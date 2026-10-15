@@ -43,7 +43,7 @@ PRONOUNS: dict[str, str] = {"female": "她", "male": "他", "other": "ta"}
 
 # 这些动作在引擎里有专门逻辑（说话的出口、寻路、睡眠门禁、内心活动、分享上限、
 # 生图动作接到事件里……），删掉会让整个世界跑不起来，所以只能停用、不能删除。
-REQUIRED_BUILTIN_ACTIONS: tuple[str, ...] = (
+VIRTUAL_BUILTIN_ACTIONS: tuple[str, ...] = (
     "say",
     "walk_to",
     "sleep",
@@ -52,6 +52,10 @@ REQUIRED_BUILTIN_ACTIONS: tuple[str, ...] = (
     "recall",
     "remember",
     "poke",
+)
+"""v3 起仍然必需的内置动作：全是虚拟动作，删掉世界就转不动。"""
+
+LEGACY_BUILTIN_ACTIONS: tuple[str, ...] = (
     "search_web",
     "check_weather",
     "schedule_list",
@@ -63,6 +67,11 @@ REQUIRED_BUILTIN_ACTIONS: tuple[str, ...] = (
     "leg_photo",
     "change_clothes",
     "make_video",
+)
+"""旧版「工具 / 指令型」内置动作：只在旧配置里保留，v3 默认不会再自动补回来。"""
+
+REQUIRED_BUILTIN_ACTIONS: tuple[str, ...] = (
+    VIRTUAL_BUILTIN_ACTIONS + LEGACY_BUILTIN_ACTIONS
 )
 
 BUILTIN_ACTION_UPDATES: dict[str, dict[str, tuple[str, str]]] = {
@@ -672,6 +681,31 @@ class ActionDef(Permissive):
         if self.scope == "global":
             return True
         return node_id in self.allowed_nodes
+
+
+def action_is_legacy(action: Any) -> bool:
+    """这个动作是不是旧版「工具型 / 指令型」动作。
+
+    v3 起工具调用交回 AstrBot 原生 Agent，这两类动作只作历史数据保留；
+    不管是标记（``legacy`` / ``kind``）还是配置本身（``llm_level`` / 工具名 /
+    触发指令）能看出旧版特征，都算旧版——清除指令和归一化共用同一把尺子。
+    """
+
+    if bool(getattr(action, "legacy", False)):
+        return True
+    if str(getattr(action, "kind", "") or "").startswith("legacy"):
+        return True
+    if str(getattr(action, "llm_level", "") or "") in ("tool", "command"):
+        return True
+    if str(getattr(action, "trigger_command", "") or "").strip():
+        return True
+    lister = getattr(action, "tool_list", None)
+    if callable(lister):
+        try:
+            return bool(lister())
+        except Exception:
+            return False
+    return bool(getattr(action, "tool_names", None))
 
 
 class StateDynamics(Permissive):
@@ -2222,6 +2256,12 @@ class WorldConfig(Permissive):
     AstrBot 原生 Agent 负责，本插件只做她的世界与提示词。只有从老版本迁移、
     暂时还需要旧行为时才打开（也可以设环境变量 ``MY_WORLD_LEGACY_TOOL_ACTIONS=1``）。
     """
+    purged_actions: list[str] = Field(default_factory=list)
+    """已经清除掉的旧版动作 id。
+
+    「清除旧版动作」会把这些 id 记在这里：以后即使打开旧版开关、或者按内置动作表
+    补回缺失项，也不会把它们复活。
+    """
     decider: DeciderConfig = Field(default_factory=DeciderConfig)
     events: EventConfig = Field(default_factory=EventConfig)
     abilities: AbilitiesConfig = Field(default_factory=AbilitiesConfig)
@@ -3165,6 +3205,7 @@ def parse_world(data: dict[str, Any]) -> tuple[WorldConfig, list[str]]:
     )
     action_ids: set[str] = set()
     actions: list[ActionDef] = []
+    legacy_disabled = 0
     for action in world.actions:
         action_id = clean_identifier(action.id)
         if action_id != str(action.id):
@@ -3186,14 +3227,15 @@ def parse_world(data: dict[str, Any]) -> tuple[WorldConfig, list[str]]:
         # 旧版「工具型 / 指令型」动作：配置原样留着，但运行时不再执行。
         # 工具调用交回 AstrBot 原生 Agent，本插件只负责她的世界与提示词。
         tool_names = action.tool_list()
-        if tool_names:
-            action.kind = "legacy_tool"
+        if action_is_legacy(action):
             action.legacy = True
-            action.tool_names = tool_names
-            action.tool_name = tool_names[0]
-        elif str(action.trigger_command or "").strip():
-            action.kind = "legacy_command"
-            action.legacy = True
+            if tool_names or str(action.llm_level or "") == "tool":
+                action.kind = "legacy_tool"
+                if tool_names:
+                    action.tool_names = tool_names
+                    action.tool_name = tool_names[0]
+            else:
+                action.kind = "legacy_command"
         else:
             action.kind = "virtual"
             action.legacy = False
@@ -3201,10 +3243,7 @@ def parse_world(data: dict[str, Any]) -> tuple[WorldConfig, list[str]]:
             action.event_text = str(action.description or action.name or "").strip()
         if action.legacy and not legacy_enabled and action.enabled:
             action.enabled = False
-            warnings.append(
-                f"动作 {action_id} 是旧版工具 / 指令动作，已停用并标为「旧版」"
-                "（工具调用现在由 AstrBot 原生处理；可在编辑器里转成虚拟动作）"
-            )
+            legacy_disabled += 1
         if action.scope == "node":
             kept = [n for n in action.allowed_nodes if n in node_map]
             missing = [n for n in action.allowed_nodes if n not in node_map]
@@ -3217,13 +3256,26 @@ def parse_world(data: dict[str, Any]) -> tuple[WorldConfig, list[str]]:
                 warnings.append(f"动作 {action_id} 限定节点为空，已改为全局动作")
                 action.scope = "global"
         actions.append(action)
+    if legacy_disabled:
+        warnings.append(
+            f"有 {legacy_disabled} 个旧版工具 / 指令动作已停用并标为「旧版」"
+            "（工具调用由 AstrBot 原生 Agent 处理；可用 /mw action purge 清除）"
+        )
     world.actions = actions
 
     # 内置动作：引擎对它们有专门逻辑，缺失会让世界跑不起来，所以自动补回来。
     # 用户删不掉它们（编辑器里删除按钮是禁用的），手改 JSON、导入预设也拦得住。
     have = {action.id for action in actions}
+    purged = {
+        str(item).strip()
+        for item in (getattr(world, "purged_actions", None) or [])
+        if str(item).strip()
+    }
+    required = REQUIRED_BUILTIN_ACTIONS if legacy_enabled else VIRTUAL_BUILTIN_ACTIONS
     missing_builtin = [
-        action_id for action_id in REQUIRED_BUILTIN_ACTIONS if action_id not in have
+        action_id
+        for action_id in required
+        if action_id not in have and action_id not in purged
     ]
     if missing_builtin:
         from .defaults import default_actions

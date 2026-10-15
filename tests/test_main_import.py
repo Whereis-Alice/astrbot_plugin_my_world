@@ -542,6 +542,48 @@ class TestMainImport(unittest.TestCase):
         self.assertIsNotNone(after_legacy)
         plugin.db.raw.close()
 
+    def test_saving_a_card_no_longer_overwrites_the_original_name(self):
+        """「保存名片」只改当前名片，不碰"原名"。
+
+        以前保存时顺手把 ``bot_base_nickname`` 也改成刚写的内容，控制台又优先显示
+        base，结果就是"名字一直卡在第一次改过的那一版"。
+        """
+
+        context = self.module.Context()
+        plugin = self.module.MyWorldPlugin(
+            context,
+            self.module.AstrBotConfig({"enabled": True, "tick_interval": 60}),
+        )
+        session = "aiocqhttp:GroupMessage:1002"
+        plugin.store.add_session(session, session_type="group", platform="aiocqhttp")
+        plugin.engine.reload_config()
+
+        async def fake_apply(_session_id, _card):
+            return 1, 0, ""
+
+        plugin._apply_card_to_group = fake_apply
+        request = self.module.request
+        request._json = {
+            "session": session,
+            "action": "set_nickname",
+            "text": "艾拉 在想浏览器",
+        }
+
+        async def scenario():
+            async with plugin.engine.session_state(session) as state:
+                state.bot_base_nickname = "艾拉"
+            response = await plugin.api_state_action()
+            state = await plugin.engine.load_state(session, cold_start=False)
+            return response, state
+
+        response, state = asyncio.run(scenario())
+        try:
+            self.assertEqual(response["status_code"], 200)
+            self.assertEqual(state.bot_current_nickname, "艾拉 在想浏览器")
+            self.assertEqual(state.bot_base_nickname, "艾拉", "原名不该被保存的名片覆盖")
+        finally:
+            plugin.db.raw.close()
+
     def test_send_failure_is_not_retried(self):
         """发送失败就当它失败：同批不再试、冷却期内也不再碰平台。"""
 
@@ -3894,6 +3936,90 @@ class TestPersonaSource(unittest.TestCase):
             ((carried.get("world") or {}).get("persona") or {}).get("text"),
             "要带走的角色卡",
         )
+
+
+class TestActionPurgeCommand(unittest.TestCase):
+    """`/mw action ...`：列旧版动作、预览清除；真正清除走引擎（见 test_legacy_purge）。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.module = load_plugin_module()
+
+    def setUp(self) -> None:
+        # 这个类会读一份全新的默认世界，避免和其它用例共用数据目录互相影响
+        self._tmp = tempfile.TemporaryDirectory()
+        self._old_env = os.environ.get("MY_WORLD_DATA_DIR")
+        os.environ["MY_WORLD_DATA_DIR"] = self._tmp.name
+
+    def tearDown(self) -> None:
+        if self._old_env is None:
+            os.environ.pop("MY_WORLD_DATA_DIR", None)
+        else:
+            os.environ["MY_WORLD_DATA_DIR"] = self._old_env
+        self._tmp.cleanup()
+
+    def _plugin(self):
+        context = self.module.Context()
+        plugin = self.module.MyWorldPlugin(
+            context,
+            self.module.AstrBotConfig({"enabled": True, "tick_interval": 60}),
+        )
+        plugin.store.add_session(
+            "aiocqhttp:GroupMessage:1", session_type="group", platform="aiocqhttp"
+        )
+        plugin.engine.reload_config()
+        return plugin
+
+    def _event(self, text: str, *, admin: bool = True):
+        event = fake_astrbot._AstrMessageEvent()
+        event.get_message_str = lambda: text
+        event.is_admin = lambda: admin
+        return event
+
+    async def _run_command(self, plugin, event) -> list[str]:
+        return [str(item) for item in [chunk async for chunk in plugin.cmd_hw(event)]]
+
+    def test_list_shows_legacy_actions(self):
+        plugin = self._plugin()
+        try:
+            legacy_ids = [action.id for action in plugin.engine.legacy_actions()]
+            output = asyncio.run(
+                self._run_command(plugin, self._event("/mw action list"))
+            )
+        finally:
+            plugin.db.raw.close()
+        text = "\n".join(output)
+        self.assertTrue(legacy_ids, "默认世界应该带着旧版动作")
+        self.assertIn("旧版动作", text)
+        self.assertTrue(any(item in text for item in legacy_ids), text)
+
+    def test_purge_previews_without_deleting(self):
+        plugin = self._plugin()
+        try:
+            before = len(plugin.engine.legacy_actions())
+            output = asyncio.run(
+                self._run_command(plugin, self._event("/mw action purge"))
+            )
+            after = len(plugin.engine.legacy_actions())
+        finally:
+            plugin.db.raw.close()
+        text = "\n".join(output)
+        self.assertGreater(before, 0)
+        self.assertIn("将清除", text)
+        self.assertIn("confirm", text)
+        self.assertEqual(before, after, "预览不应该动配置")
+
+    def test_non_admin_is_refused(self):
+        plugin = self._plugin()
+        try:
+            output = asyncio.run(
+                self._run_command(
+                    plugin, self._event("/mw action purge", admin=False)
+                )
+            )
+        finally:
+            plugin.db.raw.close()
+        self.assertTrue(any("管理员" in line for line in output), output)
 
 
 if __name__ == "__main__":

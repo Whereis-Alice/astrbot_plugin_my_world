@@ -314,7 +314,10 @@ class DialogueInjectTests(unittest.TestCase):
                 self.assertFalse(action.enabled, f"{action.id} 应该被停用")
             self.assertIn(action.kind, ("legacy_tool", "legacy_command"))
             self.assertTrue(
-                action.tool_list() or str(action.trigger_command or "").strip()
+                action.tool_list()
+                or str(action.trigger_command or "").strip()
+                or str(action.llm_level or "") in ("tool", "command"),
+                f"{action.id} 应该有工具 / 指令型特征",
             )
         plugin.db.raw.close()
 

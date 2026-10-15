@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v3.0.0-4f6bf5" alt="version" />
+  <img src="https://img.shields.io/badge/version-v3.0.1-4f6bf5" alt="version" />
   <img src="https://img.shields.io/badge/AstrBot-%E2%89%A5%204.20.0-8b6cf0" alt="AstrBot" />
   <img src="https://img.shields.io/badge/dependencies-%E6%97%A0-brightgreen" alt="dependencies" />
 </p>
@@ -84,6 +84,7 @@
 | `/mw schedule run <id>` | 立刻跑一遍某条日程（管理员） |
 | `/mw map` | 查看地图 |
 | `/mw nickname set <文本>` | 手动设置群名片（管理员） |
+| `/mw action purge` | 预览要清除的旧版（工具 / 指令型）动作与涉及分组；加 `confirm` 真正删除（管理员） |
 | `/mw session add` | 把当前会话加进白名单 |
 | `/mw help` | 完整指令表（含管理员与调试指令） |
 
@@ -100,7 +101,8 @@
 下一次说话时她自然带着这段经历。
 
 旧版本里挂过工具的动作不会丢：升级后它们会显示成「旧版」，默认停用，配置原样保留，
-可以按需删掉、或者改写成虚拟动作。工具调用请交回 AstrBot 原生工具 / 定时任务。
+可以按需改写成虚拟动作。想一次性清干净就发 `/mw action purge`（两步确认，连同空分组一起清），
+或者在编辑器「动作库 → 高级 → 清除旧版动作…」里点两下。工具调用请交回 AstrBot 原生工具 / 定时任务。
 
 ## 和这些插件怎么配合
 
@@ -144,6 +146,15 @@
 **Q：需要配哪几个模型？**
 主模型由 AstrBot 原生流程选择；本插件另外用到「打杂模型（生成 / 复盘）」和可选「看图模型」，
 在插件配置里选，留空时回落到会话默认 Provider。
+
+**Q：动作库里那一堆「旧版」动作怎么清掉？**
+发 `/mw action purge` 先看会删哪些（含涉及的分组），确认后发 `/mw action purge confirm`；
+也可以在编辑器「动作库 → 高级 → 清除旧版动作…」里点两下清完。清除过的 id 会记进
+`purged_actions`，以后即使打开旧版开关也不会复活。
+
+**Q：群名片一直显示以前改过的名字？**
+v3.0.1 修了。控制台现在会读**平台上的真实名片**（dynamic_card_plus 改过也跟得上），
+「保存名片」也只改当前名片、不再顺手覆盖「原名」。升级后打开控制台刷新一次，名字就会对齐。
 
 ## 文档导航
 

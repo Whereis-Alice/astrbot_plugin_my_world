@@ -5269,7 +5269,7 @@ class MyWorldPlugin(Star):
 
     # ================= 用户 / 管理员命令 =================
 
-    @filter.command("mw", alias={"她的世界", "myworld"})
+    @filter.command("mw", alias={"我的世界", "myworld"})
     async def cmd_hw(self, event: AstrMessageEvent):
         if self.retired:
             return
@@ -5461,6 +5461,13 @@ class MyWorldPlugin(Star):
             yield event.plain_result(await self._cmd_thread(event))
             return
 
+        if action in ("action", "actions", "动作", "动作库"):
+            if not self._can_admin(event):
+                yield event.plain_result("只有管理员可以清理动作库。")
+                return
+            yield event.plain_result(await self._cmd_actions(rest))
+            return
+
         yield event.plain_result(f"未知指令：{action}\n\n{_help_text(self._pronoun())}")
 
     async def _cmd_event(self, event: AstrMessageEvent, rest: list[str]) -> str:
@@ -5538,6 +5545,52 @@ class MyWorldPlugin(Star):
             if item.get("pending_followup"):
                 lines.append(f"   → 还有下一步：{item.get('pending_followup')}")
         return "\n".join(lines)
+
+    async def _cmd_actions(self, rest: list[str]) -> str:
+        """`/mw action ...`：管理动作库（清除旧版工具 / 指令动作）。"""
+
+        sub = rest[0].lower() if rest else ""
+        if sub in ("list", "旧版", "legacy"):
+            legacy = self.engine.legacy_actions()
+            if not legacy:
+                return "动作库里没有旧版动作。"
+            lines = [
+                f"旧版动作（{len(legacy)} 个，工具 / 指令型，v3 起不再执行）："
+            ]
+            for action in legacy[:50]:
+                group = str(action.group or "").strip() or "（未分组）"
+                lines.append(
+                    f"· {action.id}（{action.name or action.id}）｜分组：{group}"
+                )
+            if len(legacy) > 50:
+                lines.append(f"…还有 {len(legacy) - 50} 个")
+            lines.append("全部清除：/mw action purge（先预览，再加 confirm）")
+            return "\n".join(lines)
+        if sub in ("purge", "clear", "清除", "清理", "删除"):
+            confirm = any(
+                item.lower() in ("confirm", "yes", "ok", "确认", "确定")
+                for item in rest[1:]
+            )
+            result = await self.engine.purge_legacy_actions(confirm=confirm)
+            preview = result.get("preview") or {}
+            if not confirm and preview.get("count"):
+                lines = [f"将清除 {preview['count']} 个旧版动作（工具 / 指令型）："]
+                for item in list(preview.get("actions") or [])[:20]:
+                    group = item.get("group") or "（未分组）"
+                    lines.append(f"· {item.get('id')}（{item.get('name')}）｜分组：{group}")
+                if preview["count"] > 20:
+                    lines.append(f"…还有 {preview['count'] - 20} 个")
+                if preview.get("groups"):
+                    lines.append("涉及分组：" + "、".join(preview["groups"]))
+                lines.append("确认无误后发：/mw action purge confirm")
+                return "\n".join(lines)
+            return str(result.get("note") or "已清除")
+        return (
+            "用法：\n"
+            "· /mw action list          看动作库里还有哪些旧版动作（工具 / 指令型）\n"
+            "· /mw action purge         预览要清除的旧版动作与涉及的分组\n"
+            "· /mw action purge confirm 真正清除（不可撤销）"
+        )
 
     # ---------------- 给主人格 / 别的插件用的日程工具 ----------------
 
@@ -5844,6 +5897,12 @@ class MyWorldPlugin(Star):
         register(f"/{p}/config/world", self.api_put_world, ["POST"], "保存世界配置")
         register(f"/{p}/config/schedules", self.api_put_schedules, ["POST"], "保存日程")
         register(f"/{p}/config/sessions", self.api_put_sessions, ["POST"], "保存会话白名单")
+        register(
+            f"/{p}/actions/purge-legacy",
+            self.api_purge_legacy_actions,
+            ["POST"],
+            "预览 / 清除全部旧版工具与指令动作",
+        )
         register(f"/{p}/tools", self.api_tools, ["GET"], "可用工具列表")
         register(
             f"/{p}/tools/import",
@@ -6986,6 +7045,18 @@ class MyWorldPlugin(Star):
         )
         return json_response(result)
 
+    async def api_purge_legacy_actions(self):
+        """清除全部旧版（工具 / 指令型）动作；不带 confirm 时只返回预览。"""
+
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload)
+        if guard is not None:
+            return guard
+        result = await self.engine.purge_legacy_actions(
+            confirm=bool(payload.get("confirm"))
+        )
+        return json_response(result)
+
     async def api_generate_zones(self):
         """按她的人设与已有世界生成新区域草稿（不落库）。"""
 
@@ -7521,10 +7592,14 @@ class MyWorldPlugin(Star):
             if not text:
                 return error_response("名片不能为空")
             async with self.engine.session_state(session_id) as state:
+                # 只改「当前名片」，不碰「原名」：原名是她进群时的名片，用来算名片与恢复。
+                # 以前这里顺手把它也写成刚保存的内容，结果控制台一直显示第一次改过的名字。
                 state.bot_current_nickname = text
-                state.bot_base_nickname = text
                 state.bot_nickname_locked = True
             changed, failed, reason = await self._apply_card_to_group(session_id, text)
+            if changed:
+                # 刚写下去的就是当前真实名片：顺手更新缓存，编辑器不用等下一次平台读取
+                self.engine.note_local_card(session_id, text)
             ok = changed > 0
             note = f"已改 {changed} 个群的群名片"
             if failed:
@@ -7554,6 +7629,8 @@ class MyWorldPlugin(Star):
                 state.bot_nickname_locked = True
                 state.bot_current_nickname = base
             changed, failed, reason = await self._apply_card_to_group(session_id, base)
+            if changed:
+                self.engine.note_local_card(session_id, base)
             if changed:
                 note = f"已改回原名（{changed} 个群）"
                 if failed:
@@ -8157,7 +8234,7 @@ def _help_text(pronoun: str = "她") -> str:
     """指令帮助文案。pronoun 由全局设置里的性别决定（她/他/ta）。"""
 
     return (
-        "她的世界指令：\n"
+        "我的世界指令：\n"
         f"· /mw status            {pronoun}现在在哪、在做什么、心情如何\n"
         f"· /mw recall <话题>     让{pronoun}回忆某个话题\n"
         f"· /mw memory            看看{pronoun}记得你什么\n"
@@ -8174,6 +8251,7 @@ def _help_text(pronoun: str = "她") -> str:
         "· /mw reload            热加载配置（管理员）\n"
         "· /mw reset [会话]      重置某个会话的状态（管理员）\n"
         "· /mw restore-default   恢复默认配置（管理员）\n"
+        "· /mw action list|purge  看 / 清除旧版工具与指令动作（管理员）\n"
         "· /mw debug on|off|state|plan|stop|memories|session|tools|prompt|autoprompt|tick|decide   调试（管理员）"
     )
 
@@ -8198,7 +8276,7 @@ def _command_args(event: AstrMessageEvent) -> list[str]:
     if not text:
         return []
     parts = text.split()
-    if parts and parts[0].lstrip("/").lower() in ("mw", "她的世界", "myworld"):
+    if parts and parts[0].lstrip("/").lower() in ("mw", "我的世界", "myworld"):
         parts = parts[1:]
     return parts
 

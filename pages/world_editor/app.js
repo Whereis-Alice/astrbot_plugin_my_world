@@ -3588,6 +3588,9 @@ function bindButtons() {
   // 旧版「从工具导入」入口已经下线（工具调用交回 AstrBot 原生）；元素不在时不要绑。
   $("action-search").addEventListener("input", renderActionGrid);
   $("action-json").addEventListener("click", editActionsJson);
+  if ($("action-purge-legacy")) {
+    $("action-purge-legacy").addEventListener("click", purgeLegacyActions);
+  }
   // 动作库的筛选 / 排序 / 批量选择
   const filterMap = {
     "action-filter-virtual": "virtual",
@@ -4307,9 +4310,12 @@ function renderHero(data, stateLabel) {
     subBox.textContent = "先去「会话」页把群或私聊加进白名单。";
     return;
   }
-  const base = String(data.nickname_base || "").trim();
   const nickname = String(data.nickname || "").trim();
-  const label = base || sessionShortName(data.session_id || "") || nickname;
+  const base = String(data.nickname_base || "").trim();
+  // 平台的真实名片优先：dynamic_card_plus 改过之后也要跟得上，
+  // "原名（base）"只当兜底——以前优先用它，才会一直显示第一次改过的名字。
+  const live = String(data.nickname_live || "").trim();
+  const label = live || nickname || base || sessionShortName(data.session_id || "");
   avatar.textContent = label ? Array.from(label)[0] : "？";
   nameBox.textContent = label || "（还没设置群名片）";
   const action = data.current_action || {};
@@ -6155,8 +6161,13 @@ async function refreshStatus() {
     });
     const nicknameBox = $("status-nickname");
     if (nicknameBox) {
-      nicknameBox.value = data.nickname || "";
-      nicknameBox.title = `她现在：${data.state || ""}${data.node_name ? ` · ${data.node_name}` : ""}`;
+      // 有平台上的真实名片就显示它（dynamic_card_plus 改过也跟得上），
+      // 读不到就退回插件记录的那份。
+      nicknameBox.value = data.nickname_live || data.nickname || "";
+      const titleBits = [`她现在：${data.state || ""}`];
+      if (data.node_name) titleBits.push(data.node_name);
+      if (data.nickname_live) titleBits.push("来自平台上的当前名片");
+      nicknameBox.title = titleBits.filter(Boolean).join(" · ");
     }
     const nickToggle = $("status-nickname-toggle");
     if (nickToggle) {
@@ -10120,6 +10131,41 @@ async function deleteAction(actionId) {
 }
 
 /** 动作库的 JSON 直接编辑：批量改 / 跨实例搬运用。 */
+/** 清除旧版（工具 / 指令型）动作：先预览「删哪些、涉及哪些分组」，确认后再真删。 */
+async function purgeLegacyActions() {
+  try {
+    const preview = await apiPost("actions/purge-legacy", {});
+    const info = preview.preview || {};
+    const count = Number(info.count || 0);
+    if (!count) {
+      toast(preview.note || "没有旧版动作，不用清");
+      return;
+    }
+    const bits = [`将删除 ${count} 个旧版动作`];
+    (info.actions || []).slice(0, 6).forEach((item) => {
+      bits.push(`${item.name}（${item.id}）${item.group ? `·${item.group}` : ""}`);
+    });
+    if (count > 6) bits.push(`…还有 ${count - 6} 个`);
+    if ((info.groups || []).length) {
+      bits.push(`涉及分组：${info.groups.join("、")}`);
+    }
+    bits.push("分组里没有别的动作时，分组也会一起消失；删除不可撤销。");
+    const ok = await confirmDialog({
+      title: "清除旧版动作",
+      message: bits.join("；"),
+      confirmText: "全部删除",
+    });
+    if (!ok) return;
+    const result = await apiPost("actions/purge-legacy", { confirm: true });
+    ui.config = await apiGet("config");
+    renderActionMenu();
+    renderActionGrid();
+    toast(result.note || `已清除 ${result.removed || 0} 个旧版动作`);
+  } catch (error) {
+    toast(error.message || "清除失败");
+  }
+}
+
 async function editActionsJson() {
   const json = JSON.stringify(actions(), null, 2);
   openFormDialog({

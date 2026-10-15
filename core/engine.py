@@ -81,6 +81,7 @@ from .models import (
     SessionDef,
     WorldConfig,
     action_intimacy,
+    action_is_legacy,
     pronoun_for as pronounce_for,
 )
 from .nickname import compute_nickname, should_update
@@ -861,6 +862,9 @@ class MyWorldEngine:
         """``(会话, 事件类型, 工具名) -> 上次发的时间``：同一串调用只发第一条。"""
         self._read_cache: dict[str, tuple[float, str]] = {}
         """URL -> (写入时刻, 正文)，抓过的网页短期内不再重复抓。"""
+
+        self._live_card_cache: dict[str, tuple[float, str]] = {}
+        """会话 -> (读取时刻, 平台上的真实群名片)。编辑器轮询状态时用它做短缓存。"""
 
         self._image_captioned: dict[str, float] = {}
         """已经转述过的图（按图片地址记）：同一张图不再转述第二遍。"""
@@ -6066,7 +6070,7 @@ class MyWorldEngine:
         # 「mw event h」。光认带斜杠那几种写法挡不住，这里再按「第一个词 + 子命令」认一次，
         # 不然指令会被记成"他刚说的话"，她会一本正经地回一句"你怎么又敲这指令"。
         parts = cls.command_words(raw)
-        if not parts or parts[0] not in ("mw", "她的世界", "myworld"):
+        if not parts or parts[0] not in ("mw", "我的世界", "myworld"):
             return False
         if len(parts) == 1:
             return True
@@ -6079,7 +6083,7 @@ class MyWorldEngine:
         parts = cls.command_words(text)
         return bool(
             len(parts) >= 2
-            and parts[0] in ("mw", "她的世界", "myworld")
+            and parts[0] in ("mw", "我的世界", "myworld")
             and parts[1] in ("event", "事件")
         )
 
@@ -17240,6 +17244,100 @@ class MyWorldEngine:
 
     # ---------------- 世界生成：区域 / 日程 / 事件 ----------------
 
+    def legacy_actions(self) -> list[ActionDef]:
+        """当前世界里的全部旧版（工具 / 指令型）动作。"""
+
+        return [action for action in self.world.actions if action_is_legacy(action)]
+
+    async def purge_legacy_actions(self, *, confirm: bool = False) -> dict[str, Any]:
+        """清除全部旧版动作（连同它们留下的空分组一起清掉）。
+
+        ``confirm=False`` 只做预览：返回会删哪些动作、涉及哪些分组，不动配置。
+        真正删除时会把 id 记进 ``purged_actions``：以后即使打开旧版开关、或者按内置
+        动作表补回缺失项，也不会把它们复活。
+        """
+
+        legacy = self.legacy_actions()
+        groups: dict[str, int] = {}
+        for action in legacy:
+            name = str(action.group or "").strip()
+            if name:
+                groups[name] = groups.get(name, 0) + 1
+        preview = {
+            "count": len(legacy),
+            "actions": [
+                {
+                    "id": action.id,
+                    "name": action.name or action.id,
+                    "group": str(action.group or ""),
+                    "kind": str(action.kind or ""),
+                    "llm_level": str(action.llm_level or ""),
+                }
+                for action in legacy
+            ],
+            "groups": sorted(groups),
+        }
+        if not legacy:
+            return {
+                "ok": True,
+                "removed": 0,
+                "preview": preview,
+                "note": "没有旧版动作，不用清",
+            }
+        if not confirm:
+            return {
+                "ok": True,
+                "removed": 0,
+                "preview": preview,
+                "note": f"将要清除 {len(legacy)} 个旧版动作；确认后再执行",
+            }
+
+        removed_ids = {action.id for action in legacy}
+        raw = self.store.raw_world()
+        raw_actions = [
+            item
+            for item in (raw.get("actions") or [])
+            if not (
+                isinstance(item, dict)
+                and str(item.get("id") or "") in removed_ids
+            )
+        ]
+        raw["actions"] = raw_actions
+        purged = {
+            str(item).strip()
+            for item in (raw.get("purged_actions") or [])
+            if str(item).strip()
+        } | removed_ids
+        raw["purged_actions"] = sorted(purged)
+        warnings = self.store.save_world(raw, reason="清除旧版动作")
+        self.reload_config()
+        state_notes: list[str] = []
+        try:
+            state_notes = await self.repair_states_after_config_change()
+        except Exception as exc:  # 修状态失败不影响"已经删掉"这个事实
+            self._log("warning", f"清除旧版动作后修状态失败：{exc}")
+        remaining_groups = {
+            str(action.group or "").strip()
+            for action in self.world.actions
+            if str(action.group or "").strip()
+        }
+        empty_groups = sorted(name for name in groups if name not in remaining_groups)
+        note = f"已清除 {len(removed_ids)} 个旧版动作"
+        if empty_groups:
+            note += f"，顺带清掉 {len(empty_groups)} 个空分组：" + "、".join(
+                empty_groups[:6]
+            ) + ("…" if len(empty_groups) > 6 else "")
+        self._log("info", note)
+        return {
+            "ok": True,
+            "removed": len(removed_ids),
+            "removed_actions": preview["actions"],
+            "groups": empty_groups,
+            "state_notes": state_notes,
+            "warnings": warnings,
+            "note": note,
+        }
+
     def relations_brief(self, session_id: str = "", *, limit: int = 12) -> str:
         """给生成器看的人际关系摘要：她世界里的关系类型 + 已经认识的人。"""
 
@@ -17614,22 +17712,99 @@ class MyWorldEngine:
             )
             return True
 
+    async def live_group_card(
+        self, session_id: str, *, ttl: float = 30.0, force: bool = False
+    ) -> str:
+        """读平台上的**真实**群名片（带短缓存）。
+
+        dynamic_card_plus 这类插件会自己改名，插件记录的那份可能早就过期；编辑器每次
+        刷新状态都直接打平台接口又太重，所以 ``ttl`` 秒内复用同一次结果。
+        ``force=True``（「重新获取」按钮）绕过缓存。
+        """
+
+        if ":GroupMessage:" not in session_id or self.messenger is None:
+            return ""
+        fetch = getattr(self.messenger, "fetch_group_card", None)
+        if not callable(fetch):
+            return ""
+        now = time.monotonic()
+        cached = self._live_card_cache.get(session_id)
+        if cached and not force and (now - float(cached[0])) < max(0.0, float(ttl)):
+            return str(cached[1] or "")
+        card = ""
+        try:
+            card = str(await fetch(session_id) or "").strip()
+        except Exception as exc:
+            self._log("debug", f"读取群名片失败：{exc}")
+        self._live_card_cache[session_id] = (now, card)
+        return card
+
+    def nickname_owner(self, session_id: str) -> str:
+        """群名片现在由谁管理（dynamic_card_plus 接管时返回它的名字）。"""
+
+        if self.messenger is None:
+            return ""
+        getter = getattr(self.messenger, "group_card_owner", None)
+        if not callable(getter):
+            return ""
+        try:
+            return str(getter(session_id) or "")
+        except Exception:
+            return ""
+
+    def note_local_card(self, session_id: str, card: str) -> None:
+        """插件自己刚把名片写成 ``card``：把真实名片缓存同步过来，编辑器立刻能读到。"""
+
+        self._live_card_cache[session_id] = (
+            time.monotonic(),
+            str(card or "").strip(),
+        )
+
+    async def align_owned_nickname(self, session_id: str, card: str) -> bool:
+        """名片被别的插件接管时，把本地记录对齐到平台上的真实值。
+
+        这修的是「第一次改过的名字一直卡在编辑器里」：以前保存名片会顺手写
+        ``bot_base_nickname``，而控制台优先显示 base。被别人接管时 base 本来也没有意义，
+        跟着平台上的真实名片走最不容易出错。
+        """
+
+        body = str(card or "").strip()
+        if not body:
+            return False
+        changed = False
+        async with self.session_state(session_id) as state:
+            if state.bot_current_nickname != body:
+                state.bot_current_nickname = body
+                changed = True
+            if state.bot_base_nickname != body:
+                state.bot_base_nickname = body
+                changed = True
+            if changed:
+                state.last_nickname_update_at = self._now()
+                await self._log_event(
+                    state,
+                    "nickname",
+                    {
+                        "live": body,
+                        "note": "名片由别的插件管理，按平台上的真实名片对齐",
+                    },
+                )
+        return changed
+
     async def refresh_nickname(self, session_id: str) -> dict[str, Any]:
         """重新从平台读一次她现在的群名片（编辑器「重新获取」按钮用）。"""
 
         if not self.is_enabled(session_id):
             return {"ok": False, "card": "", "note": "这个会话没有启用她的世界"}
-        card = ""
-        try:
-            card = str(await self.messenger.fetch_group_card(session_id) or "").strip()
-        except Exception as exc:
-            self._log("warning", f"读取群名片失败：{exc}")
+        card = await self.live_group_card(session_id, force=True)
+        owner = self.nickname_owner(session_id)
         async with self.session_state(session_id) as state:
             before = state.bot_current_nickname
             if card:
                 state.bot_current_nickname = card
-                if not state.bot_base_nickname:
-                    # 之前没记过原名，就把这次读到的当成原名
+                if not state.bot_base_nickname or owner:
+                    # 之前没记过原名，就把这次读到的当成原名；
+                    # 被别人接管时"原名"没有意义，也按真实名片对齐（修掉旧数据里卡住的别名）
                     state.bot_base_nickname = card
                 state.last_nickname_update_at = self._now()
             note = "" if card else "还没收到过这个群的消息，拿不到机器人句柄"
@@ -17638,7 +17813,13 @@ class MyWorldEngine:
                 "nickname",
                 {"manual": True, "to": card, "ok": bool(card), "note": note},
             )
-        return {"ok": bool(card), "card": card, "before": before, "note": note}
+        return {
+            "ok": bool(card),
+            "card": card,
+            "before": before,
+            "note": note,
+            "owner": owner,
+        }
 
     async def clear_all_states(self) -> int:
         """清掉所有会话的世界状态（切换预设时用）。记忆与日志不动。"""
@@ -18798,6 +18979,7 @@ class MyWorldEngine:
             state.bot_current_nickname = desired
             state.last_nickname_update_at = now
             state.nickname_fail_count = 0
+            self.note_local_card(primary, desired)
             await self._log_event(state, "nickname", {"to": desired, "ok": True})
             # 同一个她在别的群里的名片跟着一起改：不再各算一次冷却
             for session_id in targets[1:]:
@@ -19323,6 +19505,17 @@ class MyWorldEngine:
         state = await self.load_state(session_id, cold_start=False)
         node = self.node(state.node_id)
         zone = self.world.zone_map().get(self.world.zone_of(state.node_id))
+        # 平台上的真实群名片：别人（dynamic_card_plus 等）改名后，编辑器要能看到当前值。
+        # 被别人接管时顺手把本地记录对齐，修掉"名字卡在第一次改过的那一版"的旧数据。
+        owner = self.nickname_owner(session_id)
+        live_card = (
+            await self.live_group_card(session_id)
+            if ":GroupMessage:" in session_id
+            else ""
+        )
+        if live_card and owner:
+            if await self.align_owned_nickname(session_id, live_card):
+                state = await self.load_state(session_id, cold_start=False)
         return {
             "session_id": session_id,
             "world_time": state.world_time,
@@ -19449,6 +19642,8 @@ class MyWorldEngine:
                 if isinstance(value, dict)
             },
             "nickname": state.bot_current_nickname or state.bot_base_nickname,
+            "nickname_live": live_card,
+            "nickname_owner": owner,
             "zone_id": zone.id if zone is not None else "",
             "zone_name": zone.name if zone is not None else "",
             "clock_text": self._clock_text(),
