@@ -201,6 +201,40 @@ class GenerationBrowserTests(unittest.TestCase):
         self.assertEqual(world_call["data"]["count"], 5)
         self.assertEqual(world_call["data"]["nodes_per_zone"], 3)
 
+    def test_world_action_generator_lives_in_the_action_library(self):
+        self.open_generator("actions", "action-generate-world")
+        inputs = self.page.locator('#dialog-body input[type="number"]')
+        expect(inputs).to_have_count(1)
+        inputs.nth(0).fill("6")
+        self.page.locator("#dialog-ok").click()
+        action_call = self.page.evaluate("generationCalls").pop()
+        self.assertEqual(action_call["endpoint"], "generate/world-actions")
+        self.assertEqual(action_call["data"]["count"], 6)
+        self.page.evaluate(
+            "result => finishGeneration(result)",
+            {
+                "actions": [
+                    {
+                        "id": "water_flowers",
+                        "node_id": "kitchen",
+                        "name": "给花浇水",
+                        "description": "给窗台上的花浇水",
+                        "scope": "node",
+                        "allowed_nodes": ["kitchen"],
+                    }
+                ],
+                "problems": [],
+            },
+        )
+        expect(self.page.locator("#dialog-title")).to_contain_text("生成的动作")
+        self.page.locator("#dialog-ok").click()
+        expect(self.page.locator("#dialog")).to_be_hidden()
+        config = self.page.evaluate("AstrBotPluginPage.apiGet('config')")
+        self.assertTrue(
+            any(item["id"] == "water_flowers" for item in config["world"]["actions"])
+        )
+        self.assertEqual(self.errors, [])
+
     def test_spring_layout_with_complex_routes_stays_readable(self):
         base_zones = [
             {"id": "home", "name": "家中", "is_home": True},

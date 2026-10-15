@@ -14,6 +14,8 @@ from typing import Any
 from .models import ActionDef, NodeDef, ScheduleDef, ZoneDef
 
 MAX_ACTIONS_PER_NODE = 5
+MAX_WORLD_ACTIONS_PER_RUN = 24
+DEFAULT_WORLD_ACTIONS_PER_RUN = 8
 MAX_NODES_PER_RUN = 5
 DEFAULT_ACTIONS_PER_NODE = 3
 DEFAULT_NODES_PER_RUN = 3
@@ -55,6 +57,18 @@ def clamp_per_node(value: Any, default: int = DEFAULT_ACTIONS_PER_NODE) -> int:
     except (TypeError, ValueError):
         number = default
     return max(1, min(MAX_ACTIONS_PER_NODE, number))
+
+
+def clamp_world_action_count(
+    value: Any, default: int = DEFAULT_WORLD_ACTIONS_PER_RUN
+) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    if number <= 0:
+        number = default
+    return max(1, min(MAX_WORLD_ACTIONS_PER_RUN, number))
 
 
 def clamp_node_count(value: Any, default: int = DEFAULT_NODES_PER_RUN) -> int:
@@ -121,6 +135,8 @@ def parse_generated_actions(
     node_ids: list[str],
     tool_names: set[str] | None = None,
     max_per_node: int = MAX_ACTIONS_PER_NODE,
+    existing_ids: set[str] | None = None,
+    max_total: int = 0,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """把模型输出解析成一串动作草稿。返回 (动作列表, 提示信息)。"""
 
@@ -130,10 +146,13 @@ def parse_generated_actions(
     tool_names = {str(name) for name in (tool_names or set())}
     known_nodes = {str(node) for node in node_ids}
     per_node: dict[str, int] = {}
-    used_ids: set[str] = set()
+    used_ids: set[str] = {str(item) for item in (existing_ids or set())}
     actions: list[dict[str, Any]] = []
 
     for index, item in enumerate(raw_items, 1):
+        if max_total and len(actions) >= int(max_total):
+            problems.append(f"超过一次最多 {max_total} 个动作的上限，后面的已跳过")
+            break
         if not isinstance(item, dict):
             problems.append(f"第 {index} 条不是对象，已跳过")
             continue

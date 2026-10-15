@@ -153,6 +153,7 @@ from .mood import (
 
 from .generator import (
     DEFAULT_MAP_NODES_PER_ZONE,
+    MAX_ACTIONS_PER_NODE,
     auto_layout,
     clamp_event_count,
     clamp_map_nodes_per_zone,
@@ -160,6 +161,7 @@ from .generator import (
     clamp_node_count,
     clamp_per_node,
     clamp_schedule_count,
+    clamp_world_action_count,
     clamp_zone_count,
     connect_zone_graph,
     link_plan,
@@ -17284,8 +17286,73 @@ class MyWorldEngine(ScopedConfigMixin):
             reply,
             node_ids=[node.id for node in nodes],
             tool_names=set(self.available_tools()),
+            existing_ids={action.id for action in self.world.actions},
         )
         return {"actions": actions, "problems": problems, "raw": _clip_text(reply, 1200)}
+
+    async def generate_world_actions(self, count: Any = 0) -> dict[str, Any]:
+        """按人设与**整张地图**生成一批虚拟动作草稿（动作库的全局生成入口）。
+
+        和「按区域生成」不同：这里会读全部区域与地点，让动作分摊到不同地点，
+        生成结果只是草稿，用户在动作库里勾选确认后才写进配置。
+        """
+
+        wanted = clamp_world_action_count(count)
+        session_id = self._generator_session_id()
+        zones = [
+            {"id": zone.id, "name": zone.name or zone.id, "note": zone.note}
+            for zone in self.world.zones
+        ]
+        zone_names = {zone["id"]: zone["name"] for zone in zones}
+        nodes = [
+            {
+                "id": node.id,
+                "name": node.name or node.id,
+                "zone_id": node.zone_id,
+                "zone_name": zone_names.get(node.zone_id, ""),
+                "prompt": node.prompt or node.atmosphere.describe(),
+            }
+            for node in self.world.nodes
+        ]
+        if not nodes:
+            return {
+                "actions": [],
+                "problems": ["地图里还没有地点，先建好地图再生成动作"],
+            }
+        system_prompt, prompt = self.prompts.build_world_action_generator_prompt(
+            persona_text=await self._persona_text(session_id),
+            zones=zones,
+            nodes=nodes,
+            existing_actions=[
+                action.name or action.id
+                for action in self.world.actions
+                if not bool(getattr(action, "legacy", False))
+            ],
+            count=wanted,
+        )
+        reply = await self._ask_creator(
+            session_id, system_prompt, prompt, raise_errors=True
+        )
+        per_node_cap = max(
+            2,
+            min(
+                MAX_ACTIONS_PER_NODE,
+                (wanted + len(nodes) - 1) // len(nodes) + 1,
+            ),
+        )
+        actions, problems = parse_generated_actions(
+            reply,
+            node_ids=[node["id"] for node in nodes],
+            tool_names=set(),
+            max_per_node=per_node_cap,
+            existing_ids={action.id for action in self.world.actions},
+            max_total=wanted,
+        )
+        return {
+            "actions": actions,
+            "problems": problems,
+            "raw": _clip_text(reply, 1200),
+        }
 
     async def generate_nodes_for_zone(
         self, zone_id: str, count: Any = 0

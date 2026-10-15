@@ -5948,6 +5948,12 @@ class MyWorldPlugin(Star):
             "把 AstrBot 的工具批量导入成动作",
         )
         register(f"/{p}/generate/actions", self.api_generate_actions, ["POST"], "按区域生成动作")
+        register(
+            f"/{p}/generate/world-actions",
+            self.api_generate_world_actions,
+            ["POST"],
+            "按人设与整张地图生成动作",
+        )
         register(f"/{p}/generate/nodes", self.api_generate_nodes, ["POST"], "按区域生成地点")
         register(
             f"/{p}/generate/zones",
@@ -7130,6 +7136,17 @@ class MyWorldPlugin(Star):
             zone_id,
             payload.get("per_node"),
             node_ids=[node_id] if node_id else None,
+        )
+
+    async def api_generate_world_actions(self):
+        """按人设与整张地图生成动作草稿（动作库的全局生成入口）。"""
+
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload)
+        if guard is not None:
+            return guard
+        return await self._generate_drafts_response(
+            self.engine.generate_world_actions, payload.get("count")
         )
 
     async def api_generate_nodes(self):

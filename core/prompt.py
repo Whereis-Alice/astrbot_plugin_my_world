@@ -3332,6 +3332,80 @@ class PromptBuilder:
         )
         return system, prompt
 
+    def build_world_action_generator_prompt(
+        self,
+        *,
+        persona_text: str,
+        zones: list[dict[str, Any]],
+        nodes: list[dict[str, Any]],
+        existing_actions: list[str],
+        count: int,
+    ) -> tuple[str, str]:
+        """按人设与整张地图生成动作草稿（动作库的「按人设与地图生成动作」）。"""
+
+        wanted = max(1, int(count))
+        zone_lines = [
+            f"- id={item.get('id')}｜{item.get('name')}：{_one_line(item.get('note'), 60) or '（没有说明）'}"
+            for item in zones
+        ]
+        node_lines = [
+            f"- id={item.get('id')}｜{item.get('name')}｜区域={item.get('zone_id')}"
+            f"｜{_one_line(item.get('prompt'), 60) or '（没有描述）'}"
+            for item in nodes
+        ]
+        know = (
+            "、".join(existing_actions[:60])
+            if existing_actions
+            else "（还没有动作）"
+        )
+        system = (
+            "你在帮一个群聊里的 AI 角色设计「她在这张地图上能做的事」。"
+            "输出必须是 JSON，不要解释、不要 Markdown。"
+        )
+        prompt = (
+            f"# 角色\n{_one_line(persona_text, 700) or '（没有额外设定，按真实自然的人来写）'}\n\n"
+            "# 她生活的区域\n" + ("\n".join(zone_lines) or "（还没有区域）") + "\n\n"
+            "# 地图里的地点（动作只能绑到这些 id 上）\n"
+            + ("\n".join(node_lines) or "（还没有地点）")
+            + "\n\n"
+            f"# 已经有的动作（不要重复这些名字和意图）\n{know}\n\n"
+            f"# 要求\n"
+            f"1. 一共写 {wanted} 个动作，尽量分散到不同地点；同一个地点最多 2~3 个；\n"
+            "2. 每个动作都要是「她在这个地点真的做得出来」的事，做完以后有值得在群里说一句的见闻"
+            "（例如在阳台：晒被子、给花浇水、看楼下的人）；\n"
+            "3. 不要写「说话」「分享」这类通用动作，也不要写需要联网、调用工具才能完成的事"
+            "（工具由 AstrBot 原生 Agent 处理，动作库不挂工具）；\n"
+            "4. 效果幅度要小：属性只允许 energy / loneliness / curiosity / affect / boredom，"
+            "写成 +0.05、-0.05、=0.5 这类；心情写成 mood:满足；\n"
+            "5. 持续动作给 duration_mode=llm 和 duration_min / duration_max（秒）；\n"
+            "6. 只有**主动去碰某个人**的动作（抱、亲、摸头、拉手、靠着、蹭这类）才写 "
+            "intimacy（0~1）；不是身体接触的一律不写或写 0。\n\n"
+            "# 输出格式（只输出这个 JSON）\n"
+            "{\n"
+            '  "actions": [\n'
+            "    {\n"
+            '      "id": "英文小写下划线，例如 balcony_water_flowers",\n'
+            '      "node_id": "必须用上面列出的地点 id",\n'
+            '      "name": "中文名，例如 给花浇水",\n'
+            '      "description": "一句话说明她会做什么",\n'
+            '      "category": "instant 或 continuous",\n'
+            '      "llm_level": "single（让她自己说一句）或 template（固定文案）",\n'
+            '      "duration_mode": "llm",\n'
+            '      "duration_min": 300,\n'
+            '      "duration_max": 1800,\n'
+            '      "intimacy": 0,\n'
+            '      "template": "只有 template 才填，例如 （{bot}给花浇了点水）",\n'
+            '      "on_complete": {\n'
+            '        "trigger": "llm_followup",\n'
+            '        "prompt_hint": "让她用第一人称随口讲这件事，不要说教、不要吆喝",\n'
+            '        "effects": {"boredom": "-0.05", "affect": "+0.06"}\n'
+            "      }\n"
+            "    }\n"
+            "  ]\n"
+            "}"
+        )
+        return system, prompt
+
     def build_tool_action_naming_prompt(
         self,
         *,

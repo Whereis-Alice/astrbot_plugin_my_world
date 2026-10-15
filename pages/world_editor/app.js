@@ -3753,6 +3753,9 @@ function bindButtons() {
   $("map-session").addEventListener("change", renderMap);
   $("map-show-all").addEventListener("change", renderMap);
   $("action-add").addEventListener("click", addAction);
+  if ($("action-generate-world")) {
+    $("action-generate-world").addEventListener("click", generateWorldActions);
+  }
   // 旧版「从工具导入」入口已经下线（工具调用交回 AstrBot 原生）；元素不在时不要绑。
   $("action-search").addEventListener("input", renderActionGrid);
   $("action-json").addEventListener("click", editActionsJson);
@@ -6741,8 +6744,10 @@ async function refreshWeatherNow() {
 function renderWorldMap() {
   const container = $("canvas-nodes");
   const svg = $("canvas-edges");
+  const labels = $("canvas-labels");
   container.innerHTML = "";
   svg.innerHTML = "";
+  if (labels) labels.innerHTML = "";
 
   const focusSession = $("map-session") ? $("map-session").value : "";
   const showAll = $("map-show-all") ? $("map-show-all").checked : false;
@@ -6765,6 +6770,10 @@ function renderWorldMap() {
   container.style.height = `${mapHeight}px`;
   svg.setAttribute("width", String(mapWidth));
   svg.setAttribute("height", String(mapHeight));
+  if (labels) {
+    labels.setAttribute("width", String(mapWidth));
+    labels.setAttribute("height", String(mapHeight));
+  }
 
   const byId = {};
   zones().forEach((zone) => {
@@ -6819,9 +6828,9 @@ function renderWorldMap() {
     label.setAttribute("y", ly - 4);
     label.setAttribute("text-anchor", "middle");
     label.setAttribute("class", "edge-ticks");
-    // 世界地图上只标耗时；完整的两端地点放在线的 <title> 里，避免长标签互相压住。
-    label.textContent = `${num(edge.ticks, 1)} tick`;
-    svg.appendChild(label);
+    // 点对点：标出这条线两端的具体地点；耗时放在悬停提示里。
+    label.textContent = `${nodeLabel(edge.from_node)} ↔ ${nodeLabel(edge.to_node)}`;
+    (labels || svg).appendChild(label);
   });
 
   zones().forEach((zone) => {
@@ -6890,8 +6899,10 @@ function selectNode(nodeId) {
 function renderZoneMap() {
   const container = $("canvas-nodes");
   const svg = $("canvas-edges");
+  const labels = $("canvas-labels");
   container.innerHTML = "";
   svg.innerHTML = "";
+  if (labels) labels.innerHTML = "";
   const zoneId = ui.selectedZone;
   const inside = nodesInZone(zoneId);
   const insideIds = new Set(inside.map((node) => node.id));
@@ -6913,6 +6924,10 @@ function renderZoneMap() {
   container.style.height = `${mapHeight}px`;
   svg.setAttribute("width", String(mapWidth));
   svg.setAttribute("height", String(mapHeight));
+  if (labels) {
+    labels.setAttribute("width", String(mapWidth));
+    labels.setAttribute("height", String(mapHeight));
+  }
 
   const byId = {};
   inside.forEach((node) => {
@@ -6939,7 +6954,7 @@ function renderZoneMap() {
     label.setAttribute("text-anchor", "middle");
     label.setAttribute("class", "edge-ticks");
     label.textContent = `${num(edge.ticks, 1)} tick`;
-    svg.appendChild(label);
+    (labels || svg).appendChild(label);
   });
 
   inside.forEach((node) => {
@@ -7326,6 +7341,33 @@ async function generateZoneActions(zoneId, perNode, button) {
     } catch (error) {
       toast(error.message || "生成失败");
     }
+  });
+}
+
+/** 动作库全局生成：读她的人设 + 整张地图，按地点生成一批虚拟动作。 */
+function generateWorldActions() {
+  askGenerateCount({
+    title: "按人设与地图生成动作",
+    hint: "读她的人设和整张地图，按地点生成一批虚拟动作；先预览，确认后才写进动作库。",
+    defaultValue: 8,
+    min: 1,
+    max: 24,
+    onRun: async (count) => {
+      const result = await apiPost("generate/world-actions", { count });
+      const drafts = result.actions || [];
+      if (!drafts.length) {
+        throw new Error(
+          (result.problems || []).join("；") || "没有生成出可用的动作，请重试",
+        );
+      }
+      return () => openCustomDialog({
+        title: `生成的动作（${drafts.length} 个）`,
+        hint: "每个动作已经绑好一个地点；改名、调地点、勾选之后才会写进动作库。",
+        confirmText: "确认加入选中的",
+        build: (body) => buildActionDraftList(body, drafts, result.problems || []),
+        onSubmit: () => commitGeneratedActions(drafts),
+      });
+    },
   });
 }
 

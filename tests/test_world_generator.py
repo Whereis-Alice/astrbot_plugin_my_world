@@ -25,7 +25,9 @@ from core.generator import (  # noqa: E402
     clamp_map_nodes_per_zone,
     clamp_map_zone_count,
     clamp_schedule_count,
+    clamp_world_action_count,
     clamp_zone_count,
+    parse_generated_actions,
     parse_generated_events,
     parse_generated_schedules,
     parse_generated_zones,
@@ -71,6 +73,31 @@ class ZoneParserTests(unittest.TestCase):
         zones, problems = parse_generated_zones(text)
         self.assertEqual([zone["id"] for zone in zones], ["good_zone"])
         self.assertEqual(problems, [])
+
+
+class WorldActionParserTests(unittest.TestCase):
+    def test_total_limit_and_existing_ids_are_respected(self):
+        text = (
+            '{"actions": ['
+            '{"id": "water_flowers", "node_id": "n1", "name": "给花浇水"},'
+            '{"id": "water_flowers", "node_id": "n1", "name": "重复的"},'
+            '{"id": "watch_rain", "node_id": "n1", "name": "看雨"}'
+            "]}"
+        )
+        actions, problems = parse_generated_actions(
+            text, node_ids=["n1"], max_total=1
+        )
+        self.assertEqual([item["id"] for item in actions], ["water_flowers"])
+        self.assertTrue(any("上限" in item for item in problems))
+
+        actions, problems = parse_generated_actions(
+            text,
+            node_ids=["n1"],
+            existing_ids={"water_flowers"},
+            max_total=5,
+        )
+        self.assertEqual([item["id"] for item in actions], ["watch_rain"])
+        self.assertTrue(any("重复" in item for item in problems))
 
 
 class ScheduleParserTests(unittest.TestCase):
@@ -148,6 +175,8 @@ class ClampTests(unittest.TestCase):
         self.assertEqual(clamp_map_zone_count(0), 4)
         self.assertEqual(clamp_map_nodes_per_zone(99), 5)
         self.assertEqual(clamp_map_nodes_per_zone(0), 3)
+        self.assertEqual(clamp_world_action_count(99), 24)
+        self.assertEqual(clamp_world_action_count(0), 8)
         self.assertEqual(clamp_schedule_count(99), 6)
         self.assertEqual(clamp_event_count("bad"), 3)
 
@@ -356,6 +385,27 @@ class GeneratorPromptTests(unittest.TestCase):
         )
         self.assertIn("通用工具", legacy_scene)
 
+    def test_world_action_prompt_carries_persona_map_and_count(self):
+        system, prompt = self.builder.build_world_action_generator_prompt(
+            persona_text="她喜欢做饭，也喜欢在阳台养花。",
+            zones=[{"id": "home", "name": "家中", "note": "她住的地方"}],
+            nodes=[
+                {
+                    "id": "kitchen",
+                    "name": "厨房",
+                    "zone_id": "home",
+                    "prompt": "有热茶和烤箱",
+                }
+            ],
+            existing_actions=["发呆", "看风景"],
+            count=6,
+        )
+        self.assertIn("JSON", system)
+        self.assertIn("做饭", prompt)
+        self.assertIn("厨房", prompt)
+        self.assertIn("发呆", prompt)
+        self.assertIn("6 个动作", prompt)
+
 
 class EngineGeneratorTests(unittest.IsolatedAsyncioTestCase):
     """引擎层的端到端：假的内容生成模型 → 草稿解析 → 自动摆位 / 校验。"""
@@ -470,6 +520,25 @@ class EngineGeneratorTests(unittest.IsolatedAsyncioTestCase):
         }
         self.assertIn(frozenset(("z0", "z2")), pairs)
         self.assertIn(frozenset(("z1", "z3")), pairs)
+
+    async def test_generate_world_actions_reads_persona_and_the_whole_map(self):
+        self.creator.replies = [
+            '{"actions": ['
+            '{"id": "water_flowers", "node_id": "kitchen", "name": "给花浇水",'
+            ' "description": "给窗台上的花浇水", "llm_level": "single", "category": "instant"},'
+            '{"id": "watch_street", "node_id": "lobby", "name": "看街景",'
+            ' "description": "站在窗边看楼下", "llm_level": "single", "category": "continuous",'
+            ' "duration_mode": "llm", "duration_min": 300, "duration_max": 1800}'
+            "]}"
+        ]
+        result = await self.engine.generate_world_actions(2)
+        self.assertEqual(len(result["actions"]), 2)
+        self.assertEqual(
+            {item["node_id"] for item in result["actions"]},
+            {"kitchen", "lobby"},
+        )
+        self.assertTrue(all(item["scope"] == "node" for item in result["actions"]))
+        self.assertEqual(result["problems"], [])
 
     async def test_generate_schedules_drops_unknown_steps(self):
         self.creator.replies = [

@@ -2842,9 +2842,19 @@ body.dragging-map-node {
   pointer-events: none;
 }
 
+/* 分三层：连线在最下、节点居中、标签在最上；短边上的点对点标签不会被节点框盖住 */
+#canvas-edges {
+  z-index: 1;
+}
+
 /* 内容层：定宽定高，节点以它为定位基准，比画布宽时由画布滚动 */
 #canvas-nodes {
   position: relative;
+  z-index: 2;
+}
+
+#canvas-labels {
+  z-index: 3;
 }
 
 .edge-ticks {
@@ -2854,7 +2864,7 @@ body.dragging-map-node {
   font-variant-numeric: tabular-nums;
   /* 给连线上的文字描一圈底色，压在线上也读得清 */
   paint-order: stroke;
-  stroke: var(--panel-2);
+  stroke: var(--bg);
   stroke-width: 3px;
   stroke-linejoin: round;
 }
