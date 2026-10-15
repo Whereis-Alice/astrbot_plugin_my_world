@@ -1,0 +1,6 @@
+# 源码统一 LF：插件在 Windows / Linux 上都会跑，避免换行符来回抖动
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
+*.zip binary

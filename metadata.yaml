@@ -1,0 +1,52 @@
+name: astrbot_plugin_my_world
+display_name: 我的世界 MW
+desc: >-
+  给 Bot 一个会自己长出来的世界：区域、地点、虚拟动作、日程、事件、情绪与场景记忆都由她自己规划；
+  主回复仍然走 AstrBot 原生 Agent——人设与处境由本插件注入，工具调用、工具循环、发送全交给宿主，
+  不抢工具、不丢上下文。
+short_desc: 她的世界 + 原生工具：虚拟动作 / 日程 / 事件 / 记忆 / 世界生成
+version: v3.0.0
+author: Whereis-Alice
+author_url: https://github.com/Whereis-Alice
+repo: https://github.com/Whereis-Alice/astrbot_plugin_my_world
+astrbot_version: ">=4.20.0,<5"
+category: 角色扮演
+tags:
+  - 拟人
+  - 角色扮演
+  - 生活模拟
+  - 世界生成
+  - 虚拟动作
+  - 记忆
+  - WebUI
+  - 原生工具
+  - 表情包联动
+  - 语音联动
+support_platforms:
+  - aiocqhttp
+  - telegram
+  - qq_official
+help: |
+  我的世界 MW：她自己会生活，工具交回 AstrBot 原生 Agent。
+
+  主回复不再由本插件代打：插件只把「她是谁、现在在哪、什么心情、最近发生什么」
+  注入到宿主的请求里，调模型、工具循环、发送都按 AstrBot 原生流程走。
+  动作库里的「虚拟动作」只影响她的世界与提示词，不再挂工具、不再抢工具循环。
+
+  指令前缀是 mw，别名「我的世界」和 myworld（写哪个都一样）。
+  下面示例按 AstrBot 出厂唤醒前缀 / 书写；如果你的唤醒前缀是 ! # . 之类，
+  请把 /mw 换成 !mw、#mw；如果清空了唤醒前缀，就直接私聊或 @机器人 后写 mw xxx。
+
+  常用指令：
+  - /mw status：她现在在哪、在做什么、心情与各项数值
+  - /mw memory：看看她记得你什么
+  - /mw recall <话题>：让她回忆某个话题
+  - /mw event <一句话>：给她安排一件会发生的事
+  - /mw schedule：查看全部日程
+  - /mw session add：把当前会话加进白名单
+  - /mw help：完整指令表
+
+  编辑器（AstrBot 面板 → 插件 → 我的世界 MW → 我的世界编辑器）：
+  控制台、事件、通讯录、记忆库、日志、调试、地图、动作库、日程、会话、全局设置、预设。
+  地图可以「生成区域…」、日程可以「生成日程…」、事件可以「生成事件…」：
+  生成器会先读她的人设、已有世界和人际关系，把草稿摆出来给你改，确认之后才写进去。

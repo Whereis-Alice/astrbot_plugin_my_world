@@ -1,0 +1,177 @@
+{
+  "enabled": {
+    "description": "启用插件",
+    "hint": "插件总开关。关掉后不监听消息、不接管回复、不推进世界时钟。",
+    "obvious_hint": true,
+    "type": "bool",
+    "default": true
+  },
+  "web_enabled": {
+    "description": "启用网页编辑器",
+    "hint": "在 WebUI 插件详情页显示「我的世界编辑器」。地图、动作、日程、记忆都在里面配。",
+    "obvious_hint": true,
+    "type": "bool",
+    "default": true
+  },
+  "reply_mode": {
+    "description": "回复方式",
+    "hint": "inject（默认，推荐）：只把她的世界与处境注入宿主请求，主回复、工具循环、发送全走 AstrBot 原生；takeover：旧版自己调模型自己发（已废弃，仅作迁移兜底）。",
+    "obvious_hint": true,
+    "type": "string",
+    "default": "inject"
+  },
+  "legacy_tool_actions": {
+    "description": "启用旧版工具 / 指令动作",
+    "hint": "默认关：旧版工具动作会被标成「旧版」并停用，工具调用交给 AstrBot 原生 Agent。只有暂时还离不开旧行为时才打开。",
+    "obvious_hint": false,
+    "type": "bool",
+    "default": false
+  },
+  "llm_provider_id": {
+    "description": "插件用主模型",
+    "hint": "插件自己发起的调用用它：自主决策、主动发言、打杂生成。主回复默认由宿主模型处理；留空用会话默认 Provider。\n选型：能稳定输出 JSON 的即可，当在编辑器页面的设置里开启了推理后, 建议关闭模型自己的推理",
+    "_special": "select_provider",
+    "obvious_hint": true,
+    "type": "string",
+    "default": ""
+  },
+  "sampling_enabled": {
+    "description": "接管采样参数",
+    "hint": "关着（默认）＝用 Provider 自己的设置。打开后本插件发起的调用会带上下面几个采样参数——多轮聊天复读、腔调固定，一半是采样参数的事。Provider 不认这些参数时会自动退回只用温度，不会让回复挂掉。",
+    "obvious_hint": false,
+    "type": "bool",
+    "default": false
+  },
+  "sampling_temperature": {
+    "description": "温度",
+    "hint": "越小越稳、越大越发散。角色扮演一般 0.8~1.0；调太高会开始胡言乱语。",
+    "obvious_hint": false,
+    "type": "float",
+    "default": 0.9
+  },
+  "sampling_top_p": {
+    "description": "top_p",
+    "hint": "核采样：只从累积概率前 p 的词里选。一般留 1.0（不裁剪），要收紧可以试 0.9。",
+    "obvious_hint": false,
+    "type": "float",
+    "default": 1.0
+  },
+  "sampling_frequency_penalty": {
+    "description": "重复惩罚（frequency）",
+    "hint": "按出现次数惩罚重复词，治「复读」最直接。0 = 不罚，常用 0.2~0.6；调太高会让话变得别扭。",
+    "obvious_hint": false,
+    "type": "float",
+    "default": 0.3
+  },
+  "sampling_presence_penalty": {
+    "description": "新话题奖励（presence）",
+    "hint": "只要出现过就罚，鼓励说没说过的新内容。0 = 关闭，常用 0~0.3。",
+    "obvious_hint": false,
+    "type": "float",
+    "default": 0.0
+  },
+  "helper_provider_id": {
+    "description": "打杂模型（文本）",
+    "hint": "专门干零碎活：把「她想干什么」翻译成工具参数、把过长的群聊压成摘要、判断图和话题的关系、把天气结果整理成一行。选便宜、快、能稳定输出 JSON 的文本模型。留空跟随上面的看图模型。",
+    "_special": "select_provider",
+    "obvious_hint": false,
+    "type": "string",
+    "default": ""
+  },
+  "vision_provider_id": {
+    "description": "看图模型（多模态）",
+    "hint": "所有「把图变成文字」的活都归它：群友发来的图片转述、天气工具返回的天气图。必须选支持图片输入的，选便宜的就够。留空＝不转述，改为把图片直接交给主模型（主模型本身得是多模态的，一次最多几张见「全局设置 → 上下文 → 图片上限」）。",
+    "_special": "select_provider",
+    "obvious_hint": false,
+    "type": "string",
+    "default": ""
+  },
+  "judge_provider_id": {
+    "description": "判断模型（只做轻决策）",
+    "hint": "专门干不要文笔、只要稳的活，越小越快越省越好（如qwen-flash）。留空＝跟随打杂模型。",
+    "_special": "select_provider",
+    "obvious_hint": false,
+    "type": "string",
+    "default": ""
+  },
+  "creator_provider_id": {
+    "description": "内容生成模型（编事件 / 生成动作与地点）",
+    "hint": "两件事归它：①她一个人待着时现编一件发生在身边的事；②编辑器里点「生成动作 / 生成地点」。它写的是文案，不建议用低成本模型；留空跟随插件用模型。",
+    "_special": "select_provider",
+    "obvious_hint": false,
+    "type": "string",
+    "default": ""
+  },
+  "consolidate_provider_id": {
+    "description": "睡眠整理模型（记忆 + 用户画像）",
+    "hint": "她睡着时用它把这段时间的经历消化成记忆与画像：合并重复、提取要点、更新关系与缩略版、写梦。调用次数很少, 建议使用能力强的模型",
+    "_special": "select_provider",
+    "obvious_hint": false,
+    "type": "string",
+    "default": ""
+  },
+  "event_provider_id": {
+    "description": "事件模型（事件结算）",
+    "hint": "事件最后怎么样了由它一句话定下场：写的是人话，还带着情绪与能力值的变化。留空跟随打杂模型。",
+    "_special": "select_provider",
+    "obvious_hint": false,
+    "type": "string",
+    "default": ""
+  },
+  "tick_interval": {
+    "description": "tick 间隔（秒）",
+    "hint": "世界时钟走一格 = 1 tick，动作和走路的耗时都按 tick 算。默认 60 秒。",
+    "obvious_hint": true,
+    "type": "int",
+    "default": 60
+  },
+  "decider_interval": {
+    "description": "自主决策间隔（秒）",
+    "hint": "多久评估一次「接下来做什么」。默认 300 秒。",
+    "obvious_hint": true,
+    "type": "int",
+    "default": 300
+  },
+  "web_password": {
+    "description": "编辑器访问密码",
+    "hint": "留空直接用 WebUI 的登录鉴权；填了就要求额外输一次密码。",
+    "obvious_hint": false,
+    "type": "string",
+    "default": ""
+  },
+  "debug": {
+    "description": "调试日志",
+    "hint": "把提示词、模型返回、动作校验写进后台日志（含群聊内容，注意隐私）。",
+    "obvious_hint": false,
+    "type": "bool",
+    "default": false
+  },
+  "reply_hook_bridge": {
+    "description": "插件自己发送的消息也过其他插件的钩子",
+    "hint": "旧版接管与主动发言由插件自己发送消息时，按同样的时机补发 AstrBot 的钩子（LLM 响应后 / 发送前 / 发完消息）。默认注入模式下主回复由原生管线发送，本开关只影响插件自己发的那些话。",
+    "obvious_hint": true,
+    "type": "bool",
+    "default": true
+  },
+  "expose_schedule_tools": {
+    "description": "把日程工具交给主人格",
+    "hint": "开着（默认）时，AstrBot 的大模型能看到 mw_schedule_list / mw_schedule_add / mw_schedule_remove 三个工具，用户可以直接跟她说「把日程改到七点」。工具本来就多的话可以关掉：这三个工具会从工具管理器里摘掉，每个会话的请求都能少背三条。",
+    "obvious_hint": true,
+    "type": "bool",
+    "default": true
+  },
+  "migrate_from_original": {
+    "description": "自动接管原插件的数据",
+    "hint": "第一次启动时，如果本插件的数据目录还是空的、而同一台机器上的原插件（astrbot_plugin_virtual_world）有数据，就把那份地图 / 动作 / 日程 / 记忆 / 日志整份复制过来（只复制一次，绝不覆盖已有数据）。确认没问题后记得把原插件停用——两个同时跑会各写各的库。",
+    "obvious_hint": true,
+    "type": "bool",
+    "default": true
+  },
+  "log_level": {
+    "description": "日志级别",
+    "hint": "DEBUG / INFO / WARNING / ERROR。",
+    "obvious_hint": false,
+    "type": "string",
+    "default": "INFO"
+  }
+}
