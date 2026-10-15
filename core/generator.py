@@ -501,15 +501,54 @@ def _zone_distance(left: dict[str, Any], right: dict[str, Any]) -> float:
     return ((lx - rx) ** 2 + (ly - ry) ** 2) ** 0.5
 
 
+PORTAL_HINTS = (
+    "入口", "门口", "大门", "门前", "玄关", "门厅", "出口", "站台", "车站",
+    "月台", "码头", "渡口", "港口", "桥头", "路口", "街口", "广场", "大厅",
+    "前台", "走廊", "楼梯", "电梯", "通道", "院门", "门廊", "gate",
+    "entrance", "exit", "station", "platform", "pier", "dock", "bridge",
+    "crossing", "lobby", "hall",
+)
+PRIVATE_HINTS = (
+    "厨房", "卧室", "浴室", "厕所", "洗手间", "书房", "衣柜", "床", "沙发",
+    "餐桌", "private", "bedroom", "kitchen", "bathroom",
+)
+
+
+def _portal_score(node: dict[str, Any]) -> int:
+    """这个地方像不像"跨区门户"：入口 / 门口 / 站台加分，私密房间减分。"""
+
+    text = " ".join(
+        str(node.get(key) or "") for key in ("id", "name", "prompt")
+    ).lower()
+    score = 0
+    for hint in PORTAL_HINTS:
+        if hint and hint in text:
+            score += 2
+    for hint in PRIVATE_HINTS:
+        if hint and hint in text:
+            score -= 3
+    return score
+
+
+def looks_like_portal(node: dict[str, Any]) -> bool:
+    """给引擎做连线校验用：名字 / 描述像入口、门口、站台就算门户。"""
+
+    return _portal_score(node) > 0
+
+
 def _anchor_node(nodes: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """取区域里最靠上的一个地点当门户落点；没有地点就返回 None。"""
+    """取区域里最适合当门户的地点（入口 / 门口 / 站台优先），没有地点就返回 None。"""
 
     usable = [item for item in (nodes or []) if isinstance(item, dict) and item.get("id")]
     if not usable:
         return None
-    return min(
+    return max(
         usable,
-        key=lambda item: (float(item.get("y") or 0), float(item.get("x") or 0)),
+        key=lambda item: (
+            _portal_score(item),
+            -float(item.get("y") or 0),
+            -float(item.get("x") or 0),
+        ),
     )
 
 
@@ -614,18 +653,21 @@ def starter_node_for_zone(
 
     zone_id = _slug(zone.get("id") or zone.get("name")) or "zone"
     name = str(zone.get("name") or zone_id).strip() or zone_id
-    base_id = f"{zone_id}_center"
+    base_id = f"{zone_id}_entrance"
     node_id = base_id
     used = {str(item) for item in (used_ids or set())}
     index = 2
     while node_id in used:
         node_id = f"{base_id}_{index}"
         index += 1
-    label = name if name.endswith("中心") else f"{name}·中心"
+    label = name if name.endswith(("入口", "门口", "大门", "站")) else f"{name}入口"
     return {
         "id": node_id,
         "name": label,
-        "prompt": f"「{name}」里最先落脚的地方，也是她熟悉这一带的起点。",
+        "prompt": (
+            f"「{name}」的门户入口，也是跨区路线进出这一带的地方；"
+            "写成有标志性的门口、站口或玄关。"
+        ),
         "icon": str(zone.get("icon") or "").strip(),
         "color": str(zone.get("color") or "#8B7DD8").strip(),
         "atmosphere": {},

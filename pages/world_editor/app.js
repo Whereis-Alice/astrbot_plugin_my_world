@@ -6874,14 +6874,17 @@ function renderWorldMap() {
     const toNode = nodeById[edge.to_node];
     const fromColor = (fromNode && fromNode.color) || from.color || "";
     const toColor = (toNode && toNode.color) || to.color || "";
+    // 一条线的两行都放在线的同一侧：第 1、3… 条放上面，第 2、4… 条放下面。
+    // 同一对区域有多条路线时，这样上下错开，不会挤在中间互相压住。
+    const above = index % 2 === 0;
     const first = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
     first.setAttribute("x", anchor.x);
-    first.setAttribute("dy", "-3");
+    first.setAttribute("dy", above ? "-16" : "5");
     if (fromColor) first.setAttribute("fill", fromColor);
     first.textContent = nodeLabel(edge.from_node);
     const second = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
     second.setAttribute("x", anchor.x);
-    second.setAttribute("dy", "12");
+    second.setAttribute("dy", "11");
     if (toColor) second.setAttribute("fill", toColor);
     second.textContent = nodeLabel(edge.to_node);
     label.appendChild(first);
@@ -7561,12 +7564,14 @@ async function commitGeneratedActions(drafts) {
  * 先问「生成几个」，再拿去调生成接口。
  * 生成会读她的人设与已有世界，结果永远先当草稿，用户改完确认才落库。
  */
-function askGenerateCount({ title, hint, defaultValue, min = 1, max, second, onRun }) {
+function askGenerateCount({ title, hint, defaultValue, min = 1, max, second, extra, onRun }) {
   let value = String(defaultValue);
   let secondValue = second ? String(second.defaultValue) : "";
+  let extraValue = extra ? String(extra.defaultValue || "") : "";
   let status;
   let input;
   let secondInput;
+  let extraInput;
   openCustomDialog({
     title,
     hint,
@@ -7598,6 +7603,19 @@ function askGenerateCount({ title, hint, defaultValue, min = 1, max, second, onR
         secondField.appendChild(secondInput);
         body.appendChild(secondField);
       }
+      if (extra) {
+        const extraField = el("label", "field");
+        extraField.appendChild(el("span", "", extra.label || "额外提示词（可选）"));
+        extraInput = document.createElement("textarea");
+        extraInput.rows = 2;
+        extraInput.placeholder = extra.placeholder || "";
+        extraInput.value = extraValue;
+        extraInput.addEventListener("input", () => {
+          extraValue = extraInput.value;
+        });
+        extraField.appendChild(extraInput);
+        body.appendChild(extraField);
+      }
       status = el("p", "muted generation-status");
       status.setAttribute("role", "status");
       body.appendChild(status);
@@ -7624,6 +7642,7 @@ function askGenerateCount({ title, hint, defaultValue, min = 1, max, second, onR
       const started = Date.now();
       input.disabled = true;
       if (secondInput) secondInput.disabled = true;
+      if (extraInput) extraInput.disabled = true;
       const update = () => {
         const seconds = Math.floor((Date.now() - started) / 1000);
         status.textContent = `正在生成草稿，已等待 ${seconds} 秒…`;
@@ -7633,7 +7652,7 @@ function askGenerateCount({ title, hint, defaultValue, min = 1, max, second, onR
       let timer;
       try {
         const preview = await Promise.race([
-          onRun(count, secondCount),
+          onRun(count, secondCount, extraValue.trim()),
           new Promise((_, reject) => {
             timer = window.setTimeout(
               () => reject(new Error("等待生成结果超时，请检查 AstrBot 连接和内容生成模型后重试")),
@@ -7648,6 +7667,7 @@ function askGenerateCount({ title, hint, defaultValue, min = 1, max, second, onR
         window.clearTimeout(timer);
         input.disabled = false;
         if (secondInput) secondInput.disabled = false;
+        if (extraInput) extraInput.disabled = false;
         status.textContent = "";
       }
     },
@@ -7662,10 +7682,15 @@ function generateZoneDrafts() {
     defaultValue: 2,
     max: 4,
     second: { label: "每个区域生成几个地点", defaultValue: 2, min: 1, max: 5 },
-    onRun: async (count, nodesPerZone) => {
+    extra: {
+      label: "额外提示词（可选）",
+      placeholder: "例如：爱丽丝的梦游仙境；偏童话、奇幻一点",
+    },
+    onRun: async (count, nodesPerZone, extraPrompt) => {
       const result = await apiPost("generate/zones", {
         count,
         nodes_per_zone: nodesPerZone,
+        extra_prompt: extraPrompt,
       });
       const drafts = result.zones || [];
       if (!drafts.length) {
@@ -7802,10 +7827,15 @@ function generateWorldMapDrafts() {
     min: 2,
     max: 6,
     second: { label: "每个区域生成几个地点", defaultValue: 3, min: 1, max: 5 },
-    onRun: async (count, nodesPerZone) => {
+    extra: {
+      label: "额外提示词（可选）",
+      placeholder: "例如：爱丽丝的梦游仙境；偏童话、奇幻一点",
+    },
+    onRun: async (count, nodesPerZone, extraPrompt) => {
       const result = await apiPost("generate/world-map", {
         count,
         nodes_per_zone: nodesPerZone,
+        extra_prompt: extraPrompt,
       });
       const zones = result.zones || [];
       if (!zones.length) {

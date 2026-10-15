@@ -274,6 +274,30 @@ class WorldMapParserTests(unittest.TestCase):
             right = int(edge["to_zone"][1:])
             self.assertIn(abs(left - right), (1, 4))
 
+    def test_zone_links_prefer_portal_nodes(self):
+        """自动连线优先选入口 / 门口，不要拿厨房去连公园长椅。"""
+
+        zones = [
+            {"id": "home", "x": 0, "y": 0},
+            {"id": "park", "x": 300, "y": 0},
+        ]
+        nodes_by_zone = {
+            "home": [
+                {"id": "home_kitchen", "name": "厨房", "x": 0, "y": 0},
+                {"id": "home_gate", "name": "公寓玄关", "x": 0, "y": 200},
+            ],
+            "park": [
+                {"id": "park_bench", "name": "公园长椅", "x": 0, "y": 0},
+                {"id": "park_gate", "name": "公园大门", "x": 0, "y": 200},
+            ],
+        }
+        added = connect_zone_graph(zones, nodes_by_zone)
+        self.assertEqual(len(added), 1)
+        self.assertEqual(
+            {added[0]["from_node"], added[0]["to_node"]},
+            {"home_gate", "park_gate"},
+        )
+
 
 class LayoutTests(unittest.TestCase):
     def test_ring_layout_keeps_every_zone_inside_positive_canvas(self):
@@ -320,14 +344,17 @@ class GeneratorPromptTests(unittest.TestCase):
             zone_edges=[{"from": "home", "to": "town"}],
             relations="她已经认识的人：\n- 小明（朋友）：常来串门",
             count=2,
+            extra_prompt="爱丽丝的梦游仙境，偏童话一点",
         )
         self.assertIn("新的区域", system)
         self.assertIn("JSON", system)
+        self.assertIn("门户", system)
         self.assertIn("海边小镇", prompt)
         self.assertIn("家中", prompt)
         self.assertIn("卧室", prompt)
         self.assertIn("小明", prompt)
         self.assertIn("home ↔ town", prompt)
+        self.assertIn("爱丽丝的梦游仙境", prompt)
 
     def test_schedule_prompt_lists_actions_and_existing_schedules(self):
         _system, prompt = self.builder.build_schedule_generator_prompt(
@@ -361,11 +388,15 @@ class GeneratorPromptTests(unittest.TestCase):
             relations="她已经认识的人：\n- 小明（朋友）：常来串门",
             count=4,
             nodes_per_zone=3,
+            extra_prompt="爱丽丝的梦游仙境",
         )
         self.assertIn("整张重建", system)
         self.assertIn("连通", system)
+        self.assertIn("门户", system)
+        self.assertIn("厨房 ↔ 公园长椅", system)
         self.assertIn("海边小镇", prompt)
         self.assertIn("小明", prompt)
+        self.assertIn("爱丽丝的梦游仙境", prompt)
         self.assertIn('"connections"', system)
 
     def test_autonomous_scene_hides_legacy_tools_until_migration_is_enabled(self):
@@ -483,10 +514,10 @@ class EngineGeneratorTests(unittest.IsolatedAsyncioTestCase):
         self.creator.replies = [
             '{"zones": ['
             '{"id": "seaside_home", "name": "海边小屋", "note": "她住的地方", "is_home": true,'
-            ' "nodes": [{"id": "deck", "name": "露台", "prompt": "能看海"},'
+            ' "nodes": [{"id": "deck", "name": "露台入口", "prompt": "能看海"},'
             ' {"id": "kitchen", "name": "厨房", "prompt": "有热茶"}]},'
             '{"id": "lighthouse", "name": "灯塔", "note": "她晚上散步会来",'
-            ' "nodes": [{"id": "top", "name": "塔顶", "prompt": "能看很远"}]}'
+            ' "nodes": [{"id": "top", "name": "灯塔门口", "prompt": "能看很远"}]}'
             "],"
             '"connections": [{"from_zone": "seaside_home", "from_node": "deck",'
             ' "to_zone": "lighthouse", "to_node": "top", "ticks": 3}]}'

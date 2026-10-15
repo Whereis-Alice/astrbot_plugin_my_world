@@ -183,11 +183,13 @@ class GenerationBrowserTests(unittest.TestCase):
         inputs = self.page.locator('#dialog-body input[type="number"]')
         expect(inputs).to_have_count(2)
         inputs.nth(1).fill("4")
+        self.page.locator('#dialog-body textarea').fill("爱丽丝的梦游仙境")
         self.page.locator("#dialog-ok").click()
         zone_call = self.page.evaluate("generationCalls").pop()
         self.assertEqual(zone_call["endpoint"], "generate/zones")
         self.assertEqual(zone_call["data"]["count"], 2)
         self.assertEqual(zone_call["data"]["nodes_per_zone"], 4)
+        self.assertEqual(zone_call["data"]["extra_prompt"], "爱丽丝的梦游仙境")
         self.page.locator("#dialog-cancel").click()
 
         self.open_generator("map", "map-generate-all")

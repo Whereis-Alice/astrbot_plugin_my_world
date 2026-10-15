@@ -165,6 +165,7 @@ from .generator import (
     clamp_zone_count,
     connect_zone_graph,
     link_plan,
+    looks_like_portal,
     parse_generated_actions,
     parse_generated_events,
     parse_generated_nodes,
@@ -17564,7 +17565,7 @@ class MyWorldEngine(ScopedConfigMixin):
         return "\n".join(head)
 
     async def generate_zones(
-        self, count: Any = 0, nodes_per_zone: Any = 0
+        self, count: Any = 0, nodes_per_zone: Any = 0, extra_prompt: str = ""
     ) -> dict[str, Any]:
         """按她的人设与已有世界生成新区域草稿（不落库，先给用户改）。
 
@@ -17599,6 +17600,7 @@ class MyWorldEngine(ScopedConfigMixin):
             relations=self.relations_brief(session_id),
             count=wanted,
             nodes_per_zone=per_zone,
+            extra_prompt=extra_prompt,
         )
         reply = await self._ask_creator(session_id, system_prompt, prompt, raise_errors=True)
         pack = parse_generated_zone_pack(
@@ -17678,7 +17680,7 @@ class MyWorldEngine(ScopedConfigMixin):
         }
 
     async def generate_world_map(
-        self, count: Any = 0, nodes_per_zone: Any = 0
+        self, count: Any = 0, nodes_per_zone: Any = 0, extra_prompt: str = ""
     ) -> dict[str, Any]:
         """按人设一键重建整张地图：区域、地点、区内路线与跨区路线一次配好。
 
@@ -17696,6 +17698,7 @@ class MyWorldEngine(ScopedConfigMixin):
             relations=self.relations_brief(session_id),
             count=wanted,
             nodes_per_zone=per_zone,
+            extra_prompt=extra_prompt,
         )
         reply = await self._ask_creator(
             session_id, system_prompt, prompt, raise_errors=True
@@ -17717,6 +17720,21 @@ class MyWorldEngine(ScopedConfigMixin):
                 "problems": problems or ["没有生成出可用的地图"],
                 "raw": _clip_text(reply, 1200),
             }
+
+        # 模型给的跨区路线两端最好都是入口 / 门口这类门户；两端都不像就提醒用户改，
+        # 不直接改它的路线（用户可能有意这么连），但别让它悄悄溜过去。
+        node_by_id = {str(node.get("id") or ""): node for node in nodes}
+        for edge in draft["connections"]:
+            left = node_by_id.get(str(edge.get("from_node") or ""))
+            right = node_by_id.get(str(edge.get("to_node") or ""))
+            if left is None or right is None:
+                continue
+            if not looks_like_portal(left) and not looks_like_portal(right):
+                problems.append(
+                    "跨区路线「"
+                    f"{left.get('name') or left.get('id')} ↔ {right.get('name') or right.get('id')}"
+                    "」两端都不像入口 / 门户，建议改成门口、玄关、站台这类地点"
+                )
 
         # 先按模型给的跨区路线做弹簧布局：有路的区域靠近、没路的推开，
         # 这样复杂路线能保留，线也不会横七竖八。

@@ -2804,6 +2804,7 @@ class PromptBuilder:
         relations: str = "",
         count: int = 2,
         nodes_per_zone: int = 1,
+        extra_prompt: str = "",
     ) -> tuple[str, str]:
         """基于她的人设与已有世界，生成**新区域**草稿（不落库，先给用户改）。"""
 
@@ -2821,11 +2822,14 @@ class PromptBuilder:
             "但不要替她安排好结局；\n"
             "4. 每个区域给：id（小写英文 + 下划线）、name（中文名）、note（一句话说明，"
             "会写进提示词）、icon（一个 emoji 或符号）、color（#RRGGBB）、is_home（最多一个 true）；\n"
-            f"5. 每个区域再给 {per_zone} 个地点：id（小写英文 + 下划线、全图唯一）、"
+            f"5. 每个区域再给 {per_zone} 个地点，其中**第一个必须是门户 / 入口类**"
+            "（入口、门口、玄关、站口、大门、码头这类），跨区路线要从这里进出；"
+            "地点名必须符合所在区域的生活逻辑（住宅里不要出现售票口，公园里不要出现厨房）；\n"
+            f"6. 每个地点给：id（小写英文 + 下划线、全图唯一）、"
             "name（中文名）、nickname_text（「在+地点简称」，不超过 5 个字）、"
             "prompt（一句「这里是什么样」，会进提示词）、icon、color、"
             "atmosphere（calm / intimacy / visibility / liveliness / loneliness / curiosity，0~1）；\n"
-            "6. 不要给坐标，编辑器会自动摆位；只输出 JSON，不要解释、不要代码块：\n"
+            "7. 不要给坐标，编辑器会自动摆位；只输出 JSON，不要解释、不要代码块：\n"
             "{\"zones\": [{\"id\": \"...\", \"name\": \"...\", \"note\": \"...\", "
             "\"icon\": \"...\", \"color\": \"#RRGGBB\", \"is_home\": false, "
             "\"nodes\": [{\"id\": \"...\", \"name\": \"...\", \"nickname_text\": \"...\", "
@@ -2852,6 +2856,11 @@ class PromptBuilder:
         ]
         if relations:
             blocks.append("# 她的人际关系\n" + str(relations).strip()[:1200])
+        if str(extra_prompt or "").strip():
+            blocks.append(
+                "# 额外要求（用户补充，优先满足，但不能违背人设与安全）\n"
+                + str(extra_prompt).strip()[:600]
+            )
         blocks.append(
             f"现在生成 {max(1, int(count))} 个新区域，每个区域配 {per_zone} 个地点，只输出 JSON。"
         )
@@ -2864,6 +2873,7 @@ class PromptBuilder:
         relations: str = "",
         count: int = 4,
         nodes_per_zone: int = 3,
+        extra_prompt: str = "",
     ) -> tuple[str, str]:
         """一键重建整张地图：区域、地点、区内路线、跨区路线一次生成。"""
 
@@ -2882,9 +2892,15 @@ class PromptBuilder:
             "「这里是什么样」，会直接影响她的行为；\n"
             "4. 最多只有一个区域是 home（她住的地方）；区域之间的路要能把整张地图连通，"
             "不能有孤岛；\n"
-            "5. 世界是**未知**的：可以留钩子、出现她还没见过的人和事，"
+            "5. 每个区域至少有一个**门户 / 入口类地点**（入口、大门、玄关、站口、码头、"
+            "公交站、公园大门这类），connections 的两端必须选这类地点，"
+            "两边的名字要能自然连起来（例如『公寓玄关 ↔ 街口』『公园大门 ↔ 海滨步道入口』）；"
+            "绝对不要出现『厨房 ↔ 公园长椅』这种私密房间配公共长椅的荒谬搭配；\n"
+            "6. 地点名必须符合它所在区域的生活逻辑（住宅里不要出现售票口，公园里不要出现厨房），"
+            "名字要像人真的会这么叫；\n"
+            "7. 世界是**未知**的：可以留钩子、出现她还没见过的人和事，"
             "但不要替她安排好结局；\n"
-            "6. id 用小写英文 + 下划线，地点 id 全局唯一；不要给坐标，编辑器会自动摆位。\n\n"
+            "8. id 用小写英文 + 下划线，地点 id 全局唯一；不要给坐标，编辑器会自动摆位。\n\n"
             "只输出 JSON，不要解释、不要代码块：\n"
             "{\n"
             '  "zones": [\n'
@@ -2914,6 +2930,11 @@ class PromptBuilder:
         ]
         if relations:
             blocks.append("# 她的人际关系\n" + str(relations).strip()[:1600])
+        if str(extra_prompt or "").strip():
+            blocks.append(
+                "# 额外要求（用户补充，优先满足，但不能违背人设与安全）\n"
+                + str(extra_prompt).strip()[:600]
+            )
         blocks.append(
             f"现在重建整张地图：{zones} 个区域、每个区域约 {per_zone} 个地点，"
             "并让所有区域连通；只输出 JSON。"

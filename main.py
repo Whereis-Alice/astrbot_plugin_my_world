@@ -7187,6 +7187,7 @@ class MyWorldPlugin(Star):
             self.engine.generate_zones,
             payload.get("count"),
             payload.get("nodes_per_zone"),
+            payload.get("extra_prompt"),
         )
 
     async def api_generate_world_map(self):
@@ -7200,6 +7201,7 @@ class MyWorldPlugin(Star):
             self.engine.generate_world_map,
             payload.get("count"),
             payload.get("nodes_per_zone"),
+            payload.get("extra_prompt"),
         )
 
     async def api_generate_schedules(self):
