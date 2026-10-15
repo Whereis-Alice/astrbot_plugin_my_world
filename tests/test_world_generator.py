@@ -522,6 +522,9 @@ class EngineGeneratorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(frozenset(("z1", "z3")), pairs)
 
     async def test_generate_world_actions_reads_persona_and_the_whole_map(self):
+        # 已停用的动作不该再出现在"不要重复"清单里，默认动作按需启用后尤其重要。
+        disabled = self.engine.world.action_map()["sing"]
+        disabled.enabled = False
         self.creator.replies = [
             '{"actions": ['
             '{"id": "water_flowers", "node_id": "kitchen", "name": "给花浇水",'
@@ -539,6 +542,8 @@ class EngineGeneratorTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(all(item["scope"] == "node" for item in result["actions"]))
         self.assertEqual(result["problems"], [])
+        prompt = self.creator.calls[-1]["prompt"]
+        self.assertNotIn(disabled.name or "sing", prompt)
 
     async def test_generate_schedules_drops_unknown_steps(self):
         self.creator.replies = [

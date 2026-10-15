@@ -17277,7 +17277,11 @@ class MyWorldEngine(ScopedConfigMixin):
                 {"id": node.id, "name": node.name, "prompt": node.prompt or node.atmosphere.describe()}
                 for node in nodes
             ],
-            existing_actions=[action.name or action.id for action in self.world.actions],
+            existing_actions=[
+                action.name or action.id
+                for action in self.world.actions
+                if action.enabled
+            ],
             tools=sorted(self.available_tools()),
             per_node=count,
         )
@@ -17326,7 +17330,7 @@ class MyWorldEngine(ScopedConfigMixin):
             existing_actions=[
                 action.name or action.id
                 for action in self.world.actions
-                if not bool(getattr(action, "legacy", False))
+                if action.enabled and not bool(getattr(action, "legacy", False))
             ],
             count=wanted,
         )
