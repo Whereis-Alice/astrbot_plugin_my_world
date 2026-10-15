@@ -8,11 +8,15 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from core.config_store import ConfigStore  # noqa: E402
+from core.db import AsyncDatabase  # noqa: E402
 from core.defaults import default_world  # noqa: E402
+from core.engine import MyWorldEngine  # noqa: E402
 from core.generator import (  # noqa: E402
     clamp_event_count,
     clamp_schedule_count,
@@ -23,6 +27,9 @@ from core.generator import (  # noqa: E402
 )
 from core.models import parse_world  # noqa: E402
 from core.prompt import PromptBuilder  # noqa: E402
+from tests.stub_ports import StubClock, StubLLM, StubMessenger, StubPersona  # noqa: E402
+
+SESSION = "aiocqhttp:GroupMessage:9001"
 
 
 class ZoneParserTests(unittest.TestCase):
@@ -182,6 +189,71 @@ class GeneratorPromptTests(unittest.TestCase):
         )
         self.assertIn("刚搬家", prompt)
         self.assertIn("收拾箱子", prompt)
+
+
+class EngineGeneratorTests(unittest.IsolatedAsyncioTestCase):
+    """引擎层的端到端：假的内容生成模型 → 草稿解析 → 自动摆位 / 校验。"""
+
+    async def asyncSetUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.store = ConfigStore(self._tmp.name)
+        self.store.ensure_files()
+        self.store.load_world()
+        self.store.add_session(
+            SESSION, session_type="group", platform="aiocqhttp", cold_start_node="study"
+        )
+        self.db = AsyncDatabase(self.store.db_path)
+        self.addAsyncCleanup(self.db.close)
+        self.creator = StubLLM()
+        self.engine = MyWorldEngine(
+            store=self.store,
+            db=self.db,
+            llm=StubLLM(['{"actions":[{"type":"say","messages":["嗯"]}]}']),
+            creator_llm=self.creator,
+            messenger=StubMessenger(),
+            persona=StubPersona("你是一个住在老城区的女孩。"),
+            clock=StubClock(now=1_700_000_000.0),
+            tick_seconds=60.0,
+        )
+        self.engine.reload_config()
+
+    async def test_generate_zones_returns_drafts_with_auto_positions(self):
+        self.creator.replies = [
+            '{"zones": [{"id": "old_library", "name": "旧图书馆", "note": "她小时候常来", '
+            '"icon": "📚", "color": "#8B7DD8", "is_home": false}]}'
+        ]
+        result = await self.engine.generate_zones(1)
+        zones = result["zones"]
+        self.assertEqual([zone["id"] for zone in zones], ["old_library"])
+        self.assertNotEqual((zones[0]["x"], zones[0]["y"]), (40.0, 60.0))
+        self.assertEqual(result["problems"], [])
+
+    async def test_generate_schedules_drops_unknown_steps(self):
+        self.creator.replies = [
+            '{"schedules": [{"id": "evening", "time": "20:30", "days": ["mon"], '
+            '"note": "晚上去书房待一会儿", "action_chain": ['
+            '{"type": "walk_to", "target_node": "study"},'
+            '{"type": "think", "content": "看会儿书"},'
+            '{"type": "launch_rocket", "intent": "不该存在"}]}]}'
+        ]
+        result = await self.engine.generate_schedules(1)
+        schedules = result["schedules"]
+        self.assertEqual(len(schedules), 1)
+        self.assertEqual(
+            [step["type"] for step in schedules[0]["action_chain"]],
+            ["walk_to", "think"],
+        )
+        self.assertTrue(any("不可用" in item for item in result["problems"]))
+
+    async def test_generate_events_returns_deliverable_drafts(self):
+        self.creator.replies = [
+            '{"events": [{"title": "旧朋友来信", "text": "她收到一封很多年没联系的人寄来的信。"}]}'
+        ]
+        result = await self.engine.generate_events(1)
+        events = result["events"]
+        self.assertEqual(len(events), 1)
+        self.assertIn("信", events[0]["text"])
 
 
 if __name__ == "__main__":

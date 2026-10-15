@@ -17317,7 +17317,7 @@ class MyWorldEngine:
                 for node in self.world.nodes
             ],
             zone_edges=[
-                {"from": edge.from_, "to": edge.to}
+                {"from": edge.from_zone, "to": edge.to_zone}
                 for edge in (getattr(self.world, "zone_edges", None) or [])
             ],
             relations=self.relations_brief(session_id),
