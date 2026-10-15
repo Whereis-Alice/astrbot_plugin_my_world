@@ -584,13 +584,13 @@ const LLM_LEVELS = [
   },
   {
     key: "tool",
-    label: "工具型",
-    hint: "调用 AstrBot 里已注册的工具（搜索、天气等）。她只需要说明想干什么，参数由插件自动补全",
+    label: "工具型（旧版）",
+    hint: "旧版能力：工具调用已经交回 AstrBot 原生 Agent，这类动作会被标成「旧版」并停用，只作迁移用。",
   },
   {
     key: "command",
-    label: "指令触发",
-    hint: "触发其他插件的一条指令（例如 /天气）：她只说想干什么，参数由辅助模型拼好，结果再交回给她说一句。",
+    label: "指令触发（旧版）",
+    hint: "旧版能力：插件不再代发指令，这类动作会被标成「旧版」并停用；要办事请让原生 Agent 调工具。",
   },
 ];
 
@@ -8805,7 +8805,7 @@ function renderActionForm() {
         action.llm_level = value;
         renderActionForm();
       },
-      { hint: "决定这个动作要不要调用大模型，以及要不要调用工具。" },
+      { hint: "决定这个动作要不要动用模型；工具调用已经交回 AstrBot 原生 Agent（旧版层级只作迁移）。" },
     ),
   );
   form.appendChild(
