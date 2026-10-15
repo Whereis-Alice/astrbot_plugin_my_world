@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import functools
 import hashlib
 import hmac
 import inspect
@@ -50,6 +51,7 @@ except Exception:  # pragma: no cover - 老版本没有这个类
     TextPart = None  # type: ignore[assignment]
 
 from .core.config_store import HISTORY_KEEP, ConfigStore
+from .core.config_scope import session_scoped
 from .core.db import AsyncDatabase
 from .core.defaults import (
     DEFAULT_CAPTION_PROMPT,
@@ -4204,6 +4206,7 @@ class MyWorldPlugin(Star):
     # ================= 回复路径（接管） =================
 
     @filter.on_llm_request(priority=LLM_HOOK_PRIORITY)
+    @session_scoped
     async def on_llm_request(self, event: AstrMessageEvent, req) -> None:
         """消息走到大模型时触发。
 
@@ -4602,6 +4605,7 @@ class MyWorldPlugin(Star):
     # ---------------- 注入模式的观察钩子（只记录，不干预） ----------------
 
     @filter.on_llm_response()
+    @session_scoped
     async def on_llm_response(self, event: AstrMessageEvent, response) -> None:
         """宿主拿到最终回复：把她的正文和模型自己的思考记到这一轮上。
 
@@ -4624,6 +4628,7 @@ class MyWorldPlugin(Star):
                 )
 
     @filter.on_using_llm_tool()
+    @session_scoped
     async def on_using_llm_tool(
         self, event: AstrMessageEvent, tool, tool_args: dict | None
     ) -> None:
@@ -4650,6 +4655,7 @@ class MyWorldPlugin(Star):
             )
 
     @filter.on_llm_tool_respond()
+    @session_scoped
     async def on_llm_tool_respond(
         self, event: AstrMessageEvent, tool, tool_args, tool_result
     ) -> None:
@@ -4693,6 +4699,7 @@ class MyWorldPlugin(Star):
             entry["ms"] = 0
 
     @filter.after_message_sent()
+    @session_scoped
     async def after_message_sent(self, event: AstrMessageEvent) -> None:
         """宿主发完了：推进水位线、把她的话写回世界，并在后台做一次回合复盘。"""
 
@@ -5149,6 +5156,7 @@ class MyWorldPlugin(Star):
     @filter.event_message_type(
         filter.EventMessageType.ALL, priority=SLEEP_GUARD_PRIORITY
     )
+    @session_scoped
     async def on_sleep_guard(self, event: AstrMessageEvent) -> None:
         """睡觉门禁：挡在其它插件（含意图路由）之前。
 
@@ -5205,6 +5213,7 @@ class MyWorldPlugin(Star):
     @filter.event_message_type(
         filter.EventMessageType.ALL, priority=PRESENCE_PRIORITY
     )
+    @session_scoped
     async def on_any_message(self, event: AstrMessageEvent) -> None:
         if not self.enabled or self.retired:
             return
@@ -5270,6 +5279,7 @@ class MyWorldPlugin(Star):
     # ================= 用户 / 管理员命令 =================
 
     @filter.command("mw", alias={"我的世界", "myworld"})
+    @session_scoped
     async def cmd_hw(self, event: AstrMessageEvent):
         if self.retired:
             return
@@ -5887,8 +5897,35 @@ class MyWorldPlugin(Star):
         return result
 
     def _register_web_apis(self) -> None:
-        register = self.context.register_web_api
+        def register(path, handler, methods, description):
+            @functools.wraps(handler)
+            async def scoped_handler(*args, **kwargs):
+                method = str(getattr(request, "method", methods[0])).upper()
+                payload = (await request.json(default={}) or {}) if method == "POST" else request.query
+                if not hasattr(payload, "get"):
+                    return error_response("请求参数必须是对象")
+                scope = str(payload.get("config_scope") or "").strip()
+                if scope and self.engine.session_config(scope) is None:
+                    return error_response("配置会话不存在，请重新选择")
+                endpoint = path.split(f"/{PLUGIN_NAME}/", 1)[-1]
+                if scope and method == "POST" and endpoint in {
+                    "config/world", "config/schedules", "config/sessions", "reset", "restore-default",
+                    "actions/purge-legacy", "presets/apply", "history/restore",
+                    "presets/save", "tools/import",
+                }:
+                    return error_response("此操作会修改全局配置，请先切换到全局；会话配置请使用顶部保存")
+                if not (endpoint in {"config", "persona/apply", "persona/review", "voice-samples"} or endpoint.startswith(("config/", "generate/", "voice-samples/"))):
+                    scope = str(payload.get("session") or payload.get("session_id") or scope)
+                with self.engine.config_scope(scope):
+                    if self.engine.config_scope_id and method == "POST" and endpoint in {"voice-samples/save", "persona/apply"}:
+                        session = self.engine.session_config(self.engine.config_scope_id)
+                        if "settings" not in (session.config_overrides or {}):
+                            return error_response("请先为此会话启用并保存独立设置")
+                    return await handler(*args, **kwargs)
+            return self.context.register_web_api(path, scoped_handler, methods, description)
         p = PLUGIN_NAME
+        register(f"/{p}/config/scope", self.api_put_scope, ["POST"], "保存会话独立配置")
+        register(f"/{p}/config/proactive", self.api_proactive_control, ["POST"], "全局自主搭话开关")
         register(f"/{p}/auth/status", self.api_auth_status, ["GET"], "编辑器鉴权状态")
         register(f"/{p}/auth/login", self.api_auth_login, ["POST"], "编辑器登录")
         register(f"/{p}/auth/logout", self.api_auth_logout, ["POST"], "退出登录")
@@ -6618,7 +6655,7 @@ class MyWorldPlugin(Star):
                     }
                 )
             candidates = candidates[-candidates_limit:]
-        world = self.store.raw_world()
+        world = self.engine.editable_world()
         persona_raw = dict(world.get("persona") or {})
         persona_raw["samples"] = cleaned
         if candidates is not None:
@@ -6629,7 +6666,7 @@ class MyWorldPlugin(Star):
             except (TypeError, ValueError):
                 pass
         world["persona"] = persona_raw
-        warnings = self.store.save_world(world, reason="改动声音样例")
+        warnings = self.engine.save_scoped_settings(world, reason="改动声音样例")
         self.engine.reload_config()
         return json_response({"ok": True, "warnings": warnings, **self._voice_sample_payload()})
 
@@ -6878,8 +6915,47 @@ class MyWorldPlugin(Star):
                 "weather": await self.engine.weather_payload(),
                 # 动作库里"哪些动作是扩展带来的"：编辑器按它把动作库分成两半
                 "extension_actions": self.extension_host.action_groups(),
+                "scope": self.engine.config_scope_id,
+                "scope_blocks": list(getattr(self.engine.session_config(self.engine.config_scope_id), "config_overrides", {}) or {}),
+                "global_config": {
+                    "world": self.engine._base_runtime["world"].model_dump(mode="json", by_alias=True),
+                    "schedules": self.engine._base_runtime["schedules"].model_dump(mode="json"),
+                },
+                "scope_owners": {
+                    item.session_id: self.engine.main_session(item.session_id)
+                    for item in self.engine.sessions.sessions
+                },
             }
         )
+
+    async def api_put_scope(self):
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload)
+        if guard is not None:
+            return guard
+        scope = self.engine.config_scope_id or str(payload.get("config_scope") or "").strip()
+        world, schedules, blocks = payload.get("world"), payload.get("schedules"), payload.get("blocks")
+        if not scope or not isinstance(world, dict) or not isinstance(schedules, dict) or not isinstance(blocks, list):
+            return error_response("需要会话、世界配置、日程配置和独立配置块列表")
+        try:
+            warnings = self.store.save_scope(scope, self._without_extension_actions(world), schedules, blocks)
+        except (ValueError, ValidationError) as exc:
+            return error_response(f"会话配置未保存：{exc}")
+        self.engine.reload_config()
+        return json_response({"ok": True, "warnings": warnings})
+
+    async def api_proactive_control(self):
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload)
+        if guard is not None:
+            return guard
+        if not isinstance(payload.get("enabled"), bool):
+            return error_response("enabled 必须是布尔值")
+        world = self.store.raw_world()
+        world["proactive_chat_paused"] = not payload["enabled"]
+        self.store.save_world(world, reason="切换全局自主搭话")
+        self.engine.reload_config()
+        return json_response({"ok": True, "enabled": payload["enabled"]})
 
     def _provider_slots(self) -> dict[str, str]:
         """六个模型槽位现在指向哪个 Provider（只给 id，不含 key）。
@@ -6919,6 +6995,8 @@ class MyWorldPlugin(Star):
         if not isinstance(world, dict):
             return error_response("world 必须是对象")
         world = self._without_extension_actions(world)
+        # The immediate master switch is changed only through config/proactive.
+        world = {**world, "proactive_chat_paused": bool(self.store.raw_world().get("proactive_chat_paused", False))}
         try:
             warnings = self.store.save_world(world)
         except ValidationError as exc:

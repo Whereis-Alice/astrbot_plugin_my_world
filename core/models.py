@@ -2150,6 +2150,10 @@ class PersonaConfig(Permissive):
 
 
 class WorldConfig(Permissive):
+    proactive_chat_paused: bool = False
+    """全局暂停自主搭话；所有会话都生效，日程、事件和被动回复保留。"""
+    proactive_chat_enabled: bool = True
+    """允许自主搭话；默认全局继承，会话可单独关闭。"""
     world_id: str = "default"
     name: str = "小世界"
     bot_name: str = ""
@@ -2478,6 +2482,17 @@ class SessionDef(Permissive):
     cold_start_prompt: str = ""
     added_at: int = 0
     note: str = ""
+    config_overrides: dict[str, Any] = Field(default_factory=dict)
+    """仅保存主动选择独立配置的块；缺失的块持续继承全局。"""
+
+    @field_validator("config_overrides")
+    @classmethod
+    def valid_config_blocks(cls, value):
+        from .config_scope import BLOCK_NAMES
+
+        if any(key not in BLOCK_NAMES or not isinstance(block, dict) for key, block in value.items()):
+            raise ValueError("独立配置只支持 map/actions/schedules/settings 对象")
+        return value
 
 
 class SessionGroupDef(Permissive):

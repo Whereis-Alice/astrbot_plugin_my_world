@@ -83,6 +83,41 @@
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 }
 
+.config-bar {
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  min-width: 0;
+}
+.config-bar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 18px;
+  min-width: 0;
+}
+.scope-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1 1 280px;
+}
+.scope-field select { width: 100%; max-width: 420px; min-width: 0; }
+.scope-field, .proactive-control { font-size: 13px; }
+.proactive-control, #scope-edit-label { display: flex; align-items: center; gap: 8px; }
+.proactive-control { flex-wrap: wrap; }
+.proactive-control input, #scope-edit { width: 16px; height: 16px; flex: 0 0 16px; }
+.proactive-control strong { color: var(--text); font-size: 12px; }
+.scope-inheritance { margin-top: 8px; font-size: 12px; line-height: 1.6; }
+.scope-inheritance span { min-width: 0; overflow-wrap: anywhere; }
+.scope-locked { opacity: 0.7; }
+@media (max-width: 600px) {
+  .config-bar { padding: 10px 14px; }
+  .scope-field { flex-basis: 100%; }
+  .scope-field select { flex: 1; width: 0; }
+}
+
 /* 浅色：白天用。切主题就是换这一组值，别的地方不用改 */
 [data-theme="light"] {
   color-scheme: light;

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .defaults import default_schedules, default_world
+from .config_scope import BLOCK_NAMES, effective_config, world_block
 from .models import (
     SchedulesConfig,
     SessionsConfig,
@@ -231,8 +232,49 @@ class ConfigStore:
     def raw_world(self) -> dict[str, Any]:
         return self._read_json(self.world_path, default_world())
 
+    def save_scope(
+        self, session_id: str, world: dict[str, Any], schedules: dict[str, Any],
+        blocks: list[str], *, reason: str = "保存会话独立配置",
+    ) -> list[str]:
+        if not isinstance(blocks, list) or any(not isinstance(block, str) or block not in BLOCK_NAMES for block in blocks):
+            raise ValueError("包含不支持的配置块")
+        if not isinstance(world, dict) or not isinstance(schedules, dict):
+            raise ValueError("世界和日程配置必须是对象")
+        raw = self.raw_sessions()
+        session = next((row for row in raw.get("sessions", []) if row.get("session_id") == session_id), None)
+        if session is None:
+            raise ValueError("会话不存在，请先加入会话列表")
+        overrides = {
+            block: schedules if block == "schedules" else world_block(world, block)
+            for block in blocks
+        }
+        resolved_world, resolved_schedules = effective_config(
+            self.load_world().model_dump(mode="json", by_alias=True),
+            self.load_schedules().model_dump(mode="json"), overrides,
+        )
+        parsed_world, world_warnings = parse_world(resolved_world)
+        parsed_schedules, schedule_warnings = parse_schedules(resolved_schedules)
+        overrides = {
+            block: parsed_schedules.model_dump(mode="json") if block == "schedules"
+            else world_block(parsed_world.model_dump(mode="json", by_alias=True), block)
+            for block in blocks
+        }
+        session["config_overrides"] = overrides
+        return [*world_warnings, *schedule_warnings, *self.save_sessions(raw, reason=reason)]
+
     def raw_schedules(self) -> dict[str, Any]:
         return self._read_json(self.schedules_path, default_schedules())
+
+    def save_scope_block(self, session_id: str, block: str, data: dict, *, reason: str) -> list[str]:
+        """Update one owned block without persisting injected runtime defaults elsewhere."""
+        session = next((row for row in self.raw_sessions().get("sessions", [])
+                        if row.get("session_id") == session_id), None)
+        if session is None or block not in (session.get("config_overrides") or {}):
+            raise ValueError("此配置块尚未启用独立配置")
+        overrides = dict(session["config_overrides"])
+        overrides[block] = data if block == "schedules" else world_block(data, block)
+        world, schedules = effective_config(self.raw_world(), self.raw_schedules(), overrides)
+        return self.save_scope(session_id, world, schedules, list(overrides), reason=reason)
 
     def raw_sessions(self) -> dict[str, Any]:
         return self._read_json(self.sessions_path, {"sessions": []})

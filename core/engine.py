@@ -17,12 +17,14 @@ import hashlib
 import random
 import re
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone as dt_timezone
 from types import SimpleNamespace
 from typing import Any, Callable
 
 from .config_store import ConfigStore
+from .config_scope import ScopedConfigMixin, global_config, session_scoped
+from .speech_policy import speech_origin
 from .db import AsyncDatabase
 from .defaults import DEFAULT_WEATHER_PROMPT
 from .decider import DESIRE_CUDDLE, Decider, reply_willingness
@@ -400,7 +402,11 @@ class TickOutcome:
         self.debug_messages.append(str(line))
         self.debug_positions.append(len(self.messages))
 
-    def add_speech(self, text: str, session_id: str = "") -> None:
+    speech_kinds: dict[str, list[str]] = field(default_factory=dict)
+    image_kinds: dict[str, list[str]] = field(default_factory=dict)
+    live_kinds: list[str] = field(default_factory=list)
+
+    def add_speech(self, text: str, session_id: str = "", *, kind: str | None = None) -> None:
         """记一句她要说的：没说给谁就是这一轮的会话，说了就投到那个会话去。
 
         ``session_id`` 传 ``None`` 表示"她想去的地方根本不存在"：这句话丢掉，
@@ -413,6 +419,11 @@ class TickOutcome:
         if session_id is None:
             return
         target = str(session_id or "").strip()
+        key = "" if not target or target == str(self.session_id) else target
+        bucket = self.messages if not key else self.routed.setdefault(key, [])
+        kinds = self.speech_kinds.setdefault(key, [])
+        kinds.extend([self.speech_kind] * max(0, len(bucket) - len(kinds)))
+        kinds.append(self.speech_kind if kind is None else kind)
         if not target or target == str(self.session_id):
             self.messages.append(body)
             return
@@ -428,10 +439,16 @@ class TickOutcome:
                 continue
             if not target or target == str(self.session_id):
                 if ref not in self.images:
+                    kinds = self.image_kinds.setdefault("", [])
+                    kinds.extend([self.speech_kind] * max(0, len(self.images) - len(kinds)))
+                    kinds.append(self.speech_kind)
                     self.images.append(ref)
                 continue
             bucket = self.routed_images.setdefault(target, [])
             if ref not in bucket:
+                kinds = self.image_kinds.setdefault(target, [])
+                kinds.extend([self.speech_kind] * max(0, len(bucket) - len(kinds)))
+                kinds.append(self.speech_kind)
                 bucket.append(ref)
 
     def ordered_messages(self) -> list[str]:
@@ -763,7 +780,7 @@ def _guess_duration_seconds(text: str) -> int:
     return 0
 
 
-class MyWorldEngine:
+class MyWorldEngine(ScopedConfigMixin):
     """世界状态机。"""
 
     def __init__(
@@ -790,6 +807,7 @@ class MyWorldEngine:
         logger=None,
         extensions=None,
     ) -> None:
+        self._init_config_scopes()
         self.store = store
         self.db = db
         # 扩展挂载点：没装扩展时就是个空壳（见 core/extensions.py）
@@ -915,7 +933,7 @@ class MyWorldEngine:
         self._schedule_signature: list[tuple[Any, ...]] | None = None
         self._schedule_reset_pending = False
         # 一次性日程的过期清理每天只做一遍（值就是做过的那一天）
-        self._once_pruned_day = ""
+        self._once_pruned_day = {}
         self._last_tick_at: float = 0.0
         self.rng = random.Random()
         """事件系统的骰子。测试里可以换成固定序列的假随机。"""
@@ -990,6 +1008,7 @@ class MyWorldEngine:
             pass
         return picked
 
+    @global_config
     def reload_config(self) -> list[str]:
         """热加载配置：世界 / 日程 / 会话。"""
 
@@ -1007,6 +1026,7 @@ class MyWorldEngine:
             )
             for item in (schedules.schedules if schedules is not None else [])
         ]
+        signature.append(tuple((item.session_id, repr(item.config_overrides)) for item in sessions.sessions))
         if self._schedule_signature is not None and signature != self._schedule_signature:
             self._schedule_reset_pending = True
         self._schedule_signature = signature
@@ -1031,43 +1051,49 @@ class MyWorldEngine:
         # 用户保存之后应该立刻能再试，而不是等退避结束。
         self._tool_failures.clear()
 
+        self._base_runtime = self._make_runtime(world, schedules)
+        self._scope_runtimes.clear()
+        return warnings
+
+    def _make_runtime(self, world, schedules) -> dict[str, Any]:
         # 情绪两轴需要"现在是几点"和"现实时间"：交给演化器自己取，
         # 免得每个调用点都要把 now / hour 传一遍。
-        self.dynamics = StateDynamics(
+        dynamics = StateDynamics(
             world.state_dynamics,
             now_provider=self._now,
             hour_provider=lambda: self.local_now().hour,
         )
         # 记忆按会话各存一份，召回时把同组的会话一起当条件（改组不会把记忆挂错地方）
-        self.memory = MemoryEngine(self.db.raw, world, sessions_of=self.group_sessions)
+        memory = MemoryEngine(self.db.raw, world, sessions_of=self.group_sessions)
         # 用户画像：一人一份（按"她"存），记忆回答"发生过什么"，它回答"这个人是谁"
-        self.profiles = ProfileStore(
+        profiles = ProfileStore(
             self.db.raw, world, group_of=self.state_key
         )
         # 睡眠整理：消化记忆 + 更新画像 + 写梦（小睡只做轻整理）
-        self.consolidator = Consolidator(
+        consolidator = Consolidator(
             world=world,
-            memory=self.memory,
-            profiles=self.profiles,
+            memory=memory,
+            profiles=profiles,
             sessions_of=self.group_sessions,
             # 整理材料要标来源会话（群 / 私聊）：用和人话提示词同一套标签口径
             session_label=self.session_label,
         )
-        self.decider = Decider(
+        decider = Decider(
             world,
             now_provider=self._now,
             # 规则要知道"现在几点"：夜里该睡整觉，白天只小睡
             hour_provider=lambda: self.local_now().hour,
             tick_seconds=self.tick_seconds,
         )
-        self.engagement = EngagementTracker(world)
-        self.prompts = PromptBuilder(
+        engagement = EngagementTracker(world)
+        prompts = PromptBuilder(
             world, tick_seconds=self.tick_seconds, now_provider=self.local_now
         )
-        if getattr(self, "consolidator", None) is not None:
-            self.consolidator.prompts = self.prompts
-            self.consolidator.set_world(world)
-        return warnings
+        consolidator.prompts = prompts
+        consolidator.set_world(world)
+        return dict(world=world, schedules=schedules, dynamics=dynamics, memory=memory,
+                    profiles=profiles, consolidator=consolidator, decider=decider,
+                    engagement=engagement, prompts=prompts)
 
     # ================= 会话 =================
 
@@ -1645,6 +1671,7 @@ class MyWorldEngine:
         lock = self._locks.get(self.state_key(session_id))
         return bool(lock is not None and lock.locked())
 
+    @session_scoped
     async def load_state(self, session_id: str, *, cold_start: bool = True) -> WorldState:
         # 分过组的会话共用组代表会话的那一份：别的地方按成员会话来读时
         # 也要落到同一份上，不然会读到一份空壳。
@@ -1748,6 +1775,7 @@ class MyWorldEngine:
         await self.db.call("save_state", state.session_id, state.to_payload(), state.updated_at)
 
     @contextlib.asynccontextmanager
+    @session_scoped
     async def session_state(self, session_id: str):
         """加锁 -> 加载 -> 交给调用方修改 -> 保存 -> 解锁。
 
@@ -1823,13 +1851,15 @@ class MyWorldEngine:
             return "# 手头没完的事\n" + "\n".join(lines)
         return ""
 
-    def autonomous_prompt_note(self, state: WorldState) -> str:
+    def autonomous_prompt_note(self, state: WorldState, *, respect_pause: bool = True) -> str:
         """自主开口时那句"刚才的情况"：被冷落了就别追着说。
 
         以前这句话只出现在系统提示词里，位置靠后、又和一堆规则混在一起，
         模型经常当没看见。现在把它挪到用户提示词里，紧跟"现在该你说话了"。
         """
 
+        if respect_pause and not self.proactive_chat_allowed(state.session_id):
+            return "自主搭话已暂停：只安排自己的静默生活，不主动找人、插话或发送问候。日程和事件仍按各自安排执行。"
         hint = self.engagement.hint(state)
         if not hint:
             return ""
@@ -2772,8 +2802,8 @@ class MyWorldEngine:
             # 她当时是怎么问的：等没人接、要写那句自我圆场时得知道上文
             "asked": " / ".join(lines)[:120],
         }
-        outcome.messages.extend(lines)
-        outcome.speech_kind = "event"
+        for line in lines:
+            outcome.add_speech(line, kind="event")
         await self._log_event(
             state,
             "help",
@@ -3087,8 +3117,8 @@ class MyWorldEngine:
             )
             said = []
         if said:
-            outcome.messages.extend(said)
-            outcome.speech_kind = "event"
+            for line in said:
+                outcome.add_speech(line, kind="event")
         await self._log_event(
             state,
             "event_result",
@@ -3160,6 +3190,7 @@ class MyWorldEngine:
         )
         return action_id
 
+    @speech_origin("event")
     async def _maybe_photo_for_event(
         self,
         state: WorldState,
@@ -3826,8 +3857,7 @@ class MyWorldEngine:
             # 这句话该说给哪个会话：她当初挑了别的会话就跟着她
             self._apply_thread_target(state, outcome, thread)
             if text and self._event_public_speech(state):
-                outcome.messages.append(text)
-                outcome.speech_kind = "event"
+                outcome.add_speech(text, kind="event")
             elif text:
                 outcome.notes.append("她在睡觉，这句提醒没有发到群里")
             else:
@@ -4504,11 +4534,11 @@ class MyWorldEngine:
             applied.extend(f"新增：{item[:24]}" for item in appended)
         if not applied:
             return {"ok": False, "reason": "没有可应用的改动", "skipped": skipped}
-        world = self.store.raw_world()
+        world = self.editable_world()
         persona_raw = dict(world.get("persona") or {})
         persona_raw["text"] = text
         world["persona"] = persona_raw
-        warnings = self.store.save_world(world, reason="优化人设")
+        warnings = self.save_scoped_settings(world, reason="优化人设")
         self.reload_config()
         return {
             "ok": True,
@@ -5345,6 +5375,7 @@ class MyWorldEngine:
             else asdict(action)
         )
         state.drowsy_sleep_step = dict(payload or {})
+        state.drowsy_sleep_step["speech_kind"] = outcome.speech_kind
         state.drowsy_started_world_time = int(state.world_time or 0)
         state.drowsy_started_at = float(now)
         state.drowsy_day = self._today_key(now)
@@ -5396,6 +5427,7 @@ class MyWorldEngine:
         if idle_seconds >= quiet_minutes * 60:
             await self._go_to_sleep(state, node, outcome, reason="安静下来了，去睡吧")
 
+    @speech_origin("sleep")
     async def _go_to_sleep(
         self, state: WorldState, node: NodeDef | None, outcome: TickOutcome, *, reason: str
     ) -> None:
@@ -5429,6 +5461,8 @@ class MyWorldEngine:
     ) -> bool:
         """睡前一次机会：要不要说晚安、发给谁——**由她自己决定**，也可以不发。"""
 
+        if not self.speech_allowed(outcome.home(), outcome.speech_kind):
+            return False
         if not bool(getattr(self.world.sleep, "goodnight", True)) or self.llm is None:
             return False
         if str(state.goodnight_day or "") == self._today_key(self._now()):
@@ -5471,6 +5505,8 @@ class MyWorldEngine:
     ) -> bool:
         """睡醒后一次机会：要不要说早安、发给谁——同样由她自己决定。"""
 
+        if not self.speech_allowed(outcome.home(), outcome.speech_kind):
+            return False
         if not bool(getattr(self.world.sleep, "goodmorning", True)) or self.llm is None:
             return False
         if str(state.goodmorning_day or "") == self._today_key(self._now()):
@@ -5793,6 +5829,7 @@ class MyWorldEngine:
             self._queue_echo(ctx.session_id, echo.debug_messages)
             return SleepReply(mode="template", messages=[text], reason="她在睡觉")
 
+    @session_scoped
     async def handle_incoming(self, ctx: MessageContext) -> str | None:
         """处理一条用户消息：非空 = **这条归插件管**，None = 不归我管。
 
@@ -5940,6 +5977,7 @@ class MyWorldEngine:
             return ""
         return _clip_text("；".join(parts), 120)
 
+    @session_scoped
     async def flush_pending_memory(self, session_id: str) -> TickOutcome | None:
         """把攒着的对话片段总结成一条记忆（攒够 / 聊完 / 换地点三种触发）。"""
 
@@ -7449,6 +7487,7 @@ class MyWorldEngine:
             count = 0
         self._interrupt_streak[scope] = (int(count) + 1, now)
 
+    @session_scoped
     async def handle_reply(
         self,
         ctx: MessageContext,
@@ -7797,7 +7836,7 @@ class MyWorldEngine:
             )
 
         # --- 第三阶段：执行动作（重新持锁） ---
-        outcome = TickOutcome(session_id=ctx.session_id)
+        outcome = TickOutcome(session_id=ctx.session_id, speech_kind="reply")
         # 这一轮是在哪儿发生的：日志里要标出来（她的存档与日志挂在组代表会话名下）
         outcome.place = ctx.session_id
         phase3_started = time.monotonic()
@@ -9068,6 +9107,8 @@ class MyWorldEngine:
         去哪说（``send_to``）、做什么、对谁做。什么都不想做也可以，写别的计划就行。
         """
 
+        if not self.proactive_chat_allowed(session_id):
+            return False
         if self.llm is None or not self.desire_push_ready(state):
             return False
         people = [
@@ -9226,6 +9267,8 @@ class MyWorldEngine:
         提示词里把她能说话的地方都摆出来（``session_directory``），她照着挑一个写 ``send_to``。
         """
 
+        if not self.proactive_chat_allowed(session_id):
+            return False
         config = self.world.profile
         if not bool(getattr(config, "enabled", True)):
             return False
@@ -10754,28 +10797,21 @@ class MyWorldEngine:
         outcomes: list[TickOutcome] = []
         if self.schedules is None:
             return outcomes
-        now = self.local_now()
-        seconds = now.timestamp()
-        day_key = now.strftime("%Y-%m-%d")
-        self._prune_once_schedules(day_key)
-        weekday = self.WEEKDAY_KEYS[now.weekday()]
-        # 一次性日程只认它自己那一天：日期过了/还没到的都不参与今天的判定，
-        # 星期几也不再看（「明天下午三点」这种说法不该被星期表挡住）。
-        candidates = [
-            schedule
-            for schedule in self.schedules.schedules
-            if schedule.enabled
-            and not (schedule.once and schedule.date and schedule.date != day_key)
-            and (
-                bool(schedule.once)
-                or not schedule.days
-                or weekday in schedule.days
-            )
-        ]
-
+        once_done: set[tuple[str, str]] = set()
         # 她的一天只过一遍：同一个她（会话组）只检查一次日程
         for session_id in self.tick_session_ids():
             async with self.session_state(session_id) as state:
+                now = self.local_now()
+                seconds = now.timestamp()
+                day_key = now.strftime("%Y-%m-%d")
+                self._prune_once_schedules(day_key)
+                weekday = self.WEEKDAY_KEYS[now.weekday()]
+                candidates = [
+                    schedule for schedule in self.schedules.schedules
+                    if schedule.enabled
+                    and not (schedule.once and schedule.date and schedule.date != day_key)
+                    and (schedule.once or not schedule.days or weekday in schedule.days)
+                ]
                 if self._schedule_reset_pending:
                     cursor = seconds - self.SCHEDULE_LOOKBACK_SECONDS
                 else:
@@ -10870,7 +10906,7 @@ class MyWorldEngine:
                             self._cancel_schedule(state, schedule, day_key)
                         continue
                     # 她的日程落在哪个会话里说（勾了私聊就发私聊）
-                    outcome = TickOutcome(session_id=target)
+                    outcome = TickOutcome(session_id=target, speech_kind="schedule")
                     outcome.broadcast_targets = broadcast_targets
                     outcome.locked_targets = locked_targets
                     # 这条日程发生在哪儿：调试回显要跟着它走（不然私聊的日程把回显发进群）
@@ -10923,11 +10959,18 @@ class MyWorldEngine:
                     )
                     await self._echo_events_since(state, outcome, echo_marker)
                     outcomes.append(outcome)
-                    if schedule.once and self._drop_schedule(schedule.id):
-                        outcome.notes.append(f"一次性日程 {schedule.id} 跑完了，已删掉")
+                    if schedule.once:
+                        session = self.session_config(self.config_scope_id)
+                        owner = self.config_scope_id if "schedules" in (getattr(session, "config_overrides", {}) or {}) else ""
+                        once_done.add((owner, schedule.id))
+        # All inheriting sessions must see a shared one-off before it is retired.
+        for owner, schedule_id in once_done:
+            with self.config_scope(owner):
+                self._drop_schedule(schedule_id)
         self._schedule_reset_pending = False
         return outcomes
 
+    @session_scoped
     async def run_schedule_now(
         self, session_id: str, schedule_id: str, *, force: bool = True
     ) -> dict[str, Any]:
@@ -10960,7 +11003,8 @@ class MyWorldEngine:
         # 会落在两个不同的会话里
         locked_targets = self.schedule_lock_targets(schedule, session_id)
         outcome = TickOutcome(
-            session_id=await self.resolve_schedule_target(outlook, schedule, session_id)
+            session_id=await self.resolve_schedule_target(outlook, schedule, session_id),
+            speech_kind="schedule",
         )
         outcome.broadcast_targets = [
             item
@@ -11529,6 +11573,7 @@ class MyWorldEngine:
             await self._deliver(outcome)
         return outcomes
 
+    @session_scoped
     async def _tick_session(self, session_id: str) -> TickOutcome | None:
         outcome = TickOutcome(session_id=session_id)
         # 自主行为默认落在这一组的代表会话；动作续说会临时改成"她当时说话的地方"
@@ -11723,6 +11768,7 @@ class MyWorldEngine:
             outcome.notes.append(
                 f"t={state.world_time} node={state.node_id} state={state.state} mood={state.mood}"
             )
+            self._filter_proactive_speech(outcome)
             if outcome.messages:
                 # 她这一轮主动开口了，也算回应过了这些群聊内容
                 self.mark_chat_replied(state, outcome.session_id)
@@ -11807,6 +11853,7 @@ class MyWorldEngine:
                 outcome=outcome,
             )
 
+    @speech_origin("completion")
     async def _finish_action(
         self,
         state: WorldState,
@@ -12019,6 +12066,9 @@ class MyWorldEngine:
             want_followup = False
             outcome.notes.append(f"动作 {action_id} 的结果只用于事件判断，不作续说")
         followup_spoke = False
+        if want_followup and not self.speech_allowed(outcome.home(), outcome.speech_kind):
+            want_followup = False
+            outcome.notes.append("自主搭话已暂停，动作照常完成，不作自主续说")
         if want_followup and self.llm is not None:
             if not detail:
                 # 不是工具动作（做饭、看书…）也要能续说：给她一句"刚刚做了什么"的交代
@@ -12350,6 +12400,7 @@ class MyWorldEngine:
             )
         return kept, blocked
 
+    @speech_origin("plan")
     async def _tick_plan(
         self,
         state: WorldState,
@@ -12396,6 +12447,7 @@ class MyWorldEngine:
 
     # ================= 自主行为 =================
 
+    @session_scoped
     async def maybe_decide(
         self, session_id: str, *, force: bool = False
     ) -> TickOutcome | None:
@@ -12506,6 +12558,10 @@ class MyWorldEngine:
     ) -> None:
         """把一份计划挂到状态上并记日志（自主决策与「抵达新地点」共用）。"""
 
+        if outcome.speech_kind in {"reply", "schedule", "event"}:
+            for step in plan.get("steps", []):
+                if isinstance(step, dict) and not step.get("kind"):
+                    step["kind"] = outcome.speech_kind
         if any(step.get("interject") for step in plan.get("steps", [])):
             state.last_interject_at = self._now()
         state.current_plan = plan
@@ -12657,7 +12713,7 @@ class MyWorldEngine:
             layer = self._extension_prompt(state, state.session_id)
             if layer:
                 system_prompt = f"{system_prompt}\n\n{layer}"
-        note = self.autonomous_prompt_note(state)
+        note = self.autonomous_prompt_note(state, respect_pause=outcome.speech_kind not in {"reply", "schedule", "event"})
         prompt = (
             (f"{hint}\n\n" if hint else "")
             + ("\n\n" + note + "\n\n" if note else "")
@@ -13107,6 +13163,7 @@ class MyWorldEngine:
             kept.append(step)
         return kept, dropped
 
+    @speech_origin("actions")
     async def _execute_actions(
         self,
         state: WorldState,
@@ -13149,7 +13206,7 @@ class MyWorldEngine:
         carried_source = str((existing_plan or {}).get("source") or "")
         # 这一批是"有人跟她说话"（被动回复）还是她自己想做什么：
         # 排队久了以后，被动回复那几句不该被"主动发言冷却"当成刷屏吞掉
-        batch_kind = "" if autonomous else "reply"
+        batch_kind = outcome.speech_kind
         # 这一批里有没有动作把她的"手头那件事"换掉：只有那种情况才需要排队——
         # 她原来就在做的事不该拦住"说一句话"这种瞬时动作，否则对方等的是几分钟后的回话
         started_here = False
@@ -13417,11 +13474,17 @@ class MyWorldEngine:
         ``say`` 排在慢动作后面（本来就是"做完再说"）时不受影响。
         """
 
+        self._filter_proactive_speech(outcome)
         if self.say_sink is None or not outcome.messages:
             return
+        kinds = outcome.speech_kinds.pop("", [])
         lines = outcome.take_messages()
         sent_count = 0
-        for line in lines:
+        for index, line in enumerate(lines):
+            kind = kinds[index] if index < len(kinds) else outcome.speech_kind
+            if not self.speech_allowed(outcome.home(), kind):
+                sent_count += 1
+                continue
             try:
                 sent = bool(await self.say_sink(outcome.home(), line))
             except Exception as exc:
@@ -13431,10 +13494,12 @@ class MyWorldEngine:
                 # 发不出去（会话没配 / 平台在冷却里）：从这里开始都留到收尾一起发，别丢
                 break
             outcome.live_messages.append(line)
+            outcome.live_kinds.append(kind)
             sent_count += 1
         if sent_count >= len(lines):
             return
         outcome.messages = lines[sent_count:]
+        outcome.speech_kinds[""] = kinds[sent_count:]
         # 回显的位置是"排在第几句之后"：前面几句已经当场发出去了，位置整体往前挪
         outcome.debug_positions = [
             max(0, int(position) - sent_count) for position in outcome.debug_positions
@@ -13485,7 +13550,7 @@ class MyWorldEngine:
             return
         tail = carried if carried is not None else self._plan_remaining_steps(active_plan(state))
         steps, dropped = self._dedupe_queued_steps(
-            [self._step_payload(item, outcome.home()) for item in pending], tail
+            [self._step_payload(item, outcome.home(), outcome.speech_kind) for item in pending], tail
         )
         if dropped:
             outcome.notes.append(f"「睡觉」这一类动作已经排过了，重复的 {dropped} 步丢掉")
@@ -14245,12 +14310,13 @@ class MyWorldEngine:
             lines.append(line)
         return "\n".join(lines)
 
+    @session_scoped
     async def schedule_add(
         self, payload: dict[str, Any], *, session_id: str = ""
     ) -> tuple[bool, str]:
         """加一条她自己安排的日程（校验时间、星期、动作链）。"""
 
-        raw = self.store.raw_schedules()
+        raw = self.scoped_schedules()
         items = list(raw.get("schedules") or [])
         time_text = " ".join(str(payload.get("time") or "").split())
         # 常见写法都收："7:05" / "07:5" / "7:5" 统一成 HH:MM
@@ -14329,7 +14395,7 @@ class MyWorldEngine:
                 "created_by": "bot",
             }
         )
-        self.store.save_schedules(
+        self.save_scoped_schedules(
             {**raw, "schedules": items}, reason="她给自己加了日程"
         )
         self.reload_config()
@@ -14345,22 +14411,23 @@ class MyWorldEngine:
     def _drop_schedule(self, schedule_id: str) -> bool:
         """按 id 摘掉一条日程（一次性日程跑完就用这个收尾）。"""
 
-        raw = self.store.raw_schedules()
+        raw = self.scoped_schedules()
         items = list(raw.get("schedules") or [])
         kept = [item for item in items if str(item.get("id")) != str(schedule_id)]
         if len(kept) == len(items):
             return False
-        self.store.save_schedules({**raw, "schedules": kept}, reason="日程跑完了回收")
+        self.save_scoped_schedules({**raw, "schedules": kept}, reason="日程跑完了回收")
         self.reload_config()
         return True
 
     def _prune_once_schedules(self, day_key: str) -> None:
         """日期已经过去的一次性日程留着没用，顺手清掉（每天只扫一次）。"""
 
-        if day_key == self._once_pruned_day:
+        owner = self.config_scope_id if "schedules" in (getattr(self.session_config(self.config_scope_id), "config_overrides", {}) or {}) else ""
+        if day_key == self._once_pruned_day.get(owner):
             return
-        self._once_pruned_day = day_key
-        raw = self.store.raw_schedules()
+        self._once_pruned_day[owner] = day_key
+        raw = self.scoped_schedules()
         items = list(raw.get("schedules") or [])
         kept = [
             item
@@ -14373,7 +14440,7 @@ class MyWorldEngine:
         ]
         if len(kept) == len(items):
             return
-        self.store.save_schedules(
+        self.save_scoped_schedules(
             {**raw, "schedules": kept}, reason="清理过期的一次性日程"
         )
         self.reload_config()
@@ -14381,7 +14448,7 @@ class MyWorldEngine:
     async def schedule_remove(self, selector: dict[str, Any]) -> tuple[bool, str]:
         """删掉她自己加的一条日程（用户配的动不了）。"""
 
-        raw = self.store.raw_schedules()
+        raw = self.scoped_schedules()
         items = list(raw.get("schedules") or [])
         target_id = str(selector.get("id") or "").strip()
         time_text = str(selector.get("time") or "").strip()
@@ -14407,7 +14474,7 @@ class MyWorldEngine:
         if str(matched.get("created_by") or "") != "bot":
             return False, "那条是用户自己配的日程，我删不了"
         items = [item for item in items if item is not matched]
-        self.store.save_schedules(
+        self.save_scoped_schedules(
             {**raw, "schedules": items}, reason="她自己删了一条日程"
         )
         self.reload_config()
@@ -16215,6 +16282,13 @@ class MyWorldEngine:
     ) -> bool | None:
         # 这里是所有动作真正开始执行的唯一入口（计划 / 日程 / 自主行为 / 工具后续都走这里），
         # 因此把「能不能做」的校验统一放在这里，避免某条路径绕过检查。
+        if (definition.id in {"say", "share", "poke"} or definition.llm_level in {"tool", "command"}) and not self.speech_allowed(
+            self._speech_target(state, action, outcome) or outcome.home(), outcome.speech_kind,
+        ):
+            outcome.notes.append(f"自主搭话已暂停，跳过发言动作 {definition.id}")
+            if from_plan and state.current_plan is not None:
+                advance(state)
+            return False
         blocked = self._extension_gate(definition, state)
         if blocked:
             # 扩展说了不让做（例如"这个动作只能在私聊里做"）：跳过并留痕
@@ -16308,6 +16382,7 @@ class MyWorldEngine:
                 "from_plan": bool(from_plan),
                 # 这个动作是在哪个会话里被安排/触发的：做完的续说回那儿
                 "session": outcome.home(),
+                "speech_kind": outcome.speech_kind,
                 "desc": definition.name or definition.id,
             }
             if from_plan and isinstance(state.current_plan, dict):
@@ -16461,6 +16536,7 @@ class MyWorldEngine:
                 "from_plan": False,
                 "desc": definition.name or definition.id,
                 "reply_planned": reply_planned,
+                "speech_kind": outcome.speech_kind,
             }
             answered = await self._finish_action(state, node, outcome, payload)
             if from_plan and state.current_plan is not None:
@@ -16803,6 +16879,7 @@ class MyWorldEngine:
         )
         return result
 
+    @speech_origin("schedule")
     async def _run_chain(
         self,
         state: WorldState,
@@ -16974,7 +17051,8 @@ class MyWorldEngine:
             samples=self.voice_sample_lines(state, state.session_id),
             **await self.runtime_notes(state.session_id),
         )
-        note = self.autonomous_prompt_note(state)
+        # Sending is gated by the caller; scheduled text generation must remain available.
+        note = self.autonomous_prompt_note(state, respect_pause=False)
         prompt = (
             instruction
             + ("\n\n" + note if note else "")
@@ -17154,6 +17232,8 @@ class MyWorldEngine:
     def _generator_session_id(self) -> str:
         """生成时借一个会话 id 去取人格（没有启用会话就用空字符串）。"""
 
+        if self.config_scope_id:
+            return self.config_scope_id
         ids = self.enabled_session_ids()
         return ids[0] if ids else ""
 
@@ -18862,6 +18942,8 @@ class MyWorldEngine:
         把它们分开报出来，才能知道到底是谁在限流。
         """
 
+        if not self.proactive_chat_allowed(state.session_id):
+            return "paused"
         if not self.world.decider.enabled:
             return "disabled"
         cooldown = max(0, int(self.world.decider.interject_cooldown_minutes)) * 60
@@ -19200,9 +19282,35 @@ class MyWorldEngine:
             self._log("warning", f"发送结果图片失败：{exc}")
             return False
 
+    def _filter_proactive_speech(self, outcome: TickOutcome) -> None:
+        """Filter before recording speech, including already queued autonomous lines."""
+        removed = 0
+
+        def keep(lines, key, metadata, *, images=False):
+            nonlocal removed
+            kinds = metadata.get(key, [])
+            mask = [
+                self.speech_allowed(key or outcome.session_id, kinds[i] if i < len(kinds) else outcome.speech_kind)
+                for i in range(len(lines))
+            ]
+            if key == "" and not images:
+                outcome.debug_positions = [sum(mask[:int(pos)]) for pos in outcome.debug_positions]
+            removed += len(mask) - sum(mask)
+            metadata[key] = [kinds[i] if i < len(kinds) else outcome.speech_kind for i, ok in enumerate(mask) if ok]
+            return [line for line, ok in zip(lines, mask) if ok]
+
+        outcome.messages = keep(outcome.messages, "", outcome.speech_kinds)
+        outcome.images = keep(outcome.images, "", outcome.image_kinds, images=True)
+        outcome.routed = {sid: keep(lines, sid, outcome.speech_kinds) for sid, lines in outcome.routed.items()}
+        outcome.routed_images = {sid: keep(lines, sid, outcome.image_kinds, images=True) for sid, lines in outcome.routed_images.items()}
+        if removed:
+            outcome.notes.append(f"自主搭话已暂停，未发送 {removed} 条内容")
+
+    @session_scoped
     async def _deliver(self, outcome: TickOutcome) -> None:
         if self.messenger is None:
             return
+        self._filter_proactive_speech(outcome)
         # 已经即时发出去的算"她说过话"（进日志、进聊天上下文、算主动发言冷却），
         # 但不再发一遍。
         said = [m for m in outcome.said_messages() if m and str(m).strip()]
@@ -19245,10 +19353,14 @@ class MyWorldEngine:
         state = await self.load_state(outcome.session_id, cold_start=False)
         # 事件里的发言（求助 / 事件结果）不算"她主动找人聊天"：
         # 不走无人回应保护，也不会把她的冷却期拖长。
-        is_event_speech = str(outcome.speech_kind or "") == "event"
+        kinds = {outcome.speech_kind, *outcome.live_kinds}
+        for group in (outcome.speech_kinds, outcome.image_kinds):
+            for values in group.values():
+                kinds.update(values)
+        is_event_speech = bool(kinds & {"event", "schedule"})
         # 排在后面的回话（当时有人跟她说话，她在忙，轮到她时才说）同样不算"主动开口"：
         # 被"主动发言冷却"吞掉的话，对方再也等不到那句回应，而计划上却记成"已经说过了"
-        is_reply_speech = str(outcome.speech_kind or "") == "reply"
+        is_reply_speech = "reply" in kinds
         # 已经即时发出去的几句挡不回来：这一轮不能再看冷却，否则群里会"说了一句就没下文"，
         # 那句即时发言也不进聊天记录（下一轮她就不知道自己刚说过）
         spoke_live = bool(outcome.live_messages)
@@ -19319,20 +19431,31 @@ class MyWorldEngine:
                         self._tag_chat_origin(state, target, recorded)
             # 调试用的动作回显不算"她说过的话"：不进聊天上下文、不计无人回应保护
         sent = False
+        attempted = False
         # Send each default result exactly once per selected concrete destination.
         for target in broadcast_targets:
+            target_view = replace(
+                outcome, session_id=target, messages=list(outcome.messages), images=list(outcome.images),
+                routed={}, routed_images={}, notes=[],
+                speech_kinds={"": list(outcome.speech_kinds.get("", []))},
+                image_kinds={"": list(outcome.image_kinds.get("", []))},
+            )
+            self._filter_proactive_speech(target_view)
+            target_ordered = pending + target_view.ordered_messages()
+            target_images = self._group_images(target_view)
             try:
                 target_sent = True
-                if ordered:
+                if target_ordered:
                     # 返回假值 = 平台没收下这批话：必须点名是哪个落点失败了，
                     # 其余落点照旧继续发（一次落点失败不该拖累别的会话）
-                    target_sent = bool(await self.messenger.send_text(target, ordered))
+                    attempted = True
+                    target_sent = bool(await self.messenger.send_text(target, target_ordered))
                     sent = sent or target_sent
                     if not target_sent:
                         outcome.notes.append(f"发到 {target} 失败：平台没有接收")
                         self._log("warning", f"发到 {target} 失败：平台没有接收")
-                if images:
-                    await self._send_group_images(target, images)
+                if target_images:
+                    await self._send_group_images(target, target_images)
             except Exception as exc:
                 outcome.notes.append(f"发到 {target} 失败：{exc}")
                 self._log("warning", f"发到 {target} 失败：{exc}")
@@ -19355,7 +19478,7 @@ class MyWorldEngine:
                     "send_failed",
                     {"messages": ordered, "note": failed_note},
                 )
-        elif not sent and ordered:
+        elif not sent and ordered and attempted:
             outcome.notes.append("平台没有接收这批消息")
 
     # ================= 对外快照 =================
@@ -19495,6 +19618,7 @@ class MyWorldEngine:
             "has_llm": self.llm is not None,
         }
 
+    @session_scoped
     async def snapshot(self, session_id: str) -> dict[str, Any]:
         state = await self.load_state(session_id, cold_start=False)
         node = self.node(state.node_id)
@@ -20238,6 +20362,7 @@ class MyWorldEngine:
             self._tag_chat_origin(state, session_id, recorded)
             self._count_passive_reply(state)
 
+    @session_scoped
     async def reflect_turn(
         self,
         session_id: str,

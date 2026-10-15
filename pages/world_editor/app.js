@@ -11,6 +11,8 @@ const bridge = window.AstrBotPluginPage;
 const ui = {
   status: {},
   config: { world: {}, schedules: {}, sessions: {} },
+  scope: "",
+  scopeBlocks: new Set(),
   sessions: [],
   tools: [],
   overview: [],
@@ -842,13 +844,13 @@ function watchPronoun() {
 }
 
 async function apiGet(endpoint, params = {}) {
-  const query = { ...params };
+  const query = { config_scope: ui.scope, ...params };
   if (ui.token) query.token = ui.token;
   return bridge.apiGet(endpoint, query);
 }
 
 async function apiPost(endpoint, body = {}) {
-  const payload = { ...body };
+  const payload = { config_scope: ui.scope, ...body };
   if (ui.token) payload.token = ui.token;
   return bridge.apiPost(endpoint, payload);
 }
@@ -3219,15 +3221,17 @@ function toggleTheme() {
   applyTheme(currentTheme() === "light" ? "dark" : "light");
 }
 
-async function loadAll() {
+async function loadAll(scope = ui.scope) {
   setSaveState("加载中…");
   try {
     const [config, tools, defaults] = await Promise.all([
-      apiGet("config"),
+      apiGet("config", { config_scope: scope }),
       apiGet("tools"),
       apiGet("defaults"),
     ]);
     ui.config = config;
+    ui.scope = config.scope ?? scope;
+    ui.scopeBlocks = new Set(config.scope_blocks || []);
     ui.tools = tools.tools || [];
     ui.defaults = defaults || { actions: {}, captions: {} };
     // 扩展注册的调试类型跟内置默认文案一起给（同一份 /defaults 载荷）
@@ -3237,10 +3241,13 @@ async function loadAll() {
       toast(`配置提醒：${config.warnings.join("；")}`);
     }
     renderEverything();
+    ui.configSnapshot = configFingerprint();
     setSaveState("已加载");
+    return true;
   } catch (error) {
     setSaveState("加载失败");
     toast(error.message || "加载配置失败");
+    return false;
   }
 }
 
@@ -3261,6 +3268,126 @@ function renderEverything() {
   loadTools();
   loadOverview();
   applyPronoun($("app"));
+  renderConfigScope();
+}
+
+const CONFIG_BLOCKS = { map: "地图", actions: "动作库", schedules: "日程", settings: "设置" };
+const MAP_CONFIG_KEYS = new Set(["zones", "zone_edges", "nodes", "edges"]);
+const ACTION_CONFIG_KEYS = new Set(["actions", "purged_actions"]);
+const GLOBAL_CONFIG_KEYS = new Set(["admin_ids", "proactive_chat_paused", "wizard_done", "schema_version"]);
+
+function configFingerprint() {
+  return JSON.stringify([ui.config.world, ui.config.schedules, ui.config.sessions, [...ui.scopeBlocks].sort()],
+    (key, value) => key === "proactive_chat_paused" ? undefined : value);
+}
+
+function currentConfigBlock() {
+  const tab = document.querySelector("#tabs button.active")?.dataset.tab;
+  return CONFIG_BLOCKS[tab] ? tab : "";
+}
+
+function restoreGlobalBlock(block) {
+  const base = ui.config.global_config;
+  if (!base) return;
+  if (block === "schedules") {
+    ui.config.schedules = structuredClone(base.schedules);
+    return;
+  }
+  const belongs = (key) => block === "map" ? MAP_CONFIG_KEYS.has(key)
+    : block === "actions" ? ACTION_CONFIG_KEYS.has(key)
+    : !MAP_CONFIG_KEYS.has(key) && !ACTION_CONFIG_KEYS.has(key) && !GLOBAL_CONFIG_KEYS.has(key);
+  Object.keys(ui.config.world).filter(belongs).forEach((key) => delete ui.config.world[key]);
+  Object.entries(base.world).filter(([key]) => belongs(key)).forEach(([key, value]) => {
+    ui.config.world[key] = structuredClone(value);
+  });
+}
+
+function renderConfigScope() {
+  const select = $("config-scope");
+  select.replaceChildren(new Option("全局默认", ""));
+  const owners = ui.config.scope_owners || {};
+  const seen = new Set();
+  ui.sessions.forEach((session) => {
+    const owner = owners[session.session_id] || session.session_id;
+    if (seen.has(owner)) return;
+    seen.add(owner);
+    const main = ui.sessions.find((item) => item.session_id === owner) || session;
+    const group = (ui.config.sessions.groups || []).find((item) => (item.sessions || []).includes(owner));
+    const name = group ? `会话组：${group.name || group.id}` : main.note || main.group_name || owner;
+    select.add(new Option(name, owner));
+  });
+  select.value = ui.scope;
+  const paused = ui.config.world.proactive_chat_paused === true;
+  $("proactive-enabled").checked = !paused;
+  $("proactive-state").textContent = paused ? "已暂停" : "已开启";
+  const block = currentConfigBlock();
+  const local = Boolean(ui.scope);
+  $("scope-edit-label").classList.toggle("hidden", !local || !block);
+  $("scope-edit").checked = ui.scopeBlocks.has(block);
+  const name = CONFIG_BLOCKS[block];
+  const active = document.querySelector("#tabs button.active")?.dataset.tab;
+  $("scope-note").textContent = !local
+    ? "全局默认应用于所有继承该配置的群和私聊。"
+    : block ? (ui.scopeBlocks.has(block)
+      ? `${name}已单独配置，保存后生效；取消勾选并保存可恢复继承全局。`
+      : `${name}正在继承全局（只读）；勾选后可单独修改此配置块。`)
+    : ["sessions", "presets"].includes(active)
+      ? "会话管理与预设属于全局配置，请切换到全局默认后编辑。"
+      : "此页操作对象由顶部“会话”选择；编辑范围用于地图、动作库、日程与设置。";
+  Object.keys(CONFIG_BLOCKS).forEach((key) => {
+    const section = $(`tab-${key}`);
+    section.inert = local && !ui.scopeBlocks.has(key);
+    section.classList.toggle("scope-locked", section.inert);
+  });
+  ["sessions", "presets"].forEach((key) => { $(`tab-${key}`).inert = local; });
+  // Maintenance operations always act on global files.
+  const purge = $("action-purge-legacy");
+  if (purge) purge.disabled = local;
+}
+
+function bindConfigScopes() {
+  $("config-scope").addEventListener("change", async (event) => {
+    const next = event.target.value;
+    event.target.value = ui.scope;
+    if (next === ui.scope) return;
+    if ((ui.dirty || configFingerprint() !== ui.configSnapshot) && !await confirmDialog({
+      title: "切换编辑范围", message: "当前修改尚未保存。放弃这些修改并切换？取消后可以先保存。", confirmText: "放弃并切换",
+    })) return;
+    const release = busyButton($("save"), "切换中…");
+    $("config-scope").disabled = true;
+    try {
+      if (await loadAll(next)) {
+        ui.dirty = false;
+        ui.dirtyTabs.clear();
+        renderSettingsTabs();
+      }
+    } finally { release(); $("config-scope").disabled = false; }
+  });
+  $("scope-edit").addEventListener("change", async (event) => {
+    const block = currentConfigBlock();
+    if (!ui.scope || !block) return;
+    if (event.target.checked) ui.scopeBlocks.add(block);
+    else {
+      if (!await confirmDialog({ title: "恢复全局配置", message: `保存后将移除本会话的${CONFIG_BLOCKS[block]}独立配置，持续继承全局。`, confirmText: "恢复继承" })) {
+        renderConfigScope(); return;
+      }
+      ui.scopeBlocks.delete(block);
+      restoreGlobalBlock(block);
+    }
+    markDirty();
+    renderEverything();
+  });
+  $("proactive-enabled").addEventListener("change", async (event) => {
+    const enabled = event.target.checked;
+    event.target.disabled = true;
+    try {
+      await apiPost("config/proactive", { enabled });
+      ui.config.world.proactive_chat_paused = !enabled;
+      if (ui.config.global_config) ui.config.global_config.world.proactive_chat_paused = !enabled;
+      toast(enabled ? "全局自主搭话已开启" : "所有会话的自主搭话已暂停，日程与事件照常");
+    } catch (error) { toast(error.message || "切换失败"); }
+    finally { event.target.disabled = false; renderConfigScope(); }
+  });
 }
 
 function bindTabs() {
@@ -3361,9 +3488,11 @@ function showTab(name, button) {
   if (name === "map") loadOverview();
   if (name === "debug") loadTools();
   if (name === "presets") loadPresets();
+  renderConfigScope();
 }
 
 function bindButtons() {
+  bindConfigScopes();
   $("save").addEventListener("click", saveAll);
   bindFilterToggle("memory-filter-toggle", "#tab-memories");
   bindFilterToggle("log-filter-toggle", "#tab-logs");
@@ -3774,6 +3903,17 @@ function bindButtons() {
 async function saveAll() {
   setSaveState("保存中…");
   try {
+    if (ui.scope) {
+      const result = await apiPost("config/scope", {
+        world: ui.config.world, schedules: ui.config.schedules, blocks: [...ui.scopeBlocks],
+      });
+      ui.dirty = false;
+      ui.dirtyTabs.clear();
+      await loadAll();
+      setSaveState("会话配置已保存并生效");
+      toast((result.warnings || []).length ? `已保存，提醒：${result.warnings.join("；")}` : "会话配置已保存并生效");
+      return true;
+    }
     const worldResult = await apiPost("config/world", { world: ui.config.world });
     const scheduleResult = await apiPost("config/schedules", {
       schedules: ui.config.schedules,
@@ -3805,9 +3945,11 @@ async function saveAll() {
           : "已保存并生效",
     );
     await loadAll();
+    return true;
   } catch (error) {
     setSaveState("保存失败");
     toast(error.message || "保存失败");
+    return false;
   }
 }
 
@@ -10680,6 +10822,11 @@ async function runScheduleNow(schedule) {
     toast("先在右上角选一个会话");
     return;
   }
+  const owner = (ui.config.scope_owners || {})[sessionId] || sessionId;
+  if (ui.scope && owner !== ui.scope) {
+    toast("当前查看会话与日程编辑范围不同，请先选择对应会话，避免执行另一套日程。");
+    return;
+  }
   const chain =
     (schedule.action_chain || []).map((step) => step.type).join(" → ") || "（没有动作）";
   const ok = await confirmDialog({
@@ -12685,13 +12832,14 @@ function renderSettings() {
   /* --- 基础 --- */
   const basic = settingsSection(
     "基础",
-    "这些是全局规则，决定她生活在什么样的世界里。",
+    ui.scope ? "这些规则只用于当前会话或共享生活组。" : "这些是默认规则，所有未单独配置的会话都会继承。",
     "新手只需要改「全局提示词」，其它保持默认即可。",
   );
   const basicFull = el("div", "full");
   const wizardRow = el("div", "row");
   const wizardButton = el("button", "small primary", "重新运行设置向导…");
   wizardButton.type = "button";
+  wizardButton.disabled = Boolean(ui.scope);
   wizardButton.title = "把「她在哪儿生活 / 她是谁 / 模型 / 手感 / 记忆」再走一遍（每一步都会预填当前值）";
   wizardButton.addEventListener("click", () => openWizard());
   wizardRow.appendChild(wizardButton);
@@ -12707,6 +12855,11 @@ function renderSettings() {
     }),
   );
   basic._fields.appendChild(basicFull);
+  basic._fields.appendChild(checkboxField(
+    "允许自主搭话", world.proactive_chat_enabled !== false,
+    (value) => (world.proactive_chat_enabled = value),
+    { hint: "控制当前配置范围的自主搭话；顶部全局开关暂停时全部会话均不自主搭话。日程、事件和正常回复保留。" },
+  ));
   basic._fields.appendChild(
     inputField("世界名称", world.name || "小世界", (value) => (world.name = value), {
       hint: "只用于展示。",
@@ -12727,7 +12880,7 @@ function renderSettings() {
       hint: "日程按这个时区判断几点。系统缺少时区数据时自动退回本机时间。",
     }),
   );
-  basic._fields.appendChild(
+  if (!ui.scope) basic._fields.appendChild(
     tagField(
       "管理员 QQ",
       world.admin_ids || [],

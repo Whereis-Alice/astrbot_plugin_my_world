@@ -51,7 +51,7 @@
           <button data-tab="schedules">日程</button>
           <button data-tab="sessions">会话</button>
           <span class="nav-group">配置</span>
-          <button data-tab="settings">全局设置</button>
+          <button data-tab="settings">设置</button>
           <button data-tab="presets">预设</button>
         </nav>
         <div class="sidebar-foot">
@@ -74,6 +74,23 @@
             <button id="save" class="primary">保存</button>
           </div>
         </header>
+
+        <div class="config-bar" aria-label="配置范围与自主搭话">
+          <div class="config-bar-row">
+            <label class="scope-field" for="config-scope">编辑范围
+              <select id="config-scope"><option value="">全局默认</option></select>
+            </label>
+            <label class="proactive-control" for="proactive-enabled">
+              <input id="proactive-enabled" type="checkbox" role="switch" />
+              <span>全局自主搭话</span><strong id="proactive-state"></strong>
+            </label>
+            <span class="muted scope-detail">日程与事件照常发言</span>
+          </div>
+          <div class="config-bar-row scope-inheritance" id="scope-inheritance">
+            <label id="scope-edit-label"><input id="scope-edit" type="checkbox" /> 本页单独配置</label>
+            <span id="scope-note" class="muted" role="status"></span>
+          </div>
+        </div>
 
         <main>
         <!-- 控制台：人物面板 + 当前状态 -->
@@ -267,7 +284,7 @@
                 <label class="inline"><input id="map-show-all" type="checkbox" checked /><span>显示所有会话</span></label>
               </div>
               <p class="hint-line">
-                地图是共享的一份配置（所有会话共用），但每个会话有她自己的位置和状态。
+                地图默认继承全局，也可为会话单独配置；独立会话各有自己的位置和状态。
                 拖动节点调整位置；点节点后在右侧「连线」里增删路线与耗时。「连到其他区域…」建的是跨区通道，
                 两端各自指定一个地点（例如公园·北门 ↔ 商场·大门）。
               </p>
