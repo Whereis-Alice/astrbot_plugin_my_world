@@ -245,67 +245,91 @@
           </div>
         </section>
 
-        <!-- 地图 -->
-        <section id="tab-map" class="tab">
-          <div class="row crumbs">
-            <span id="map-crumbs" class="crumb-text">世界地图</span>
-            <span class="muted" id="map-crumbs-note">
-              世界地图上是各个区域；点区域进去看它里面的地点。
-            </span>
-          </div>
-          <div class="map-layout">
-            <div class="card grow">
-              <div class="row" id="toolbar-world">
-                <button id="zone-add" class="primary">新增区域</button>
-                <button id="zone-generate" class="ghost" title="按她的人设、已有区域和人际关系，让模型起草几个新区域；先预览、再手动改">生成区域…</button>
-                <button id="map-generate-all" class="ghost" title="根据她的人设重新设计整张地图：区域、地点、区内路线与跨区路线一次配好；确认后替换当前地图">一键重建地图…</button>
-                <button id="zone-delete" class="danger">删除选中区域</button>
-                <button id="zone-edge-add" class="ghost">区域连线…</button>
-                <button id="zone-enter" class="ghost">进入区域 →</button>
-                <button id="map-fit" class="ghost" title="把所有区域挪到画布中间，方便一眼看全">适应画布</button>
-                <details class="adv-menu">
-                  <summary title="给会用的人准备的：批量导入导出、直接改结构">高级</summary>
-                  <div class="adv-menu-body">
-                    <button id="map-json" class="ghost" title="直接编辑地图结构的 JSON，方便批量导入导出">
-                      编辑地图 JSON…
-                    </button>
+        <!-- 地图：以画布为主，工具栏与属性面板悬浮在上面 -->
+        <section id="tab-map" class="tab map-tab">
+          <div id="map-stage" class="map-stage">
+            <div class="map-topbar">
+              <div class="map-crumb">
+                <button id="map-back" class="map-icon-btn hidden" type="button" title="返回世界地图">←</button>
+                <div class="map-crumb-text">
+                  <strong id="map-crumbs">世界地图</strong>
+                  <span id="map-crumbs-note" class="muted">世界地图上是各个区域；点区域进去看它里面的地点。</span>
+                </div>
+              </div>
+
+              <div id="toolbar-world" class="map-tools">
+                <button id="zone-add" class="tool-btn primary" type="button" title="在画布上新增一个区域">＋ 区域</button>
+                <button id="zone-generate" class="tool-btn" type="button" title="按她的人设、已有区域和人际关系，让模型起草几个新区域；先预览、再手动改">生成区域…</button>
+                <button id="map-generate-all" class="tool-btn" type="button" title="根据她的人设重新设计整张地图：区域、地点、区内路线与跨区路线一次配好；确认后替换当前地图">一键重建…</button>
+                <button id="zone-edge-add" class="tool-btn" type="button" title="给选中的区域连一条跨区通道">区域连线…</button>
+                <button id="zone-enter" class="tool-btn" type="button" title="进入选中的区域，编辑里面的地点">进入 →</button>
+                <details class="tool-menu">
+                  <summary title="更多区域操作">⋯</summary>
+                  <div class="tool-menu-body">
+                    <button id="zone-delete" class="danger" type="button">删除选中区域</button>
+                    <button id="map-fit" class="ghost" type="button" title="把所有区域挪到画布中间，方便一眼看全">适应画布</button>
+                    <button id="map-json" class="ghost" type="button" title="直接编辑地图结构的 JSON，方便批量导入导出">编辑地图 JSON…</button>
                   </div>
                 </details>
               </div>
-              <div class="row wrap hidden" id="toolbar-zone">
-                <button id="node-add" class="primary">新增节点</button>
-                <button id="node-delete" class="danger">删除选中</button>
-                <button id="edge-add" class="ghost">连线到…</button>
-                <button id="portal-add" class="ghost">连到其他区域…</button>
-                <button id="map-fit-zone" class="ghost" title="把这个区域里的地点挪到画布中间">适应画布</button>
-                <label class="field">
-                  <span>查看会话</span>
+
+              <div id="toolbar-zone" class="map-tools hidden">
+                <button id="node-add" class="tool-btn primary" type="button" title="在这个区域里新增一个地点">＋ 地点</button>
+                <button id="edge-add" class="tool-btn" type="button" title="给选中的地点连一条区内路线">连线…</button>
+                <button id="portal-add" class="tool-btn" type="button" title="连到其他区域的通道，两端各指定一个地点">跨区通道…</button>
+                <button id="node-delete" class="tool-btn danger" type="button" title="删除选中的地点">删除</button>
+                <details class="tool-menu">
+                  <summary title="更多地点操作">⋯</summary>
+                  <div class="tool-menu-body">
+                    <button id="map-fit-zone" class="ghost" type="button" title="把这个区域里的地点挪到画布中间">适应画布</button>
+                  </div>
+                </details>
+                <label class="map-select" title="查看这个会话此刻在哪个地点">
+                  <span>会话</span>
                   <select id="map-session"></select>
                 </label>
-                <label class="inline"><input id="map-show-all" type="checkbox" checked /><span>显示所有会话</span></label>
+                <label class="map-check"><input id="map-show-all" type="checkbox" checked /><span>显示全部会话</span></label>
               </div>
-              <p class="hint-line">
-                地图默认继承全局，也可为会话单独配置；独立会话各有自己的位置和状态。
-                拖动节点调整位置；点节点后在右侧「连线」里增删路线与耗时。「连到其他区域…」建的是跨区通道，
-                两端各自指定一个地点（例如公园·北门 ↔ 商场·大门）。
-              </p>
-              <div id="map-weather" class="map-weather hidden">
-                <span id="map-weather-icon" class="weather-icon">🌤</span>
-                <span id="map-weather-main" class="weather-main"></span>
-                <span id="map-weather-age" class="weather-age"></span>
-                <button id="map-weather-refresh" class="ghost tiny" type="button">刷新</button>
+
+              <div class="map-topbar-right">
+                <div class="map-label-switch" role="group" aria-label="路线标签">
+                  <button type="button" data-label-mode="smart" class="on" title="自动显示不重叠的路线名字，悬停可看被挡住的">智能</button>
+                  <button type="button" data-label-mode="all" title="所有路线都显示两端名字">全部</button>
+                  <button type="button" data-label-mode="ticks" title="只显示走过去要几 tick">耗时</button>
+                </div>
+                <button id="map-side-toggle" class="map-icon-btn" type="button" title="展开 / 收起属性面板">⛭</button>
               </div>
-              <div id="canvas" class="canvas">
-                <button id="map-back" class="ghost hidden">← 世界地图</button>
+            </div>
+
+            <div id="map-weather" class="map-weather map-float hidden">
+              <span id="map-weather-icon" class="weather-icon">🌤</span>
+              <span id="map-weather-main" class="weather-main"></span>
+              <span id="map-weather-age" class="weather-age"></span>
+              <button id="map-weather-refresh" class="ghost tiny" type="button">刷新</button>
+            </div>
+
+            <div id="canvas" class="canvas">
+              <div id="canvas-world" class="canvas-world">
                 <svg id="canvas-edges"></svg>
                 <div id="canvas-nodes"></div>
                 <svg id="canvas-labels"></svg>
               </div>
             </div>
-            <div class="card side">
-              <h2 id="node-title">区域属性</h2>
-              <div id="node-form" class="form"></div>
+
+            <div class="map-zoom map-float">
+              <button id="map-zoom-in" type="button" title="放大">＋</button>
+              <span id="map-zoom-label">100%</span>
+              <button id="map-zoom-out" type="button" title="缩小">－</button>
+              <button id="map-zoom-fit" type="button" title="适应画布">⤢</button>
             </div>
+
+            <aside id="map-side" class="map-side">
+              <div class="map-side-head">
+                <h2 id="node-title">区域属性</h2>
+                <button id="map-side-close" class="map-icon-btn" type="button" title="收起面板">×</button>
+              </div>
+              <div id="node-form" class="form"></div>
+            </aside>
           </div>
         </section>
 

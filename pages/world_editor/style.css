@@ -6478,3 +6478,730 @@ label.inline > input[type="checkbox"]:checked + span {
     animation: none;
   }
 }
+
+/* ================================================================== */
+/* 8. 地图 v2：全屏舞台 + 悬浮工具栏 / 属性面板                        */
+/* ================================================================== */
+
+.map-tab {
+  min-height: 0;
+}
+
+.map-stage {
+  position: relative;
+  height: calc(100vh - 148px);
+  min-height: 540px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-2);
+  box-shadow: var(--shadow-1);
+  isolation: isolate;
+}
+
+.map-float {
+  position: absolute;
+  z-index: 12;
+}
+
+.map-topbar {
+  position: absolute;
+  z-index: 20;
+  top: 10px;
+  left: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 7px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 11px;
+  background: var(--panel);
+  background: color-mix(in srgb, var(--panel) 86%, transparent);
+  box-shadow: var(--shadow-2);
+  backdrop-filter: blur(14px) saturate(1.35);
+  -webkit-backdrop-filter: blur(14px) saturate(1.35);
+}
+
+.map-crumb {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  flex: 1 1 240px;
+}
+
+/* 旧的 #map-back 是浮在画布左上角的；现在是顶栏里的返回按钮，回归文档流 */
+.map-crumb #map-back {
+  position: static;
+  top: auto;
+  left: auto;
+  z-index: auto;
+  flex: 0 0 auto;
+}
+
+.map-crumb-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
+}
+
+.map-crumb-text strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.map-crumb-text span {
+  max-width: 34vw;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-inset);
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease),
+    background var(--dur-1) var(--ease);
+}
+
+.map-icon-btn:hover,
+.map-icon-btn.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.map-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.tool-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-inset);
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease),
+    background var(--dur-1) var(--ease), transform var(--dur-1) var(--ease);
+}
+
+.tool-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.tool-btn.primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 8px 18px -10px var(--accent);
+}
+
+.tool-btn.primary:hover {
+  color: #fff;
+}
+
+.tool-btn.danger {
+  border-color: var(--danger-line, var(--line));
+  color: var(--danger, #e35d6a);
+}
+
+.tool-btn.danger:hover {
+  border-color: var(--danger, #e35d6a);
+  color: var(--danger, #e35d6a);
+}
+
+.tool-menu {
+  position: relative;
+}
+
+.tool-menu > summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-inset);
+  color: var(--text-2);
+  cursor: pointer;
+  list-style: none;
+}
+
+.tool-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool-menu[open] > summary,
+.tool-menu > summary:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.tool-menu-body {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  display: none;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 168px;
+  padding: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow-2);
+}
+
+.tool-menu[open] .tool-menu-body {
+  display: flex;
+}
+
+.tool-menu-body button {
+  justify-content: flex-start;
+  width: 100%;
+  text-align: left;
+}
+
+.map-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.map-label-switch {
+  display: flex;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-inset);
+}
+
+.map-label-switch button {
+  padding: 4px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.map-label-switch button.on {
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow-1);
+}
+
+.map-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.map-select select {
+  height: 30px;
+  max-width: 190px;
+  font-size: 11.5px;
+}
+
+.map-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* ---- 画布 ---- */
+
+.canvas {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 12px;
+  background-color: var(--panel-2);
+  background-image:
+    radial-gradient(circle at 50% 38%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 58%),
+    radial-gradient(var(--line-strong) 1px, transparent 1px),
+    linear-gradient(180deg, color-mix(in srgb, var(--bg) 24%, transparent), transparent 34%);
+  background-size: auto, 22px 22px, auto;
+  background-position: center, -1px -1px, center;
+  cursor: grab;
+  touch-action: none;
+}
+
+.canvas.panning {
+  cursor: grabbing;
+}
+
+.canvas-world {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.canvas svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}
+
+#canvas-edges { z-index: 1; }
+#canvas-nodes { z-index: 2; }
+#canvas-labels { z-index: 3; }
+
+#canvas-edges .edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 14;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.edge-path {
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  transition: opacity var(--dur-1) var(--ease), stroke-width var(--dur-1) var(--ease),
+    filter var(--dur-1) var(--ease);
+}
+
+.edge-path.oneway {
+  stroke-dasharray: 7 5;
+  animation: map-dash 1.6s linear infinite;
+}
+
+.edge-path.dimmed {
+  opacity: 0.12;
+}
+
+.edge-path.hot {
+  stroke-width: 3;
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 55%, transparent));
+}
+
+@keyframes map-dash {
+  to { stroke-dashoffset: -24; }
+}
+
+.edge-ticks {
+  fill: var(--muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  user-select: none;
+}
+
+.edge-pair {
+  font-size: 9.5px;
+  font-weight: 600;
+}
+
+.edge-pair.dimmed,
+.edge-tick-chip.dimmed {
+  opacity: 0.18;
+}
+
+.edge-pair.hidden-label,
+.edge-tick-chip.hidden-label {
+  display: none;
+}
+
+.edge-tick-bg {
+  fill: var(--panel);
+  stroke: var(--line-strong);
+  stroke-width: 1;
+}
+
+.edge-tick {
+  fill: var(--muted);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+/* ---- 节点卡片 ---- */
+
+.node {
+  position: absolute;
+  width: 128px;
+  padding: 9px 10px 8px;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--node-color, var(--accent));
+  border-radius: 8px;
+  background: var(--panel);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--panel) 92%, var(--node-color, var(--accent))),
+    var(--panel) 58%
+  );
+  box-shadow: var(--shadow-1);
+  text-align: left;
+  font-size: 12px;
+  cursor: grab;
+  user-select: none;
+  transition: box-shadow var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease),
+    transform var(--dur-1) var(--ease), opacity var(--dur-1) var(--ease);
+}
+
+.node:hover {
+  border-color: var(--node-color, var(--accent));
+  box-shadow: var(--shadow-2);
+  transform: translateY(-2px);
+}
+
+.node:active {
+  cursor: grabbing;
+}
+
+.node.dimmed {
+  opacity: 0.3;
+}
+
+.node.selected {
+  border-color: var(--node-color, var(--accent));
+  background: color-mix(in srgb, var(--panel) 86%, var(--node-color, var(--accent)));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--node-color, var(--accent)) 28%, transparent),
+    var(--shadow-2);
+  transform: translateY(-2px);
+}
+
+.node.here {
+  box-shadow: 0 0 0 3px var(--ok-soft), var(--shadow-2);
+}
+
+.node-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.node-icon {
+  flex: 0 0 auto;
+  color: var(--node-color, var(--accent));
+  font-size: 15px;
+  line-height: 1;
+}
+
+.node .node-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node .node-id {
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node .node-count {
+  display: inline-block;
+  margin-top: 5px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bg-inset);
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.node .node-here {
+  position: absolute;
+  top: -9px;
+  left: 10px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+  transform: none;
+  box-shadow: 0 4px 12px -5px var(--accent);
+}
+
+.node.other {
+  border-style: dashed;
+  opacity: 0.92;
+}
+
+.node.other .node-here {
+  max-width: 150px;
+  overflow: hidden;
+  background: var(--line);
+  color: var(--muted);
+  text-overflow: ellipsis;
+}
+
+.portal-chip {
+  position: absolute;
+  max-width: 260px;
+  padding: 3px 9px;
+  overflow: hidden;
+  border: 1px dashed var(--line-strong);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+
+.portal-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ---- 悬浮属性面板 ---- */
+
+.map-side {
+  position: absolute;
+  z-index: 16;
+  top: 62px;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  width: 348px;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 11px;
+  background: var(--panel);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  box-shadow: var(--shadow-2);
+  backdrop-filter: blur(16px) saturate(1.3);
+  -webkit-backdrop-filter: blur(16px) saturate(1.3);
+  transition: transform 0.22s var(--ease), opacity 0.22s var(--ease);
+}
+
+.map-side.collapsed {
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(calc(100% + 18px));
+}
+
+.map-side-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.map-side-head h2 {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-side #node-form {
+  flex: 1 1 auto;
+  padding: 12px;
+  overflow: auto;
+}
+
+/* ---- 缩放 / 天气 ---- */
+
+.map-zoom {
+  left: 12px;
+  bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--panel);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  box-shadow: var(--shadow-2);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.map-zoom button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bg-inset);
+  color: var(--text-2);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.map-zoom button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+#map-zoom-label {
+  color: var(--muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.map-weather {
+  left: 12px;
+  bottom: 162px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 340px;
+  margin: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--panel);
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  box-shadow: var(--shadow-2);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  font-size: 11.5px;
+}
+
+.map-weather .weather-main {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.map-weather .weather-line {
+  max-width: 180px;
+}
+
+.map-weather button {
+  margin-left: auto;
+}
+
+/* ---- 窄屏 ---- */
+
+@media (max-width: 1100px) {
+  .map-stage {
+    height: calc(100vh - 132px);
+    min-height: 500px;
+  }
+
+  .map-topbar {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .map-topbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .map-crumb-text span {
+    display: none;
+  }
+
+  .map-tools {
+    flex-wrap: nowrap;
+  }
+
+  .map-side {
+    top: auto;
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+    width: auto;
+    max-height: 56vh;
+  }
+
+  .map-side.collapsed {
+    transform: translateY(calc(100% + 18px));
+  }
+
+  .map-zoom {
+    left: 8px;
+    bottom: 8px;
+  }
+
+  .map-weather {
+    left: 8px;
+    bottom: 150px;
+    max-width: calc(100% - 74px);
+  }
+}
+
+@media (max-width: 640px) {
+  .map-stage {
+    height: calc(100vh - 116px);
+    min-height: 440px;
+    border-radius: 10px;
+  }
+
+  .map-label-switch {
+    display: none;
+  }
+
+  .map-select {
+    display: none;
+  }
+}

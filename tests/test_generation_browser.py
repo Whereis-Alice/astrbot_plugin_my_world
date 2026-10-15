@@ -262,6 +262,44 @@ class GenerationBrowserTests(unittest.TestCase):
         self.assertTrue(by_id["sing"]["enabled"])
         self.assertEqual(self.errors, [])
 
+    def test_map_stage_zoom_labels_pan_and_side_panel(self):
+        self.page.locator('button[data-tab="map"]').click()
+        expect(self.page.locator("#canvas-nodes .node").first).to_be_visible()
+        zoom_before = self.page.locator("#map-zoom-label").inner_text()
+        self.page.locator("#map-zoom-in").click()
+        self.assertNotEqual(zoom_before, self.page.locator("#map-zoom-label").inner_text())
+        self.assertIn(
+            "scale(",
+            self.page.locator("#canvas-world").get_attribute("style") or "",
+        )
+
+        self.page.locator('#tab-map [data-label-mode="ticks"]').click()
+        expect(self.page.locator("#canvas-labels .edge-tick-chip").first).to_be_visible()
+        self.page.locator('#tab-map [data-label-mode="all"]').click()
+        expect(self.page.locator("#canvas-labels .edge-pair").first).to_be_visible()
+
+        canvas = self.page.locator("#canvas")
+        box = canvas.bounding_box()
+        before = self.page.locator("#canvas-world").get_attribute("style")
+        self.host.mouse.move(
+            box["x"] + box["width"] * 0.5, box["y"] + box["height"] * 0.85
+        )
+        self.host.mouse.down()
+        self.host.mouse.move(
+            box["x"] + box["width"] * 0.5 + 60,
+            box["y"] + box["height"] * 0.85 + 30,
+        )
+        self.host.mouse.up()
+        self.assertNotEqual(before, self.page.locator("#canvas-world").get_attribute("style"))
+
+        side = self.page.locator("#map-side")
+        self.assertNotIn("collapsed", side.get_attribute("class") or "")
+        self.page.locator("#map-side-close").click()
+        self.assertIn("collapsed", side.get_attribute("class") or "")
+        self.page.locator("#map-side-toggle").click()
+        self.assertNotIn("collapsed", side.get_attribute("class") or "")
+        self.assertEqual(self.errors, [])
+
     def test_spring_layout_with_complex_routes_stays_readable(self):
         base_zones = [
             {"id": "home", "name": "家中", "is_home": True},

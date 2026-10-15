@@ -20,6 +20,20 @@ const ui = {
   selectedAction: "",
   selectedZone: "",
   mapLevel: "world",
+  mapView: { scale: 1, x: 0, y: 0 },
+  mapViewReady: false,
+  mapLabelMode: (() => {
+    try {
+      return window.localStorage.getItem("mw-map-label-mode") || "smart";
+    } catch (error) {
+      return "smart";
+    }
+  })(),
+  mapHoverNode: "",
+  mapHoverEdge: "",
+  mapHoverFrom: "",
+  mapHoverTo: "",
+  mapSideOpen: true,
   // 全局设置：当前选中的分类标签，以及哪些标签里有未保存的改动
   settingsTab: "basic",
   dirtyTabs: new Set(),
@@ -3420,53 +3434,122 @@ function bindTabs() {
  * 「适应画布」：把当前层的区域 / 地点整体挪到画布中间。
  * 只改坐标、不改缩放，所以拖拽的手感不变；也只在点按钮时跑一次，不会在拖动过程中抖。
  */
-function fitMapToCanvas() {
+function applyMapView() {
+  const world = $("canvas-world");
+  if (!world) return;
+  const view = ui.mapView || { scale: 1, x: 0, y: 0 };
+  world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.scale})`;
+  const label = $("map-zoom-label");
+  if (label) label.textContent = `${Math.round(view.scale * 100)}%`;
+}
+
+function mapZoomBy(factor, clientX, clientY) {
   const canvas = $("canvas");
   if (!canvas) return;
+  const rect = canvas.getBoundingClientRect();
+  const px = clientX == null ? rect.width / 2 : clientX - rect.left;
+  const py = clientY == null ? rect.height / 2 : clientY - rect.top;
+  const view = ui.mapView || (ui.mapView = { scale: 1, x: 0, y: 0 });
+  const next = Math.max(MAP_MIN_SCALE, Math.min(MAP_MAX_SCALE, view.scale * factor));
+  if (Math.abs(next - view.scale) < 0.001) return;
+  view.x = px - (px - view.x) * (next / view.scale);
+  view.y = py - (py - view.y) * (next / view.scale);
+  view.scale = next;
+  ui.mapViewReady = true;
+  applyMapView();
+}
+
+function fitMapToCanvas({ silent = false } = {}) {
+  const canvas = $("canvas");
+  if (!canvas) return;
+  if (canvas.clientWidth < 60 || canvas.clientHeight < 60) return;
   const level = ui.mapLevel === "zone" ? "zone" : "world";
   const list = level === "zone" ? nodesInZone(ui.selectedZone) : zones();
   if (!(list || []).length) {
-    toast(level === "zone" ? "这个区域里还没有地点" : "还没有区域");
+    if (!silent) toast(level === "zone" ? "这个区域里还没有地点" : "还没有区域");
     return;
   }
-  const boxW = 104; // .node 的宽度
-  const boxH = 56;
   const xs = list.map((item) => num(item.x, 0));
   const ys = list.map((item) => num(item.y, 0));
   const minX = Math.min(...xs);
   const minY = Math.min(...ys);
   const maxX = Math.max(...xs);
   const maxY = Math.max(...ys);
-  // 目标：内容中心落在"当前可见区域"的中心（要算上滚动位置）
-  const dx = Math.round(
-    canvas.scrollLeft + (canvas.clientWidth - (maxX - minX + boxW)) / 2 - minX,
+  const contentW = Math.max(1, maxX - minX + MAP_NODE_W);
+  const contentH = Math.max(1, maxY - minY + MAP_NODE_H);
+  const vw = canvas.clientWidth;
+  const vh = canvas.clientHeight;
+  const side = $("map-side");
+  const sideOpen = side && !side.classList.contains("collapsed");
+  const leftPad = 28;
+  const rightPad = sideOpen && vw > 980 ? 380 : 28;
+  const topPad = 78;
+  const bottomPad = 36;
+  const availW = Math.max(120, vw - leftPad - rightPad);
+  const availH = Math.max(120, vh - topPad - bottomPad);
+  const scale = Math.max(
+    MAP_MIN_SCALE,
+    Math.min(1.3, Math.min(availW / contentW, availH / contentH)),
   );
-  const dy = Math.round(
-    canvas.scrollTop + (canvas.clientHeight - (maxY - minY + boxH)) / 2 - minY,
-  );
-  if (dx === 0 && dy === 0) {
-    toast("已经在中间了");
-    return;
-  }
-  list.forEach((item) => {
-    item.x = Math.max(0, Math.round(num(item.x, 0) + dx));
-    item.y = Math.max(0, Math.round(num(item.y, 0) + dy));
-  });
-  markDirty();
-  renderMap();
-  renderNodeForm();
-  toast(level === "zone" ? "地点已经挪到中间" : "区域已经挪到中间");
+  ui.mapView = {
+    scale,
+    x: leftPad + (availW - contentW * scale) / 2 - minX * scale,
+    y: topPad + (availH - contentH * scale) / 2 - minY * scale,
+  };
+  ui.mapViewReady = true;
+  applyMapView();
+  if (!silent) toast(level === "zone" ? "地点已经放进视野" : "区域已经放进视野");
 }
 
-/** 只把画布滚到内容中心，不移动任何节点；生成完地图后用。 */
+/** 只调整视野，不移动任何节点；生成完地图后用。 */
 function centerMapView() {
+  fitMapToCanvas({ silent: true });
+}
+
+/** 滚轮缩放 + 拖拽空白处平移；只绑一次。 */
+function bindMapCanvas() {
   const canvas = $("canvas");
-  const content = $("canvas-nodes");
-  if (!canvas || !content) return;
-  const width = num(content.style.width, 0) || content.scrollWidth;
-  const height = num(content.style.height, 0) || content.scrollHeight;
-  canvas.scrollLeft = Math.max(0, Math.round((width - canvas.clientWidth) / 2));
-  canvas.scrollTop = Math.max(0, Math.round((height - canvas.clientHeight) / 2));
+  if (!canvas || canvas.dataset.mapBound === "1") return;
+  canvas.dataset.mapBound = "1";
+  canvas.addEventListener(
+    "wheel",
+    (event) => {
+      if (Math.abs(event.deltaY) >= Math.abs(event.deltaX)) {
+        event.preventDefault();
+        mapZoomBy(event.deltaY < 0 ? 1.12 : 1 / 1.12, event.clientX, event.clientY);
+      }
+    },
+    { passive: false },
+  );
+  canvas.addEventListener("mousedown", (event) => {
+    if (event.button !== 0 && event.button !== 1) return;
+    if (event.target.closest(".node") || event.target.closest(".portal-chip")) return;
+    if (event.target.closest(".edge-hit")) return;
+    event.preventDefault();
+    const view = ui.mapView || (ui.mapView = { scale: 1, x: 0, y: 0 });
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const originX = view.x;
+    const originY = view.y;
+    canvas.classList.add("panning");
+    const onMove = (moveEvent) => {
+      view.x = originX + (moveEvent.clientX - startX);
+      view.y = originY + (moveEvent.clientY - startY);
+      ui.mapViewReady = true;
+      applyMapView();
+    };
+    const onUp = () => {
+      canvas.classList.remove("panning");
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+  canvas.addEventListener("dblclick", (event) => {
+    if (event.target.closest(".node")) return;
+    mapZoomBy(1.4, event.clientX, event.clientY);
+  });
 }
 
 function bindSegmented(segId, panes) {
@@ -3512,7 +3595,10 @@ function showTab(name, button) {
   if (name === "contacts") loadContacts();
   if (name === "memories") loadMemories();
   if (name === "logs") loadLogs();
-  if (name === "map") loadOverview();
+  if (name === "map") {
+    renderMap();
+    loadOverview();
+  }
   if (name === "debug") loadTools();
   if (name === "presets") loadPresets();
   renderConfigScope();
@@ -3758,6 +3844,49 @@ function bindButtons() {
   $("portal-add").addEventListener("click", addPortal);
   $("map-session").addEventListener("change", renderMap);
   $("map-show-all").addEventListener("change", renderMap);
+  bindMapCanvas();
+  if ($("map-zoom-in")) {
+    $("map-zoom-in").addEventListener("click", () => mapZoomBy(1.2));
+  }
+  if ($("map-zoom-out")) {
+    $("map-zoom-out").addEventListener("click", () => mapZoomBy(1 / 1.2));
+  }
+  if ($("map-zoom-fit")) {
+    $("map-zoom-fit").addEventListener("click", () => fitMapToCanvas());
+  }
+  document.querySelectorAll("#tab-map [data-label-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      ui.mapLabelMode = button.dataset.labelMode || "smart";
+      try {
+        window.localStorage.setItem("mw-map-label-mode", ui.mapLabelMode);
+      } catch (error) {
+        /* 隐私模式下写不进缓存，本次仍然生效 */
+      }
+      renderMap();
+    });
+  });
+  const mapSide = $("map-side");
+  const setMapSide = (open) => {
+    if (!mapSide) return;
+    ui.mapSideOpen = open;
+    mapSide.classList.toggle("collapsed", !open);
+    if ($("map-side-toggle")) $("map-side-toggle").classList.toggle("on", open);
+  };
+  if ($("map-side-toggle")) {
+    $("map-side-toggle").addEventListener("click", () =>
+      setMapSide(mapSide ? mapSide.classList.contains("collapsed") : true),
+    );
+  }
+  if ($("map-side-close")) {
+    $("map-side-close").addEventListener("click", () => setMapSide(false));
+  }
+  setMapSide(window.innerWidth >= 1100);
+  window.addEventListener("resize", () => {
+    const mapTab = $("tab-map");
+    if (!mapTab || !mapTab.classList.contains("active")) return;
+    if (!ui.mapViewReady) fitMapToCanvas({ silent: true });
+    else applyMapView();
+  });
   $("action-add").addEventListener("click", addAction);
   if ($("action-generate-world")) {
     $("action-generate-world").addEventListener("click", generateWorldActions);
@@ -6656,6 +6785,203 @@ function describeAction(action) {
 /* 地图                                                                */
 /* ================================================================== */
 
+const MAP_NS = "http://www.w3.org/2000/svg";
+const MAP_NODE_W = 128;
+const MAP_NODE_H = 64;
+const MAP_MIN_SCALE = 0.25;
+const MAP_MAX_SCALE = 2.6;
+
+function mapCenter(item) {
+  return { x: num(item.x) + MAP_NODE_W / 2, y: num(item.y) + MAP_NODE_H / 2 };
+}
+
+const MAP_ICON_ALIASES = {
+  bed: "🛏",
+  bedroom: "🛏",
+  book: "📚",
+  books: "📚",
+  window: "🪟",
+  sofa: "🛋",
+  cup: "☕",
+  tea: "🍵",
+  pot: "🍲",
+  kitchen: "🍳",
+  bath: "🛁",
+  bathroom: "🛁",
+  tree: "🌳",
+  park: "🌳",
+  star: "✨",
+  sun: "☀️",
+  moon: "🌙",
+  tv: "📺",
+  pc: "💻",
+  computer: "💻",
+  music: "🎵",
+  flower: "🌸",
+  cat: "🐱",
+  sea: "🌊",
+};
+
+function displayIcon(value, fallback = "●") {
+  const text = String(value || "").trim();
+  if (!text) return fallback;
+  const alias = MAP_ICON_ALIASES[text.toLowerCase()];
+  if (alias) return alias;
+  return /[^\x00-\x7F]/.test(text) ? text : fallback;
+}
+
+function mixColors(left, right) {
+  const parse = (value) => {
+    const text = String(value || "").trim().replace("#", "");
+    if (!/^[0-9a-f]{6}$/i.test(text)) return null;
+    return [0, 2, 4].map((index) => parseInt(text.slice(index, index + 2), 16));
+  };
+  const a = parse(left);
+  const b = parse(right);
+  if (!a && !b) return "var(--muted)";
+  if (!a) return `rgb(${b.join(",")})`;
+  if (!b) return `rgb(${a.join(",")})`;
+  return `rgb(${a.map((value, index) => Math.round((value + b[index]) / 2)).join(",")})`;
+}
+
+function edgeAnchorPoint(x1, y1, x2, y2, curveX, curveY, curved, offset = 0) {
+  const baseX = curved ? 0.25 * x1 + 0.5 * curveX + 0.25 * x2 : (x1 + x2) / 2;
+  const baseY = curved ? 0.25 * y1 + 0.5 * curveY + 0.25 * y2 : (y1 + y2) / 2;
+  let angle = (Math.atan2(y2 - y1, x2 - x1) * 180) / Math.PI;
+  if (angle > 90) angle -= 180;
+  else if (angle < -90) angle += 180;
+  const rad = (angle * Math.PI) / 180;
+  return {
+    x: baseX + Math.sin(rad) * offset,
+    y: baseY - Math.cos(rad) * offset,
+    angle,
+  };
+}
+
+function rectsOverlap(left, right, pad = 0) {
+  return !(
+    left.x + left.w + pad < right.x
+    || right.x + right.w + pad < left.x
+    || left.y + left.h + pad < right.y
+    || right.y + right.h + pad < left.y
+  );
+}
+
+function textPixelWidth(text, size = 9.5) {
+  let width = 0;
+  for (const char of String(text)) {
+    width += /[\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef]/.test(char)
+      ? size
+      : size * 0.58;
+  }
+  return width;
+}
+
+function labelRect(point, leftText, rightText, above) {
+  const width = Math.max(textPixelWidth(leftText), textPixelWidth(rightText)) + 14;
+  const height = 27;
+  const rad = (point.angle * Math.PI) / 180;
+  const cos = Math.abs(Math.cos(rad));
+  const sin = Math.abs(Math.sin(rad));
+  const boxW = width * cos + height * sin;
+  const boxH = width * sin + height * cos;
+  const centerY = point.y + (above ? -11 : 11);
+  return {
+    x: point.x - boxW / 2,
+    y: centerY - boxH / 2,
+    w: boxW,
+    h: boxH,
+  };
+}
+
+function makeTickChip(point, text, key, from, to, pairVisible) {
+  const group = document.createElementNS(MAP_NS, "g");
+  group.setAttribute("class", "edge-tick-chip");
+  group.dataset.role = "tick";
+  group.dataset.edgeKey = key;
+  group.dataset.from = from;
+  group.dataset.to = to;
+  group.dataset.pairVisible = pairVisible ? "1" : "0";
+  const width = textPixelWidth(text, 9) + 12;
+  group.setAttribute(
+    "transform",
+    `translate(${point.x.toFixed(1)} ${point.y.toFixed(1)}) rotate(${point.angle.toFixed(1)})`,
+  );
+  const rect = document.createElementNS(MAP_NS, "rect");
+  rect.setAttribute("x", String(-width / 2));
+  rect.setAttribute("y", "-8");
+  rect.setAttribute("width", String(width));
+  rect.setAttribute("height", "16");
+  rect.setAttribute("rx", "6");
+  rect.setAttribute("class", "edge-tick-bg");
+  group.appendChild(rect);
+  const label = document.createElementNS(MAP_NS, "text");
+  label.setAttribute("class", "edge-tick");
+  label.setAttribute("text-anchor", "middle");
+  label.setAttribute("dominant-baseline", "middle");
+  label.textContent = text;
+  group.appendChild(label);
+  return group;
+}
+
+function mapNeighbors(id) {
+  const result = new Set();
+  const list = ui.mapLevel === "world" ? zoneEdges() : edges();
+  list.forEach((edge) => {
+    const from = ui.mapLevel === "world" ? edge.from_zone : edge.from;
+    const to = ui.mapLevel === "world" ? edge.to_zone : edge.to;
+    if (from === id) result.add(to);
+    if (to === id) result.add(from);
+  });
+  return result;
+}
+
+function applyMapFocus() {
+  const hoverNode = ui.mapHoverNode;
+  const hoverEdge = ui.mapHoverEdge;
+  const hoverFrom = ui.mapHoverFrom;
+  const hoverTo = ui.mapHoverTo;
+  const focusedIds = new Set();
+  if (hoverNode) {
+    focusedIds.add(hoverNode);
+    mapNeighbors(hoverNode).forEach((id) => focusedIds.add(id));
+  }
+  if (hoverEdge) {
+    if (hoverFrom) focusedIds.add(hoverFrom);
+    if (hoverTo) focusedIds.add(hoverTo);
+  }
+  const focused = Boolean(hoverNode || hoverEdge);
+  document.querySelectorAll("#canvas-nodes .node").forEach((element) => {
+    const id = element.dataset.id;
+    const related = !focused || focusedIds.has(id);
+    element.classList.toggle("dimmed", focused && !related);
+    element.classList.toggle("hot", Boolean(hoverNode) && id === hoverNode);
+  });
+  document.querySelectorAll("#canvas-edges .edge-path").forEach((path) => {
+    const related = !focused
+      || (hoverEdge
+        ? path.dataset.key === hoverEdge
+        : focusedIds.has(path.dataset.from) && focusedIds.has(path.dataset.to));
+    const hot = hoverEdge ? path.dataset.key === hoverEdge : (Boolean(hoverNode) && related);
+    path.classList.toggle("dimmed", focused && !hot);
+    path.classList.toggle("hot", hot);
+  });
+  document.querySelectorAll("#canvas-labels [data-edge-key]").forEach((element) => {
+    const key = element.dataset.edgeKey;
+    const related = !focused
+      || (hoverEdge
+        ? key === hoverEdge
+        : focusedIds.has(element.dataset.from) && focusedIds.has(element.dataset.to));
+    const pairVisible = element.dataset.pairVisible === "1";
+    const wantPair = hoverEdge
+      ? key === hoverEdge
+      : (Boolean(hoverNode) && related ? true : pairVisible);
+    const show = element.dataset.role === "pair" ? wantPair : !wantPair;
+    element.classList.toggle("hidden-label", !show);
+    element.classList.toggle("dimmed", focused && !related);
+  });
+}
+
 function renderMap() {
   updateMapToolbar();
   renderWeatherBanner();
@@ -6762,29 +7088,23 @@ async function refreshWeatherNow() {
  * 朝左的线会把文字翻正，避免倒着读；curved 时按贝塞尔中点找位置。
  */
 function placeEdgeLabel(label, x1, y1, x2, y2, curveX, curveY, curved, offset = 9) {
-  const baseX = curved ? 0.25 * x1 + 0.5 * curveX + 0.25 * x2 : (x1 + x2) / 2;
-  const baseY = curved ? 0.25 * y1 + 0.5 * curveY + 0.25 * y2 : (y1 + y2) / 2;
-  let angle = (Math.atan2(y2 - y1, x2 - x1) * 180) / Math.PI;
-  if (angle > 90) angle -= 180;
-  else if (angle < -90) angle += 180;
-  const rad = (angle * Math.PI) / 180;
-  const x = baseX + Math.sin(rad) * offset;
-  const y = baseY - Math.cos(rad) * offset;
-  label.setAttribute("x", x);
-  label.setAttribute("y", y);
+  const point = edgeAnchorPoint(x1, y1, x2, y2, curveX, curveY, curved, offset);
+  label.setAttribute("x", point.x);
+  label.setAttribute("y", point.y);
   label.setAttribute("text-anchor", "middle");
   label.setAttribute("dominant-baseline", "middle");
   label.setAttribute(
     "transform",
-    `rotate(${angle.toFixed(1)} ${x.toFixed(1)} ${y.toFixed(1)})`,
+    `rotate(${point.angle.toFixed(1)} ${point.x.toFixed(1)} ${point.y.toFixed(1)})`,
   );
-  return { x, y, angle };
+  return point;
 }
 
 function renderWorldMap() {
   const container = $("canvas-nodes");
   const svg = $("canvas-edges");
   const labels = $("canvas-labels");
+  const world = $("canvas-world");
   container.innerHTML = "";
   svg.innerHTML = "";
   if (labels) labels.innerHTML = "";
@@ -6804,10 +7124,14 @@ function renderWorldMap() {
   const maxY = zones().reduce((acc, zone) => Math.max(acc, num(zone.y)), 0);
   // 尺寸给"里面的内容层"，不给画布本身：
   // 给画布设 min-width 会让它撑破栅格列、盖住右侧属性面板（节点拉远时必现）。
-  const mapWidth = Math.max(720, maxX + 200);
-  const mapHeight = Math.max(380, maxY + 120);
+  const mapWidth = Math.max(760, maxX + MAP_NODE_W + 160);
+  const mapHeight = Math.max(520, maxY + MAP_NODE_H + 140);
   container.style.width = `${mapWidth}px`;
   container.style.height = `${mapHeight}px`;
+  if (world) {
+    world.style.width = `${mapWidth}px`;
+    world.style.height = `${mapHeight}px`;
+  }
   svg.setAttribute("width", String(mapWidth));
   svg.setAttribute("height", String(mapHeight));
   if (labels) {
@@ -6825,19 +7149,29 @@ function renderWorldMap() {
   });
 
   const seen = {};
+  const labelLayer = labels || svg;
+  const labelMode = ui.mapLabelMode || "smart";
+  const occupied = [];
+  const tickRects = [];
+  const nodeRects = zones().map((zone) => ({
+    x: num(zone.x),
+    y: num(zone.y),
+    w: MAP_NODE_W,
+    h: MAP_NODE_H,
+  }));
   zoneEdges().forEach((edge) => {
     const from = byId[edge.from_zone];
     const to = byId[edge.to_zone];
     if (!from || !to) return;
-    // 连线跟着主题的灰阶走，别写死颜色
-    const linkColor = getComputedStyle(document.body).getPropertyValue("--muted").trim() || "#7f8ea8";
     const key = [edge.from_zone, edge.to_zone].sort().join("|");
     const index = seen[key] || 0;
     seen[key] = index + 1;
-    const x1 = num(from.x) + 48;
-    const y1 = num(from.y) + 20;
-    const x2 = num(to.x) + 48;
-    const y2 = num(to.y) + 20;
+    const fromPoint = mapCenter(from);
+    const toPoint = mapCenter(to);
+    const x1 = fromPoint.x;
+    const y1 = fromPoint.y;
+    const x2 = toPoint.x;
+    const y2 = toPoint.y;
     const dx = x2 - x1;
     const dy = y2 - y1;
     const length = Math.max(1, Math.hypot(dx, dy));
@@ -6846,50 +7180,114 @@ function renderWorldMap() {
     // 同一对区域的第 2、3 条线弯出去，避免完全重叠；单线保持直线。
     const bend = index === 0
       ? 0
-      : (index % 2 === 1 ? 1 : -1) * (18 + 12 * Math.floor((index - 1) / 2));
+      : (index % 2 === 1 ? 1 : -1) * (20 + 14 * Math.floor((index - 1) / 2));
     const cx = (x1 + x2) / 2 + nx * bend;
     const cy = (y1 + y2) / 2 + ny * bend;
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute(
-      "d",
-      index === 0
-        ? `M ${x1} ${y1} L ${x2} ${y2}`
-        : `M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`,
-    );
-    path.setAttribute("fill", "none");
-    path.setAttribute("stroke", linkColor);
-    path.setAttribute("stroke-width", "2");
-    if (!edge.bidirectional) path.setAttribute("stroke-dasharray", "6 4");
+    const d = index === 0
+      ? `M ${x1} ${y1} L ${x2} ${y2}`
+      : `M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`;
+    const edgeKey = `${key}#${index}`;
+    const above = index % 2 === 0;
+
+    // 透明加粗命中线：线只有 2px，鼠标很难点中，单独给一条 14px 的命中路径
+    const hit = document.createElementNS(MAP_NS, "path");
+    hit.setAttribute("d", d);
+    hit.setAttribute("class", "edge-hit");
+    hit.dataset.from = edge.from_zone;
+    hit.dataset.to = edge.to_zone;
+    hit.dataset.key = edgeKey;
+    svg.appendChild(hit);
+
+    const path = document.createElementNS(MAP_NS, "path");
+    path.setAttribute("d", d);
+    path.setAttribute("class", `edge-path${edge.bidirectional === false ? " oneway" : ""}`);
+    path.setAttribute("stroke", mixColors(from.color, to.color));
+    path.dataset.from = edge.from_zone;
+    path.dataset.to = edge.to_zone;
+    path.dataset.key = edgeKey;
     svg.appendChild(path);
-    const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+    const title = document.createElementNS(MAP_NS, "title");
     title.textContent =
       `${nodeLabel(edge.from_node)} ↔ ${nodeLabel(edge.to_node)}（${num(edge.ticks, 1)} tick）`;
     path.appendChild(title);
-    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    label.setAttribute("class", "edge-ticks");
-    const anchor = placeEdgeLabel(label, x1, y1, x2, y2, cx, cy, index !== 0, 0);
-    // 点对点标签分两行：来源地点在线的上方、目标地点在下方；
-    // 两端各用自己的地点颜色，路线一多也能一眼看出这条线连着谁。
+
+    const fromText = nodeLabel(edge.from_node);
+    const toText = nodeLabel(edge.to_node);
+    const point = edgeAnchorPoint(x1, y1, x2, y2, cx, cy, index !== 0, 0);
+    const rect = labelRect(point, fromText, toText, above);
+    const pairFits = labelMode === "all"
+      || (labelMode !== "ticks"
+        && !nodeRects.some((box) => rectsOverlap(rect, box, 4))
+        && !occupied.some((box) => rectsOverlap(rect, box, 8)));
+    if (pairFits) occupied.push(rect);
+
+    const pair = document.createElementNS(MAP_NS, "text");
+    pair.setAttribute("class", "edge-ticks edge-pair");
+    pair.dataset.role = "pair";
+    pair.dataset.edgeKey = edgeKey;
+    pair.dataset.from = edge.from_zone;
+    pair.dataset.to = edge.to_zone;
+    pair.dataset.pairVisible = pairFits ? "1" : "0";
+    placeEdgeLabel(pair, x1, y1, x2, y2, cx, cy, index !== 0, 0);
     const fromNode = nodeById[edge.from_node];
     const toNode = nodeById[edge.to_node];
     const fromColor = (fromNode && fromNode.color) || from.color || "";
     const toColor = (toNode && toNode.color) || to.color || "";
-    // 一条线的两行都放在线的同一侧：第 1、3… 条放上面，第 2、4… 条放下面。
-    // 同一对区域有多条路线时，这样上下错开，不会挤在中间互相压住。
-    const above = index % 2 === 0;
-    const first = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
-    first.setAttribute("x", anchor.x);
+    const first = document.createElementNS(MAP_NS, "tspan");
+    first.setAttribute("x", point.x);
     first.setAttribute("dy", above ? "-16" : "5");
     if (fromColor) first.setAttribute("fill", fromColor);
-    first.textContent = nodeLabel(edge.from_node);
-    const second = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
-    second.setAttribute("x", anchor.x);
+    first.textContent = fromText;
+    const second = document.createElementNS(MAP_NS, "tspan");
+    second.setAttribute("x", point.x);
     second.setAttribute("dy", "11");
     if (toColor) second.setAttribute("fill", toColor);
-    second.textContent = nodeLabel(edge.to_node);
-    label.appendChild(first);
-    label.appendChild(second);
-    (labels || svg).appendChild(label);
+    second.textContent = toText;
+    pair.appendChild(first);
+    pair.appendChild(second);
+    labelLayer.appendChild(pair);
+
+    const tickPoint = edgeAnchorPoint(x1, y1, x2, y2, cx, cy, index !== 0, above ? 10 : -10);
+    const tickText = `${num(edge.ticks, 1)}t`;
+    const tickW = textPixelWidth(tickText, 9) + 12;
+    const tickRect = {
+      x: tickPoint.x - tickW / 2,
+      y: tickPoint.y - 8,
+      w: tickW,
+      h: 16,
+    };
+    const tickFits = labelMode === "ticks"
+      || (!pairFits
+        && !occupied.some((box) => rectsOverlap(tickRect, box, 4))
+        && !tickRects.some((box) => rectsOverlap(tickRect, box, 4)));
+    if (tickFits) tickRects.push(tickRect);
+    const tick = makeTickChip(
+      tickPoint,
+      tickText,
+      edgeKey,
+      edge.from_zone,
+      edge.to_zone,
+      pairFits,
+    );
+    if (!tickFits) tick.classList.add("hidden-label");
+    labelLayer.appendChild(tick);
+
+    const hoverOn = () => {
+      ui.mapHoverEdge = edgeKey;
+      ui.mapHoverFrom = edge.from_zone;
+      ui.mapHoverTo = edge.to_zone;
+      applyMapFocus();
+    };
+    const hoverOff = () => {
+      if (ui.mapHoverEdge === edgeKey) {
+        ui.mapHoverEdge = "";
+        ui.mapHoverFrom = "";
+        ui.mapHoverTo = "";
+      }
+      applyMapFocus();
+    };
+    hit.addEventListener("mouseenter", hoverOn);
+    hit.addEventListener("mouseleave", hoverOff);
   });
 
   zones().forEach((zone) => {
@@ -6920,11 +7318,15 @@ function renderWorldMap() {
     }
     box.style.left = `${num(zone.x)}px`;
     box.style.top = `${num(zone.y)}px`;
-    box.style.borderColor = zone.color || "";
+    box.style.setProperty("--node-color", zone.color || "#7FB2E5");
     box.dataset.id = zone.id;
     box.dataset.kind = "zone";
-    box.appendChild(el("div", "node-name", zone.name || zone.id));
-    box.appendChild(el("div", "node-id", `${zone.id}｜${inside.length} 个地点`));
+    const head = el("div", "node-head");
+    head.appendChild(el("span", "node-icon", displayIcon(zone.icon)));
+    head.appendChild(el("div", "node-name", zone.name || zone.id));
+    box.appendChild(head);
+    box.appendChild(el("div", "node-id", zone.id));
+    box.appendChild(el("div", "node-count", `${inside.length} 个地点`));
     box.addEventListener("mousedown", (event) => startDrag(event, zone));
     // 单击只切选中态（重建 DOM 会让双击永远打不到同一个元素）
     box.addEventListener("click", () => selectZone(zone.id));
@@ -6932,8 +7334,20 @@ function renderWorldMap() {
       event.preventDefault();
       enterZone(zone.id);
     });
+    box.addEventListener("mouseenter", () => {
+      ui.mapHoverNode = zone.id;
+      applyMapFocus();
+    });
+    box.addEventListener("mouseleave", () => {
+      if (ui.mapHoverNode === zone.id) ui.mapHoverNode = "";
+      applyMapFocus();
+    });
     container.appendChild(box);
   });
+
+  if (!ui.mapViewReady) fitMapToCanvas({ silent: true });
+  else applyMapView();
+  applyMapFocus();
 }
 
 /** 选中一个区域：只更新高亮和右侧表单，不重画地图。 */
@@ -6959,6 +7373,7 @@ function renderZoneMap() {
   const container = $("canvas-nodes");
   const svg = $("canvas-edges");
   const labels = $("canvas-labels");
+  const world = $("canvas-world");
   container.innerHTML = "";
   svg.innerHTML = "";
   if (labels) labels.innerHTML = "";
@@ -6977,10 +7392,14 @@ function renderZoneMap() {
   const canvas = $("canvas");
   const maxX = inside.reduce((acc, node) => Math.max(acc, num(node.x)), 0);
   const maxY = inside.reduce((acc, node) => Math.max(acc, num(node.y)), 0);
-  const mapWidth = Math.max(720, maxX + 240);
-  const mapHeight = Math.max(380, maxY + 160);
+  const mapWidth = Math.max(760, maxX + MAP_NODE_W + 180);
+  const mapHeight = Math.max(520, maxY + MAP_NODE_H + 160);
   container.style.width = `${mapWidth}px`;
   container.style.height = `${mapHeight}px`;
+  if (world) {
+    world.style.width = `${mapWidth}px`;
+    world.style.height = `${mapHeight}px`;
+  }
   svg.setAttribute("width", String(mapWidth));
   svg.setAttribute("height", String(mapHeight));
   if (labels) {
@@ -6993,29 +7412,58 @@ function renderZoneMap() {
     byId[node.id] = node;
   });
 
-  edges().forEach((edge) => {
+  const labelLayer = labels || svg;
+  edges().forEach((edge, index) => {
     const from = byId[edge.from];
     const to = byId[edge.to];
     if (!from || !to) return;
-    const linkColor = getComputedStyle(document.body).getPropertyValue("--muted").trim() || "#9aa7bd";
-    const x1 = num(from.x) + 48;
-    const y1 = num(from.y) + 20;
-    const x2 = num(to.x) + 48;
-    const y2 = num(to.y) + 20;
-    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    line.setAttribute("x1", x1);
-    line.setAttribute("y1", y1);
-    line.setAttribute("x2", x2);
-    line.setAttribute("y2", y2);
-    line.setAttribute("stroke", linkColor);
-    line.setAttribute("stroke-width", "2");
-    if (!edge.bidirectional) line.setAttribute("stroke-dasharray", "6 4");
-    svg.appendChild(line);
-    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    label.setAttribute("class", "edge-ticks");
-    placeEdgeLabel(label, x1, y1, x2, y2, 0, 0, false);
-    label.textContent = `${num(edge.ticks, 1)} tick`;
-    (labels || svg).appendChild(label);
+    const fromPoint = mapCenter(from);
+    const toPoint = mapCenter(to);
+    const x1 = fromPoint.x;
+    const y1 = fromPoint.y;
+    const x2 = toPoint.x;
+    const y2 = toPoint.y;
+    const d = `M ${x1} ${y1} L ${x2} ${y2}`;
+    const edgeKey = `${edge.id || `${edge.from}-${edge.to}`}#${index}`;
+    const hit = document.createElementNS(MAP_NS, "path");
+    hit.setAttribute("d", d);
+    hit.setAttribute("class", "edge-hit");
+    hit.dataset.from = edge.from;
+    hit.dataset.to = edge.to;
+    hit.dataset.key = edgeKey;
+    svg.appendChild(hit);
+    const path = document.createElementNS(MAP_NS, "path");
+    path.setAttribute("d", d);
+    path.setAttribute("class", `edge-path${edge.bidirectional === false ? " oneway" : ""}`);
+    path.setAttribute("stroke", mixColors(from.color, to.color));
+    path.dataset.from = edge.from;
+    path.dataset.to = edge.to;
+    path.dataset.key = edgeKey;
+    svg.appendChild(path);
+    const title = document.createElementNS(MAP_NS, "title");
+    title.textContent =
+      `${nodeLabel(edge.from)} ↔ ${nodeLabel(edge.to)}（${num(edge.ticks, 1)} tick）`;
+    path.appendChild(title);
+    const point = edgeAnchorPoint(x1, y1, x2, y2, 0, 0, false, 10);
+    labelLayer.appendChild(
+      makeTickChip(point, `${num(edge.ticks, 1)}t`, edgeKey, edge.from, edge.to, false),
+    );
+    const hoverOn = () => {
+      ui.mapHoverEdge = edgeKey;
+      ui.mapHoverFrom = edge.from;
+      ui.mapHoverTo = edge.to;
+      applyMapFocus();
+    };
+    const hoverOff = () => {
+      if (ui.mapHoverEdge === edgeKey) {
+        ui.mapHoverEdge = "";
+        ui.mapHoverFrom = "";
+        ui.mapHoverTo = "";
+      }
+      applyMapFocus();
+    };
+    hit.addEventListener("mouseenter", hoverOn);
+    hit.addEventListener("mouseleave", hoverOff);
   });
 
   inside.forEach((node) => {
@@ -7044,13 +7492,24 @@ function renderZoneMap() {
     }
     box.style.left = `${num(node.x)}px`;
     box.style.top = `${num(node.y)}px`;
-    box.style.borderColor = node.color || "";
+    box.style.setProperty("--node-color", node.color || "#8B7DD8");
     box.dataset.id = node.id;
     box.dataset.kind = "node";
-    box.appendChild(el("div", "node-name", node.name || node.id));
+    const head = el("div", "node-head");
+    head.appendChild(el("span", "node-icon", displayIcon(node.icon)));
+    head.appendChild(el("div", "node-name", node.name || node.id));
+    box.appendChild(head);
     box.appendChild(el("div", "node-id", node.id));
     box.addEventListener("mousedown", (event) => startDrag(event, node));
     box.addEventListener("click", () => selectNode(node.id));
+    box.addEventListener("mouseenter", () => {
+      ui.mapHoverNode = node.id;
+      applyMapFocus();
+    });
+    box.addEventListener("mouseleave", () => {
+      if (ui.mapHoverNode === node.id) ui.mapHoverNode = "";
+      applyMapFocus();
+    });
     container.appendChild(box);
   });
 
@@ -7079,18 +7538,28 @@ function renderZoneMap() {
     });
     container.appendChild(chip);
   });
+
+  if (!ui.mapViewReady) fitMapToCanvas({ silent: true });
+  else applyMapView();
+  applyMapFocus();
 }
 
 function enterZone(zoneId) {
   ui.mapLevel = "zone";
   ui.selectedZone = zoneId;
   ui.selectedNode = nodesInZone(zoneId)[0] ? nodesInZone(zoneId)[0].id : "";
+  ui.mapViewReady = false;
+  ui.mapHoverNode = "";
+  ui.mapHoverEdge = "";
   renderMap();
   renderNodeForm();
 }
 
 function backToWorldMap() {
   ui.mapLevel = "world";
+  ui.mapViewReady = false;
+  ui.mapHoverNode = "";
+  ui.mapHoverEdge = "";
   renderMap();
   renderNodeForm();
 }
@@ -7107,26 +7576,26 @@ function updateMapToolbar() {
   $("map-crumbs-note").textContent = world
     ? "世界地图上是各个区域；点区域进去看它里面的地点。"
     : "区域地图：只显示这个区域里的地点，左上角可以返回世界地图。";
+  document.querySelectorAll("#tab-map [data-label-mode]").forEach((button) => {
+    button.classList.toggle("on", button.dataset.labelMode === (ui.mapLabelMode || "smart"));
+  });
   $("node-title").textContent = world ? "区域属性" : "地点属性";
 }
 
 function startDrag(event, node) {
   event.preventDefault();
+  event.stopPropagation();
   const startX = event.clientX;
   const startY = event.clientY;
   const originX = num(node.x);
   const originY = num(node.y);
-  const canvas = $("canvas");
-  // 坐标是"内容坐标系"，指针位移要加上画布自身的滚动变化。
-  // 以前每次直接加当前 scrollLeft，滚动一存在就会把节点越推越远。
-  const startScrollLeft = canvas.scrollLeft;
-  const startScrollTop = canvas.scrollTop;
+  const scale = (ui.mapView && ui.mapView.scale) || 1;
+  // 画布是缩放过的：屏幕上的位移要除以缩放，才能得到内容坐标系里的位移。
+  ui.mapHoverNode = node.id;
 
   function onMove(moveEvent) {
-    const dx =
-      moveEvent.clientX - startX + (canvas.scrollLeft - startScrollLeft);
-    const dy =
-      moveEvent.clientY - startY + (canvas.scrollTop - startScrollTop);
+    const dx = (moveEvent.clientX - startX) / scale;
+    const dy = (moveEvent.clientY - startY) / scale;
     node.x = Math.max(0, Math.round(originX + dx));
     node.y = Math.max(0, Math.round(originY + dy));
     renderMap();
@@ -7137,6 +7606,8 @@ function startDrag(event, node) {
     document.removeEventListener("mousemove", onMove);
     document.removeEventListener("mouseup", onUp);
     document.body.classList.remove("dragging-map-node");
+    if (ui.mapHoverNode === node.id) ui.mapHoverNode = "";
+    applyMapFocus();
   }
 
   document.body.classList.add("dragging-map-node");
