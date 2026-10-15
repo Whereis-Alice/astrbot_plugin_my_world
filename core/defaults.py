@@ -168,6 +168,8 @@ DEFAULT_WORLD: dict[str, Any] = {
     "memory_scope_fallback": True,
     "memory_scope_warn_on_switch": True,
     "memory_conflict_policy": "newest",
+    # v2 遗留键：只在迁移期重新打开 legacy_tool_actions 时，旧版工具动作
+    # 与旧版自主规划才会用到；v3 原生 Agent 的工具清单不受这两个键影响。
     "global_allowed_tools": [],
     "tool_filter_enabled": True,
     # 睡觉时怎么回应、怎么把她叫起来

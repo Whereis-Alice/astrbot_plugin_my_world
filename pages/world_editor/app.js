@@ -14503,49 +14503,6 @@ function renderSettings() {
   );
   form.appendChild(memory);
 
-  /* --- 工具 --- */
-  const toolsSection = settingsSection(
-    "工具",
-    "工具挂在动作上；这里配置哪些工具是「不分地点都能用」的，以及工具结果怎么处理。",
-    "工具只挂在动作上：动作里选好工具就够用了，这里只配置「不分地点都能用」的通用工具。",
-  );
-  toolsSection._fields.appendChild(
-    pickerField(
-      "通用工具（任何地点都能用）",
-      world.global_allowed_tools || [],
-      toolItems(),
-      (chosen) => {
-        world.global_allowed_tools = chosen;
-        renderSettings();
-      },
-      {
-        hint: "这里勾选的工具直接列进提示词，任何地点都能调用。只在一处用的工具请绑到该地点的动作上。",
-        empty: "（没有通用工具）",
-      },
-    ),
-  );
-  toolsSection._fields.appendChild(
-    checkboxField(
-      "按地点裁剪 AstrBot 工具集",
-      world.tool_filter_enabled !== false,
-      (value) => (world.tool_filter_enabled = value),
-      {
-        hint: "主人格可用工具 = 这里的通用工具 + 当前地点动作绑定的工具，避免在卧室里上网搜索。",
-      },
-    ),
-  );
-  toolsSection._fields.appendChild(
-    checkboxField(
-      "工具结果交回大模型说一句",
-      world.tool_result_reply !== false,
-      (value) => (world.tool_result_reply = value),
-      {
-        hint: "工具调用完成后把结果交回主模型，由她用自己的话说出来。关闭则结果只进日志、结束后不额外说话。",
-      },
-    ),
-  );
-  form.appendChild(toolsSection);
-
   /* --- 动作与地点 --- */
   const placeSection = settingsSection(
     "动作与地点",

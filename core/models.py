@@ -2176,7 +2176,11 @@ class WorldConfig(Permissive):
     """她是谁：插件自己的一份人设（跟着预设走，全会话共用一份）。"""
 
     tool_result_reply: bool = True
-    """工具型动作拿到结果后，是否交回主模型说一句（关掉就只记进日志）。"""
+    """[v2 遗留] 旧版工具 / 指令动作拿到结果后，是否交回主模型说一句。
+
+    v3 走原生 Agent：工具结果本来就由宿主交回主模型续写，本键只在迁移期打开
+    ``legacy_tool_actions`` 后还有意义；编辑器不再展示这个开关。
+    """
 
     remote_action_travel: bool = True
     """允许她「想去别处做某事」：她自己没写移动时，插件替她走过去再执行。"""
@@ -2252,7 +2256,18 @@ class WorldConfig(Permissive):
     memory_scope_warn_on_switch: bool = True
     memory_conflict_policy: Literal["newest", "highest_weight", "skip_conflict"] = "newest"
     global_allowed_tools: list[str] = Field(default_factory=list)
+    """[v2 遗留] 旧版工具动作的「通用工具」清单。
+
+    只在打开 ``legacy_tool_actions``、旧版动作继续执行时参与旧版规划；
+    v3 原生 Agent 能调用哪些工具由 AstrBot 自己决定，这个列表不会裁剪也不会扩展它。
+    """
+
     tool_filter_enabled: bool = True
+    """[v2 遗留] 旧版接管是否按地点裁剪 AstrBot 工具集。
+
+    v3 注入模式不碰宿主请求里的工具清单，后端也不再读取此键；保留只为兼容老配置。
+    """
+
     legacy_tool_actions: bool = False
     """旧版「工具型 / 指令型动作」开关。
 

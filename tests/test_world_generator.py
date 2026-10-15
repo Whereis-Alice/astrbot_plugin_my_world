@@ -339,6 +339,23 @@ class GeneratorPromptTests(unittest.TestCase):
         self.assertIn("小明", prompt)
         self.assertIn('"connections"', system)
 
+    def test_autonomous_scene_hides_legacy_tools_until_migration_is_enabled(self):
+        world, _warnings = parse_world(default_world())
+        scene = PromptBuilder(world).scene_layer(
+            world.node_map()["study"], {"web_search": "搜索网页"}
+        )
+        self.assertNotIn("通用工具", scene)
+        self.assertNotIn("工具型动作", scene)
+
+        legacy = default_world()
+        legacy["legacy_tool_actions"] = True
+        legacy["global_allowed_tools"] = ["web_search"]
+        legacy_world, _warnings = parse_world(legacy)
+        legacy_scene = PromptBuilder(legacy_world).scene_layer(
+            legacy_world.node_map()["study"], {"web_search": "搜索网页"}
+        )
+        self.assertIn("通用工具", legacy_scene)
+
 
 class EngineGeneratorTests(unittest.IsolatedAsyncioTestCase):
     """引擎层的端到端：假的内容生成模型 → 草稿解析 → 自动摆位 / 校验。"""

@@ -685,7 +685,20 @@ class PromptBuilder:
         type_line = "、".join(usable) if usable else "say"
         if "walk_to" not in usable:
             type_line += "、walk_to"
-        tool_lines = self.global_tool_lines(available_tools)
+        # v3 原生 Agent 自己管工具清单：只有迁移期重新打开旧版工具动作时，
+        # 才把「通用工具」这一段写进自主规划提示词；默认路径一个字都不提。
+        tool_block = ""
+        if bool(getattr(self.world, "legacy_tool_actions", False)):
+            tool_actions = [
+                action
+                for action in actions
+                if str(getattr(action, "llm_level", "")) in ("tool", "command")
+            ]
+            if tool_actions or self.world.global_allowed_tools:
+                tool_block = (
+                    "（工具型动作只要说明想做什么，具体参数由系统转交）\n\n"
+                    f"{self.global_tool_lines(available_tools)}\n\n"
+                )
         zone = self.world.zone_map().get(self.world.zone_of(node.id))
         where = f"{zone.name} · {node.name or node.id}" if zone else (node.name or node.id)
         zone_note = f"\n{_one_line(zone.note, 40)}" if zone is not None and zone.note else ""
@@ -713,8 +726,7 @@ class PromptBuilder:
             "# 这个地方能做的事（按地点变）\n"
             f"{exclusive_line}"
             f"{local_lines or '（这儿没什么特别的，发呆就行）'}\n"
-            "（工具型动作只要说明想做什么，具体参数由系统转交）\n\n"
-            f"{tool_lines}\n\n"
+            f"{tool_block}"
             f"{search_hint}"
             "想做只有别处能做的事（比如在书房上网）：**先写一步 walk_to，紧接着把要做的那个动作也写进\n"
             "同一串 actions**，系统会带你走过去再执行；只写移动的话，到了那儿还得再问你一次。\n\n"
