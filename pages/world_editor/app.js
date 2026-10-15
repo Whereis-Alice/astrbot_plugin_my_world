@@ -3452,6 +3452,17 @@ function fitMapToCanvas() {
   toast(level === "zone" ? "地点已经挪到中间" : "区域已经挪到中间");
 }
 
+/** 只把画布滚到内容中心，不移动任何节点；生成完地图后用。 */
+function centerMapView() {
+  const canvas = $("canvas");
+  const content = $("canvas-nodes");
+  if (!canvas || !content) return;
+  const width = num(content.style.width, 0) || content.scrollWidth;
+  const height = num(content.style.height, 0) || content.scrollHeight;
+  canvas.scrollLeft = Math.max(0, Math.round((width - canvas.clientWidth) / 2));
+  canvas.scrollTop = Math.max(0, Math.round((height - canvas.clientHeight) / 2));
+}
+
 function bindSegmented(segId, panes) {
   const seg = $(segId);
   if (!seg) return;
@@ -6768,27 +6779,48 @@ function renderWorldMap() {
     // 连线跟着主题的灰阶走，别写死颜色
     const linkColor = getComputedStyle(document.body).getPropertyValue("--muted").trim() || "#7f8ea8";
     const key = [edge.from_zone, edge.to_zone].sort().join("|");
-    seen[key] = (seen[key] || 0) + 1;
-    const offset = (seen[key] - 1) * 12;
-    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    line.setAttribute("x1", num(from.x) + 48);
-    line.setAttribute("y1", num(from.y) + 20);
-    line.setAttribute("x2", num(to.x) + 48);
-    line.setAttribute("y2", num(to.y) + 20);
-    line.setAttribute("stroke", linkColor);
-    line.setAttribute("stroke-width", "2");
-    if (!edge.bidirectional) line.setAttribute("stroke-dasharray", "6 4");
-    svg.appendChild(line);
+    const index = seen[key] || 0;
+    seen[key] = index + 1;
+    const x1 = num(from.x) + 48;
+    const y1 = num(from.y) + 20;
+    const x2 = num(to.x) + 48;
+    const y2 = num(to.y) + 20;
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const length = Math.max(1, Math.hypot(dx, dy));
+    const nx = -dy / length;
+    const ny = dx / length;
+    // 同一对区域的第 2、3 条线弯出去，避免完全重叠；单线保持直线。
+    const bend = index === 0
+      ? 0
+      : (index % 2 === 1 ? 1 : -1) * (18 + 12 * Math.floor((index - 1) / 2));
+    const cx = (x1 + x2) / 2 + nx * bend;
+    const cy = (y1 + y2) / 2 + ny * bend;
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute(
+      "d",
+      index === 0
+        ? `M ${x1} ${y1} L ${x2} ${y2}`
+        : `M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`,
+    );
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", linkColor);
+    path.setAttribute("stroke-width", "2");
+    if (!edge.bidirectional) path.setAttribute("stroke-dasharray", "6 4");
+    svg.appendChild(path);
     const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
     title.textContent =
       `${nodeLabel(edge.from_node)} ↔ ${nodeLabel(edge.to_node)}（${num(edge.ticks, 1)} tick）`;
-    line.appendChild(title);
+    path.appendChild(title);
+    const lx = index === 0 ? (x1 + x2) / 2 : 0.25 * x1 + 0.5 * cx + 0.25 * x2;
+    const ly = index === 0 ? (y1 + y2) / 2 : 0.25 * y1 + 0.5 * cy + 0.25 * y2;
     const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    label.setAttribute("x", (num(from.x) + num(to.x)) / 2 + 48 + offset);
-    label.setAttribute("y", (num(from.y) + num(to.y)) / 2 + 16 + offset);
+    label.setAttribute("x", lx);
+    label.setAttribute("y", ly - 4);
     label.setAttribute("text-anchor", "middle");
     label.setAttribute("class", "edge-ticks");
-    label.textContent = `${nodeLabel(edge.from_node)} ↔ ${nodeLabel(edge.to_node)}`;
+    // 世界地图上只标耗时；完整的两端地点放在线的 <title> 里，避免长标签互相压住。
+    label.textContent = `${num(edge.ticks, 1)} tick`;
     svg.appendChild(label);
   });
 
@@ -7429,10 +7461,12 @@ async function commitGeneratedActions(drafts) {
  * 先问「生成几个」，再拿去调生成接口。
  * 生成会读她的人设与已有世界，结果永远先当草稿，用户改完确认才落库。
  */
-function askGenerateCount({ title, hint, defaultValue, min = 1, max, onRun }) {
+function askGenerateCount({ title, hint, defaultValue, min = 1, max, second, onRun }) {
   let value = String(defaultValue);
+  let secondValue = second ? String(second.defaultValue) : "";
   let status;
   let input;
+  let secondInput;
   openCustomDialog({
     title,
     hint,
@@ -7450,6 +7484,20 @@ function askGenerateCount({ title, hint, defaultValue, min = 1, max, onRun }) {
       });
       field.appendChild(input);
       body.appendChild(field);
+      if (second) {
+        const secondField = el("label", "field");
+        secondField.appendChild(el("span", "", second.label));
+        secondInput = document.createElement("input");
+        secondInput.type = "number";
+        secondInput.min = String(second.min ?? 1);
+        secondInput.max = String(second.max ?? 8);
+        secondInput.value = secondValue;
+        secondInput.addEventListener("input", () => {
+          secondValue = secondInput.value;
+        });
+        secondField.appendChild(secondInput);
+        body.appendChild(secondField);
+      }
       status = el("p", "muted generation-status");
       status.setAttribute("role", "status");
       body.appendChild(status);
@@ -7459,9 +7507,23 @@ function askGenerateCount({ title, hint, defaultValue, min = 1, max, onRun }) {
       if (!Number.isInteger(count) || count < min || count > (max || 8)) {
         throw new Error(`生成数量请填写 ${min} 到 ${max || 8} 之间的整数`);
       }
+      let secondCount = null;
+      if (second) {
+        secondCount = Number(secondValue);
+        const secondMin = second.min ?? 1;
+        const secondMax = second.max ?? 8;
+        if (
+          !Number.isInteger(secondCount)
+          || secondCount < secondMin
+          || secondCount > secondMax
+        ) {
+          throw new Error(`${second.label}请填写 ${secondMin} 到 ${secondMax} 之间的整数`);
+        }
+      }
       const current = dialogState;
       const started = Date.now();
       input.disabled = true;
+      if (secondInput) secondInput.disabled = true;
       const update = () => {
         const seconds = Math.floor((Date.now() - started) / 1000);
         status.textContent = `正在生成草稿，已等待 ${seconds} 秒…`;
@@ -7471,7 +7533,7 @@ function askGenerateCount({ title, hint, defaultValue, min = 1, max, onRun }) {
       let timer;
       try {
         const preview = await Promise.race([
-          onRun(count),
+          onRun(count, secondCount),
           new Promise((_, reject) => {
             timer = window.setTimeout(
               () => reject(new Error("等待生成结果超时，请检查 AstrBot 连接和内容生成模型后重试")),
@@ -7485,6 +7547,7 @@ function askGenerateCount({ title, hint, defaultValue, min = 1, max, onRun }) {
         window.clearInterval(ticker);
         window.clearTimeout(timer);
         input.disabled = false;
+        if (secondInput) secondInput.disabled = false;
         status.textContent = "";
       }
     },
@@ -7498,8 +7561,12 @@ function generateZoneDrafts() {
     hint: "读人设与已有世界起草新区域；先预览，改完确认才写进地图。",
     defaultValue: 2,
     max: 4,
-    onRun: async (count) => {
-      const result = await apiPost("generate/zones", { count });
+    second: { label: "每个区域生成几个地点", defaultValue: 2, min: 1, max: 5 },
+    onRun: async (count, nodesPerZone) => {
+      const result = await apiPost("generate/zones", {
+        count,
+        nodes_per_zone: nodesPerZone,
+      });
       const drafts = result.zones || [];
       if (!drafts.length) {
         throw new Error((result.problems || []).join("；") || "没有生成出可用的区域，请重试");
@@ -7554,6 +7621,16 @@ function openZoneDraftDialog(drafts, problems, draftNodes = [], draftZoneEdges =
         });
         noteField.appendChild(noteInput);
         fields.appendChild(noteField);
+        const inside = draftNodes.filter((node) => node.zone_id === draft.id);
+        fields.appendChild(
+          el(
+            "p",
+            "muted",
+            inside.length
+              ? `地点：${inside.map((node) => node.name || node.id).join("、")}`
+              : "地点：没有，确认后会补一个落脚点",
+          ),
+        );
         row.appendChild(fields);
         list.appendChild(row);
       });
@@ -7624,8 +7701,12 @@ function generateWorldMapDrafts() {
     defaultValue: 4,
     min: 2,
     max: 6,
-    onRun: async (count) => {
-      const result = await apiPost("generate/world-map", { count });
+    second: { label: "每个区域生成几个地点", defaultValue: 3, min: 1, max: 5 },
+    onRun: async (count, nodesPerZone) => {
+      const result = await apiPost("generate/world-map", {
+        count,
+        nodes_per_zone: nodesPerZone,
+      });
       const zones = result.zones || [];
       if (!zones.length) {
         throw new Error((result.problems || []).join("；") || "没有生成出可用的地图，请重试");
@@ -7754,6 +7835,8 @@ async function commitGeneratedWorldMap(zones, nodes, edges, zoneEdges) {
   renderMap();
   renderNodeForm();
   await saveAll();
+  renderMap();
+  centerMapView();
   const notes = [`已替换为 ${zones.length} 个区域、${nodes.length} 个地点、${zoneEdges.length} 条跨区路线`];
   if (orphanedActions) notes.push(`${orphanedActions} 个原本限定旧地点的动作已改为全局`);
   if (droppedWalks) notes.push(`日程里有 ${droppedWalks} 个旧地点步骤已移除`);

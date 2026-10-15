@@ -16,6 +16,7 @@ except ImportError:
     sync_playwright = None
 
 from tools.render_screenshots import BRIDGE_JS, Handler, PLUGIN_DIR, build_payload
+from core.generator import spring_layout_zones  # noqa: E402
 
 
 GENERATION_BRIDGE = r"""
@@ -172,7 +173,99 @@ class GenerationBrowserTests(unittest.TestCase):
 
     def test_invalid_count_does_not_call_model(self):
         self.open_generator()
-        self.page.locator('#dialog-body input[type="number"]').fill("0")
+        self.page.locator('#dialog-body input[type="number"]').nth(0).fill("0")
         self.page.locator("#dialog-ok").click()
         expect(self.page.locator("#dialog-error")).to_contain_text("1 到 4")
         self.assertEqual(self.page.evaluate("generationCalls"), [])
+
+    def test_both_map_generators_can_choose_nodes_per_zone(self):
+        self.open_generator()
+        inputs = self.page.locator('#dialog-body input[type="number"]')
+        expect(inputs).to_have_count(2)
+        inputs.nth(1).fill("4")
+        self.page.locator("#dialog-ok").click()
+        zone_call = self.page.evaluate("generationCalls").pop()
+        self.assertEqual(zone_call["endpoint"], "generate/zones")
+        self.assertEqual(zone_call["data"]["count"], 2)
+        self.assertEqual(zone_call["data"]["nodes_per_zone"], 4)
+        self.page.locator("#dialog-cancel").click()
+
+        self.open_generator("map", "map-generate-all")
+        inputs = self.page.locator('#dialog-body input[type="number"]')
+        expect(inputs).to_have_count(2)
+        inputs.nth(0).fill("5")
+        inputs.nth(1).fill("3")
+        self.page.locator("#dialog-ok").click()
+        world_call = self.page.evaluate("generationCalls").pop()
+        self.assertEqual(world_call["endpoint"], "generate/world-map")
+        self.assertEqual(world_call["data"]["count"], 5)
+        self.assertEqual(world_call["data"]["nodes_per_zone"], 3)
+
+    def test_spring_layout_with_complex_routes_stays_readable(self):
+        base_zones = [
+            {"id": "home", "name": "家中", "is_home": True},
+            {"id": "street", "name": "商业街"},
+            {"id": "school", "name": "学校"},
+            {"id": "park", "name": "公园"},
+            {"id": "seaside", "name": "海边"},
+        ]
+        connections = [
+            {"from_zone": "home", "to_zone": "street"},
+            {"from_zone": "home", "to_zone": "park"},
+            {"from_zone": "street", "to_zone": "school"},
+            {"from_zone": "street", "to_zone": "park"},
+            {"from_zone": "park", "to_zone": "seaside"},
+        ]
+        positions = spring_layout_zones(base_zones, connections)
+        zones = [
+            {
+                "id": zone["id"],
+                "name": zone["name"],
+                "note": "",
+                "x": positions[zone["id"]][0],
+                "y": positions[zone["id"]][1],
+                "color": "#7FB2E5",
+            }
+            for zone in base_zones
+        ]
+        nodes = [
+            {
+                "id": f"{zone['id']}_center",
+                "zone_id": zone["id"],
+                "name": f"{zone['name']}中心",
+                "prompt": "",
+                "x": 100,
+                "y": 60,
+            }
+            for zone in base_zones
+        ]
+        zone_edges = [
+            {
+                "id": f"zp_{index}",
+                "from_zone": link["from_zone"],
+                "from_node": f"{link['from_zone']}_center",
+                "to_zone": link["to_zone"],
+                "to_node": f"{link['to_zone']}_center",
+                "ticks": 2,
+                "bidirectional": True,
+            }
+            for index, link in enumerate(connections)
+        ]
+        self.open_generator("map", "map-generate-all")
+        self.page.locator("#dialog-ok").click()
+        self.page.evaluate(
+            "result => finishGeneration(result)",
+            {
+                "zones": zones,
+                "nodes": nodes,
+                "edges": [],
+                "zone_edges": zone_edges,
+                "problems": [],
+            },
+        )
+        expect(self.page.locator("#dialog-title")).to_contain_text("一键重建地图")
+        self.page.locator("#dialog-ok").click()
+        expect(self.page.locator("#dialog")).to_be_hidden()
+        expect(self.page.locator("#canvas-nodes .node")).to_have_count(5)
+        self.host.screenshot(path=str(self.shots / "ring-layout.png"))
+        self.assertEqual(self.errors, [])

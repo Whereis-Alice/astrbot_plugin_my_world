@@ -155,6 +155,7 @@ from .generator import (
     DEFAULT_MAP_NODES_PER_ZONE,
     auto_layout,
     clamp_event_count,
+    clamp_map_nodes_per_zone,
     clamp_map_zone_count,
     clamp_node_count,
     clamp_per_node,
@@ -166,9 +167,9 @@ from .generator import (
     parse_generated_events,
     parse_generated_nodes,
     parse_generated_schedules,
-    parse_generated_zones,
+    parse_generated_zone_pack,
     parse_generated_world_map,
-    starter_node_for_zone,
+    spring_layout_zones,
 )
 
 DEFAULT_TICK_SECONDS = 60.0
@@ -17491,10 +17492,16 @@ class MyWorldEngine(ScopedConfigMixin):
             head.extend(lines)
         return "\n".join(head)
 
-    async def generate_zones(self, count: Any = 0) -> dict[str, Any]:
-        """按她的人设与已有世界生成新区域草稿（不落库，先给用户改）。"""
+    async def generate_zones(
+        self, count: Any = 0, nodes_per_zone: Any = 0
+    ) -> dict[str, Any]:
+        """按她的人设与已有世界生成新区域草稿（不落库，先给用户改）。
+
+        ``nodes_per_zone`` 控制每个新区域同时生成几个地点；默认 1 个落脚点。
+        """
 
         wanted = clamp_zone_count(count)
+        per_zone = clamp_map_nodes_per_zone(nodes_per_zone, default=1)
         session_id = self._generator_session_id()
         system_prompt, prompt = self.prompts.build_zone_generator_prompt(
             persona_text=await self._persona_text(session_id),
@@ -17520,24 +17527,36 @@ class MyWorldEngine(ScopedConfigMixin):
             ],
             relations=self.relations_brief(session_id),
             count=wanted,
+            nodes_per_zone=per_zone,
         )
         reply = await self._ask_creator(session_id, system_prompt, prompt, raise_errors=True)
-        zones, problems = parse_generated_zones(
+        pack = parse_generated_zone_pack(
             reply,
-            existing_ids={zone.id for zone in self.world.zones},
+            existing_zone_ids={zone.id for zone in self.world.zones},
+            existing_node_ids={node.id for node in self.world.nodes},
             max_zones=wanted,
+            max_nodes_per_zone=per_zone,
+            add_starter=True,
         )
+        zones = pack["zones"]
+        nodes = pack["nodes"]
+        problems = list(pack["problems"])
+        if not zones:
+            return {
+                "zones": [],
+                "nodes": [],
+                "zone_edges": [],
+                "problems": problems,
+                "raw": _clip_text(reply, 1200),
+            }
         positions = auto_layout(
             [(float(zone.x), float(zone.y)) for zone in self.world.zones],
             len(zones),
-            step=170,
+            step=190,
         )
         for zone, (x, y) in zip(zones, positions):
             zone["x"], zone["y"] = x, y
-        # 区域光有框没法连线：每个新区域自动配一个可编辑的落脚点，
-        # 再按最近原则接到已有区域（没有已有区域就在新区域之间串起来）。
-        nodes: list[dict[str, Any]] = []
-        used_nodes = {node.id for node in self.world.nodes}
+        # 新区域里的地点各自在区域坐标系里摆开；区域之间再按最近原则连起来。
         nodes_by_zone: dict[str, list[dict[str, Any]]] = {
             zone.id: [
                 {"id": node.id, "x": float(node.x), "y": float(node.y)}
@@ -17546,11 +17565,14 @@ class MyWorldEngine(ScopedConfigMixin):
             for zone in self.world.zones
         }
         for zone in zones:
-            node = starter_node_for_zone(zone, used_ids=used_nodes)
-            node["zone_id"] = str(zone["id"])
-            nodes.append(node)
-            used_nodes.add(str(node["id"]))
-            nodes_by_zone.setdefault(str(zone["id"]), []).append(node)
+            inside = [
+                node
+                for node in nodes
+                if str(node.get("zone_id") or "") == str(zone["id"])
+            ]
+            for node, (x, y) in zip(inside, auto_layout([], len(inside), step=150)):
+                node["x"], node["y"] = x, y
+            nodes_by_zone.setdefault(str(zone["id"]), []).extend(inside)
         all_zone_dicts = [
             {"id": zone.id, "x": float(zone.x), "y": float(zone.y)}
             for zone in self.world.zones
@@ -17584,7 +17606,9 @@ class MyWorldEngine(ScopedConfigMixin):
             "raw": _clip_text(reply, 1200),
         }
 
-    async def generate_world_map(self, count: Any = 0) -> dict[str, Any]:
+    async def generate_world_map(
+        self, count: Any = 0, nodes_per_zone: Any = 0
+    ) -> dict[str, Any]:
         """按人设一键重建整张地图：区域、地点、区内路线与跨区路线一次配好。
 
         这是**草稿**：用户在编辑器里确认后才会替换当前地图。默认地图会被换掉，
@@ -17592,12 +17616,15 @@ class MyWorldEngine(ScopedConfigMixin):
         """
 
         wanted = clamp_map_zone_count(count)
+        per_zone = clamp_map_nodes_per_zone(
+            nodes_per_zone, default=DEFAULT_MAP_NODES_PER_ZONE
+        )
         session_id = self._generator_session_id()
         system_prompt, prompt = self.prompts.build_world_map_generator_prompt(
             persona_text=await self._persona_text(session_id),
             relations=self.relations_brief(session_id),
             count=wanted,
-            nodes_per_zone=DEFAULT_MAP_NODES_PER_ZONE,
+            nodes_per_zone=per_zone,
         )
         reply = await self._ask_creator(
             session_id, system_prompt, prompt, raise_errors=True
@@ -17605,7 +17632,7 @@ class MyWorldEngine(ScopedConfigMixin):
         draft = parse_generated_world_map(
             reply,
             max_zones=wanted,
-            max_nodes_per_zone=DEFAULT_MAP_NODES_PER_ZONE + 2,
+            max_nodes_per_zone=per_zone,
         )
         zones = draft["zones"]
         nodes = draft["nodes"]
@@ -17620,16 +17647,18 @@ class MyWorldEngine(ScopedConfigMixin):
                 "raw": _clip_text(reply, 1200),
             }
 
-        # 区域先按网格摆好，地点在各自区域里独立摆位（两层坐标系互不影响）。
-        zone_positions = auto_layout([], len(zones), step=170)
-        for zone, (x, y) in zip(zones, zone_positions):
+        # 先按模型给的跨区路线做弹簧布局：有路的区域靠近、没路的推开，
+        # 这样复杂路线能保留，线也不会横七竖八。
+        positions = spring_layout_zones(zones, draft["connections"])
+        for zone in zones:
+            x, y = positions.get(str(zone["id"]), (70.0, 70.0))
             zone["x"], zone["y"] = x, y
         nodes_by_zone: dict[str, list[dict[str, Any]]] = {}
         for node in nodes:
             nodes_by_zone.setdefault(str(node.get("zone_id") or ""), []).append(node)
         for zone in zones:
             inside = nodes_by_zone.get(str(zone["id"]), [])
-            for node, (x, y) in zip(inside, auto_layout([], len(inside), step=130)):
+            for node, (x, y) in zip(inside, auto_layout([], len(inside), step=150)):
                 node["x"], node["y"] = x, y
 
         edges: list[dict[str, Any]] = []
@@ -17647,11 +17676,12 @@ class MyWorldEngine(ScopedConfigMixin):
                 for src, dst in pairs
             )
 
-        zone_edges = list(draft["connections"])
-        explicit = {
-            (
-                str(edge.get("from_zone") or ""),
-                str(edge.get("to_zone") or ""),
+        # 模型给的跨区路线全部保留（复杂路线照旧能走）；
+        # 只给完全没连上的区域补一条最近的，保证地图没有孤岛。
+        zone_edges: list[dict[str, Any]] = list(draft["connections"])
+        used_pairs: set[frozenset[str]] = {
+            frozenset(
+                (str(edge.get("from_zone") or ""), str(edge.get("to_zone") or ""))
             )
             for edge in zone_edges
         }
@@ -17667,13 +17697,12 @@ class MyWorldEngine(ScopedConfigMixin):
             nodes_by_zone,
             existing_edges=zone_edges,
         ):
-            key = (
-                str(edge.get("from_zone") or ""),
-                str(edge.get("to_zone") or ""),
+            pair = frozenset(
+                (str(edge.get("from_zone") or ""), str(edge.get("to_zone") or ""))
             )
-            if key in explicit or (key[1], key[0]) in explicit:
+            if pair in used_pairs:
                 continue
-            explicit.add(key)
+            used_pairs.add(pair)
             zone_edges.append(edge)
         if not zone_edges and len(zones) > 1:
             problems.append("跨区路线没能自动补全，请进地图检查区域落脚点")

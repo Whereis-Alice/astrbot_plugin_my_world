@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Any
 
@@ -28,6 +29,7 @@ MAX_MAP_ZONES = 6
 MIN_MAP_ZONES = 2
 DEFAULT_MAP_ZONES = 4
 MAX_MAP_NODES_PER_ZONE = 5
+MIN_MAP_NODES_PER_ZONE = 1
 DEFAULT_MAP_NODES_PER_ZONE = 3
 
 DAY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -330,6 +332,130 @@ def auto_layout(
     return positions
 
 
+def auto_layout_ring(
+    count: int,
+    *,
+    center: tuple[float, float] | None = None,
+    radius: float = 0.0,
+) -> list[tuple[float, float]]:
+    """把整张地图的区域摆成一个圆环。
+
+    圆环比两列网格更适合一眼看全：任意两个相邻区域都隔着一段弧，
+    自动连线时也更自然地连到隔壁，而不是在中间交叉成 X。
+    """
+
+    total = max(0, int(count))
+    if total <= 0:
+        return []
+    chosen_radius = (
+        float(radius) if radius > 0 else max(165.0, 80.0 + 22.0 * total)
+    )
+    center_x, center_y = (
+        (float(center[0]), float(center[1]))
+        if center
+        else (chosen_radius + 70.0, chosen_radius + 70.0)
+    )
+    if total == 1:
+        return [(center_x, center_y)]
+    # 区域框宽约 104px；半径随数量增长，保证 6 个区域也不挤在一起。
+    positions: list[tuple[float, float]] = []
+    for index in range(total):
+        angle = -math.pi / 2 + (2 * math.pi * index / total)
+        positions.append(
+            (
+                round(center_x + chosen_radius * math.cos(angle), 1),
+                round(center_y + chosen_radius * math.sin(angle), 1),
+            )
+        )
+    return positions
+
+
+def spring_layout_zones(
+    zones: list[dict[str, Any]],
+    edges: list[dict[str, Any]] | None = None,
+    *,
+    iterations: int = 180,
+    ideal: float = 240.0,
+) -> dict[str, tuple[float, float]]:
+    """按跨区路线摆放区域：有路线的区域互相靠近，没路线的互相推开。
+
+    用圆环做确定性种子，再跑一套简化版 Fruchterman-Reingold：
+    路线是弹簧，区域之间是斥力，``is_home`` 的区域额外往重心收一点。
+    纯计算、无随机数，同一张地图每次得到的布局一致。
+    """
+
+    total = len(zones)
+    ids = [str(zone.get("id") or "") for zone in zones if str(zone.get("id") or "")]
+    if total <= 0 or not ids:
+        return {}
+    if len(ids) == 1:
+        return {ids[0]: (260.0, 260.0)}
+    seed = auto_layout_ring(len(ids))
+    pos = {zone_id: [seed[index][0], seed[index][1]] for index, zone_id in enumerate(ids)}
+    links: set[tuple[str, str]] = set()
+    for edge in edges or []:
+        if not isinstance(edge, dict):
+            continue
+        left = str(edge.get("from_zone") or "")
+        right = str(edge.get("to_zone") or "")
+        if left in pos and right in pos and left != right:
+            links.add(tuple(sorted((left, right))))
+    homes = {str(zone.get("id") or "") for zone in zones if zone.get("is_home")}
+    homes &= set(ids)
+    k = max(80.0, float(ideal))
+    temperature = k * 0.9
+    for _step in range(max(1, int(iterations))):
+        disp = {zone_id: [0.0, 0.0] for zone_id in ids}
+        for index, left in enumerate(ids):
+            for right in ids[index + 1 :]:
+                dx = pos[left][0] - pos[right][0]
+                dy = pos[left][1] - pos[right][1]
+                distance = max(1.0, (dx * dx + dy * dy) ** 0.5)
+                force = (k * k) / distance
+                ux, uy = dx / distance, dy / distance
+                disp[left][0] += ux * force
+                disp[left][1] += uy * force
+                disp[right][0] -= ux * force
+                disp[right][1] -= uy * force
+        for left, right in links:
+            dx = pos[left][0] - pos[right][0]
+            dy = pos[left][1] - pos[right][1]
+            distance = max(1.0, (dx * dx + dy * dy) ** 0.5)
+            force = (distance * distance) / k
+            ux, uy = dx / distance, dy / distance
+            disp[left][0] -= ux * force
+            disp[left][1] -= uy * force
+            disp[right][0] += ux * force
+            disp[right][1] += uy * force
+        center_x = sum(point[0] for point in pos.values()) / len(ids)
+        center_y = sum(point[1] for point in pos.values()) / len(ids)
+        for zone_id in homes:
+            disp[zone_id][0] += (center_x - pos[zone_id][0]) * 0.08
+            disp[zone_id][1] += (center_y - pos[zone_id][1]) * 0.08
+        for zone_id in ids:
+            dx, dy = disp[zone_id]
+            length = max(1e-6, (dx * dx + dy * dy) ** 0.5)
+            step = min(length, temperature)
+            pos[zone_id][0] += (dx / length) * step
+            pos[zone_id][1] += (dy / length) * step
+        temperature *= 0.97
+    xs = [point[0] for point in pos.values()]
+    ys = [point[1] for point in pos.values()]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    span = max(1.0, max_x - min_x, max_y - min_y)
+    scale = min(1.0, 560.0 / span)
+    if span < 260.0:
+        scale = 260.0 / span
+    return {
+        zone_id: (
+            round((pos[zone_id][0] - min_x) * scale + 70.0, 1),
+            round((pos[zone_id][1] - min_y) * scale + 70.0, 1),
+        )
+        for zone_id in ids
+    }
+
+
 def link_plan(node_ids: list[str], *, anchor: str = "") -> list[tuple[str, str]]:
     """新地点的自动连线（方案 A）：第一个连到区域内最近的既有地点，之后依次串成链。"""
 
@@ -418,7 +544,9 @@ def connect_zone_graph(
         missing = [zone_id for zone_id in usable if find(zone_id) != find(root)]
         if not missing:
             break
-        connected = False
+        # 每次只接入「离已连通区域最近的那个区域」，接完立刻重算。
+        # 一次把整批都接到同一个 root 上会得到放射状的线，交叉得很难看。
+        best: tuple[float, str, str] | None = None
         for zone_id in missing:
             candidates = [item for item in main if nodes_by_zone.get(item)]
             if not candidates:
@@ -427,36 +555,36 @@ def connect_zone_graph(
                 candidates,
                 key=lambda item: _zone_distance(by_id[zone_id], by_id[item]),
             )
-            src_node = _anchor_node(nodes_by_zone.get(zone_id, []))
-            dst_node = _anchor_node(nodes_by_zone.get(target, []))
-            if not src_node or not dst_node:
-                continue
-            ticks = max(
-                1,
-                int(round(_zone_distance(by_id[zone_id], by_id[target]) / 150.0)),
-            )
-            edge_id = f"z_{src_node['id']}_{dst_node['id']}"
-            if edge_id in used_edge_ids:
-                index = 2
-                while f"{edge_id}_{index}" in used_edge_ids:
-                    index += 1
-                edge_id = f"{edge_id}_{index}"
-            used_edge_ids.add(edge_id)
-            added.append(
-                {
-                    "id": edge_id,
-                    "from_zone": zone_id,
-                    "from_node": str(src_node["id"]),
-                    "to_zone": target,
-                    "to_node": str(dst_node["id"]),
-                    "ticks": ticks,
-                    "bidirectional": True,
-                }
-            )
-            union(zone_id, target)
-            connected = True
-        if not connected:
+            distance = _zone_distance(by_id[zone_id], by_id[target])
+            if best is None or distance < best[0]:
+                best = (distance, zone_id, target)
+        if best is None:
             break
+        distance, zone_id, target = best
+        src_node = _anchor_node(nodes_by_zone.get(zone_id, []))
+        dst_node = _anchor_node(nodes_by_zone.get(target, []))
+        if not src_node or not dst_node:
+            break
+        ticks = max(1, int(round(distance / 150.0)))
+        edge_id = f"z_{src_node['id']}_{dst_node['id']}"
+        if edge_id in used_edge_ids:
+            index = 2
+            while f"{edge_id}_{index}" in used_edge_ids:
+                index += 1
+            edge_id = f"{edge_id}_{index}"
+        used_edge_ids.add(edge_id)
+        added.append(
+            {
+                "id": edge_id,
+                "from_zone": zone_id,
+                "from_node": str(src_node["id"]),
+                "to_zone": target,
+                "to_node": str(dst_node["id"]),
+                "ticks": ticks,
+                "bidirectional": True,
+            }
+        )
+        union(zone_id, target)
     return added
 
 
@@ -502,7 +630,21 @@ def clamp_map_zone_count(value: Any, default: int = DEFAULT_MAP_ZONES) -> int:
         number = int(value)
     except (TypeError, ValueError):
         number = default
+    if number <= 0:
+        number = default
     return max(MIN_MAP_ZONES, min(MAX_MAP_ZONES, number))
+
+
+def clamp_map_nodes_per_zone(
+    value: Any, default: int = DEFAULT_MAP_NODES_PER_ZONE
+) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    if number <= 0:
+        number = default
+    return max(MIN_MAP_NODES_PER_ZONE, min(MAX_MAP_NODES_PER_ZONE, number))
 
 
 def clamp_schedule_count(value: Any, default: int = DEFAULT_SCHEDULES_PER_RUN) -> int:
@@ -577,20 +719,23 @@ def parse_generated_zones(
     return zones, problems
 
 
-def parse_generated_world_map(
+def parse_generated_zone_pack(
     text: str,
     *,
-    max_zones: int = MAX_MAP_ZONES,
+    existing_zone_ids: set[str] | None = None,
+    existing_node_ids: set[str] | None = None,
+    max_zones: int = MAX_ZONES_PER_RUN,
     max_nodes_per_zone: int = MAX_MAP_NODES_PER_ZONE,
+    add_starter: bool = True,
 ) -> dict[str, Any]:
-    """解析"一键重建整张地图"的模型输出。
+    """解析「区域 + 每个区域的地点」这一层草稿。
 
-    只信任结构合规、id 合法、区域归属正确的部分；缺地点或漏连线的区域会在
-    引擎里自动补落脚点与连通线，保证确认后拿到的地图一定能走通。
+    「生成区域」和「一键重建地图」共用同一套校验：区域 id、地点 id、
+    每区地点数量都挡一遍；缺地点的区域按 ``add_starter`` 决定是否补落脚点。
     """
 
     payload, problems = parse_json_payload(text)
-    empty = {"zones": [], "nodes": [], "connections": [], "problems": []}
+    empty = {"zones": [], "nodes": [], "problems": []}
     if not isinstance(payload, dict):
         empty["problems"] = problems or ["模型输出不是 JSON 对象"]
         return empty
@@ -601,6 +746,7 @@ def parse_generated_world_map(
 
     zones, zone_problems = parse_generated_zones(
         json.dumps({"zones": raw_zones}, ensure_ascii=False),
+        existing_ids=existing_zone_ids,
         max_zones=max_zones,
     )
     problems.extend(zone_problems)
@@ -617,8 +763,7 @@ def parse_generated_world_map(
             raw_by_zone.setdefault(key, item)
 
     nodes: list[dict[str, Any]] = []
-    used_nodes: set[str] = set()
-    zone_ids = {str(zone.get("id") or "") for zone in zones}
+    used_nodes = {str(item) for item in (existing_node_ids or set())}
     for zone in zones:
         zone_id = str(zone.get("id") or "")
         raw = raw_by_zone.get(zone_id) or {}
@@ -632,7 +777,7 @@ def parse_generated_world_map(
             max_nodes=max_nodes_per_zone,
         )
         problems.extend(node_problems)
-        if not parsed:
+        if not parsed and add_starter:
             parsed = [starter_node_for_zone(zone, used_ids=used_nodes)]
             problems.append(f"{zone_id} 没有可用地点，已自动补一个落脚点")
         for node in parsed:
@@ -640,6 +785,36 @@ def parse_generated_world_map(
             nodes.append(node)
             used_nodes.add(str(node.get("id") or ""))
 
+    return {"zones": zones, "nodes": nodes, "problems": problems}
+
+
+def parse_generated_world_map(
+    text: str,
+    *,
+    max_zones: int = MAX_MAP_ZONES,
+    max_nodes_per_zone: int = MAX_MAP_NODES_PER_ZONE,
+) -> dict[str, Any]:
+    """解析"一键重建整张地图"的模型输出。
+
+    只信任结构合规、id 合法、区域归属正确的部分；缺地点或漏连线的区域会在
+    引擎里自动补落脚点与连通线，保证确认后拿到的地图一定能走通。
+    """
+
+    pack = parse_generated_zone_pack(
+        text,
+        max_zones=max_zones,
+        max_nodes_per_zone=max_nodes_per_zone,
+    )
+    zones = pack["zones"]
+    nodes = pack["nodes"]
+    problems = list(pack["problems"])
+    empty = {"zones": zones, "nodes": nodes, "connections": [], "problems": problems}
+    if not zones:
+        return empty
+    payload, _payload_problems = parse_json_payload(text)
+    if not isinstance(payload, dict):
+        return empty
+    zone_ids = {str(zone.get("id") or "") for zone in zones}
     node_zone = {
         str(node.get("id") or ""): str(node.get("zone_id") or "") for node in nodes
     }

@@ -2852,6 +2852,11 @@ body.dragging-map-node {
   fill: var(--muted);
   user-select: none;
   font-variant-numeric: tabular-nums;
+  /* 给连线上的文字描一圈底色，压在线上也读得清 */
+  paint-order: stroke;
+  stroke: var(--panel-2);
+  stroke-width: 3px;
+  stroke-linejoin: round;
 }
 
 /* 天气条：地图卡里的一条信息栏，不再压在画布上挡节点 */

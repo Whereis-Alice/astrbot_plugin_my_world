@@ -7165,7 +7165,11 @@ class MyWorldPlugin(Star):
         guard = self._guard(payload)
         if guard is not None:
             return guard
-        return await self._generate_drafts_response(self.engine.generate_zones, payload.get("count"))
+        return await self._generate_drafts_response(
+            self.engine.generate_zones,
+            payload.get("count"),
+            payload.get("nodes_per_zone"),
+        )
 
     async def api_generate_world_map(self):
         """按她的人设一键重建整张地图草稿（不落库，确认后才替换）。"""
@@ -7175,7 +7179,9 @@ class MyWorldPlugin(Star):
         if guard is not None:
             return guard
         return await self._generate_drafts_response(
-            self.engine.generate_world_map, payload.get("count")
+            self.engine.generate_world_map,
+            payload.get("count"),
+            payload.get("nodes_per_zone"),
         )
 
     async def api_generate_schedules(self):

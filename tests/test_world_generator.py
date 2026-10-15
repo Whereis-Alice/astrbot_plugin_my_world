@@ -19,15 +19,19 @@ from core.db import AsyncDatabase  # noqa: E402
 from core.defaults import default_world  # noqa: E402
 from core.engine import MyWorldEngine  # noqa: E402
 from core.generator import (  # noqa: E402
+    auto_layout_ring,
     connect_zone_graph,
     clamp_event_count,
+    clamp_map_nodes_per_zone,
     clamp_map_zone_count,
     clamp_schedule_count,
     clamp_zone_count,
     parse_generated_events,
     parse_generated_schedules,
     parse_generated_zones,
+    parse_generated_zone_pack,
     parse_generated_world_map,
+    spring_layout_zones,
 )
 from core.models import parse_world  # noqa: E402
 from core.ports import LLMReply  # noqa: E402
@@ -141,12 +145,30 @@ class ClampTests(unittest.TestCase):
         self.assertEqual(clamp_zone_count(99), 4)
         self.assertEqual(clamp_zone_count(0), 1)
         self.assertEqual(clamp_map_zone_count(99), 6)
-        self.assertEqual(clamp_map_zone_count(0), 2)
+        self.assertEqual(clamp_map_zone_count(0), 4)
+        self.assertEqual(clamp_map_nodes_per_zone(99), 5)
+        self.assertEqual(clamp_map_nodes_per_zone(0), 3)
         self.assertEqual(clamp_schedule_count(99), 6)
         self.assertEqual(clamp_event_count("bad"), 3)
 
 
 class WorldMapParserTests(unittest.TestCase):
+    def test_zone_pack_reads_the_requested_nodes_per_zone(self):
+        text = (
+            '{"zones": [{"id": "home", "name": "家中", "nodes": ['
+            '{"id": "bedroom", "name": "卧室"},'
+            '{"id": "kitchen", "name": "厨房"},'
+            '{"id": "balcony", "name": "阳台"}]}]}'
+        )
+        pack = parse_generated_zone_pack(text, max_nodes_per_zone=3)
+        self.assertEqual(len(pack["zones"]), 1)
+        self.assertEqual(
+            [node["id"] for node in pack["nodes"]],
+            ["bedroom", "kitchen", "balcony"],
+        )
+        self.assertTrue(all(node["zone_id"] == "home" for node in pack["nodes"]))
+        self.assertEqual(pack["problems"], [])
+
     def test_reads_zones_nodes_and_connections(self):
         text = (
             '{"zones": ['
@@ -206,6 +228,51 @@ class WorldMapParserTests(unittest.TestCase):
         )
         self.assertTrue(added[0]["from_node"])
         self.assertTrue(added[0]["to_node"])
+
+    def test_connect_zone_graph_walks_around_the_ring_instead_of_a_star(self):
+        zones = [
+            {"id": f"z{index}", "x": x, "y": y}
+            for index, (x, y) in enumerate(auto_layout_ring(5))
+        ]
+        nodes_by_zone = {
+            f"z{index}": [{"id": f"n{index}", "x": 0, "y": 0}]
+            for index in range(5)
+        }
+        added = connect_zone_graph(zones, nodes_by_zone)
+        self.assertEqual(len(added), 4)
+        for edge in added:
+            left = int(edge["from_zone"][1:])
+            right = int(edge["to_zone"][1:])
+            self.assertIn(abs(left - right), (1, 4))
+
+
+class LayoutTests(unittest.TestCase):
+    def test_ring_layout_keeps_every_zone_inside_positive_canvas(self):
+        positions = auto_layout_ring(6)
+        self.assertEqual(len(positions), 6)
+        self.assertTrue(all(x >= 0 and y >= 0 for x, y in positions))
+        xs = [x for x, _y in positions]
+        ys = [y for _x, y in positions]
+        self.assertGreater(max(xs) - min(xs), 300)
+        self.assertGreater(max(ys) - min(ys), 300)
+
+    def test_spring_layout_keeps_routed_zones_closer_than_unrouted_ones(self):
+        zones = [{"id": f"z{index}"} for index in range(5)]
+        edges = [
+            {"from_zone": f"z{index}", "to_zone": f"z{index + 1}"}
+            for index in range(4)
+        ]
+        positions = spring_layout_zones(zones, edges)
+        self.assertEqual(len(positions), 5)
+        self.assertTrue(all(x >= 0 and y >= 0 for x, y in positions.values()))
+
+        def distance(left: str, right: str) -> float:
+            lx, ly = positions[left]
+            rx, ry = positions[right]
+            return ((lx - rx) ** 2 + (ly - ry) ** 2) ** 0.5
+
+        self.assertLess(distance("z0", "z1"), distance("z0", "z4"))
+        self.assertLess(distance("z3", "z4"), distance("z0", "z4"))
 
 
 class GeneratorPromptTests(unittest.TestCase):
@@ -309,7 +376,25 @@ class EngineGeneratorTests(unittest.IsolatedAsyncioTestCase):
         zones = result["zones"]
         self.assertEqual([zone["id"] for zone in zones], ["old_library"])
         self.assertNotEqual((zones[0]["x"], zones[0]["y"]), (40.0, 60.0))
-        self.assertEqual(result["problems"], [])
+        # 模型没给地点时会自动补一个落脚点，这是提醒不是失败。
+        self.assertTrue(all("落脚点" in item for item in result["problems"]))
+
+    async def test_generate_zones_can_ask_for_several_nodes_per_zone(self):
+        self.creator.replies = [
+            '{"zones": [{"id": "rooftop", "name": "天台", "note": "看星星的地方", "nodes": ['
+            '{"id": "rooftop_edge", "name": "天台边缘", "prompt": "风很大"},'
+            '{"id": "water_tank", "name": "水箱旁", "prompt": "很安静"},'
+            '{"id": "old_chair", "name": "旧椅子", "prompt": "能坐一会儿"}]}]}'
+        ]
+        result = await self.engine.generate_zones(1, 3)
+        self.assertEqual(len(result["zones"]), 1)
+        self.assertEqual(
+            [node["id"] for node in result["nodes"]],
+            ["rooftop_edge", "water_tank", "old_chair"],
+        )
+        self.assertTrue(all(node["zone_id"] == "rooftop" for node in result["nodes"]))
+        # 同一个区域里的地点已经自动摆开，不会全叠在 (60, 60)。
+        self.assertGreater(len({(node["x"], node["y"]) for node in result["nodes"]}), 1)
 
     async def test_generate_zones_adds_starter_nodes_and_a_zone_link(self):
         self.creator.replies = [
@@ -347,6 +432,27 @@ class EngineGeneratorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["zone_edges"][0]["ticks"], 3)
         self.assertTrue(result["edges"])
         self.assertEqual(result["problems"], [])
+
+    async def test_generate_world_map_keeps_crossing_non_neighbor_routes(self):
+        self.creator.replies = [
+            '{"zones": ['
+            '{"id": "z0", "name": "A", "nodes": [{"id": "n0", "name": "a"}]},'
+            '{"id": "z1", "name": "B", "nodes": [{"id": "n1", "name": "b"}]},'
+            '{"id": "z2", "name": "C", "nodes": [{"id": "n2", "name": "c"}]},'
+            '{"id": "z3", "name": "D", "nodes": [{"id": "n3", "name": "d"}]}'
+            "],"
+            '"connections": ['
+            '{"from_zone": "z0", "from_node": "n0", "to_zone": "z2", "to_node": "n2", "ticks": 4},'
+            '{"from_zone": "z1", "from_node": "n1", "to_zone": "z3", "to_node": "n3", "ticks": 4}'
+            "]}"
+        ]
+        result = await self.engine.generate_world_map(4, 1)
+        pairs = {
+            frozenset((edge["from_zone"], edge["to_zone"]))
+            for edge in result["zone_edges"]
+        }
+        self.assertIn(frozenset(("z0", "z2")), pairs)
+        self.assertIn(frozenset(("z1", "z3")), pairs)
 
     async def test_generate_schedules_drops_unknown_steps(self):
         self.creator.replies = [

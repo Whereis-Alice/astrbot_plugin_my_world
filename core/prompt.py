@@ -2791,9 +2791,11 @@ class PromptBuilder:
         zone_edges: list[dict[str, Any]] | None = None,
         relations: str = "",
         count: int = 2,
+        nodes_per_zone: int = 1,
     ) -> tuple[str, str]:
         """基于她的人设与已有世界，生成**新区域**草稿（不落库，先给用户改）。"""
 
+        per_zone = max(1, int(nodes_per_zone))
         system = (
             "你是这个角色世界的规划者。读她的人设、已经存在的地图和她的人际关系，"
             f"为她设计 {max(1, int(count))} 个**新的区域**（一个区域 = 城市里的一个地方，"
@@ -2807,7 +2809,16 @@ class PromptBuilder:
             "但不要替她安排好结局；\n"
             "4. 每个区域给：id（小写英文 + 下划线）、name（中文名）、note（一句话说明，"
             "会写进提示词）、icon（一个 emoji 或符号）、color（#RRGGBB）、is_home（最多一个 true）；\n"
-            "5. 只输出 JSON：{\"zones\": [{...}]}，不要解释、不要代码块。"
+            f"5. 每个区域再给 {per_zone} 个地点：id（小写英文 + 下划线、全图唯一）、"
+            "name（中文名）、nickname_text（「在+地点简称」，不超过 5 个字）、"
+            "prompt（一句「这里是什么样」，会进提示词）、icon、color、"
+            "atmosphere（calm / intimacy / visibility / liveliness / loneliness / curiosity，0~1）；\n"
+            "6. 不要给坐标，编辑器会自动摆位；只输出 JSON，不要解释、不要代码块：\n"
+            "{\"zones\": [{\"id\": \"...\", \"name\": \"...\", \"note\": \"...\", "
+            "\"icon\": \"...\", \"color\": \"#RRGGBB\", \"is_home\": false, "
+            "\"nodes\": [{\"id\": \"...\", \"name\": \"...\", \"nickname_text\": \"...\", "
+            "\"prompt\": \"...\", \"icon\": \"...\", \"color\": \"#RRGGBB\", "
+            "\"atmosphere\": {\"calm\": 0.5}}]}]}"
         )
         zone_lines = [
             f"- {item.get('id')}｜{item.get('name')}：{item.get('note') or '（没有说明）'}"
@@ -2829,7 +2840,9 @@ class PromptBuilder:
         ]
         if relations:
             blocks.append("# 她的人际关系\n" + str(relations).strip()[:1200])
-        blocks.append(f"现在生成 {max(1, int(count))} 个新区域，只输出 JSON。")
+        blocks.append(
+            f"现在生成 {max(1, int(count))} 个新区域，每个区域配 {per_zone} 个地点，只输出 JSON。"
+        )
         return system, "\n\n".join(blocks)
 
     def build_world_map_generator_prompt(
