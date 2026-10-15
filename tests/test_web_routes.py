@@ -17,6 +17,7 @@ import sys
 import tempfile
 import types
 import unittest
+from unittest.mock import AsyncMock, Mock, patch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN_DIR = os.path.dirname(HERE)
@@ -185,6 +186,42 @@ class WebRouteRegistryTest(unittest.TestCase):
             raw = getattr(getattr(plugin, "db", None), "raw", None)
             if raw is not None:
                 raw.close()
+
+
+class GenerationResponseTests(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.module = load_plugin_module()
+
+    async def test_failures_return_visible_errors(self):
+        plugin = types.SimpleNamespace(logger=Mock())
+        call = self.module.MyWorldPlugin._generate_drafts_response
+        failure = AsyncMock(side_effect=ValueError("HTTP 429: quota exceeded"))
+        response = await call(plugin, failure, 1)
+        self.assertEqual(response["status_code"], 400)
+        self.assertIn("429: quota exceeded", response["message"])
+        plugin.logger.warning.assert_called_once()
+
+    async def test_timeout_returns_retry_guidance(self):
+        plugin = types.SimpleNamespace(logger=Mock())
+        call = self.module.MyWorldPlugin._generate_drafts_response
+
+        async def expire(coroutine, *, timeout):
+            coroutine.close()
+            self.assertEqual(timeout, 120)
+            raise TimeoutError
+
+        with patch.object(self.module.asyncio, "wait_for", side_effect=expire):
+            response = await call(plugin, AsyncMock(), 1)
+        self.assertIn("120 秒", response["message"])
+        self.assertIn("重试", response["message"])
+
+    async def test_success_returns_drafts_without_writing(self):
+        plugin = types.SimpleNamespace(logger=Mock())
+        call = self.module.MyWorldPlugin._generate_drafts_response
+        drafts = {"zones": [{"id": "garden", "name": "花园"}], "problems": []}
+        response = await call(plugin, AsyncMock(return_value=drafts), 1)
+        self.assertEqual(response["data"], drafts)
 
 
 if __name__ == "__main__":

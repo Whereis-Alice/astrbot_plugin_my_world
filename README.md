@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v3.0.2-4f6bf5" alt="version" />
+  <img src="https://img.shields.io/badge/version-v3.0.3-4f6bf5" alt="version" />
   <img src="https://img.shields.io/badge/AstrBot-%E2%89%A5%204.20.0-8b6cf0" alt="AstrBot" />
   <img src="https://img.shields.io/badge/dependencies-%E6%97%A0-brightgreen" alt="dependencies" />
 </p>
@@ -144,8 +144,16 @@
 与这一轮的心情、好感、话题变化；如果模型自己返回了推理内容，也会一起记下来。
 
 **Q：需要配哪几个模型？**
-主模型由 AstrBot 原生流程选择；本插件另外用到「打杂模型（生成 / 复盘）」和可选「看图模型」，
-在插件配置里选，留空时回落到会话默认 Provider。
+主回复模型由 AstrBot 原生流程选择。编辑器生成区域、地点、动作、日程和事件使用插件配置中的
+「内容生成模型」，留空时复用「插件用模型」，再回落到会话默认模型。
+「打杂模型」负责复盘等后台任务，「看图模型」按需配置。
+
+**Q：点击生成区域、日程或事件后没有反应？**
+请升级到 v3.0.3 并重新打开编辑器。此版本修复了生成成功后预览被立即关闭的问题。
+生成时按钮显示「生成中」，窗口显示已等待的秒数；成功后保留可编辑的草稿，确认前不会保存或投递。
+失败原因会留在窗口内，可以直接重试。模型未配置、连接失败、额度不足、空回复和格式不符合要求
+都会显示相应提示；生成请求超过 120 秒会中止并提示超时。检查模型时，优先查看插件配置中的
+「内容生成模型」；留空则复用插件用模型，再回落到会话默认模型。
 
 **Q：动作库里那一堆「旧版」动作怎么清掉？**
 发 `/mw action purge` 先看会删哪些（含涉及的分组），确认后发 `/mw action purge confirm`；

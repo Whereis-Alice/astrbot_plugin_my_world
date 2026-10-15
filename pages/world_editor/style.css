@@ -4446,7 +4446,8 @@ button.pill:hover:not(.on) {
 }
 
 .dialog-wide {
-  width: min(760px, 94vw);
+  width: min(760px, 100%);
+  min-width: 0;
 }
 
 .dialog-error {
@@ -4454,6 +4455,8 @@ button.pill:hover:not(.on) {
   margin-top: 6px;
   color: var(--danger);
   font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* ---- 生成预览的行 ---- */

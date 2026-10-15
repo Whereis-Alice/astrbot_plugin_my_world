@@ -7007,6 +7007,24 @@ class MyWorldPlugin(Star):
             + (f"\n{detail}" if detail else f"\n{exc}")
         )
 
+    async def _generate_drafts_response(self, generate, *args, **kwargs):
+        """生成接口统一限时，并把失败原因交给编辑器展示。"""
+
+        label = getattr(generate, "__name__", "generate")
+        self.logger.info(f"[my_world] 世界生成开始：{label}")
+        started = time.monotonic()
+        try:
+            result = await asyncio.wait_for(generate(*args, **kwargs), timeout=120)
+        except asyncio.TimeoutError:
+            self.logger.warning(f"[my_world] 世界生成超时：{label}（120 秒）")
+            return error_response("生成超时（120 秒），请检查内容生成模型的连接，或减少生成数量后重试")
+        except Exception as exc:
+            detail = str(exc)[:500] or type(exc).__name__
+            self.logger.warning(f"[my_world] 世界生成失败：{label}: {detail}")
+            return error_response(f"生成失败：{detail}")
+        self.logger.info(f"[my_world] 世界生成完成：{label}，耗时 {time.monotonic() - started:.1f} 秒")
+        return json_response(result)
+
     async def api_generate_actions(self):
         """批量生成动作草稿（只返回草稿，用户在编辑器里勾选后才保存）。
 
@@ -7023,12 +7041,12 @@ class MyWorldPlugin(Star):
             zone_id = self.engine.world.zone_of(node_id)
         if not zone_id:
             return error_response("缺少 zone 参数")
-        result = await self.engine.generate_actions_for_zone(
+        return await self._generate_drafts_response(
+            self.engine.generate_actions_for_zone,
             zone_id,
             payload.get("per_node"),
             node_ids=[node_id] if node_id else None,
         )
-        return json_response(result)
 
     async def api_generate_nodes(self):
         """按区域批量生成地点草稿（含自动摆位与自动连线）。"""
@@ -7040,10 +7058,9 @@ class MyWorldPlugin(Star):
         zone_id = str(payload.get("zone", "") or "").strip()
         if not zone_id:
             return error_response("缺少 zone 参数")
-        result = await self.engine.generate_nodes_for_zone(
-            zone_id, payload.get("count")
+        return await self._generate_drafts_response(
+            self.engine.generate_nodes_for_zone, zone_id, payload.get("count")
         )
-        return json_response(result)
 
     async def api_purge_legacy_actions(self):
         """清除全部旧版（工具 / 指令型）动作；不带 confirm 时只返回预览。"""
@@ -7064,8 +7081,7 @@ class MyWorldPlugin(Star):
         guard = self._guard(payload)
         if guard is not None:
             return guard
-        result = await self.engine.generate_zones(payload.get("count"))
-        return json_response(result)
+        return await self._generate_drafts_response(self.engine.generate_zones, payload.get("count"))
 
     async def api_generate_schedules(self):
         """按她的人设与生活节奏生成日程草稿（不落库）。"""
@@ -7074,8 +7090,7 @@ class MyWorldPlugin(Star):
         guard = self._guard(payload)
         if guard is not None:
             return guard
-        result = await self.engine.generate_schedules(payload.get("count"))
-        return json_response(result)
+        return await self._generate_drafts_response(self.engine.generate_schedules, payload.get("count"))
 
     async def api_generate_events(self):
         """按她的人设与最近经历生成事件草稿（不落库）。"""
@@ -7084,8 +7099,7 @@ class MyWorldPlugin(Star):
         guard = self._guard(payload)
         if guard is not None:
             return guard
-        result = await self.engine.generate_events(payload.get("count"))
-        return json_response(result)
+        return await self._generate_drafts_response(self.engine.generate_events, payload.get("count"))
 
     async def api_deliver_event(self):
         """把编辑器里挑好的事件草稿投递给她（等价于 /mw event 一句话）。"""

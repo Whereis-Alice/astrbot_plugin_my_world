@@ -2427,17 +2427,32 @@ function collectDialogValues() {
 }
 
 async function submitDialog() {
-  if (!dialogState) return;
+  const submitted = dialogState;
+  if (!submitted || submitted.submitting) return;
   const error = $("dialog-error");
   if (error) error.textContent = "";
-  const handler = dialogState.onSubmit;
-  const values = dialogState.custom ? dialogState.values || {} : collectDialogValues();
+  const handler = submitted.onSubmit;
+  const values = submitted.custom ? submitted.values || {} : collectDialogValues();
+  const button = $("dialog-ok");
+  const label = button.textContent;
+  submitted.submitting = true;
+  button.disabled = true;
+  button.textContent = submitted.busyText || "处理中…";
   try {
     const done = await handler(values);
-    if (done === false) return; // 校验没过，保持弹窗打开
-    closeDialog(true);
+    // 提交回调可能打开下一步预览，旧请求只能关闭自己的弹窗。
+    if (dialogState === submitted && done !== false) closeDialog(true);
   } catch (exception) {
-    if (error) error.textContent = exception?.message || "操作失败";
+    if (dialogState === submitted && error) {
+      error.textContent = exception?.message || "操作失败，请重试";
+      error.setAttribute("role", "alert");
+    }
+  } finally {
+    submitted.submitting = false;
+    if (dialogState === submitted) {
+      button.disabled = false;
+      button.textContent = label;
+    }
   }
 }
 
@@ -7253,6 +7268,8 @@ async function commitGeneratedActions(drafts) {
  */
 function askGenerateCount({ title, hint, defaultValue, max, onRun }) {
   let value = String(defaultValue);
+  let status;
+  let input;
   openCustomDialog({
     title,
     hint,
@@ -7260,7 +7277,7 @@ function askGenerateCount({ title, hint, defaultValue, max, onRun }) {
     build: (body) => {
       const field = el("label", "field");
       field.appendChild(el("span", "", "生成几个"));
-      const input = document.createElement("input");
+      input = document.createElement("input");
       input.type = "number";
       input.min = "1";
       input.max = String(max || 8);
@@ -7270,11 +7287,46 @@ function askGenerateCount({ title, hint, defaultValue, max, onRun }) {
       });
       field.appendChild(input);
       body.appendChild(field);
+      status = el("p", "muted generation-status");
+      status.setAttribute("role", "status");
+      body.appendChild(status);
     },
     onSubmit: async () => {
-      await onRun(num(value, defaultValue));
+      const count = Number(value);
+      if (!Number.isInteger(count) || count < 1 || count > (max || 8)) {
+        throw new Error(`生成数量请填写 1 到 ${max || 8} 之间的整数`);
+      }
+      const current = dialogState;
+      const started = Date.now();
+      input.disabled = true;
+      const update = () => {
+        const seconds = Math.floor((Date.now() - started) / 1000);
+        status.textContent = `正在生成草稿，已等待 ${seconds} 秒…`;
+      };
+      update();
+      const ticker = window.setInterval(update, 1000);
+      let timer;
+      try {
+        const preview = await Promise.race([
+          onRun(count),
+          new Promise((_, reject) => {
+            timer = window.setTimeout(
+              () => reject(new Error("等待生成结果超时，请检查 AstrBot 连接和内容生成模型后重试")),
+              130000,
+            );
+          }),
+        ]);
+        // 用户关闭了等待窗口时，迟到的结果不能覆盖另一个弹窗。
+        if (dialogState === current && typeof preview === "function") preview();
+      } finally {
+        window.clearInterval(ticker);
+        window.clearTimeout(timer);
+        input.disabled = false;
+        status.textContent = "";
+      }
     },
   });
+  dialogState.busyText = "生成中…";
 }
 
 function generateZoneDrafts() {
@@ -7287,10 +7339,9 @@ function generateZoneDrafts() {
       const result = await apiPost("generate/zones", { count });
       const drafts = result.zones || [];
       if (!drafts.length) {
-        toast((result.problems || []).join("；") || "没有生成出可用的区域");
-        return;
+        throw new Error((result.problems || []).join("；") || "没有生成出可用的区域，请重试");
       }
-      openZoneDraftDialog(drafts, result.problems || []);
+      return () => openZoneDraftDialog(drafts, result.problems || []);
     },
   });
 }
@@ -7371,10 +7422,9 @@ function generateScheduleDrafts() {
       const result = await apiPost("generate/schedules", { count });
       const drafts = result.schedules || [];
       if (!drafts.length) {
-        toast((result.problems || []).join("；") || "没有生成出可用的日程");
-        return;
+        throw new Error((result.problems || []).join("；") || "没有生成出可用的日程，请重试");
       }
-      openScheduleDraftDialog(drafts, result.problems || []);
+      return () => openScheduleDraftDialog(drafts, result.problems || []);
     },
   });
 }
@@ -7478,10 +7528,9 @@ function generateEventDrafts() {
       const result = await apiPost("generate/events", { count });
       const drafts = result.events || [];
       if (!drafts.length) {
-        toast((result.problems || []).join("；") || "没有生成出可用的事件");
-        return;
+        throw new Error((result.problems || []).join("；") || "没有生成出可用的事件，请重试");
       }
-      openEventDraftDialog(drafts, result.problems || []);
+      return () => openEventDraftDialog(drafts, result.problems || []);
     },
   });
 }

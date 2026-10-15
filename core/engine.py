@@ -17125,24 +17125,31 @@ class MyWorldEngine:
 
     # ================= 打断 / 唤醒 =================
 
-    async def _ask_creator(self, session_id: str, system_prompt: str, prompt: str) -> str | None:
+    async def _ask_creator(
+        self, session_id: str, system_prompt: str, prompt: str, *, raise_errors: bool = False
+    ) -> str | None:
         """内容生成模型：编事件包，以及编辑器里批量生成动作 / 地点。"""
 
-        if self.creator_llm is None:
-            return None
         try:
+            if self.creator_llm is None:
+                raise ValueError("没有可用的内容生成模型，请在插件配置中选择模型或配置 AstrBot 默认对话模型")
             reply = await self.creator_llm.generate(
                 session_id=session_id,
                 system_prompt=system_prompt,
                 prompt=prompt,
                 temperature=0.8,
             )
+            if reply is None or not getattr(reply, "ok", True):
+                raise ValueError(getattr(reply, "error", "") or "模型没有返回内容")
+            text = getattr(reply, "text", "") or ""
+            if not text.strip():
+                raise ValueError("模型返回了空内容，请检查内容生成模型是否支持文本输出后重试")
         except Exception as exc:
             self._log("warning", f"内容生成模型调用失败: {exc}")
+            if raise_errors:
+                raise ValueError(f"内容生成失败：{str(exc)[:500] or type(exc).__name__}") from exc
             return None
-        if reply is None or not getattr(reply, "ok", True):
-            return None
-        return getattr(reply, "text", "") or ""
+        return text
 
     def _generator_session_id(self) -> str:
         """生成时借一个会话 id 去取人格（没有启用会话就用空字符串）。"""
@@ -17186,12 +17193,7 @@ class MyWorldEngine:
             tools=sorted(self.available_tools()),
             per_node=count,
         )
-        reply = await self._ask_creator(session_id, system_prompt, prompt)
-        if reply is None:
-            return {
-                "actions": [],
-                "problems": ["生成模型没有返回内容（检查插件配置里的「内容生成模型」）"],
-            }
+        reply = await self._ask_creator(session_id, system_prompt, prompt, raise_errors=True)
         actions, problems = parse_generated_actions(
             reply,
             node_ids=[node.id for node in nodes],
@@ -17217,13 +17219,7 @@ class MyWorldEngine:
             existing_nodes=[node.name or node.id for node in inside],
             count=wanted,
         )
-        reply = await self._ask_creator(session_id, system_prompt, prompt)
-        if reply is None:
-            return {
-                "nodes": [],
-                "edges": [],
-                "problems": ["生成模型没有返回内容（检查插件配置里的「内容生成模型」）"],
-            }
+        reply = await self._ask_creator(session_id, system_prompt, prompt, raise_errors=True)
         nodes, problems = parse_generated_nodes(
             reply,
             existing_ids={node.id for node in self.world.nodes},
@@ -17440,14 +17436,7 @@ class MyWorldEngine:
             relations=self.relations_brief(session_id),
             count=wanted,
         )
-        reply = await self._ask_creator(session_id, system_prompt, prompt)
-        if reply is None:
-            return {
-                "zones": [],
-                "problems": [
-                    "生成模型没有返回内容（检查插件配置里的「内容生成模型」）"
-                ],
-            }
+        reply = await self._ask_creator(session_id, system_prompt, prompt, raise_errors=True)
         zones, problems = parse_generated_zones(
             reply,
             existing_ids={zone.id for zone in self.world.zones},
@@ -17505,14 +17494,7 @@ class MyWorldEngine:
             relations=self.relations_brief(session_id),
             count=wanted,
         )
-        reply = await self._ask_creator(session_id, system_prompt, prompt)
-        if reply is None:
-            return {
-                "schedules": [],
-                "problems": [
-                    "生成模型没有返回内容（检查插件配置里的「内容生成模型」）"
-                ],
-            }
+        reply = await self._ask_creator(session_id, system_prompt, prompt, raise_errors=True)
         schedules, problems = parse_generated_schedules(
             reply,
             existing_ids={item["id"] for item in existing},
@@ -17564,14 +17546,7 @@ class MyWorldEngine:
             relations=self.relations_brief(session_id),
             count=wanted,
         )
-        reply = await self._ask_creator(session_id, system_prompt, prompt)
-        if reply is None:
-            return {
-                "events": [],
-                "problems": [
-                    "生成模型没有返回内容（检查插件配置里的「内容生成模型」）"
-                ],
-            }
+        reply = await self._ask_creator(session_id, system_prompt, prompt, raise_errors=True)
         events, problems = parse_generated_events(reply, max_events=wanted)
         return {
             "events": events,

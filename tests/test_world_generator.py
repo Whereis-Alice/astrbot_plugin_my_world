@@ -10,6 +10,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import AsyncMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -26,6 +27,7 @@ from core.generator import (  # noqa: E402
     parse_generated_zones,
 )
 from core.models import parse_world  # noqa: E402
+from core.ports import LLMReply  # noqa: E402
 from core.prompt import PromptBuilder  # noqa: E402
 from tests.stub_ports import StubClock, StubLLM, StubMessenger, StubPersona  # noqa: E402
 
@@ -254,6 +256,26 @@ class EngineGeneratorTests(unittest.IsolatedAsyncioTestCase):
         events = result["events"]
         self.assertEqual(len(events), 1)
         self.assertIn("信", events[0]["text"])
+
+    async def test_editor_generators_preserve_provider_failure_reason(self):
+        self.creator.generate = AsyncMock(return_value=LLMReply(ok=False, error="HTTP 429: quota exceeded"))
+        for method in (self.engine.generate_zones, self.engine.generate_schedules, self.engine.generate_events):
+            with self.subTest(generator=method.__name__):
+                with self.assertRaisesRegex(ValueError, "429: quota exceeded"):
+                    await method(1)
+
+    async def test_empty_reply_and_missing_model_have_actionable_errors(self):
+        with self.assertRaisesRegex(ValueError, "空内容"):
+            await self.engine.generate_zones(1)
+        self.engine.creator_llm = None
+        with self.assertRaisesRegex(ValueError, "没有可用的内容生成模型"):
+            await self.engine.generate_zones(1)
+
+    async def test_provider_exception_is_reported_but_background_calls_still_fall_back(self):
+        self.creator.generate = AsyncMock(side_effect=RuntimeError("connection refused"))
+        with self.assertRaisesRegex(ValueError, "connection refused"):
+            await self.engine.generate_zones(1)
+        self.assertIsNone(await self.engine._ask_creator(SESSION, "", ""))
 
 
 if __name__ == "__main__":
