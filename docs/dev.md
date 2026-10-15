@@ -1,0 +1,61 @@
+# 开发与测试
+
+[文档目录](README.md) · [按主题拆开的详细说明](GUIDE.md) · [返回 README](../README.md)
+
+## 目录结构
+
+```text
+astrbot_plugin_my_world/
+├── main.py                  # AstrBot 适配层：钩子、指令、Web API、消息发送
+├── metadata.yaml            # 插件标识与版本（插件市场读它）
+├── _conf_schema.json        # AstrBot 面板里的插件配置项
+├── core/                    # 引擎：世界模型、提示词、状态、记忆、事件、生成器
+├── pages/world_editor/      # 网页编辑器（HTML / CSS / 原生 JS）
+├── docs/                    # 文档（本文件在这里）
+├── tests/                   # 不依赖 AstrBot 的回归测试（自带桩）
+└── tools/                   # 开发脚本：logo、模拟、API 推送
+```
+
+核心逻辑都在 `core/`，`main.py` 只做宿主适配。测试替身在 `tests/fake_astrbot.py` 与
+`tests/stub_ports.py` 里，所以跑测试不需要装 AstrBot、也不碰真实数据目录。
+
+## 本地验证与测试
+
+```powershell
+python -m pytest -q
+```
+
+覆盖范围：提示词分层与注入边界、回合复盘、世界生成解析、引擎状态机、事件与掷骰、
+记忆与画像、编辑器接口与前端引用、旧版接管路径（迁移兜底）等。
+
+想只跑某一块：
+
+```powershell
+python -m pytest tests/test_dialogue_inject.py -q   # 注入式接管（主路径）
+python -m pytest tests/test_world_generator.py -q   # 区域 / 日程 / 事件生成
+python -m pytest tests/test_frontend.py -q          # 编辑器契约
+```
+
+## 两个版本开关
+
+- `reply_mode=inject`（默认）：只注入；`takeover` 是旧版接管（自己调模型自己发），
+  仅作迁移兜底。
+- `legacy_tool_actions`（默认关）：旧版工具 / 指令动作是否继续执行；
+  也可以用环境变量 `MY_WORLD_LEGACY_TOOL_ACTIONS=1`。
+
+## 数据目录
+
+默认在 AstrBot 的 `data/plugin_data/astrbot_plugin_my_world/`，可以用环境变量
+`MY_WORLD_DATA_DIR` 覆盖。第一次启动时可以用 `MY_WORLD_MIGRATE_FROM=<旧目录>`
+从 `astrbot_plugin_her_world` / `astrbot_plugin_virtual_world` 整份搬数据（不覆盖已有数据）。
+
+## 推送到 GitHub
+
+如果遇到只能访问 `api.github.com`、`git push` 被重置的网络，
+用 `tools/push_via_api.ps1` 通过 REST API 推送：
+
+```powershell
+pwsh tools/push_via_api.ps1 -Repo Whereis-Alice/astrbot_plugin_my_world
+```
+
+它按 blob → tree → commit → ref 的顺序推当前 HEAD 的内容，认证走本机已登录的 `gh`。
