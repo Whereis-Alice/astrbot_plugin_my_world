@@ -2242,6 +2242,14 @@ class WorldConfig(Permissive):
     """是否要求大模型在 actions 之前先输出 reasoning（推理草稿）。"""
 
     schema_version: int = 1
+    default_actions_disabled: bool = False
+    """这份配置是否已经应用过「默认动作按需启用」的迁移。
+
+    新装默认世界直接带上这个标记并让非核心动作默认停用；老配置第一次读入时由
+    ``ConfigStore.load_world()`` 迁移一次并写回。迁移之后用户重新开启的默认动作
+    不会被再次关掉。
+    """
+
     global_prompt: str = ""
     timezone: str = "Asia/Shanghai"
     default_state: DefaultState = Field(default_factory=DefaultState)

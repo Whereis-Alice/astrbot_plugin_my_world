@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -22,7 +23,7 @@ from core.memory import (  # noqa: E402
     MemoryEngine,
 )
 from core.models import parse_world  # noqa: E402
-from core.defaults import default_world  # noqa: E402
+from core.defaults import CORE_BUILTIN_ACTIONS, default_world  # noqa: E402
 
 
 class TempDirMixin:
@@ -182,6 +183,71 @@ class TestConfigStore(TempDirMixin, unittest.TestCase):
         kept = world.action_map()["pour_tea"]
         self.assertEqual(kept.name, "给我倒水")
         self.assertEqual(kept.template, "（{bot}把水递给你）")
+
+
+class TestDefaultActionsOff(TempDirMixin, unittest.TestCase):
+    """默认动作按需启用：生产默认只开核心动作，老配置做一次性迁移。"""
+
+    def test_production_default_keeps_only_core_actions_enabled(self):
+        repo = str(Path(__file__).resolve().parent.parent)
+        script = (
+            "import json, sys; "
+            f"sys.path.insert(0, r'{repo}'); "
+            "from core.defaults import default_actions; "
+            "print(json.dumps([a['id'] for a in default_actions() if a.get('enabled', True)]))"
+        )
+        env = dict(os.environ)
+        env.pop("MY_WORLD_TEST_DEFAULT_ACTIONS", None)
+        done = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=repo,
+            timeout=30,
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(set(json.loads(done.stdout)), set(CORE_BUILTIN_ACTIONS))
+
+    def test_old_world_migrates_once_and_keeps_custom_actions(self):
+        store = ConfigStore(self.tmp_path)
+        store.ensure_files()
+        raw = store.raw_world()
+        raw.pop("default_actions_disabled", None)  # 模拟升级前的旧配置
+        by_id = {action["id"]: action for action in raw["actions"]}
+        by_id["sing"]["enabled"] = True
+        by_id["say"]["enabled"] = True
+        raw["actions"].append(
+            {
+                "id": "my_custom_action",
+                "name": "用户自己加的动作",
+                "category": "instant",
+                "llm_level": "single",
+                "enabled": True,
+            }
+        )
+        store.save_world(raw, snapshot=False)
+
+        world = store.load_world()
+        migrated = {action.id: action for action in world.actions}
+        self.assertTrue(world.default_actions_disabled)
+        self.assertFalse(migrated["sing"].enabled)
+        self.assertTrue(migrated["say"].enabled)
+        self.assertTrue(migrated["my_custom_action"].enabled)
+
+        # 迁移会写回文件，编辑器 / 下次加载看到的是同一份状态
+        raw_after = store.raw_world()
+        after = {action["id"]: action for action in raw_after["actions"]}
+        self.assertTrue(raw_after.get("default_actions_disabled"))
+        self.assertFalse(after["sing"]["enabled"])
+
+        # 用户之后手动重新开启，再加载时不会被迁移逻辑重新关掉
+        for action in raw_after["actions"]:
+            if action["id"] == "sing":
+                action["enabled"] = True
+        store.save_world(raw_after, snapshot=False)
+        again = {action.id: action for action in store.load_world().actions}
+        self.assertTrue(again["sing"].enabled)
 
 
 class TestDatabase(TempDirMixin, unittest.TestCase):

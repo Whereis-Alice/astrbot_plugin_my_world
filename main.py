@@ -54,6 +54,7 @@ from .core.config_store import HISTORY_KEEP, ConfigStore
 from .core.config_scope import session_scoped
 from .core.db import AsyncDatabase
 from .core.defaults import (
+    CORE_BUILTIN_ACTIONS,
     DEFAULT_CAPTION_PROMPT,
     DEFAULT_CAPTION_RELATION_PROMPT,
     DEFAULT_FORWARD_PROMPT,
@@ -8127,6 +8128,9 @@ class MyWorldPlugin(Star):
         return json_response(
             {
                 "actions": actions,
+                # 默认动作现在是"按需启用"：编辑器用它做一键开启 / 关闭，
+                # 核心动作（说话 / 移动 / 睡觉…）始终保留。
+                "core_actions": sorted(CORE_BUILTIN_ACTIONS),
                 # 配置字段的中文说明：滑块明细和旧默认值提醒都用它，
                 # 免得同一份字段名要在前端再抄一遍。
                 "field_labels": dict(FIELD_LABELS),

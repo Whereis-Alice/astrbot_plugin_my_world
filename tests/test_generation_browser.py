@@ -235,6 +235,31 @@ class GenerationBrowserTests(unittest.TestCase):
         )
         self.assertEqual(self.errors, [])
 
+    def test_default_actions_can_be_bulk_enabled_and_disabled(self):
+        self.page.locator('button[data-tab="actions"]').click()
+        advanced = self.page.locator("#tab-actions details.adv-menu")
+        if not advanced.evaluate("element => element.open"):
+            advanced.locator("summary").click()
+        self.page.locator("#action-disable-defaults").click()
+        expect(self.page.locator("#dialog-title")).to_contain_text("停用全部默认动作")
+        self.page.locator("#dialog-ok").click()
+        expect(self.page.locator("#dialog")).to_be_hidden()
+        config = self.page.evaluate("AstrBotPluginPage.apiGet('config')")
+        by_id = {item["id"]: item for item in config["world"]["actions"]}
+        self.assertFalse(by_id["sing"]["enabled"])
+        self.assertTrue(by_id["say"]["enabled"])
+
+        if not advanced.evaluate("element => element.open"):
+            advanced.locator("summary").click()
+        self.page.locator("#action-enable-defaults").click()
+        expect(self.page.locator("#dialog-title")).to_contain_text("启用全部默认动作")
+        self.page.locator("#dialog-ok").click()
+        expect(self.page.locator("#dialog")).to_be_hidden()
+        config = self.page.evaluate("AstrBotPluginPage.apiGet('config')")
+        by_id = {item["id"]: item for item in config["world"]["actions"]}
+        self.assertTrue(by_id["sing"]["enabled"])
+        self.assertEqual(self.errors, [])
+
     def test_spring_layout_with_complex_routes_stays_readable(self):
         base_zones = [
             {"id": "home", "name": "家中", "is_home": True},
@@ -301,5 +326,8 @@ class GenerationBrowserTests(unittest.TestCase):
         self.page.locator("#dialog-ok").click()
         expect(self.page.locator("#dialog")).to_be_hidden()
         expect(self.page.locator("#canvas-nodes .node")).to_have_count(5)
+        first_label = self.page.locator("#canvas-labels text.edge-ticks").first
+        self.assertIn("rotate(", first_label.get_attribute("transform") or "")
+        self.assertEqual(first_label.locator("tspan").count(), 2)
         self.host.screenshot(path=str(self.shots / "ring-layout.png"))
         self.assertEqual(self.errors, [])

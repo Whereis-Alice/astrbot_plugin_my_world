@@ -26,6 +26,7 @@ PLUGIN_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PLUGIN_DIR))
 
 from core.defaults import (  # noqa: E402
+    CORE_BUILTIN_ACTIONS,
     DEFAULT_CAPTION_PROMPT,
     DEFAULT_CAPTION_RELATION_PROMPT,
     DEFAULT_FORWARD_PROMPT,
@@ -200,6 +201,7 @@ def build_payload() -> dict:
         },
         "tools": {"tools": tools, "global_allowed": world["global_allowed_tools"]},
         "defaults": {
+            "core_actions": sorted(CORE_BUILTIN_ACTIONS),
             "actions": {
                 str(item.get("id")): {
                     "name": item.get("name", ""),

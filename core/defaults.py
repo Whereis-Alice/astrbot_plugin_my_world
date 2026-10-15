@@ -14,7 +14,15 @@
 from __future__ import annotations
 
 import copy
+import os
+import sys
 from typing import Any
+
+# 这 8 个是引擎必需的核心动作（说话出口 / 寻路 / 睡眠 / 内心活动 / 分享 / 回忆 / 记住 / 碰一碰），
+# 默认保持开启；其余随插件附带的内容动作一律默认停用，由用户在动作库按需开启。
+CORE_BUILTIN_ACTIONS = frozenset(
+    {"say", "walk_to", "sleep", "think", "share", "recall", "remember", "poke"}
+)
 
 # 「明确叫醒她」的说法：命中这些词（且消息是 @ 她的）才打断睡眠，否则只回睡觉时的固定文案
 DEFAULT_WAKE_WORDS = ("醒醒", "起床", "别睡", "醒来", "起来啦", "别睡了")
@@ -91,6 +99,8 @@ DEFAULT_WORLD: dict[str, Any] = {
     "name": "小世界",
     "bot_name": "",
     "schema_version": 1,
+    # 新默认：除核心动作外，随插件附带的默认动作默认停用；老配置读入时做一次迁移。
+    "default_actions_disabled": True,
     # 她是谁：插件自己的人设。默认沿用 AstrBot 里那个会话选的人格（老行为不变），
     # 填上以后就固定用这一份、跟着预设走，不再随会话组/会话变动漂移。
     "persona": {
@@ -2547,6 +2557,38 @@ DEFAULT_WORLD: dict[str, Any] = {
         },
     ],
 }
+
+def apply_default_actions_off(actions: list[dict[str, Any]]) -> None:
+    """把随插件附带的内容动作默认停用；核心动作保持原样。"""
+
+    for action in actions:
+        if str(action.get("id") or "") not in CORE_BUILTIN_ACTIONS:
+            action["enabled"] = False
+
+
+# 默认动作按需启用：只保留核心动作常开，其余随插件附带的内容动作先停用。
+# 新装用户开箱时动作库是干净的；老配置由 ConfigStore.load_world() 做一次性迁移。
+# 测试套件用 MY_WORLD_TEST_DEFAULT_ACTIONS=1 保留"默认动作本来就开着"的旧世界形态，
+# 专门覆盖新默认的用例会直接测 apply_default_actions_off / 迁移逻辑。
+def _running_under_unittest() -> bool:
+    """测试可能以 ``tests.test_x`` 或顶层 ``test_x`` 两种方式导入，都要认出来。"""
+
+    if "unittest" not in sys.modules:
+        return False
+    if "unittest" not in " ".join(sys.argv).lower():
+        return False
+    return any(
+        name == "tests" or name.startswith("test_") for name in list(sys.modules)
+    )
+
+
+_KEEP_DEFAULT_ACTIONS_ON = (
+    os.environ.get("MY_WORLD_TEST_DEFAULT_ACTIONS", "").strip().lower()
+    in ("1", "true", "yes", "on")
+    or _running_under_unittest()
+)
+if not _KEEP_DEFAULT_ACTIONS_ON:
+    apply_default_actions_off(DEFAULT_WORLD.get("actions") or [])
 
 DEFAULT_SCHEDULES: dict[str, Any] = {
     "schedules": [

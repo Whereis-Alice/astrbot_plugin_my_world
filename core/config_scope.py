@@ -11,7 +11,15 @@ from typing import Any
 
 MAP_KEYS = frozenset({"zones", "zone_edges", "nodes", "edges"})
 ACTION_KEYS = frozenset({"actions", "purged_actions"})
-GLOBAL_KEYS = frozenset({"admin_ids", "proactive_chat_paused", "wizard_done", "schema_version"})
+GLOBAL_KEYS = frozenset(
+    {
+        "admin_ids",
+        "proactive_chat_paused",
+        "wizard_done",
+        "schema_version",
+        "default_actions_disabled",
+    }
+)
 BLOCK_NAMES = ("map", "actions", "schedules", "settings")
 
 

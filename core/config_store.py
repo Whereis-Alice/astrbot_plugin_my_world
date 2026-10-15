@@ -14,7 +14,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .defaults import default_schedules, default_world
+from .defaults import (
+    CORE_BUILTIN_ACTIONS,
+    default_actions,
+    default_schedules,
+    default_world,
+)
 from .config_scope import BLOCK_NAMES, effective_config, world_block
 from .models import (
     SchedulesConfig,
@@ -147,9 +152,40 @@ class ConfigStore:
         merged["edges"] = raw.get("edges", merged.get("edges", []))
         merged["actions"] = raw.get("actions", merged.get("actions", []))
         world, warnings = parse_world(merged)
+        if "default_actions_disabled" not in raw:
+            # 老配置一次性迁移：默认动作改为"按需启用"。用户自己加的动作不动，
+            # 核心动作（说话 / 移动 / 睡觉…）保持开启；迁移只发生一次。
+            changed = self._disable_default_actions(world)
+            world.default_actions_disabled = True
+            if changed:
+                warnings.append(
+                    f"默认动作已改为按需启用：{changed} 个默认动作已停用"
+                    "（说话 / 移动 / 睡觉等核心动作保留，可在动作库按需开启）"
+                )
+            self.snapshot_before("默认动作改为按需启用")
+            self._write_json(
+                self.world_path,
+                world.model_dump(mode="json", by_alias=True),
+            )
         self.warnings.extend(warnings)
         self._world = world
         return world
+
+    @staticmethod
+    def _disable_default_actions(world: WorldConfig) -> int:
+        """把随插件附带的默认动作停用（核心动作和用户自己加的动作除外）。"""
+
+        shipped = {
+            str(item.get("id") or "")
+            for item in default_actions()
+            if str(item.get("id") or "")
+        }
+        changed = 0
+        for action in world.actions:
+            if action.id in shipped and action.id not in CORE_BUILTIN_ACTIONS and action.enabled:
+                action.enabled = False
+                changed += 1
+        return changed
 
     def load_schedules(self) -> SchedulesConfig:
         raw = self._read_json(self.schedules_path, default_schedules())

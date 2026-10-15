@@ -3284,7 +3284,13 @@ function renderEverything() {
 const CONFIG_BLOCKS = { map: "地图", actions: "动作库", schedules: "日程", settings: "设置" };
 const MAP_CONFIG_KEYS = new Set(["zones", "zone_edges", "nodes", "edges"]);
 const ACTION_CONFIG_KEYS = new Set(["actions", "purged_actions"]);
-const GLOBAL_CONFIG_KEYS = new Set(["admin_ids", "proactive_chat_paused", "wizard_done", "schema_version"]);
+const GLOBAL_CONFIG_KEYS = new Set([
+  "admin_ids",
+  "proactive_chat_paused",
+  "wizard_done",
+  "schema_version",
+  "default_actions_disabled",
+]);
 
 function configFingerprint() {
   return JSON.stringify([ui.config.world, ui.config.schedules, ui.config.sessions, [...ui.scopeBlocks].sort()],
@@ -3759,6 +3765,16 @@ function bindButtons() {
   // 旧版「从工具导入」入口已经下线（工具调用交回 AstrBot 原生）；元素不在时不要绑。
   $("action-search").addEventListener("input", renderActionGrid);
   $("action-json").addEventListener("click", editActionsJson);
+  if ($("action-enable-defaults")) {
+    $("action-enable-defaults").addEventListener("click", () =>
+      setDefaultActionsEnabled(true),
+    );
+  }
+  if ($("action-disable-defaults")) {
+    $("action-disable-defaults").addEventListener("click", () =>
+      setDefaultActionsEnabled(false),
+    );
+  }
   if ($("action-purge-legacy")) {
     $("action-purge-legacy").addEventListener("click", purgeLegacyActions);
   }
@@ -6741,6 +6757,30 @@ async function refreshWeatherNow() {
 }
 
 /** 世界地图：只画区域节点和区域之间的连线。 */
+/**
+ * 把连线标签顺着线的方向摆到线的上侧。
+ * 朝左的线会把文字翻正，避免倒着读；curved 时按贝塞尔中点找位置。
+ */
+function placeEdgeLabel(label, x1, y1, x2, y2, curveX, curveY, curved, offset = 9) {
+  const baseX = curved ? 0.25 * x1 + 0.5 * curveX + 0.25 * x2 : (x1 + x2) / 2;
+  const baseY = curved ? 0.25 * y1 + 0.5 * curveY + 0.25 * y2 : (y1 + y2) / 2;
+  let angle = (Math.atan2(y2 - y1, x2 - x1) * 180) / Math.PI;
+  if (angle > 90) angle -= 180;
+  else if (angle < -90) angle += 180;
+  const rad = (angle * Math.PI) / 180;
+  const x = baseX + Math.sin(rad) * offset;
+  const y = baseY - Math.cos(rad) * offset;
+  label.setAttribute("x", x);
+  label.setAttribute("y", y);
+  label.setAttribute("text-anchor", "middle");
+  label.setAttribute("dominant-baseline", "middle");
+  label.setAttribute(
+    "transform",
+    `rotate(${angle.toFixed(1)} ${x.toFixed(1)} ${y.toFixed(1)})`,
+  );
+  return { x, y, angle };
+}
+
 function renderWorldMap() {
   const container = $("canvas-nodes");
   const svg = $("canvas-edges");
@@ -6778,6 +6818,10 @@ function renderWorldMap() {
   const byId = {};
   zones().forEach((zone) => {
     byId[zone.id] = zone;
+  });
+  const nodeById = {};
+  nodes().forEach((node) => {
+    nodeById[node.id] = node;
   });
 
   const seen = {};
@@ -6821,15 +6865,27 @@ function renderWorldMap() {
     title.textContent =
       `${nodeLabel(edge.from_node)} ↔ ${nodeLabel(edge.to_node)}（${num(edge.ticks, 1)} tick）`;
     path.appendChild(title);
-    const lx = index === 0 ? (x1 + x2) / 2 : 0.25 * x1 + 0.5 * cx + 0.25 * x2;
-    const ly = index === 0 ? (y1 + y2) / 2 : 0.25 * y1 + 0.5 * cy + 0.25 * y2;
     const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    label.setAttribute("x", lx);
-    label.setAttribute("y", ly - 4);
-    label.setAttribute("text-anchor", "middle");
     label.setAttribute("class", "edge-ticks");
-    // 点对点：标出这条线两端的具体地点；耗时放在悬停提示里。
-    label.textContent = `${nodeLabel(edge.from_node)} ↔ ${nodeLabel(edge.to_node)}`;
+    const anchor = placeEdgeLabel(label, x1, y1, x2, y2, cx, cy, index !== 0, 0);
+    // 点对点标签分两行：来源地点在线的上方、目标地点在下方；
+    // 两端各用自己的地点颜色，路线一多也能一眼看出这条线连着谁。
+    const fromNode = nodeById[edge.from_node];
+    const toNode = nodeById[edge.to_node];
+    const fromColor = (fromNode && fromNode.color) || from.color || "";
+    const toColor = (toNode && toNode.color) || to.color || "";
+    const first = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
+    first.setAttribute("x", anchor.x);
+    first.setAttribute("dy", "-3");
+    if (fromColor) first.setAttribute("fill", fromColor);
+    first.textContent = nodeLabel(edge.from_node);
+    const second = document.createElementNS("http://www.w3.org/2000/svg", "tspan");
+    second.setAttribute("x", anchor.x);
+    second.setAttribute("dy", "12");
+    if (toColor) second.setAttribute("fill", toColor);
+    second.textContent = nodeLabel(edge.to_node);
+    label.appendChild(first);
+    label.appendChild(second);
     (labels || svg).appendChild(label);
   });
 
@@ -6939,20 +6995,22 @@ function renderZoneMap() {
     const to = byId[edge.to];
     if (!from || !to) return;
     const linkColor = getComputedStyle(document.body).getPropertyValue("--muted").trim() || "#9aa7bd";
+    const x1 = num(from.x) + 48;
+    const y1 = num(from.y) + 20;
+    const x2 = num(to.x) + 48;
+    const y2 = num(to.y) + 20;
     const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    line.setAttribute("x1", num(from.x) + 48);
-    line.setAttribute("y1", num(from.y) + 20);
-    line.setAttribute("x2", num(to.x) + 48);
-    line.setAttribute("y2", num(to.y) + 20);
+    line.setAttribute("x1", x1);
+    line.setAttribute("y1", y1);
+    line.setAttribute("x2", x2);
+    line.setAttribute("y2", y2);
     line.setAttribute("stroke", linkColor);
     line.setAttribute("stroke-width", "2");
     if (!edge.bidirectional) line.setAttribute("stroke-dasharray", "6 4");
     svg.appendChild(line);
     const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    label.setAttribute("x", (num(from.x) + num(to.x)) / 2 + 48);
-    label.setAttribute("y", (num(from.y) + num(to.y)) / 2 + 16);
-    label.setAttribute("text-anchor", "middle");
     label.setAttribute("class", "edge-ticks");
+    placeEdgeLabel(label, x1, y1, x2, y2, 0, 0, false);
     label.textContent = `${num(edge.ticks, 1)} tick`;
     (labels || svg).appendChild(label);
   });
@@ -10210,6 +10268,45 @@ function setSelectedActionsEnabled(enabled) {
   markDirty();
   renderActionGrid();
   toast(changed ? `已${enabled ? "启用" : "停用"} ${changed} 个动作` : "选中的动作没有需要改的");
+}
+
+/** 一次开启 / 停用全部随插件附带的默认动作；核心动作和用户自己加的动作不动。 */
+async function setDefaultActionsEnabled(enabled) {
+  const shipped = new Set(Object.keys((ui.defaults && ui.defaults.actions) || {}));
+  const core = new Set((ui.defaults && ui.defaults.core_actions) || []);
+  if (!shipped.size) {
+    toast("没有可用的默认动作清单");
+    return;
+  }
+  const targets = actions().filter(
+    (action) =>
+      shipped.has(String(action.id))
+      && !core.has(String(action.id))
+      && !actionOwnerOf(action),
+  );
+  const affected = targets.filter((action) => Boolean(action.enabled) !== enabled);
+  if (!affected.length) {
+    toast(enabled ? "默认动作已经全部开着" : "默认动作已经全部停着");
+    return;
+  }
+  const ok = await confirmDialog({
+    title: enabled ? "启用全部默认动作" : "停用全部默认动作",
+    message: enabled
+      ? `会打开 ${affected.length} 个随插件附带的默认动作；说话 / 移动 / 睡觉等核心动作本来就开着，用户自己加的动作不受影响。`
+      : `会关掉 ${affected.length} 个随插件附带的默认动作；核心动作和用户自己加的动作不受影响。`,
+    confirmText: enabled ? "全部启用" : "全部停用",
+  });
+  if (!ok) return;
+  let changed = 0;
+  targets.forEach((action) => {
+    if (Boolean(action.enabled) === enabled) return;
+    action.enabled = enabled;
+    changed += 1;
+  });
+  markDirty();
+  renderActionGrid();
+  await saveAll();
+  toast(`已${enabled ? "启用" : "停用"} ${changed} 个默认动作`);
 }
 
 /** 批量改分组：直接写 group 字段（留空 = 回到自动归类）。 */

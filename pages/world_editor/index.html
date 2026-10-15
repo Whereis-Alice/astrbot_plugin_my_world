@@ -333,6 +333,12 @@
                 <details class="adv-menu">
                   <summary title="给会用的人准备的：批量导入导出、直接改结构">高级</summary>
                   <div class="adv-menu-body">
+                    <button id="action-enable-defaults" class="ghost" title="把随插件附带的默认动作一次性打开；用户自己加的动作不受影响">
+                      启用默认动作…
+                    </button>
+                    <button id="action-disable-defaults" class="ghost" title="把随插件附带的默认动作一次性关掉；说话 / 移动 / 睡觉等核心动作不受影响">
+                      停用默认动作…
+                    </button>
                     <button id="action-json" class="ghost" title="直接编辑动作的 JSON，方便批量导入导出">
                       编辑动作 JSON…
                     </button>
@@ -348,6 +354,7 @@
             动作多的时候：左边按组筛、上面按条件筛，勾上「批量选择」可以一次启用 / 停用 / 改分组 / 删除一批。
             动作是她的「虚拟动作 / 提示词事件」：她做什么、去哪里，只影响她的世界与提示词；
             工具调用走 AstrBot 原生 Agent，不在这里挂工具。旧版工具动作保留为「旧版」并停用，可以删掉或改写成虚拟动作。
+            随插件附带的默认动作默认停用；想用哪些就打开它的开关，或在「高级 → 启用默认动作…」里一次打开。
           </p>
           <div class="action-filters">
             <div class="toolbar">
