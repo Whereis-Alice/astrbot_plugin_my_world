@@ -22,6 +22,13 @@ MAX_SCHEDULES_PER_RUN = 6
 DEFAULT_SCHEDULES_PER_RUN = 3
 MAX_EVENTS_PER_RUN = 6
 DEFAULT_EVENTS_PER_RUN = 3
+# 一键重建整张地图：区域更多、每个区域自带地点，单独一套上限，避免和"增量生成"
+# 的额度互相牵制。
+MAX_MAP_ZONES = 6
+MIN_MAP_ZONES = 2
+DEFAULT_MAP_ZONES = 4
+MAX_MAP_NODES_PER_ZONE = 5
+DEFAULT_MAP_NODES_PER_ZONE = 3
 
 DAY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
@@ -56,12 +63,12 @@ def clamp_node_count(value: Any, default: int = DEFAULT_NODES_PER_RUN) -> int:
     return max(1, min(MAX_NODES_PER_RUN, number))
 
 
-def extract_items(text: str, key: str) -> tuple[list[Any], list[str]]:
-    """从模型输出里取出数组：容忍 ```json 围栏、前后废话、以及 {"key": [...]} 包装。"""
+def parse_json_payload(text: str) -> tuple[Any, list[str]]:
+    """把模型输出解析成 JSON 对象 / 数组：容忍 ```json 围栏和前后废话。"""
 
     raw = str(text or "").strip()
     if not raw:
-        return [], ["模型没有返回任何内容"]
+        return None, ["模型没有返回任何内容"]
     fenced = re.search(r"```(?:json)?\s*(.+?)```", raw, re.S)
     if fenced:
         raw = fenced.group(1).strip()
@@ -79,7 +86,16 @@ def extract_items(text: str, key: str) -> tuple[list[Any], list[str]]:
                 except Exception:
                     continue
     if payload is None:
-        return [], ["模型输出不是合法 JSON"]
+        return None, ["模型输出不是合法 JSON"]
+    return payload, []
+
+
+def extract_items(text: str, key: str) -> tuple[list[Any], list[str]]:
+    """从模型输出里取出数组：容忍 ```json 围栏、前后废话、以及 {"key": [...]} 包装。"""
+
+    payload, problems = parse_json_payload(text)
+    if payload is None:
+        return [], problems
     if isinstance(payload, list):
         return payload, []
     if isinstance(payload, dict):
@@ -327,12 +343,166 @@ def link_plan(node_ids: list[str], *, anchor: str = "") -> list[tuple[str, str]]
     return pairs
 
 
+def _zone_xy(zone: dict[str, Any]) -> tuple[float, float]:
+    try:
+        return float(zone.get("x") or 0), float(zone.get("y") or 0)
+    except (TypeError, ValueError):
+        return 0.0, 0.0
+
+
+def _zone_distance(left: dict[str, Any], right: dict[str, Any]) -> float:
+    lx, ly = _zone_xy(left)
+    rx, ry = _zone_xy(right)
+    return ((lx - rx) ** 2 + (ly - ry) ** 2) ** 0.5
+
+
+def _anchor_node(nodes: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """取区域里最靠上的一个地点当门户落点；没有地点就返回 None。"""
+
+    usable = [item for item in (nodes or []) if isinstance(item, dict) and item.get("id")]
+    if not usable:
+        return None
+    return min(
+        usable,
+        key=lambda item: (float(item.get("y") or 0), float(item.get("x") or 0)),
+    )
+
+
+def connect_zone_graph(
+    zones: list[dict[str, Any]],
+    nodes_by_zone: dict[str, list[dict[str, Any]]],
+    *,
+    existing_edges: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """补全跨区连线，返回**新增**的连线，保证所有有地点的区域连成一片。
+
+    已有连线会被当成图的边参与连通性判断；缺的那几刀按"离已经连上的片区最近的
+    区域"补，拓扑稳定，也不会给同一对区域叠重复线。
+    """
+
+    by_id = {
+        str(zone.get("id") or ""): zone
+        for zone in (zones or [])
+        if str(zone.get("id") or "")
+    }
+    usable = [zone_id for zone_id in by_id if nodes_by_zone.get(zone_id)]
+    if len(usable) < 2:
+        return []
+
+    parent = {zone_id: zone_id for zone_id in usable}
+
+    def find(zone_id: str) -> str:
+        while parent[zone_id] != zone_id:
+            parent[zone_id] = parent[parent[zone_id]]
+            zone_id = parent[zone_id]
+        return zone_id
+
+    def union(left: str, right: str) -> None:
+        root_left, root_right = find(left), find(right)
+        if root_left != root_right:
+            parent[root_right] = root_left
+
+    for edge in existing_edges or []:
+        if not isinstance(edge, dict):
+            continue
+        left = str(edge.get("from_zone") or "").strip()
+        right = str(edge.get("to_zone") or "").strip()
+        if left in parent and right in parent:
+            union(left, right)
+
+    root = usable[0]
+    added: list[dict[str, Any]] = []
+    used_edge_ids: set[str] = set()
+    while True:
+        main = [zone_id for zone_id in usable if find(zone_id) == find(root)]
+        missing = [zone_id for zone_id in usable if find(zone_id) != find(root)]
+        if not missing:
+            break
+        connected = False
+        for zone_id in missing:
+            candidates = [item for item in main if nodes_by_zone.get(item)]
+            if not candidates:
+                continue
+            target = min(
+                candidates,
+                key=lambda item: _zone_distance(by_id[zone_id], by_id[item]),
+            )
+            src_node = _anchor_node(nodes_by_zone.get(zone_id, []))
+            dst_node = _anchor_node(nodes_by_zone.get(target, []))
+            if not src_node or not dst_node:
+                continue
+            ticks = max(
+                1,
+                int(round(_zone_distance(by_id[zone_id], by_id[target]) / 150.0)),
+            )
+            edge_id = f"z_{src_node['id']}_{dst_node['id']}"
+            if edge_id in used_edge_ids:
+                index = 2
+                while f"{edge_id}_{index}" in used_edge_ids:
+                    index += 1
+                edge_id = f"{edge_id}_{index}"
+            used_edge_ids.add(edge_id)
+            added.append(
+                {
+                    "id": edge_id,
+                    "from_zone": zone_id,
+                    "from_node": str(src_node["id"]),
+                    "to_zone": target,
+                    "to_node": str(dst_node["id"]),
+                    "ticks": ticks,
+                    "bidirectional": True,
+                }
+            )
+            union(zone_id, target)
+            connected = True
+        if not connected:
+            break
+    return added
+
+
+def starter_node_for_zone(
+    zone: dict[str, Any], *, used_ids: set[str] | None = None
+) -> dict[str, Any]:
+    """给没有地点的区域放一个可编辑的落脚点，跨区连线才有两端可以引用。"""
+
+    zone_id = _slug(zone.get("id") or zone.get("name")) or "zone"
+    name = str(zone.get("name") or zone_id).strip() or zone_id
+    base_id = f"{zone_id}_center"
+    node_id = base_id
+    used = {str(item) for item in (used_ids or set())}
+    index = 2
+    while node_id in used:
+        node_id = f"{base_id}_{index}"
+        index += 1
+    label = name if name.endswith("中心") else f"{name}·中心"
+    return {
+        "id": node_id,
+        "name": label,
+        "prompt": f"「{name}」里最先落脚的地方，也是她熟悉这一带的起点。",
+        "icon": str(zone.get("icon") or "").strip(),
+        "color": str(zone.get("color") or "#8B7DD8").strip(),
+        "atmosphere": {},
+        "preset_memories": [],
+        "nickname_text": _node_nickname_text("", name),
+        "x": 60.0,
+        "y": 60.0,
+    }
+
+
 def clamp_zone_count(value: Any, default: int = DEFAULT_ZONES_PER_RUN) -> int:
     try:
         number = int(value)
     except (TypeError, ValueError):
         number = default
     return max(1, min(MAX_ZONES_PER_RUN, number))
+
+
+def clamp_map_zone_count(value: Any, default: int = DEFAULT_MAP_ZONES) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(MIN_MAP_ZONES, min(MAX_MAP_ZONES, number))
 
 
 def clamp_schedule_count(value: Any, default: int = DEFAULT_SCHEDULES_PER_RUN) -> int:
@@ -405,6 +575,134 @@ def parse_generated_zones(
                 zone["is_home"] = False
         problems.append("生成了多个「家」，只保留第一个，其余已清掉")
     return zones, problems
+
+
+def parse_generated_world_map(
+    text: str,
+    *,
+    max_zones: int = MAX_MAP_ZONES,
+    max_nodes_per_zone: int = MAX_MAP_NODES_PER_ZONE,
+) -> dict[str, Any]:
+    """解析"一键重建整张地图"的模型输出。
+
+    只信任结构合规、id 合法、区域归属正确的部分；缺地点或漏连线的区域会在
+    引擎里自动补落脚点与连通线，保证确认后拿到的地图一定能走通。
+    """
+
+    payload, problems = parse_json_payload(text)
+    empty = {"zones": [], "nodes": [], "connections": [], "problems": []}
+    if not isinstance(payload, dict):
+        empty["problems"] = problems or ["模型输出不是 JSON 对象"]
+        return empty
+    raw_zones = payload.get("zones")
+    if not isinstance(raw_zones, list) or not raw_zones:
+        empty["problems"] = [*problems, "模型输出里没有 zones 列表"]
+        return empty
+
+    zones, zone_problems = parse_generated_zones(
+        json.dumps({"zones": raw_zones}, ensure_ascii=False),
+        max_zones=max_zones,
+    )
+    problems.extend(zone_problems)
+    if not zones:
+        empty["problems"] = problems
+        return empty
+
+    raw_by_zone: dict[str, dict[str, Any]] = {}
+    for item in raw_zones:
+        if not isinstance(item, dict):
+            continue
+        key = _slug(item.get("id") or item.get("name"))
+        if key:
+            raw_by_zone.setdefault(key, item)
+
+    nodes: list[dict[str, Any]] = []
+    used_nodes: set[str] = set()
+    zone_ids = {str(zone.get("id") or "") for zone in zones}
+    for zone in zones:
+        zone_id = str(zone.get("id") or "")
+        raw = raw_by_zone.get(zone_id) or {}
+        raw_nodes = raw.get("nodes")
+        parsed, node_problems = parse_generated_nodes(
+            json.dumps(
+                {"nodes": raw_nodes if isinstance(raw_nodes, list) else []},
+                ensure_ascii=False,
+            ),
+            existing_ids=used_nodes,
+            max_nodes=max_nodes_per_zone,
+        )
+        problems.extend(node_problems)
+        if not parsed:
+            parsed = [starter_node_for_zone(zone, used_ids=used_nodes)]
+            problems.append(f"{zone_id} 没有可用地点，已自动补一个落脚点")
+        for node in parsed:
+            node["zone_id"] = zone_id
+            nodes.append(node)
+            used_nodes.add(str(node.get("id") or ""))
+
+    node_zone = {
+        str(node.get("id") or ""): str(node.get("zone_id") or "") for node in nodes
+    }
+    connections: list[dict[str, Any]] = []
+    used_connections: set[tuple[str, str]] = set()
+    raw_connections = payload.get("connections")
+    if raw_connections is None:
+        raw_connections = payload.get("zone_edges")
+    for index, item in enumerate(
+        raw_connections if isinstance(raw_connections, list) else [], 1
+    ):
+        if not isinstance(item, dict):
+            problems.append(f"第 {index} 条跨区连线不是对象，已跳过")
+            continue
+        from_node = _slug(item.get("from_node") or item.get("from_point"))
+        to_node = _slug(item.get("to_node") or item.get("to_point"))
+        from_zone = _slug(item.get("from_zone") or "")
+        to_zone = _slug(item.get("to_zone") or "")
+        if from_node not in node_zone or to_node not in node_zone:
+            problems.append(f"第 {index} 条跨区连线指向不存在的地点，已跳过")
+            continue
+        if not from_zone:
+            from_zone = node_zone[from_node]
+        if not to_zone:
+            to_zone = node_zone[to_node]
+        if from_zone not in zone_ids or to_zone not in zone_ids:
+            problems.append(f"第 {index} 条跨区连线指向不存在的区域，已跳过")
+            continue
+        if node_zone[from_node] != from_zone or node_zone[to_node] != to_zone:
+            problems.append(
+                f"第 {index} 条跨区连线两端的地点不属于对应区域，已跳过"
+            )
+            continue
+        if from_node == to_node:
+            problems.append(f"第 {index} 条跨区连线的两端是同一个地点，已跳过")
+            continue
+        pair = tuple(sorted((from_node, to_node)))
+        if pair in used_connections:
+            problems.append(f"第 {index} 条跨区连线重复，已跳过")
+            continue
+        used_connections.add(pair)
+        try:
+            ticks = max(1, min(60, int(item.get("ticks") or 1)))
+        except (TypeError, ValueError):
+            ticks = 1
+        connections.append(
+            {
+                "id": f"z_{from_node}_{to_node}",
+                "from_zone": from_zone,
+                "from_node": from_node,
+                "to_zone": to_zone,
+                "to_node": to_node,
+                "ticks": ticks,
+                "bidirectional": item.get("bidirectional") is not False,
+            }
+        )
+
+    return {
+        "zones": zones,
+        "nodes": nodes,
+        "connections": connections,
+        "problems": problems,
+    }
 
 
 def parse_generated_schedules(

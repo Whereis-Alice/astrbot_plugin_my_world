@@ -1357,6 +1357,16 @@ function knobEditor(world, onChange) {
     detail.appendChild(body);
     row.appendChild(detail);
     if (knob.hint) row.appendChild(el("p", "muted knob-hint", knob.hint));
+    if (knob.id === "chat_freq") {
+      row.appendChild(
+        el(
+          "p",
+          "muted knob-hint knob-off-note",
+          "最低档只是「很克制」，不是关闭。想让她完全不自主搭话，请用右上角的「全局自主搭话」开关；"
+            + "日程与事件仍然照常发言。",
+        ),
+      );
+    }
 
     function draw() {
       const level = knobLevel(world, knob);
@@ -3711,6 +3721,9 @@ function bindButtons() {
   $("zone-add").addEventListener("click", addZone);
   if ($("zone-generate")) {
     $("zone-generate").addEventListener("click", generateZoneDrafts);
+  }
+  if ($("map-generate-all")) {
+    $("map-generate-all").addEventListener("click", generateWorldMapDrafts);
   }
   $("zone-delete").addEventListener("click", deleteZone);
   $("zone-edge-add").addEventListener("click", addPortal);
@@ -6996,10 +7009,16 @@ function startDrag(event, node) {
   const originX = num(node.x);
   const originY = num(node.y);
   const canvas = $("canvas");
+  // 坐标是"内容坐标系"，指针位移要加上画布自身的滚动变化。
+  // 以前每次直接加当前 scrollLeft，滚动一存在就会把节点越推越远。
+  const startScrollLeft = canvas.scrollLeft;
+  const startScrollTop = canvas.scrollTop;
 
   function onMove(moveEvent) {
-    const dx = moveEvent.clientX - startX + canvas.scrollLeft;
-    const dy = moveEvent.clientY - startY + canvas.scrollTop;
+    const dx =
+      moveEvent.clientX - startX + (canvas.scrollLeft - startScrollLeft);
+    const dy =
+      moveEvent.clientY - startY + (canvas.scrollTop - startScrollTop);
     node.x = Math.max(0, Math.round(originX + dx));
     node.y = Math.max(0, Math.round(originY + dy));
     renderMap();
@@ -7009,8 +7028,10 @@ function startDrag(event, node) {
   function onUp() {
     document.removeEventListener("mousemove", onMove);
     document.removeEventListener("mouseup", onUp);
+    document.body.classList.remove("dragging-map-node");
   }
 
+  document.body.classList.add("dragging-map-node");
   document.addEventListener("mousemove", onMove);
   document.addEventListener("mouseup", onUp);
   ui.selectedNode = node.id;
@@ -7408,7 +7429,7 @@ async function commitGeneratedActions(drafts) {
  * 先问「生成几个」，再拿去调生成接口。
  * 生成会读她的人设与已有世界，结果永远先当草稿，用户改完确认才落库。
  */
-function askGenerateCount({ title, hint, defaultValue, max, onRun }) {
+function askGenerateCount({ title, hint, defaultValue, min = 1, max, onRun }) {
   let value = String(defaultValue);
   let status;
   let input;
@@ -7421,7 +7442,7 @@ function askGenerateCount({ title, hint, defaultValue, max, onRun }) {
       field.appendChild(el("span", "", "生成几个"));
       input = document.createElement("input");
       input.type = "number";
-      input.min = "1";
+      input.min = String(min);
       input.max = String(max || 8);
       input.value = value;
       input.addEventListener("input", () => {
@@ -7435,8 +7456,8 @@ function askGenerateCount({ title, hint, defaultValue, max, onRun }) {
     },
     onSubmit: async () => {
       const count = Number(value);
-      if (!Number.isInteger(count) || count < 1 || count > (max || 8)) {
-        throw new Error(`生成数量请填写 1 到 ${max || 8} 之间的整数`);
+      if (!Number.isInteger(count) || count < min || count > (max || 8)) {
+        throw new Error(`生成数量请填写 ${min} 到 ${max || 8} 之间的整数`);
       }
       const current = dialogState;
       const started = Date.now();
@@ -7483,18 +7504,24 @@ function generateZoneDrafts() {
       if (!drafts.length) {
         throw new Error((result.problems || []).join("；") || "没有生成出可用的区域，请重试");
       }
-      return () => openZoneDraftDialog(drafts, result.problems || []);
+      return () =>
+        openZoneDraftDialog(
+          drafts,
+          result.problems || [],
+          result.nodes || [],
+          result.zone_edges || [],
+        );
     },
   });
 }
 
-function openZoneDraftDialog(drafts, problems) {
+function openZoneDraftDialog(drafts, problems, draftNodes = [], draftZoneEdges = []) {
   drafts.forEach((draft) => {
     draft._pick = true;
   });
   openCustomDialog({
     title: `生成的新区域（${drafts.length} 个）`,
-    hint: "改名字和说明，勾掉不要的；确认后写进地图并保存（坐标已经自动摆好，之后可以拖）。",
+    hint: "改名字和说明，勾掉不要的；确认后写入地图，新区域会自动带落脚点并接到已有区域。",
     confirmText: "加入选中的",
     build: (body) => {
       const list = el("div", "list");
@@ -7542,16 +7569,196 @@ function openZoneDraftDialog(drafts, problems) {
         return false;
       }
       const used = new Set(zones().map((zone) => zone.id));
+      const addedZoneIds = new Set();
       chosen.forEach((draft) => {
         const payload = { ...draft };
         delete payload._pick;
-        if (!used.has(payload.id)) zones().push(payload);
+        if (!used.has(payload.id)) {
+          zones().push(payload);
+          addedZoneIds.add(payload.id);
+        }
       });
+      const usedNodes = new Set(nodes().map((node) => node.id));
+      const idMap = {};
+      draftNodes
+        .filter((node) => addedZoneIds.has(node.zone_id))
+        .forEach((node) => {
+          const payload = { ...node };
+          if (usedNodes.has(payload.id)) {
+            const base = payload.id;
+            let id = `${base}_2`;
+            let index = 3;
+            while (usedNodes.has(id)) id = `${base}_${index++}`;
+            idMap[base] = id;
+            payload.id = id;
+          }
+          usedNodes.add(payload.id);
+          nodes().push(payload);
+        });
+      const remap = (id) => idMap[id] || id;
+      draftZoneEdges
+        .filter((edge) => usedNodes.has(remap(edge.from_node)) && usedNodes.has(remap(edge.to_node)))
+        .forEach((edge) => {
+          zoneEdges().push({
+            ...edge,
+            from_node: remap(edge.from_node),
+            to_node: remap(edge.to_node),
+            id: `${edge.id || "z"}_${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`,
+          });
+        });
       await saveAll();
       renderMap();
       loadOverview();
     },
   });
+}
+
+function generateWorldMapDrafts() {
+  if (ui.scope) {
+    toast("一键重建会替换整张地图结构，请先切换到「全局默认」再操作；当前会话请用「生成区域」或手动编辑。");
+    return;
+  }
+  askGenerateCount({
+    title: "一键重建地图",
+    hint: "读她的人设与关系，重新设计区域、地点和路线。先预览，确认后会替换当前地图。",
+    defaultValue: 4,
+    min: 2,
+    max: 6,
+    onRun: async (count) => {
+      const result = await apiPost("generate/world-map", { count });
+      const zones = result.zones || [];
+      if (!zones.length) {
+        throw new Error((result.problems || []).join("；") || "没有生成出可用的地图，请重试");
+      }
+      return () => openWorldMapDraftDialog(result);
+    },
+  });
+}
+
+function openWorldMapDraftDialog(result) {
+  const zones = result.zones || [];
+  const nodes = result.nodes || [];
+  const edges = result.edges || [];
+  const zoneEdges = result.zone_edges || [];
+  const problems = result.problems || [];
+  const nodesByZone = {};
+  nodes.forEach((node) => {
+    (nodesByZone[node.zone_id] = nodesByZone[node.zone_id] || []).push(node);
+  });
+  openCustomDialog({
+    title: `一键重建地图（${zones.length} 个区域 / ${nodes.length} 个地点）`,
+    hint: "确认后会替换当前的区域、地点和路线。可以先调整区域名和说明；"
+      + "地点与连线之后还能在地图页继续调整。",
+    confirmText: "替换当前地图",
+    build: (body) => {
+      const list = el("div", "list");
+      zones.forEach((zone) => {
+        const row = el("div", "row-item");
+        const fields = el("div", "form grow");
+        const nameField = el("label", "field");
+        nameField.appendChild(el("span", "", "区域名"));
+        const nameInput = document.createElement("input");
+        nameInput.value = zone.name || zone.id;
+        nameInput.addEventListener("input", () => {
+          zone.name = nameInput.value;
+        });
+        nameField.appendChild(nameInput);
+        fields.appendChild(nameField);
+        const noteField = el("label", "field");
+        noteField.appendChild(el("span", "", "说明（写进提示词）"));
+        const noteInput = document.createElement("textarea");
+        noteInput.rows = 2;
+        noteInput.value = zone.note || "";
+        noteInput.addEventListener("input", () => {
+          zone.note = noteInput.value;
+        });
+        noteField.appendChild(noteInput);
+        fields.appendChild(noteField);
+        const inside = nodesByZone[zone.id] || [];
+        fields.appendChild(
+          el(
+            "p",
+            "muted",
+            inside.length
+              ? `地点：${inside.map((node) => node.name || node.id).join("、")}`
+              : "地点：没有，确认前请补一个",
+          ),
+        );
+        row.appendChild(fields);
+        list.appendChild(row);
+      });
+      body.appendChild(list);
+      const routeCount = zoneEdges.length;
+      body.appendChild(
+        el("p", "muted", `跨区路线：${routeCount} 条${routeCount ? "" : "（预计确认时自动补）"}`),
+      );
+      if (problems.length) {
+        body.appendChild(el("p", "muted", "生成提醒：" + problems.join("；")));
+      }
+    },
+    onSubmit: async () => {
+      if (!zones.length || !nodes.length) {
+        toast("这张地图不完整，至少要有区域和地点");
+        return false;
+      }
+      const nodeIds = new Set(nodes.map((node) => node.id));
+      const keptEdges = edges.filter((edge) => nodeIds.has(edge.from) && nodeIds.has(edge.to));
+      const keptZoneEdges = zoneEdges.filter(
+        (edge) => nodeIds.has(edge.from_node) && nodeIds.has(edge.to_node),
+      );
+      if (zones.length > 1 && !keptZoneEdges.length) {
+        toast("区域之间还没有路，请重新生成一次，或先确认后手动补线");
+      }
+      return commitGeneratedWorldMap(zones, nodes, keptEdges, keptZoneEdges);
+    },
+  });
+}
+
+async function commitGeneratedWorldMap(zones, nodes, edges, zoneEdges) {
+  const newNodeIds = new Set(nodes.map((node) => node.id));
+  let orphanedActions = 0;
+  (ui.config.world.actions || []).forEach((action) => {
+    if (action.scope !== "node" || !(action.allowed_nodes || []).length) return;
+    const kept = (action.allowed_nodes || []).filter((id) => newNodeIds.has(id));
+    if (!kept.length) {
+      action.scope = "global";
+      action.allowed_nodes = [];
+      orphanedActions += 1;
+      return;
+    }
+    action.allowed_nodes = kept;
+  });
+  let droppedWalks = 0;
+  ((ui.config.schedules && ui.config.schedules.schedules) || []).forEach((schedule) => {
+    const steps = schedule.action_chain || [];
+    const kept = steps.filter((step) => {
+      if (step.type !== "walk_to" || !step.target_node) return true;
+      if (newNodeIds.has(step.target_node)) return true;
+      droppedWalks += 1;
+      return false;
+    });
+    if (kept.length) schedule.action_chain = kept;
+    else {
+      schedule.action_chain = [];
+      schedule.enabled = false;
+    }
+  });
+  ui.config.world.zones = zones;
+  ui.config.world.nodes = nodes;
+  ui.config.world.edges = edges;
+  ui.config.world.zone_edges = zoneEdges;
+  ui.selectedZone = zones[0] ? zones[0].id : "";
+  ui.selectedNode = nodes[0] ? nodes[0].id : "";
+  ui.mapLevel = "world";
+  markDirty();
+  renderMap();
+  renderNodeForm();
+  await saveAll();
+  const notes = [`已替换为 ${zones.length} 个区域、${nodes.length} 个地点、${zoneEdges.length} 条跨区路线`];
+  if (orphanedActions) notes.push(`${orphanedActions} 个原本限定旧地点的动作已改为全局`);
+  if (droppedWalks) notes.push(`日程里有 ${droppedWalks} 个旧地点步骤已移除`);
+  toast(notes.join("；"));
+  return true;
 }
 
 function generateScheduleDrafts() {

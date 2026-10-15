@@ -19,12 +19,15 @@ from core.db import AsyncDatabase  # noqa: E402
 from core.defaults import default_world  # noqa: E402
 from core.engine import MyWorldEngine  # noqa: E402
 from core.generator import (  # noqa: E402
+    connect_zone_graph,
     clamp_event_count,
+    clamp_map_zone_count,
     clamp_schedule_count,
     clamp_zone_count,
     parse_generated_events,
     parse_generated_schedules,
     parse_generated_zones,
+    parse_generated_world_map,
 )
 from core.models import parse_world  # noqa: E402
 from core.ports import LLMReply  # noqa: E402
@@ -137,8 +140,72 @@ class ClampTests(unittest.TestCase):
     def test_counts_are_clamped(self):
         self.assertEqual(clamp_zone_count(99), 4)
         self.assertEqual(clamp_zone_count(0), 1)
+        self.assertEqual(clamp_map_zone_count(99), 6)
+        self.assertEqual(clamp_map_zone_count(0), 2)
         self.assertEqual(clamp_schedule_count(99), 6)
         self.assertEqual(clamp_event_count("bad"), 3)
+
+
+class WorldMapParserTests(unittest.TestCase):
+    def test_reads_zones_nodes_and_connections(self):
+        text = (
+            '{"zones": ['
+            '{"id": "old_town", "name": "老城区", "note": "她从小住的地方",'
+            ' "nodes": [{"id": "square", "name": "广场", "prompt": "很热闹"},'
+            ' {"id": "alley", "name": "小巷", "prompt": "安静"}]},'
+            '{"id": "river_bank", "name": "河岸", "note": "适合发呆",'
+            ' "nodes": [{"id": "dock", "name": "码头", "prompt": "能看船"}]}'
+            "],"
+            '"connections": [{"from_zone": "old_town", "from_node": "square",'
+            ' "to_zone": "river_bank", "to_node": "dock", "ticks": 2}]}'
+        )
+        draft = parse_generated_world_map(text, max_zones=4)
+        self.assertEqual([zone["id"] for zone in draft["zones"]], ["old_town", "river_bank"])
+        self.assertEqual(len(draft["nodes"]), 3)
+        self.assertEqual(draft["nodes"][0]["zone_id"], "old_town")
+        self.assertEqual(len(draft["connections"]), 1)
+        self.assertEqual(draft["connections"][0]["ticks"], 2)
+        self.assertEqual(draft["problems"], [])
+
+    def test_missing_nodes_get_a_starter_and_bad_links_are_dropped(self):
+        text = (
+            '{"zones": [{"id": "home", "name": "家中", "nodes": []},'
+            ' {"id": "park", "name": "公园"}],'
+            '"connections": [{"from_zone": "home", "from_node": "nowhere",'
+            ' "to_zone": "park", "to_node": "missing"}]}'
+        )
+        draft = parse_generated_world_map(text)
+        self.assertEqual(len(draft["nodes"]), 2)
+        self.assertTrue(all(node["id"] for node in draft["nodes"]))
+        self.assertEqual(draft["connections"], [])
+        self.assertTrue(any("落脚点" in item for item in draft["problems"]))
+        self.assertTrue(any("不存在的地点" in item for item in draft["problems"]))
+
+    def test_connect_zone_graph_bridges_isolated_zones(self):
+        zones = [
+            {"id": "home", "x": 0, "y": 0},
+            {"id": "town", "x": 200, "y": 0},
+            {"id": "beach", "x": 400, "y": 0},
+        ]
+        nodes_by_zone = {
+            "home": [{"id": "home_center", "x": 0, "y": 0}],
+            "town": [{"id": "town_center", "x": 0, "y": 0}],
+            "beach": [{"id": "beach_center", "x": 0, "y": 0}],
+        }
+        added = connect_zone_graph(
+            zones,
+            nodes_by_zone,
+            existing_edges=[
+                {"from_zone": "home", "to_zone": "town"},
+            ],
+        )
+        self.assertEqual(len(added), 1)
+        self.assertEqual(
+            {added[0]["from_zone"], added[0]["to_zone"]},
+            {"town", "beach"},
+        )
+        self.assertTrue(added[0]["from_node"])
+        self.assertTrue(added[0]["to_node"])
 
 
 class GeneratorPromptTests(unittest.TestCase):
@@ -192,6 +259,19 @@ class GeneratorPromptTests(unittest.TestCase):
         self.assertIn("刚搬家", prompt)
         self.assertIn("收拾箱子", prompt)
 
+    def test_world_map_prompt_asks_for_full_connected_map(self):
+        system, prompt = self.builder.build_world_map_generator_prompt(
+            persona_text="她住在海边小镇，喜欢在天台看星星。",
+            relations="她已经认识的人：\n- 小明（朋友）：常来串门",
+            count=4,
+            nodes_per_zone=3,
+        )
+        self.assertIn("整张重建", system)
+        self.assertIn("连通", system)
+        self.assertIn("海边小镇", prompt)
+        self.assertIn("小明", prompt)
+        self.assertIn('"connections"', system)
+
 
 class EngineGeneratorTests(unittest.IsolatedAsyncioTestCase):
     """引擎层的端到端：假的内容生成模型 → 草稿解析 → 自动摆位 / 校验。"""
@@ -229,6 +309,43 @@ class EngineGeneratorTests(unittest.IsolatedAsyncioTestCase):
         zones = result["zones"]
         self.assertEqual([zone["id"] for zone in zones], ["old_library"])
         self.assertNotEqual((zones[0]["x"], zones[0]["y"]), (40.0, 60.0))
+        self.assertEqual(result["problems"], [])
+
+    async def test_generate_zones_adds_starter_nodes_and_a_zone_link(self):
+        self.creator.replies = [
+            '{"zones": [{"id": "old_library", "name": "旧图书馆", "note": "她小时候常来"}]}'
+        ]
+        result = await self.engine.generate_zones(1)
+        zone = result["zones"][0]
+        self.assertEqual(len(result["nodes"]), 1)
+        node = result["nodes"][0]
+        self.assertEqual(node["zone_id"], zone["id"])
+        self.assertTrue(node["id"].startswith("old_library"))
+        # 默认世界里已经有区域和地点，新区域应该接到其中一个已有区域。
+        self.assertEqual(len(result["zone_edges"]), 1)
+        edge = result["zone_edges"][0]
+        self.assertIn(zone["id"], (edge["from_zone"], edge["to_zone"]))
+        self.assertTrue(edge["from_node"] and edge["to_node"])
+
+    async def test_generate_world_map_returns_a_connected_replacement(self):
+        self.creator.replies = [
+            '{"zones": ['
+            '{"id": "seaside_home", "name": "海边小屋", "note": "她住的地方", "is_home": true,'
+            ' "nodes": [{"id": "deck", "name": "露台", "prompt": "能看海"},'
+            ' {"id": "kitchen", "name": "厨房", "prompt": "有热茶"}]},'
+            '{"id": "lighthouse", "name": "灯塔", "note": "她晚上散步会来",'
+            ' "nodes": [{"id": "top", "name": "塔顶", "prompt": "能看很远"}]}'
+            "],"
+            '"connections": [{"from_zone": "seaside_home", "from_node": "deck",'
+            ' "to_zone": "lighthouse", "to_node": "top", "ticks": 3}]}'
+        ]
+        result = await self.engine.generate_world_map(2)
+        self.assertEqual(len(result["zones"]), 2)
+        self.assertEqual(len(result["nodes"]), 3)
+        self.assertTrue(result["zones"][0]["is_home"])
+        self.assertEqual(len(result["zone_edges"]), 1)
+        self.assertEqual(result["zone_edges"][0]["ticks"], 3)
+        self.assertTrue(result["edges"])
         self.assertEqual(result["problems"], [])
 
     async def test_generate_schedules_drops_unknown_steps(self):

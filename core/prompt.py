@@ -2832,6 +2832,69 @@ class PromptBuilder:
         blocks.append(f"现在生成 {max(1, int(count))} 个新区域，只输出 JSON。")
         return system, "\n\n".join(blocks)
 
+    def build_world_map_generator_prompt(
+        self,
+        *,
+        persona_text: str,
+        relations: str = "",
+        count: int = 4,
+        nodes_per_zone: int = 3,
+    ) -> tuple[str, str]:
+        """一键重建整张地图：区域、地点、区内路线、跨区路线一次生成。"""
+
+        zones = max(2, int(count))
+        per_zone = max(1, int(nodes_per_zone))
+        system = (
+            "你是这个角色世界的规划者。读她的人设与已知的人际关系，"
+            f"从零为她设计一张完整的小世界地图：{zones} 个区域，每个区域 {per_zone} 个地点，"
+            "并把区域之间的路也配好。\n\n"
+            "要求：\n"
+            "1. 这是一次**整张重建**：旧地图会被替换，所以要围绕她的人设、经历和关系"
+            "重新搭一个自洽的生活空间，不要照搬通用模板；\n"
+            "2. 区域 = 城市里的一个地方（家、工作地、常去的街、藏着秘密的角落等），"
+            "地点 = 区域里具体的房间 / 位置（卧室、吧台、天台、长椅等）；\n"
+            "3. 每个区域都要说清她为什么去、那里有什么、能做什么；地点写一句"
+            "「这里是什么样」，会直接影响她的行为；\n"
+            "4. 最多只有一个区域是 home（她住的地方）；区域之间的路要能把整张地图连通，"
+            "不能有孤岛；\n"
+            "5. 世界是**未知**的：可以留钩子、出现她还没见过的人和事，"
+            "但不要替她安排好结局；\n"
+            "6. id 用小写英文 + 下划线，地点 id 全局唯一；不要给坐标，编辑器会自动摆位。\n\n"
+            "只输出 JSON，不要解释、不要代码块：\n"
+            "{\n"
+            '  "zones": [\n'
+            "    {\n"
+            '      "id": "old_town", "name": "老城区", "note": "一句话说明",\n'
+            '      "icon": "🏘", "color": "#7FB2E5", "is_home": false,\n'
+            '      "nodes": [\n'
+            "        {\n"
+            '          "id": "old_town_square", "name": "老城广场",\n'
+            '          "nickname_text": "在广场", "prompt": "一句话描述",\n'
+            '          "icon": "⛲", "color": "#8B7DD8",\n'
+            '          "atmosphere": {"calm": 0.6, "intimacy": 0.2, "visibility": 0.8, '
+            '"liveliness": 0.7, "loneliness": 0.2, "curiosity": 0.6}\n'
+            "        }\n"
+            "      ]\n"
+            "    }\n"
+            "  ],\n"
+            '  "connections": [\n'
+            '    {"from_zone": "old_town", "from_node": "old_town_square", '
+            '"to_zone": "river_bank", "to_node": "river_bank_path", "ticks": 2}\n'
+            "  ]\n"
+            "}"
+        )
+        blocks = [
+            "# 她是谁\n"
+            + (str(persona_text or "").strip() or "（没有人设，按一个真实的人来写）"),
+        ]
+        if relations:
+            blocks.append("# 她的人际关系\n" + str(relations).strip()[:1600])
+        blocks.append(
+            f"现在重建整张地图：{zones} 个区域、每个区域约 {per_zone} 个地点，"
+            "并让所有区域连通；只输出 JSON。"
+        )
+        return system, "\n\n".join(blocks)
+
     def build_schedule_generator_prompt(
         self,
         *,

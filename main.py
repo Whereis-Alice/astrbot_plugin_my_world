@@ -5956,6 +5956,12 @@ class MyWorldPlugin(Star):
             "按人设与已有世界生成新区域",
         )
         register(
+            f"/{p}/generate/world-map",
+            self.api_generate_world_map,
+            ["POST"],
+            "按人设一键重建整张地图（区域 / 地点 / 路线）",
+        )
+        register(
             f"/{p}/generate/schedules",
             self.api_generate_schedules,
             ["POST"],
@@ -7160,6 +7166,17 @@ class MyWorldPlugin(Star):
         if guard is not None:
             return guard
         return await self._generate_drafts_response(self.engine.generate_zones, payload.get("count"))
+
+    async def api_generate_world_map(self):
+        """按她的人设一键重建整张地图草稿（不落库，确认后才替换）。"""
+
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload)
+        if guard is not None:
+            return guard
+        return await self._generate_drafts_response(
+            self.engine.generate_world_map, payload.get("count")
+        )
 
     async def api_generate_schedules(self):
         """按她的人设与生活节奏生成日程草稿（不落库）。"""

@@ -152,18 +152,23 @@ from .mood import (
 )
 
 from .generator import (
+    DEFAULT_MAP_NODES_PER_ZONE,
     auto_layout,
     clamp_event_count,
+    clamp_map_zone_count,
     clamp_node_count,
     clamp_per_node,
     clamp_schedule_count,
     clamp_zone_count,
+    connect_zone_graph,
     link_plan,
     parse_generated_actions,
     parse_generated_events,
     parse_generated_nodes,
     parse_generated_schedules,
     parse_generated_zones,
+    parse_generated_world_map,
+    starter_node_for_zone,
 )
 
 DEFAULT_TICK_SECONDS = 60.0
@@ -17529,8 +17534,154 @@ class MyWorldEngine(ScopedConfigMixin):
         )
         for zone, (x, y) in zip(zones, positions):
             zone["x"], zone["y"] = x, y
+        # 区域光有框没法连线：每个新区域自动配一个可编辑的落脚点，
+        # 再按最近原则接到已有区域（没有已有区域就在新区域之间串起来）。
+        nodes: list[dict[str, Any]] = []
+        used_nodes = {node.id for node in self.world.nodes}
+        nodes_by_zone: dict[str, list[dict[str, Any]]] = {
+            zone.id: [
+                {"id": node.id, "x": float(node.x), "y": float(node.y)}
+                for node in self.world.nodes_in_zone(zone.id)
+            ]
+            for zone in self.world.zones
+        }
+        for zone in zones:
+            node = starter_node_for_zone(zone, used_ids=used_nodes)
+            node["zone_id"] = str(zone["id"])
+            nodes.append(node)
+            used_nodes.add(str(node["id"]))
+            nodes_by_zone.setdefault(str(zone["id"]), []).append(node)
+        all_zone_dicts = [
+            {"id": zone.id, "x": float(zone.x), "y": float(zone.y)}
+            for zone in self.world.zones
+        ] + [
+            {
+                "id": str(zone["id"]),
+                "x": float(zone["x"]),
+                "y": float(zone["y"]),
+            }
+            for zone in zones
+        ]
+        added_edges = connect_zone_graph(
+            all_zone_dicts,
+            nodes_by_zone,
+            existing_edges=[
+                {"from_zone": edge.from_zone, "to_zone": edge.to_zone}
+                for edge in (getattr(self.world, "zone_edges", None) or [])
+            ],
+        )
+        new_zone_ids = {str(zone["id"]) for zone in zones}
+        zone_edges = [
+            edge
+            for edge in added_edges
+            if edge["from_zone"] in new_zone_ids or edge["to_zone"] in new_zone_ids
+        ]
         return {
             "zones": zones,
+            "nodes": nodes,
+            "zone_edges": zone_edges,
+            "problems": problems,
+            "raw": _clip_text(reply, 1200),
+        }
+
+    async def generate_world_map(self, count: Any = 0) -> dict[str, Any]:
+        """按人设一键重建整张地图：区域、地点、区内路线与跨区路线一次配好。
+
+        这是**草稿**：用户在编辑器里确认后才会替换当前地图。默认地图会被换掉，
+        所以调用方必须把"会替换"讲清楚。
+        """
+
+        wanted = clamp_map_zone_count(count)
+        session_id = self._generator_session_id()
+        system_prompt, prompt = self.prompts.build_world_map_generator_prompt(
+            persona_text=await self._persona_text(session_id),
+            relations=self.relations_brief(session_id),
+            count=wanted,
+            nodes_per_zone=DEFAULT_MAP_NODES_PER_ZONE,
+        )
+        reply = await self._ask_creator(
+            session_id, system_prompt, prompt, raise_errors=True
+        )
+        draft = parse_generated_world_map(
+            reply,
+            max_zones=wanted,
+            max_nodes_per_zone=DEFAULT_MAP_NODES_PER_ZONE + 2,
+        )
+        zones = draft["zones"]
+        nodes = draft["nodes"]
+        problems = list(draft["problems"])
+        if not zones or not nodes:
+            return {
+                "zones": zones,
+                "nodes": nodes,
+                "edges": [],
+                "zone_edges": [],
+                "problems": problems or ["没有生成出可用的地图"],
+                "raw": _clip_text(reply, 1200),
+            }
+
+        # 区域先按网格摆好，地点在各自区域里独立摆位（两层坐标系互不影响）。
+        zone_positions = auto_layout([], len(zones), step=170)
+        for zone, (x, y) in zip(zones, zone_positions):
+            zone["x"], zone["y"] = x, y
+        nodes_by_zone: dict[str, list[dict[str, Any]]] = {}
+        for node in nodes:
+            nodes_by_zone.setdefault(str(node.get("zone_id") or ""), []).append(node)
+        for zone in zones:
+            inside = nodes_by_zone.get(str(zone["id"]), [])
+            for node, (x, y) in zip(inside, auto_layout([], len(inside), step=130)):
+                node["x"], node["y"] = x, y
+
+        edges: list[dict[str, Any]] = []
+        for zone in zones:
+            inside = nodes_by_zone.get(str(zone["id"]), [])
+            pairs = link_plan([str(node["id"]) for node in inside])
+            edges.extend(
+                {
+                    "id": f"e_{src}_{dst}",
+                    "from": src,
+                    "to": dst,
+                    "ticks": 1,
+                    "bidirectional": True,
+                }
+                for src, dst in pairs
+            )
+
+        zone_edges = list(draft["connections"])
+        explicit = {
+            (
+                str(edge.get("from_zone") or ""),
+                str(edge.get("to_zone") or ""),
+            )
+            for edge in zone_edges
+        }
+        for edge in connect_zone_graph(
+            [
+                {
+                    "id": str(zone["id"]),
+                    "x": float(zone["x"]),
+                    "y": float(zone["y"]),
+                }
+                for zone in zones
+            ],
+            nodes_by_zone,
+            existing_edges=zone_edges,
+        ):
+            key = (
+                str(edge.get("from_zone") or ""),
+                str(edge.get("to_zone") or ""),
+            )
+            if key in explicit or (key[1], key[0]) in explicit:
+                continue
+            explicit.add(key)
+            zone_edges.append(edge)
+        if not zone_edges and len(zones) > 1:
+            problems.append("跨区路线没能自动补全，请进地图检查区域落脚点")
+        return {
+            "zones": zones,
+            "nodes": nodes,
+            "edges": edges,
+            "zone_edges": zone_edges,
             "problems": problems,
             "raw": _clip_text(reply, 1200),
         }

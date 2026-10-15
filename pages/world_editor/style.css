@@ -2810,11 +2810,24 @@ button.pill:hover:not(.on) {
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   overflow: auto;
+  /* 重画节点时别让浏览器的滚动锚定偷偷改 scrollLeft，不然拖拽会漂 */
+  overflow-anchor: none;
   background-color: var(--panel-2);
   background-image: radial-gradient(var(--line-strong) 1px, transparent 1px);
   background-size: 22px 22px;
   background-position: -1px -1px;
   transition: border-color var(--dur-1) var(--ease);
+}
+
+body.dragging-map-node {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.knob-off-note {
+  margin-top: -2px;
+  color: var(--accent);
+  opacity: 0.85;
 }
 
 .canvas:hover {
