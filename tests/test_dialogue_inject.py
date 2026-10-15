@@ -54,18 +54,34 @@ class At:
 
 class Event(fake_astrbot._AstrMessageEvent):
     def __init__(
-        self, text: str, *, session: str, wake: bool = True, mention: bool = True
+        self,
+        text: str,
+        *,
+        session: str,
+        wake: bool = True,
+        mention: bool = True,
+        sender_id: str = "42",
+        sender_name: str = "tester",
+        message_id: str = "4711",
     ) -> None:
         super().__init__()
         self._text = text
         self._wake = wake
+        self._sender_id = sender_id
+        self._sender_name = sender_name
         self.unified_msg_origin = session
         self.message_obj = types.SimpleNamespace(
-            message=[At("1")] if mention else [], message_id="4711"
+            message=[At("1")] if mention else [], message_id=message_id
         )
 
     def get_message_str(self) -> str:
         return self._text
+
+    def get_sender_id(self) -> str:
+        return self._sender_id
+
+    def get_sender_name(self) -> str:
+        return self._sender_name
 
     def is_wake_up(self) -> bool:
         return self._wake
@@ -196,6 +212,52 @@ class DialogueInjectTests(unittest.TestCase):
         self.assertIn("[我的世界·此刻]", joined)
         self.assertEqual(req.image_urls, ["https://img/frame3.jpg"])
         self.assertIn("<worldtree_persona>", req.system_prompt)
+        plugin.db.raw.close()
+
+    def test_two_people_at_once_are_not_merged(self):
+        """两个人几乎同时 @ 她：各回各的，第二个人不能被并进第一轮、也不能被吞。"""
+
+        session = "aiocqhttp:GroupMessage:inject-two-people"
+        plugin, _context = self._plugin(session)
+        first_event = Event(
+            "今天开会吗",
+            session=session,
+            sender_id="1001",
+            sender_name="小明",
+            message_id="two-people-a",
+        )
+        first_req = Request("今天开会吗")
+        asyncio.run(plugin.on_llm_request(first_event, first_req))
+        second_event = Event(
+            "你晚上有空吗",
+            session=session,
+            sender_id="1002",
+            sender_name="小红",
+            message_id="two-people-b",
+        )
+        second_req = Request("你晚上有空吗")
+        asyncio.run(plugin.on_llm_request(second_event, second_req))
+
+        self.assertFalse(first_event.is_stopped())
+        self.assertFalse(
+            second_event.is_stopped(), "第二个人的事件不能在她答第一条时被吞掉"
+        )
+        self.assertIsInstance(second_event.get_extra("mw_dialogue_turn"), dict)
+
+        snapshots = [
+            item
+            for item in plugin.engine._prompt_snapshots
+            if str(item.get("session_id") or "") == session
+        ]
+        self.assertGreaterEqual(len(snapshots), 2)
+        latest = [str(item) for item in (snapshots[0].get("batch_texts") or [])]
+        self.assertTrue(any("你晚上有空吗" in item for item in latest))
+        self.assertFalse(
+            any("今天开会吗" in item for item in latest), "别人那条不能进这一轮"
+        )
+        earlier = [str(item) for item in (snapshots[1].get("batch_texts") or [])]
+        self.assertTrue(any("今天开会吗" in item for item in earlier))
+        self.assertFalse(any("你晚上有空吗" in item for item in earlier))
         plugin.db.raw.close()
 
     def test_after_message_sent_records_reply_and_advances_waterline(self):

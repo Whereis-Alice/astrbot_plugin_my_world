@@ -7137,6 +7137,7 @@ class MyWorldEngine:
         exclude_text: str = "",
         window: float | None = None,
         limit: int = MERGE_MAX_TEXTS,
+        same_user: str = "",
     ) -> list[dict[str, Any]]:
         """调用期间到达、且还在窗口内的新消息（会被并进这次请求）。
 
@@ -7147,6 +7148,11 @@ class MyWorldEngine:
         返回的记录会标 ``picked=True``（同一轮里不会再被捞第二次）。**最多返回
         ``limit`` 条**：超出的留在队列里（``picked`` / ``absorbed`` 都不动），
         各自那一轮的钩子会照常把它们当触发消息处理，不会被丢掉。
+
+        ``same_user``：这一轮触发消息的发送者。给了就**只合并同一个人的连发**——
+        不同人几乎同时 @ 她时，各回各的，不把第二个人的话并进第一轮（更不能让
+        那条事件被吸收后一声不吭）。候选没有 ``user_id`` 时也跳过：认不出是谁，
+        就不能赌是同一个人。
         """
 
         scope = self.merge_scope(session_id)
@@ -7159,12 +7165,15 @@ class MyWorldEngine:
         keys = {str(item) for item in (exclude_keys or set()) if str(item)}
         current = " ".join(str(exclude_text or "").split())
         origin = str(session_id or "")
+        trigger_user = str(same_user or "").strip()
         for item in queue:
             if len(picked) >= budget:
                 break
             if item.get("absorbed") or item.get("picked"):
                 continue
             if str(item.get("session") or "") != origin:
+                continue
+            if trigger_user and str(item.get("user_id") or "").strip() != trigger_user:
                 continue
             text = str(item.get("text") or "").strip()
             if not text:
@@ -7188,16 +7197,22 @@ class MyWorldEngine:
         ]
         return picked
 
-    def _latest_incoming_at(self, session_id: str) -> float:
-        """这个"她"最近一条还在等着的消息是什么时候到的（安静期用）。"""
+    def _latest_incoming_at(self, session_id: str, same_user: str = "") -> float:
+        """这个"她"最近一条还在等着的消息是什么时候到的（安静期用）。
+
+        ``same_user``：只看这个人的消息。别人在群里打字不该拖着她的回复等，
+        更不该把别人的消息算作"他还有下文"。
+        """
 
         queue = self._pending_replies.get(self.merge_scope(session_id)) or []
+        user = str(same_user or "").strip()
         stamps = [
             float(item.get("at") or 0.0)
             for item in queue
             if not item.get("absorbed")
             and not item.get("picked")
             and str(item.get("session") or "") == str(session_id or "")
+            and (not user or str(item.get("user_id") or "").strip() == user)
         ]
         return max(stamps) if stamps else 0.0
 
@@ -7393,12 +7408,13 @@ class MyWorldEngine:
             )
         return entries
 
-    async def _wait_for_quiet(self, session_id: str) -> None:
+    async def _wait_for_quiet(self, session_id: str, *, same_user: str = "") -> None:
         """安静期：先等几秒看对方还有没有下文；有新消息就重新计时（有硬顶）。
 
         这是"像真人打字"的核心——连发两句她会听完一起回，而不是答一句、再答一句。
         只算**同一个会话**里的话：群里说一句、私聊里说一句是两件事，
         并成一条会让她在群里答私聊的问题（跨会话只靠"按她分锁"串行）。
+        也只算**同一个人的话**：别人在群里打字不该拖着这一条等。
         """
 
         style = getattr(self.world, "reply_style", None)
@@ -7408,7 +7424,7 @@ class MyWorldEngine:
         cap = float(getattr(style, "merge_wait_max_seconds", 0.0) or 0.0)
         deadline = time.monotonic() + (cap if cap > 0 else window)
         while True:
-            latest = self._latest_incoming_at(session_id)
+            latest = self._latest_incoming_at(session_id, same_user)
             now = time.monotonic()
             if latest <= 0 or (now - latest) >= window or now >= deadline:
                 return
@@ -7492,7 +7508,7 @@ class MyWorldEngine:
         # 只在还没开始发送的窗口里做（最多 MERGE_MAX_RESTARTS 次），所以不会有"说了半句又改口"。
         # 先等一个「安静期」：对方连着打字就等他打完，一起回（新消息会刷新计时）
         wait_started = time.monotonic()
-        await self._wait_for_quiet(ctx.session_id)
+        await self._wait_for_quiet(ctx.session_id, same_user=str(ctx.user_id or ""))
         # 这一轮要回的就是一个**显式 batch**：触发她的那条 + 安静期里并进来的几条。
         # batch 是这一轮唯一的数据源（排序 / 去重 / 渲染 / 释放都看它），
         # 后面合并重启也只是往同一个 batch 里追加。
@@ -7505,6 +7521,7 @@ class MyWorldEngine:
             exclude_text="" if ctx_key else ctx.text,
             window=max(MERGE_WINDOW_SECONDS, time.monotonic() - wait_started + 1.0),
             limit=max(0, MERGE_MAX_TEXTS - len(batch)),
+            same_user=str(ctx.user_id or ""),
         )
         # 按真实到达顺序排：她要回的是"对方连着说的这几句"，顺序反了模型会读成两轮对话
         batch = self._sort_reply_batch([*batch, *early])
@@ -7719,6 +7736,7 @@ class MyWorldEngine:
                 },
                 exclude_text="" if ctx_key else ctx.text,
                 limit=max(0, MERGE_MAX_TEXTS - len(batch)),
+                same_user=str(ctx.user_id or ""),
             )
             if not merged:
                 break
@@ -7832,6 +7850,7 @@ class MyWorldEngine:
                     },
                     exclude_text="" if ctx_key else ctx.text,
                     limit=max(0, MERGE_MAX_TEXTS - len(batch)),
+                    same_user=str(ctx.user_id or ""),
                 )
                 if (
                     late

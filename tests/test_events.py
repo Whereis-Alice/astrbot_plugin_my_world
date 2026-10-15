@@ -1814,7 +1814,9 @@ class EventEngineTest(unittest.IsolatedAsyncioTestCase):
         holder: dict[str, Any] = {}
 
         def hook(_index: int) -> None:
-            holder["second"] = self.engine.register_incoming(SESSION, "还有一句话")
+            holder["second"] = self.engine.register_incoming(
+                SESSION, "还有一句话", identity={"user_id": "1", "user_name": "小明"}
+            )
 
         self.main.on_call = hook
         reply = await self.engine.handle_reply(
@@ -1875,7 +1877,9 @@ class EventEngineTest(unittest.IsolatedAsyncioTestCase):
         holder: dict[str, Any] = {}
 
         def hook(_index: int) -> None:
-            holder["second"] = self.engine.register_incoming(SESSION, "还有一句话")
+            holder["second"] = self.engine.register_incoming(
+                SESSION, "还有一句话", identity={"user_id": "1", "user_name": "小明"}
+            )
 
         self.main.on_call = hook
         reply = await self.engine.handle_reply(

@@ -2247,7 +2247,11 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.engine.world.reply_style.merge_wait_seconds = 0.2
         await self.engine.handle_incoming(self.ctx(text="第一句：在吗"))
-        second = self.engine.register_incoming(SESSION, "第二句：顺便问你件事")
+        second = self.engine.register_incoming(
+            SESSION,
+            "第二句：顺便问你件事",
+            identity={"user_id": "42", "user_name": "小明"},
+        )
         self.llm.replies = ['{"actions":[{"type":"say","messages":["都在，你说"]}]}']
         outcome = await self.engine.handle_reply(self.ctx(text="第一句：在吗"))
         self.assertTrue(outcome.ok, outcome.error)

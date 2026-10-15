@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v3.0.1-4f6bf5" alt="version" />
+  <img src="https://img.shields.io/badge/version-v3.0.2-4f6bf5" alt="version" />
   <img src="https://img.shields.io/badge/AstrBot-%E2%89%A5%204.20.0-8b6cf0" alt="AstrBot" />
   <img src="https://img.shields.io/badge/dependencies-%E6%97%A0-brightgreen" alt="dependencies" />
 </p>
@@ -155,6 +155,10 @@
 **Q：群名片一直显示以前改过的名字？**
 v3.0.1 修了。控制台现在会读**平台上的真实名片**（dynamic_card_plus 改过也跟得上），
 「保存名片」也只改当前名片、不再顺手覆盖「原名」。升级后打开控制台刷新一次，名字就会对齐。
+
+**Q：两个人同时 @ 她，会被合并成一条回复吗？**
+不会。连发合并只并**同一个人**在短时间内的几句（她才不会答一句、再答一句）；
+不同人几乎同时触发时各回各的，第二条消息不会被吞掉，也不会被算进别人的那一轮。
 
 ## 文档导航
 

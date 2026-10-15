@@ -273,6 +273,41 @@ class ReplyBatchTest(unittest.IsolatedAsyncioTestCase):
             line = next(line for line in prompt.splitlines() if marker in line)
             self.assertEqual(line, f"  {marker}", line)
 
+    async def test_another_person_is_not_merged_into_this_reply(self):
+        """两个人同时 @ 她：各回各的；第二个人的消息不能被并进第一轮、更不能被吸收。"""
+
+        self.merge_mode()
+        mine = self.register(
+            "今天开会吗", user_id="1", user_name="小明", message_id="p1"
+        )
+        other = self.register(
+            "你晚上有空吗", user_id="2", user_name="小红", message_id="p2"
+        )
+
+        reply = await self.engine.handle_reply(
+            self.ctx("今天开会吗", user_id="1", user_name="小明", message_id="p1")
+        )
+
+        self.assertTrue(reply.ok, reply.error)
+        prompt = self.llm.user_prompt()
+        self.assertIn("今天开会吗", prompt)
+        self.assertNotIn("你晚上有空吗", prompt, "不同人的话不能并进同一轮")
+        self.assertTrue(self.engine.was_absorbed(mine))
+        self.assertFalse(
+            self.engine.was_absorbed(other), "另一条要留给它自己的那一轮"
+        )
+
+    async def test_quiet_window_only_waits_for_the_same_person(self):
+        """别人在群里打字，不该拖着她的这一条一起等安静期。"""
+
+        self.register("别人还在打字", user_id="2", user_name="小红", message_id="q1")
+
+        self.assertEqual(self.engine._latest_incoming_at(SESSION, "1"), 0.0)
+        self.assertGreater(self.engine._latest_incoming_at(SESSION, "2"), 0.0)
+        self.assertGreater(
+            self.engine._latest_incoming_at(SESSION), 0.0, "不传人时维持原行为"
+        )
+
     async def test_same_topic_burst_is_not_rendered_as_one_sentence_three_times(self):
         """同主题、不同内容：三条各自成条，不写成"同一句重复三遍"。"""
 
@@ -298,13 +333,13 @@ class ReplyBatchTest(unittest.IsolatedAsyncioTestCase):
 
     # ---------------- 3：同群两个人 ----------------
 
-    async def test_two_people_burst_keeps_each_speaker(self):
-        """两个人几乎同时说：合并成一轮，但逐条标出真实发言人。"""
+    async def test_two_people_burst_does_not_steal_each_others_batch(self):
+        """两个人几乎同时说：各回各的；没轮到的那些留给它自己的那一轮，并且带对发言人。"""
 
         self.merge_mode()
-        self.register("今天开会吗", user_id="1001", user_name="A", message_id="p1")
+        a = self.register("今天开会吗", user_id="1001", user_name="A", message_id="p1")
         # B 那句是冲别人说的：渲染器要按条给它标出「这句是冲别人说的」
-        self.register(
+        b = self.register(
             "我去买咖啡",
             user_id="1002",
             user_name="B",
@@ -312,7 +347,7 @@ class ReplyBatchTest(unittest.IsolatedAsyncioTestCase):
             addressing="others",
         )
         # C 那条例子里 @ 了她：渲染器要按条标出「→ 你：」
-        self.register(
+        c = self.register(
             "几点",
             user_id="1003",
             user_name="C",
@@ -332,22 +367,37 @@ class ReplyBatchTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(reply.ok, reply.error)
         prompt = self.llm.user_prompt()
-        for marker in ("A(1001): 今天开会吗", "B(1002): 我去买咖啡", "C(1003): → 你：几点"):
-            self.assertIn(marker, prompt)
-            line = next(line for line in prompt.splitlines() if marker in line)
-            self.assertTrue(line.startswith("- ["), line)
-        # B / C 的话绝不能挂到 A 名下
-        self.assertNotIn("A(1001): 我去买咖啡", prompt)
-        self.assertNotIn("A(1001): 几点", prompt)
-        self.assertEqual(prompt.count("我去买咖啡"), 1)
-        # 冲别人说的那句，渲染器按条点一句；@ 了她的那句不点
-        hint = "（这句是冲别人说的，不是在问你）"
-        b_line = next(line for line in prompt.splitlines() if "我去买咖啡" in line)
-        c_line = next(line for line in prompt.splitlines() if "C(1003):" in line)
-        self.assertIn(hint, b_line)
-        self.assertNotIn(hint, c_line)
+        # 这一轮只答 C：A / B 的话不能进同一轮，更不能被吸收后一声不吭
+        self.assertIn("C(1003): → 你：几点", prompt)
+        self.assertNotIn("A(1001): 今天开会吗", prompt)
+        self.assertNotIn("B(1002): 我去买咖啡", prompt)
+        self.assertFalse(self.engine.was_absorbed(a))
+        self.assertFalse(self.engine.was_absorbed(b))
+        self.assertTrue(self.engine.was_absorbed(c))
+        line = next(line for line in prompt.splitlines() if "C(1003):" in line)
+        self.assertTrue(line.startswith("- ["), line)
         # addressing 基调由触发者那一条决定，仍然写在最后那条 user 消息里
         self.assertIn("C 对你说：", prompt)
+
+        # B 轮到自己时，那条消息和「冲别人说的」标注都还在
+        reply_b = await self.engine.handle_reply(
+            self.ctx(
+                "我去买咖啡",
+                user_id="1002",
+                user_name="B",
+                message_id="p2",
+                addressing="others",
+            )
+        )
+        self.assertTrue(reply_b.ok, reply_b.error)
+        prompt_b = self.llm.user_prompt()
+        self.assertIn("B(1002): 我去买咖啡", prompt_b)
+        self.assertNotIn("A(1001): 我去买咖啡", prompt_b)
+        self.assertEqual(prompt_b.count("我去买咖啡"), 1)
+        hint = "（这句是冲别人说的，不是在问你）"
+        b_line = next(line for line in prompt_b.splitlines() if "我去买咖啡" in line)
+        self.assertIn(hint, b_line)
+        self.assertTrue(self.engine.was_absorbed(b))
 
     # ---------------- 4：真的说了两遍 + 两个钩子的副本 ----------------
 
@@ -740,8 +790,8 @@ class ReplyBatchTest(unittest.IsolatedAsyncioTestCase):
                 {chat_event_key(SESSION, "s1"), chat_event_key(PRIVATE_SESSION, "s2")},
             )
 
-    async def test_same_text_from_two_people_in_one_group_is_kept(self):
-        """同一个群里两个人说了同一句话：两条都要在，归属各是各的。"""
+    async def test_same_text_from_two_people_is_each_answered_once(self):
+        """同一个群里两个人说了同一句话：两条都要在，各回各的那一轮。"""
 
         self.merge_mode()
         first = self.register("哈哈哈哈", user_id="1", user_name="小明", message_id="p1")
@@ -754,8 +804,21 @@ class ReplyBatchTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(reply.ok, reply.error)
         whole = self.llm.request_text()
-        self.assertEqual(whole.count("哈哈哈哈"), 2, "两个人各说一遍，两遍都要在")
-        self.assertIn("小红", whole, "发言人不能丢掉")
+        self.assertEqual(whole.count("哈哈哈哈"), 1, "这一轮只答小明")
+        self.assertIn("小明", whole, "发言人不能丢掉")
+        self.assertTrue(self.engine.was_absorbed(first))
+        self.assertFalse(
+            self.engine.was_absorbed(second), "小红那条要留给它自己的那一轮"
+        )
+
+        reply2 = await self.engine.handle_reply(
+            self.ctx("哈哈哈哈", user_id="2", user_name="小红", message_id="p2")
+        )
+        self.assertTrue(reply2.ok, reply2.error)
+        whole2 = self.llm.request_text()
+        self.assertEqual(whole2.count("哈哈哈哈"), 1, "这一轮只答小红")
+        self.assertIn("小红", whole2)
+        self.assertTrue(self.engine.was_absorbed(second))
 
     async def test_a_fresh_message_is_not_swallowed_by_an_answered_twin(self):
         """刚回过一句一模一样的：新来的这条仍然是新的，不能被当成"已回过"。"""
