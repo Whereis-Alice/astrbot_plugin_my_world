@@ -3203,6 +3203,7 @@ async function startApp() {
   applyTheme(currentTheme(), false);
   bindTabs();
   bindButtons();
+  applySidebarRail();
   syncTopbarHeight();
   // 顶栏换了内容（会话列表、编辑范围、按钮文案）就可能换行，高度跟着变；
   // 盯着它量，地图舞台永远按真实高度算，不会留一条缝或者被压掉一截。
@@ -3754,6 +3755,7 @@ function showTab(name, button) {
   if (name === "events") loadEvents();
   if (name === "contacts") loadContacts();
   if (name === "memories") loadMemories();
+  if (name === "thoughts") loadThoughts();
   if (name === "logs") loadLogs();
   if (name === "map") {
     renderMap();
@@ -3766,6 +3768,20 @@ function showTab(name, button) {
 
 function bindButtons() {
   bindConfigScopes();
+  if ($("sidebar-toggle")) {
+    $("sidebar-toggle").addEventListener("click", () => {
+      setSidebarRail(!$("app").classList.contains("side-rail"));
+    });
+  }
+  if ($("thoughts-refresh")) {
+    $("thoughts-refresh").addEventListener("click", loadThoughts);
+  }
+  if ($("thought-session")) {
+    $("thought-session").addEventListener("change", loadThoughts);
+  }
+  if ($("thoughts-clear")) {
+    $("thoughts-clear").addEventListener("click", clearThoughts);
+  }
   if ($("config-bar-toggle")) {
     $("config-bar-toggle").addEventListener("click", (event) => {
       event.stopPropagation();
@@ -4231,6 +4247,9 @@ function bindButtons() {
   if ($("schedule-generate")) {
     $("schedule-generate").addEventListener("click", generateScheduleDrafts);
   }
+  if ($("schedule-auto")) {
+    $("schedule-auto").addEventListener("click", editAutoSchedules);
+  }
   // 「立即执行用哪个会话」也决定落点里能勾哪些：换了就重画表单
   $("schedule-session").addEventListener("change", () => renderScheduleForm());
   $("session-add").addEventListener("click", addSession);
@@ -4525,6 +4544,7 @@ function renderSessionSelects() {
     "map-session",
     "schedule-session",
     "contacts-session",
+    "thought-session",
   ].forEach((id) => {
     const select = $(id);
     if (!select) return;
@@ -7555,9 +7575,9 @@ function renderWorldMap() {
       const focused = markers.some((item) => item.session_id === focusSession);
       const label = focused
         ? markers.length > 1
-          ? `她在这个区域（共 ${markers.length} 个会话）`
-          : "她在这个区域"
-        : `${markers.length} 个会话在这个区域`;
+          ? `她在这里 · ${markers.length} 个会话`
+          : "她在这里"
+        : `${markers.length} 个会话`;
       if (!focused) box.classList.add("other");
       const badge = el("div", "node-here", label);
       badge.setAttribute(
@@ -8778,6 +8798,57 @@ async function commitGeneratedWorldMap(zones, nodes, edges, zoneEdges) {
   if (droppedWalks) notes.push(`日程里有 ${droppedWalks} 个旧地点步骤已移除`);
   toast(notes.join("；"));
   return true;
+}
+
+/**
+ * 自动生成日程：每天过了设定的时间点，她自己排几条一次性安排。
+ * 配置写进日程配置里的 auto 块，和别的设置一样，点右上角「保存」后生效。
+ */
+function editAutoSchedules() {
+  const schedules = (ui.config && ui.config.schedules) || {};
+  schedules.auto = schedules.auto || {};
+  const auto = schedules.auto;
+  openFormDialog({
+    title: "自动生成日程",
+    hint: "打开之后，每天过了设定的时间点，她会按人设与地图自己排几条一次性安排；"
+      + "跑完那一次就自动删掉，不会越积越多。",
+    confirmText: "保存这项设置",
+    values: {
+      enabled: auto.enabled === true,
+      per_day: num(auto.per_day, 2),
+      hour: num(auto.hour, 8),
+      extra_prompt: auto.extra_prompt || "",
+    },
+    fields: [
+      { key: "enabled", label: "启用自动生成", type: "checkbox" },
+      {
+        key: "per_day",
+        label: "每天生成几条（1~6）",
+        type: "number",
+        hint: "生成出来的都是一次性安排：做完就删，第二天再排新的。",
+      },
+      { key: "hour", label: "几点之后开始排（0~23）", type: "number" },
+      {
+        key: "extra_prompt",
+        label: "额外要求（可选）",
+        type: "textarea",
+        hint: "例如：最近在准备考试，晚上多在书房。",
+      },
+    ],
+    onSubmit: (values) => {
+      auto.enabled = Boolean(values.enabled);
+      auto.per_day = Math.max(1, Math.min(6, Math.round(num(values.per_day, 2))));
+      auto.hour = Math.max(0, Math.min(23, Math.round(num(values.hour, 8))));
+      auto.extra_prompt = String(values.extra_prompt || "").trim();
+      markDirty();
+      toast(
+        auto.enabled
+          ? "自动生成已开：点右上角「保存」后生效"
+          : "自动生成已关：点右上角「保存」后生效",
+      );
+      return true;
+    },
+  });
 }
 
 function generateScheduleDrafts() {
@@ -12099,6 +12170,19 @@ function scheduleScopeNames(schedule) {
 function renderScheduleList() {
   const list = $("schedule-list");
   list.innerHTML = "";
+  const auto = ((ui.config && ui.config.schedules) || {}).auto || {};
+  if (auto.enabled) {
+    const banner = el("div", "list-item");
+    banner.appendChild(
+      el(
+        "div",
+        "list-main",
+        `自动生成已开：每天 ${num(auto.per_day, 2)} 条一次性安排`
+          + `（${num(auto.hour, 8)} 点之后排），做完自动删`,
+      ),
+    );
+    list.appendChild(banner);
+  }
   schedules().forEach((schedule) => {
     const item = el("div", "list-item");
     if (schedule.id === ui.selectedSchedule) item.classList.add("selected");
@@ -13721,6 +13805,100 @@ async function contactAction(node) {
   }
 }
 
+/* ---------------- 内心活动：她自己留下的那些话 ---------------- */
+
+async function loadThoughts() {
+  const list = $("thoughts-list");
+  if (!list) return;
+  const session = $("thought-session") ? $("thought-session").value : "";
+  list.innerHTML = "";
+  if (!session) {
+    list.appendChild(el("p", "muted", "还没有白名单会话。"));
+    return;
+  }
+  list.appendChild(el("p", "muted", "读取中…"));
+  try {
+    const data = await apiGet("thoughts", { session, limit: 120 });
+    renderThoughts(data);
+  } catch (error) {
+    list.innerHTML = "";
+    list.appendChild(el("p", "muted", error.message || "读取失败"));
+  }
+}
+
+function renderThoughts(data) {
+  const list = $("thoughts-list");
+  if (!list) return;
+  list.innerHTML = "";
+  const rows = (data && data.thoughts) || [];
+  const note = $("thoughts-note");
+  if (note) note.textContent = rows.length ? `最近 ${rows.length} 条` : "";
+  if (!rows.length) {
+    list.appendChild(
+      el("p", "muted", "还没有记录：等她说完一轮话，或者自己做一次决定，这里就会有。"),
+    );
+    return;
+  }
+  rows.forEach((row) => {
+    const item = el("div", "thought-row");
+    const head = el("div", "thought-head");
+    head.appendChild(el("span", "thought-time", formatStamp(row.at)));
+    if (row.node_name) head.appendChild(el("span", "thought-node", row.node_name));
+    if (row.source) head.appendChild(el("span", "thought-source", row.source));
+    item.appendChild(head);
+    item.appendChild(el("div", "thought-text", String(row.content || "")));
+    list.appendChild(item);
+  });
+}
+
+async function clearThoughts() {
+  const session = $("thought-session") ? $("thought-session").value : "";
+  if (!session) return;
+  const sure = await confirmDialog({
+    title: "清空内心活动",
+    message: "只清掉这一栏留下的心里话；她的状态、记忆、日志和日程都不动。",
+    confirmText: "清空",
+  });
+  if (!sure) return;
+  try {
+    const result = await apiPost("thoughts/clear", { session });
+    toast(result.removed ? `清掉了 ${result.removed} 条` : "本来就是空的");
+    loadThoughts();
+  } catch (error) {
+    toast(error.message || "清空失败");
+  }
+}
+
+/* ---------------- 左侧导航：收成图标栏 ---------------- */
+
+function setSidebarRail(collapsed) {
+  const app = $("app");
+  if (!app) return;
+  app.classList.toggle("side-rail", Boolean(collapsed));
+  const toggle = $("sidebar-toggle");
+  if (toggle) {
+    toggle.textContent = collapsed ? "»" : "«";
+    toggle.title = collapsed
+      ? "展开左侧导航"
+      : "收起左侧导航（收起来只剩图标，鼠标停上去看名字）";
+  }
+  try {
+    window.localStorage.setItem("mw-sidebar-rail", collapsed ? "1" : "0");
+  } catch (error) {
+    /* 隐私模式下写不进缓存，本次仍然生效 */
+  }
+}
+
+function applySidebarRail() {
+  let saved = "0";
+  try {
+    saved = window.localStorage.getItem("mw-sidebar-rail") || "0";
+  } catch (error) {
+    saved = "0";
+  }
+  setSidebarRail(saved === "1");
+}
+
 async function loadMemories() {
   const list = $("memory-list");
   list.innerHTML = "<p class='muted'>加载中…</p>";
@@ -15238,6 +15416,24 @@ function renderSettings() {
         "每小时最多自主行动几次在下面的「说话频率与预算」里。",
     ),
   );
+  // 顶栏那个「自主搭话」暂停之后，日程到点和事件发生仍然会说话（那是设计好的）。
+  // 想连这两个也一起静音，就在这儿关；三个开关合起来才是"完全不主动开口"。
+  decideCard._fields.appendChild(
+    checkboxField(
+      "日程到点也发言",
+      world.schedule_speech_enabled !== false,
+      (value) => (world.schedule_speech_enabled = value),
+      { hint: "关掉后日程照常执行动作，但不会把话发出去；想彻底安静就把它和下面那个都关掉。" },
+    ),
+  );
+  decideCard._fields.appendChild(
+    checkboxField(
+      "事件发生时发言",
+      world.event_speech_enabled !== false,
+      (value) => (world.event_speech_enabled = value),
+      { hint: "关掉后事件照常推进与记录，只是她不会为这件事开口。" },
+    ),
+  );
   form.appendChild(decideCard);
 
   /* --- 无人回应保护 --- */
@@ -16386,6 +16582,34 @@ function renderSettings() {
         renderSettings();
       },
       {},
+    ),
+  );
+  // 装了「心迹画像」时的联动：它一直在记新东西，所以这边要定期同步，
+  // 同时避免两边把同一份画像都塞进提示词。
+  profileSection._fields.appendChild(
+    checkboxField(
+      "和「心迹画像」联动",
+      !(world.profile && world.profile.weaver_link === false),
+      (value) => {
+        world.profile = world.profile || {};
+        world.profile.weaver_link = value;
+      },
+      { hint: "它开着时不再重复注入从它那儿搬来的事实，并定期自动同步新记的内容。" },
+    ),
+  );
+  profileSection._fields.appendChild(
+    inputField(
+      "同步间隔（小时）",
+      num(world.profile && world.profile.weaver_sync_hours, 6),
+      (value) => {
+        world.profile = world.profile || {};
+        world.profile.weaver_sync_hours = Math.max(0, num(value, 6));
+      },
+      {
+        hint: "每隔这么久读一次它的数据；填 0 = 只手动搬。",
+        type: "number",
+        min: 0,
+      },
     ),
   );
   profileSection._fields.appendChild(

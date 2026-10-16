@@ -2285,6 +2285,7 @@ class PromptBuilder:
         *,
         limit_others: int = 5,
         date_text: str = "",
+        skip_weaver_facts: bool = False,
     ) -> str:
         """「你在跟谁说话」：当前说话人的画像全文 + 其他人的缩略版一行。
 
@@ -2357,7 +2358,7 @@ class PromptBuilder:
                 if call_him:
                     parts.append(f"你叫他「{call_him}」")
                 lines.append("- " + "；".join(parts))
-            for text in self._fact_lines(person):
+            for text in self._fact_lines(person, skip_weaver=skip_weaver_facts):
                 lines.append(f"- {text}")
             level_prompt = str(_field(level, "prompt", "") or "")
             if level_prompt:
@@ -2432,12 +2433,18 @@ class PromptBuilder:
             text += f"；他 {_dwell_text(max(0.0, (stamp - seen) / 60.0))}前在群里露过面"
         return text
 
-    def _fact_lines(self, person: Any) -> list[str]:
-        """把事实按类型合并成几行（信息给全，但别写成一坨）。"""
+    def _fact_lines(self, person: Any, *, skip_weaver: bool = False) -> list[str]:
+        """把事实按类型合并成几行（信息给全，但别写成一坨）。
+
+        ``skip_weaver=True`` 时跳过「从心迹画像搬来的」那些：那个插件自己也在
+        注入同一份画像，两边都写一遍等于让模型读两遍同样的话。
+        """
 
         grouped: dict[str, list[str]] = {}
         for item in _field(person, "facts") or []:
             if not isinstance(item, dict):
+                continue
+            if skip_weaver and str(item.get("evidence") or "").startswith("导入自"):
                 continue
             text = " ".join(str(item.get("text") or "").split())
             if not text:

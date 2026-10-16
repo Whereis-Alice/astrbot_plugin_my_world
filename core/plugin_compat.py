@@ -66,3 +66,33 @@ def _ids(value: Any) -> set[str]:
     if not isinstance(value, (list, tuple, set)):
         return set()
     return {str(item).strip() for item in value}
+
+
+PROFILE_WEAVER_PLUGIN = "astrbot_plugin_profile_weaver"
+"""心迹画像：它自己也会往系统提示词里注入画像，所以要知道它开没开。"""
+
+
+def plugin_active(context: Any, names: str | tuple[str, ...]) -> bool:
+    """这个插件装没装、启用没有（只读，不碰它的配置）。"""
+
+    wanted = {names} if isinstance(names, str) else {str(item) for item in names}
+    getter = getattr(context, "get_all_stars", None)
+    if not callable(getter):
+        return False
+    try:
+        stars = getter() or []
+    except Exception:
+        return False
+    for star in stars:
+        labels = {str(getattr(star, key, "") or "") for key in ("name", "root_dir_name")}
+        if not labels.intersection(wanted):
+            continue
+        if bool(getattr(star, "activated", False)):
+            return True
+    return False
+
+
+def profile_weaver_active(context: Any) -> bool:
+    """心迹画像在不在跑（它在跑就会自己注入画像，我们别重复注入）。"""
+
+    return plugin_active(context, PROFILE_WEAVER_PLUGIN)

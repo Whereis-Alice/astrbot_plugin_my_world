@@ -15,6 +15,7 @@ from core import profile_weaver  # noqa: E402
 from core.db import Database  # noqa: E402
 from core.defaults import default_world  # noqa: E402
 from core.models import parse_world  # noqa: E402
+from core.plugin_compat import profile_weaver_active  # noqa: E402
 from core.profile import ProfileStore  # noqa: E402
 
 SESSION = "aiocqhttp:GroupMessage:1001"
@@ -77,6 +78,33 @@ class ProfileWeaverBridgeTests(unittest.TestCase):
         stats = profile_weaver.summarize(items)
         self.assertEqual(stats["people"], 2)
         self.assertGreaterEqual(stats["facts"], 5)
+
+
+class ProfileWeaverPluginDetectTests(unittest.TestCase):
+    """心迹画像插件在不在跑：在跑我们就别重复注入。"""
+
+    class _Star:
+        def __init__(self, name, activated):
+            self.name = name
+            self.activated = activated
+
+    class _Context:
+        def __init__(self, stars):
+            self._stars = stars
+
+        def get_all_stars(self):
+            return self._stars
+
+    def test_plugin_active_reads_star_state(self):
+        active = self._Context(
+            [self._Star("astrbot_plugin_profile_weaver", True)]
+        )
+        self.assertTrue(profile_weaver_active(active))
+        idle = self._Context([self._Star("astrbot_plugin_profile_weaver", False)])
+        self.assertFalse(profile_weaver_active(idle))
+        missing = self._Context([self._Star("astrbot_plugin_meme_magpie", True)])
+        self.assertFalse(profile_weaver_active(missing))
+        self.assertFalse(profile_weaver_active(object()))
 
 
 class ProfileWeaverImportTests(unittest.TestCase):

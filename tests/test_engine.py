@@ -10475,6 +10475,40 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         # 但提示词里不带（那是「启用天气」管的事）
         self.assertEqual(await self.engine.weather_line(), "")
 
+    async def test_schedule_and_event_speech_have_their_own_switches(self):
+        """「自主搭话」之外，日程与事件的发言也能各自静音。"""
+
+        self.assertTrue(self.engine.speech_allowed(SESSION, "schedule"))
+        self.assertTrue(self.engine.speech_allowed(SESSION, "event"))
+        raw = self.store.raw_world()
+        raw["proactive_chat_paused"] = True
+        raw["schedule_speech_enabled"] = False
+        raw["event_speech_enabled"] = False
+        self.store.save_world(raw)
+        self.engine.reload_config()
+        self.assertFalse(self.engine.speech_allowed(SESSION, "schedule"))
+        self.assertFalse(self.engine.speech_allowed(SESSION, "event"))
+        # 别人叫她，她当然还是能回
+        self.assertTrue(self.engine.speech_allowed(SESSION, "reply"))
+
+    async def test_thoughts_page_reads_and_clears_inner_voice(self):
+        """「内心活动」那一页读的是她自己留下的心里话，能按会话清空。"""
+
+        await self.set_state(node_id="study")
+        async with self.engine.session_state(SESSION) as state:
+            state.add_thought("今天风挺舒服", source="聊完一轮")
+        payload = await self.engine.thoughts_payload(SESSION)
+        self.assertEqual(len(payload["thoughts"]), 1)
+        row = payload["thoughts"][0]
+        self.assertEqual(row["content"], "今天风挺舒服")
+        self.assertEqual(row["source"], "聊完一轮")
+        self.assertEqual(row["node_id"], "study")
+        self.assertTrue(row["node_name"])
+        self.assertGreater(row["at"], 0)
+
+        self.assertEqual(await self.engine.clear_thoughts(SESSION), 1)
+        self.assertEqual((await self.engine.thoughts_payload(SESSION))["thoughts"], [])
+
     async def test_weather_can_be_learned_from_a_tool_with_the_wrong_binding(self):
         """「查天气」动作没绑工具时，自动认一把已注册的天气工具。"""
 

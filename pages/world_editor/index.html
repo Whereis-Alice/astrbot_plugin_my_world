@@ -36,23 +36,32 @@
         <div class="brand">
           <img class="brand-logo" src="./assets/logo.svg" alt="" />
           <span class="brand-name">我的世界编辑器</span>
+          <button
+            id="sidebar-toggle"
+            class="sidebar-toggle"
+            type="button"
+            title="收起 / 展开左侧导航（收起来只剩图标）"
+          >
+            «
+          </button>
         </div>
         <nav id="tabs" class="tabs">
           <span class="nav-group">观察</span>
-          <button data-tab="status" class="active">控制台</button>
-          <button data-tab="events">事件</button>
-          <button data-tab="contacts">通讯录</button>
-          <button data-tab="memories">记忆库</button>
-          <button data-tab="logs">日志</button>
-          <button data-tab="debug">调试</button>
+          <button data-tab="status" class="active" title="控制台">控制台</button>
+          <button data-tab="events" title="事件">事件</button>
+          <button data-tab="contacts" title="通讯录">通讯录</button>
+          <button data-tab="memories" title="记忆库">记忆库</button>
+          <button data-tab="thoughts" title="内心活动">内心活动</button>
+          <button data-tab="logs" title="日志">日志</button>
+          <button data-tab="debug" title="调试">调试</button>
           <span class="nav-group">编辑</span>
-          <button data-tab="map">地图</button>
-          <button data-tab="actions">动作库</button>
-          <button data-tab="schedules">日程</button>
-          <button data-tab="sessions">会话</button>
+          <button data-tab="map" title="地图">地图</button>
+          <button data-tab="actions" title="动作库">动作库</button>
+          <button data-tab="schedules" title="日程">日程</button>
+          <button data-tab="sessions" title="会话">会话</button>
           <span class="nav-group">配置</span>
-          <button data-tab="settings">设置</button>
-          <button data-tab="presets">预设</button>
+          <button data-tab="settings" title="设置">设置</button>
+          <button data-tab="presets" title="预设">预设</button>
         </nav>
         <div class="sidebar-foot">
           <span class="muted sidebar-note">v2 · 本地编辑器</span>
@@ -488,6 +497,13 @@
               <div class="toolbar">
                 <button id="schedule-add" class="primary">新增日程</button>
                 <button id="schedule-generate" class="ghost" title="按她的生活节奏起草几条日程，动作只引用她真会做的事">生成日程…</button>
+                <button
+                  id="schedule-auto"
+                  class="ghost"
+                  title="每天到了设定的时间点，自动排几条一次性安排（按人设与地图写，做完自动删掉）"
+                >
+                  自动生成…
+                </button>
               </div>
               <label class="field">
                 <span>「立即执行」用哪个会话</span>
@@ -671,6 +687,32 @@
         </section>
 
         <!-- 日志 -->
+        <!-- 内心活动：她自己留下的那些话，按时间倒序排一页 -->
+        <section id="tab-thoughts" class="tab">
+          <div class="page-head">
+            <div class="page-head-left">
+              <label class="field">
+                <span>会话</span>
+                <select id="thought-session"></select>
+              </label>
+              <div class="toolbar">
+                <button id="thoughts-refresh" class="ghost">刷新</button>
+                <button id="thoughts-clear" class="ghost danger" title="只清掉留下的心里话，状态、记忆、日志都不动">
+                  清空记录
+                </button>
+              </div>
+            </div>
+            <div class="page-head-right">
+              <span class="muted" id="thoughts-note"></span>
+            </div>
+          </div>
+          <p class="hint-line">
+            每聊完一轮、每做一次自主决定，她心里冒出来的那一两句都会留在这儿；
+            这里显示的是最近的记录，越上面越新。同一句连着出现只记一次。
+          </p>
+          <div id="thoughts-list" class="list" data-keep-text></div>
+        </section>
+
         <section id="tab-logs" class="tab">
           <div class="page-head">
             <div class="page-head-left">

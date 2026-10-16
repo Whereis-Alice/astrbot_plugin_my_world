@@ -1682,6 +1682,17 @@ class ProfileConfig(Permissive):
     consolidate_enabled: bool = True
     """睡眠整理开关（画像与记忆的消化 / 折叠都在那一步）。"""
 
+    weaver_link: bool = True
+    """和「心迹画像」（astrbot_plugin_profile_weaver）联动。
+
+    开着时：① 它也在往提示词里注入时，本插件不再重复注入**从它那儿搬来的**事实
+    （同一份上下文只说一遍）；② 每隔 ``weaver_sync_hours`` 自动把它新记的字段
+    同步过来，不用手动点。
+    """
+
+    weaver_sync_hours: float = 6.0
+    """自动同步的间隔（小时）。填 0 = 只手动同步。"""
+
     sleep_consolidate_minutes: int = 20
     """睡下多久开始第一次整理（分钟）：让"睡沉了"再整理，也避免刚躺下就动记忆。"""
 
@@ -2162,6 +2173,12 @@ class WorldConfig(Permissive):
     """全局暂停自主搭话；所有会话都生效，日程、事件和被动回复保留。"""
     proactive_chat_enabled: bool = True
     """允许自主搭话；默认全局继承，会话可单独关闭。"""
+    schedule_speech_enabled: bool = True
+    """日程到点时允不允许她说话。关掉 = 日程照跑，只是不发出去。"""
+
+    event_speech_enabled: bool = True
+    """事件发生（推进/完结）时允不允许她说话。关掉 = 事件照走，只是不发出去。"""
+
     world_id: str = "default"
     name: str = "小世界"
     bot_name: str = ""
@@ -2499,8 +2516,25 @@ class ScheduleDef(Permissive):
         return f"{hour:02d}:{minute:02d}"
 
 
+class ScheduleAutoConfig(Permissive):
+    """自动排日程：每天按频率生成几条**一次性**安排（做完自动删掉）。"""
+
+    enabled: bool = False
+    """开了之后，每天到了点就自动让内容生成模型排几条一次性日程。"""
+
+    per_day: int = 2
+    """每天生成几条（1~6）。"""
+
+    hour: int = 8
+    """当地时间的几点之后再排今天的（0~23），免得半夜突然加安排。"""
+
+    extra_prompt: str = ""
+    """额外要求：例如「最近在准备考试，晚上多在书房」。"""
+
+
 class SchedulesConfig(Permissive):
     schedules: list[ScheduleDef] = Field(default_factory=list)
+    auto: ScheduleAutoConfig = Field(default_factory=ScheduleAutoConfig)
 
 
 class SessionDef(Permissive):

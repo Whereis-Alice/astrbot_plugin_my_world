@@ -1242,9 +1242,24 @@ class WorldState:
         if len(self.recent_events) > keep:
             self.recent_events = self.recent_events[-keep:]
 
-    def add_thought(self, content: str, node_id: str = "", keep: int = 20) -> None:
+    def add_thought(
+        self, content: str, node_id: str = "", source: str = "", keep: int = 120
+    ) -> None:
+        """留下她的一句心里话。
+
+        ``keep`` 给得比较宽（120 条）：这些是编辑器「内心活动」那一页的内容，
+        只留最近二十条的话，翻着翻着就没了；提示词那边只会取最后三条，不影响预算。
+        """
+
         self.thoughts.append(
-            {"content": content, "node_id": node_id or self.node_id, "world_time": self.world_time}
+            {
+                "content": content,
+                "node_id": node_id or self.node_id,
+                "source": source,
+                # 世界时钟还没跑起来（例如离线补写）时用真实时间兜底，
+                # 免得「内心活动」那一页的时间栏永远是空的。
+                "world_time": float(self.world_time or 0.0) or time.time(),
+            }
         )
         if len(self.thoughts) > keep:
             self.thoughts = self.thoughts[-keep:]

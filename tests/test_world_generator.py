@@ -10,6 +10,8 @@ import os
 import sys
 import tempfile
 import unittest
+import json
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -573,6 +575,23 @@ class GeneratorPromptTests(unittest.TestCase):
         self.assertIn("2026-10-16", prompt)
         self.assertIn("婚礼", prompt)
 
+    def test_profile_block_can_skip_facts_imported_from_the_weaver(self):
+        """心迹画像自己也在注入时，这边跳过"从它那儿搬来的"那些事实，不重复说一遍。"""
+
+        builder = PromptBuilder(parse_world(default_world())[0])
+        person = {
+            "name": "小明",
+            "user_id": "42",
+            "facts": [
+                {"kind": "profile", "text": "爱好：摄影", "evidence": "导入自心迹画像"},
+                {"kind": "profile", "text": "职业：学生", "evidence": "他说的"},
+            ],
+        }
+        self.assertIn("爱好：摄影", builder.profile_block(person))
+        skipped = builder.profile_block(person, skip_weaver_facts=True)
+        self.assertNotIn("爱好：摄影", skipped)
+        self.assertIn("职业：学生", skipped)
+
     def test_world_action_prompt_carries_persona_map_and_count(self):
         system, prompt = self.builder.build_world_action_generator_prompt(
             persona_text="她喜欢做饭，也喜欢在阳台养花。",
@@ -837,6 +856,86 @@ class EngineGeneratorTests(unittest.IsolatedAsyncioTestCase):
         call = self.creator.calls[-1]
         self.assertIn("反常", call["system_prompt"])
         self.assertIn("多写点做梦的事", call["prompt"])
+
+    async def test_auto_schedule_generation_runs_once_per_day(self):
+        """开了「自动生成」之后，每天到点自己排几条一次性日程，同一天不重复排。"""
+
+        raw = self.store.raw_schedules()
+        raw["auto"] = {"enabled": True, "per_day": 1, "hour": 0, "extra_prompt": "最近在准备考试"}
+        self.store.save_schedules(raw)
+        self.engine.reload_config()
+        today = self.engine._today_key(self.engine._now())
+        self.creator.replies = [
+            '{"schedules": [{"id": "buy_fish", "time": "17:30", "once": true, '
+            f'"date": "{today}", "note": "出门买点东西", '
+            '"action_chain": [{"type": "think", "content": "出门买东西"}]}]}'
+        ]
+        note = await self.engine.maybe_auto_generate_schedules()
+        self.assertIn("1 条", note)
+        rows = self.engine.schedules.schedules
+        self.assertTrue(any(item.once and item.id == "buy_fish" for item in rows))
+        prompt = self.creator.calls[-1]["prompt"]
+        self.assertIn("最近在准备考试", prompt)
+
+        # 同一天再跑一次：不再生成，也不再多调一次模型
+        calls = len(self.creator.calls)
+        self.assertEqual(await self.engine.maybe_auto_generate_schedules(), "")
+        self.assertEqual(len(self.creator.calls), calls)
+
+    async def test_stale_one_off_schedules_are_cleaned_by_the_same_job(self):
+        """过期没跑成的一次性安排留着也没用：自动排的时候顺手清掉。"""
+
+        raw = self.store.raw_schedules()
+        raw["schedules"] = [
+            {
+                "id": "old_plan",
+                "time": "09:00",
+                "once": True,
+                "date": "2020-01-01",
+                "days": [],
+                "action_chain": [{"type": "think", "content": "早就过去了"}],
+            }
+        ]
+        raw["auto"] = {"enabled": True, "per_day": 1, "hour": 0}
+        self.store.save_schedules(raw)
+        self.engine.reload_config()
+        self.creator.replies = ['{"schedules": [{"id": "noop", "time": "10:00", "once": true, "date": "' + self.engine._today_key(self.engine._now()) + '", "action_chain": [{"type": "think", "content": "今天的事"}]}]}']
+        await self.engine.maybe_auto_generate_schedules()
+        ids = [item.id for item in self.engine.schedules.schedules]
+        self.assertNotIn("old_plan", ids)
+
+    async def test_profile_weaver_sync_maps_records_to_their_session(self):
+        """自动同步按记录里的会话分别落库，不认得的会话跳过。"""
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        target = root / "astrbot_plugin_profile_weaver" / "profiles.json"
+        target.parent.mkdir(parents=True)
+        target.write_text(
+            json.dumps(
+                {
+                    "profiles": {
+                        f"{SESSION}_42": {
+                            "subject_user_id": "42",
+                            "fields": {"昵称": "小明", "爱好": "摄影"},
+                        },
+                        "unknown:GroupMessage:1_7": {
+                            "subject_user_id": "7",
+                            "fields": {"昵称": "没人认得的群"},
+                        },
+                    }
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        result = await self.engine.sync_profile_weaver_by_session(str(root))
+        self.assertEqual(result["people"], 1)
+        self.assertEqual(result["skipped"], 1)
+        self.assertGreater(result["added"], 0)
+        facts = self.engine.profiles.facts(SESSION, "42", limit=10)
+        self.assertIn("爱好：摄影", [item["text"] for item in facts])
 
     async def test_editor_generators_preserve_provider_failure_reason(self):
         self.creator.generate = AsyncMock(return_value=LLMReply(ok=False, error="HTTP 429: quota exceeded"))

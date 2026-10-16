@@ -118,7 +118,22 @@ class ScopedConfigMixin:
             return bool(self.world.proactive_chat_enabled)
 
     def speech_allowed(self, session_id: str, kind: str = "") -> bool:
-        return kind in {"reply", "event", "schedule"} or self.proactive_chat_allowed(session_id)
+        """这一条消息现在允许发出去吗。
+
+        ``reply`` 永远放行（别人叫她，她当然能回）；``schedule`` / ``event``
+        各有自己的开关（默认开，因为那是她生活的一部分）；其余（自主搭话、
+        接话、早晚问候这些）看顶栏那个「自主搭话」总闸。
+        """
+
+        if kind == "reply":
+            return True
+        if kind == "schedule":
+            return bool(
+                getattr(self._base_runtime["world"], "schedule_speech_enabled", True)
+            )
+        if kind == "event":
+            return bool(getattr(self._base_runtime["world"], "event_speech_enabled", True))
+        return self.proactive_chat_allowed(session_id)
 
     def scoped_schedules(self):
         session = self.session_config(self.config_scope_id)

@@ -8433,8 +8433,15 @@ class MyWorldEngine(ScopedConfigMixin):
         if person is not None:
             person = self._apply_grudge_coldness(state, user_id, person)
         others = self.other_people(state, session_id, exclude_user_id=user_id)
+        # 心迹画像自己也往提示词里注入，而且我们每隔几小时就把它的字段搬了一份；
+        # 两边都写等于同一句话读两遍，所以它在注入时这里跳过"搬来的"那些事实
+        # （本插件自己整理出来的事实照旧全给）。它关掉或者没装时不跳。
+        link = bool(getattr(self.world.profile, "weaver_link", True))
         return self.prompts.profile_block(
-            person, others, limit_others=int(self.world.profile.digest_limit)
+            person,
+            others,
+            limit_others=int(self.world.profile.digest_limit),
+            skip_weaver_facts=link and bool(getattr(self, "weaver_injecting", False)),
         )
 
     def _apply_grudge_coldness(
@@ -8520,6 +8527,91 @@ class MyWorldEngine(ScopedConfigMixin):
                 f"{result.get('added')} 条事实（{result.get('merged')} 条已存在）",
             )
         return {**result, "source_people": len(items)}
+
+    PROFILE_WEAVER_SYNC_KV = "profile.weaver_sync_at"
+
+    async def sync_profile_weaver_by_session(self, data_root: str) -> dict[str, Any]:
+        """按记录里的会话把数据分别搬进对应的通讯录（自动同步用）。"""
+
+        path = profile_weaver_bridge.profiles_path(data_root)
+        if path is None:
+            return {"ok": False, "reason": "没找到心迹画像的数据", "people": 0, "added": 0}
+        items = profile_weaver_bridge.iter_import_items(
+            profile_weaver_bridge.load_profiles(path)
+        )
+        if not items:
+            return {"ok": True, "people": 0, "added": 0, "merged": 0, "skipped": 0}
+        sessions = [str(item) for item in self.enabled_session_ids()]
+        by_session: dict[str, list[dict[str, Any]]] = {}
+        skipped = 0
+        for item in items:
+            source = str(item.get("source_session") or "")
+            if source:
+                # 记录指名了某个会话：只搬进本插件也认识的那个；
+                # 不认识的（别的群）坚决不往这个群倒。
+                target = source if self.session_config(source) is not None else ""
+            elif len(sessions) == 1:
+                # 没写会话的全局记录：只有唯一一条会话时才敢放进去
+                target = sessions[0]
+            else:
+                target = ""
+            if not target:
+                # 认不出这条记录属于哪个群：跳过，别把别人家的画像倒进随便一个群
+                skipped += 1
+                continue
+            by_session.setdefault(target, []).append(item)
+        people = added = merged = 0
+        for session_id, rows in by_session.items():
+            result = self.profiles.import_external(session_id, rows, source="心迹画像")
+            people += int(result.get("people") or 0)
+            added += int(result.get("added") or 0)
+            merged += int(result.get("merged") or 0)
+        if added:
+            self._log(
+                "info",
+                f"[my_world] 心迹画像自动同步：新增 {added} 条事实"
+                f"（{people} 个人，{merged} 条已存在，跳过 {skipped} 条认不出会话的）",
+            )
+        return {
+            "ok": True,
+            "people": people,
+            "added": added,
+            "merged": merged,
+            "skipped": skipped,
+        }
+
+    async def maybe_sync_profile_weaver(self, data_root: str) -> str:
+        """每隔几小时自动同步一次心迹画像（它一直在记新东西）。"""
+
+        profile = getattr(self.world, "profile", None)
+        if profile is None or not bool(getattr(profile, "enabled", True)):
+            return ""
+        if not bool(getattr(profile, "weaver_link", True)):
+            return ""
+        if not data_root:
+            return ""
+        try:
+            hours = float(getattr(profile, "weaver_sync_hours", 6.0) or 0.0)
+        except (TypeError, ValueError):
+            hours = 6.0
+        if hours <= 0:
+            return ""
+        now = self._now()
+        try:
+            last = float(await self.db.call("kv_get", self.PROFILE_WEAVER_SYNC_KV) or 0.0)
+        except Exception:
+            last = 0.0
+        if last and (now - last) < hours * 3600:
+            return ""
+        if not self.profile_weaver_status(data_root).get("installed"):
+            return ""
+        # 先记时间：同步失败也等下一个周期，不要在 tick 里反复读盘
+        try:
+            await self.db.call("kv_set", self.PROFILE_WEAVER_SYNC_KV, float(now))
+        except Exception:
+            pass
+        result = await self.sync_profile_weaver_by_session(data_root)
+        return "" if not result.get("added") else f"同步到 {result.get('added')} 条画像字段"
 
     # ---------------- 睡眠整理 ----------------
 
@@ -11342,14 +11434,15 @@ class MyWorldEngine(ScopedConfigMixin):
         """
 
         config = self.world.weather
-        if not bool(getattr(config, "enabled", True)):
-            return "天气功能在全局设置里关着"
+        if not bool(getattr(config, "enabled", True)) and not force:
+            return "天气功能在全局设置里关着（地图上的「刷新」仍然可以手动查一次）"
         hours = max(0.0, float(getattr(config, "refresh_hours", 2.0) or 0.0))
         definition = self.world.action_map().get("check_weather")
         channel = self._weather_channel(definition)
         if not channel:
-            # 「查天气」可以是工具型，也可以是指令型；两者都没配就没法查
-            return "「查天气」动作得配成工具型（选一个天气工具）或指令型（填要触发的指令）"
+            # 不用再配「工具型动作」了：默认走工具那条路，
+            # 具体用哪把天气工具由 _weather_once 自己从已注册的工具里认。
+            channel = "tool"
         if channel == "command":
             if self.commands is None:
                 return "拿不到 AstrBot 的指令通道"
@@ -11408,7 +11501,13 @@ class MyWorldEngine(ScopedConfigMixin):
         definition = self.world.action_map().get("check_weather")
         channel = self._weather_channel(definition)
         if definition is None:
-            return WeatherRecord(), "动作库里没有「查天气」这个动作了，先加回来再让它后台查"
+            # 动作被删了也能查：天气早就不是"必须有一个工具型动作"才能用的东西了，
+            # 用什么工具由插件自己认（见 _weather_definition_with_tool）。
+            definition = ActionDef(id="check_weather", name="查天气")
+            channel = "tool"
+        elif not channel:
+            # 普通虚拟动作也走工具那条路：用户不需要再去动作库里把它改成工具型
+            channel = "tool"
         try:
             state = await self.load_state(session_id, cold_start=False)
         except Exception:
@@ -11696,6 +11795,19 @@ class MyWorldEngine(ScopedConfigMixin):
             await self.maybe_refresh_weather()
         except Exception as exc:
             self._log("debug", f"静默刷新天气失败：{exc}")
+        try:
+            # 自动排日程也是"每天一次"的事：放在会话循环之前，
+            # 排好的安排这一轮就能按正常逻辑被看见。
+            await self.maybe_auto_generate_schedules()
+        except Exception as exc:
+            self._log("debug", f"自动排日程失败：{exc}")
+        try:
+            # 心迹画像一直在记新东西：每隔几小时同步一份过来（只读它的文件）
+            await self.maybe_sync_profile_weaver(
+                str(getattr(self, "external_data_root", "") or "")
+            )
+        except Exception as exc:
+            self._log("debug", f"心迹画像同步失败：{exc}")
         outcomes: list[TickOutcome] = []
         # 同一个她只推一次：组里的几个群 / 私聊共用一份状态，
         # 按会话各推一遍等于她的时间、精力、事件频率乘以会话数。
@@ -12350,7 +12462,9 @@ class MyWorldEngine(ScopedConfigMixin):
         state.add_event("chain", {"schedule": schedule_id})
         await self._run_chain(state, target.action_chain, outcome, depth=depth)
 
-    def _remember_inner_thought(self, state: WorldState, text: str) -> None:
+    def _remember_inner_thought(
+        self, state: WorldState, text: str, source: str = ""
+    ) -> None:
         """把这一轮她心里冒出来的那一句留下来（编辑器「内心活动」那一栏）。
 
         以前只有 ``think`` 动作会写它，而模型很少主动选那个动作，
@@ -12369,7 +12483,7 @@ class MyWorldEngine(ScopedConfigMixin):
         ]
         if clean in recent:
             return
-        state.add_thought(clean)
+        state.add_thought(clean, source=source)
 
     def _remember_action(
         self, state: WorldState, definition: ActionDef, action: dict[str, Any]
@@ -12378,7 +12492,7 @@ class MyWorldEngine(ScopedConfigMixin):
         if definition.id == "think":
             content = str(action.get("content", "") or "")
             if content:
-                state.add_thought(content)
+                state.add_thought(content, source="她想事情")
                 self.memory.remember(
                     session_id=state.session_id,
                     persona_id=str(action.get("persona_id", "")),
@@ -12756,7 +12870,7 @@ class MyWorldEngine(ScopedConfigMixin):
             state.note_reasoning({"intent": str(plan.get("reason"))}, source="plan")
         # 自主决策时她心里那一句也留下：以前只有 think 动作才写，
         # 模型不主动想，「内心活动」那一栏就长期只有一行旧内容。
-        self._remember_inner_thought(state, str(plan.get("inner") or ""))
+        self._remember_inner_thought(state, str(plan.get("inner") or ""), source="自主决定")
         state.add_event(
             "plan", {"reason": plan.get("reason"), "source": plan.get("source")}
         )
@@ -13927,6 +14041,12 @@ class MyWorldEngine(ScopedConfigMixin):
             if chosen and chosen not in result:
                 result.append(chosen)
                 break
+        if not result and str(getattr(definition, "id", "")) == "check_weather":
+            # 「查天气」没绑工具时自己认一把（uapi_weather 这类）：
+            # 主回复的工具调用归原生 Agent，天气动作也不该逼用户去配工具型动作。
+            candidates = self.weather_tool_candidates()
+            if candidates:
+                result.append(candidates[0])
         return result
 
     async def fill_tool_params(
@@ -18178,6 +18298,88 @@ class MyWorldEngine(ScopedConfigMixin):
             "raw": _clip_text(reply, 1200),
         }
 
+    AUTO_SCHEDULE_KV = "schedule.auto_day"
+    """「今天已经自动排过日程了吗」记在 kv 里，按配置范围分开。"""
+
+    async def maybe_auto_generate_schedules(self) -> str:
+        """到点自动排今天的**一次性**日程（每个配置范围每天只排一次）。
+
+        用户在日程页打开「自动生成」之后，每天到了设定的时间点，就用同一个
+        内容生成模型排几条一次性安排：它们和手动生成的没区别——按地图与人设
+        写出来，带日期，跑完那一次插件会自动删掉，不会越积越多。
+        返回一句说明（日志用），空串表示这次什么都没做。
+        """
+
+        config = getattr(self.schedules, "auto", None)
+        if config is None or not bool(getattr(config, "enabled", False)):
+            return ""
+        now = self.local_now()
+        try:
+            hour = max(0, min(23, int(getattr(config, "hour", 8) or 0)))
+        except (TypeError, ValueError):
+            hour = 8
+        if now.hour < hour:
+            return ""
+        scope_key = self.config_scope_id or "global"
+        today = self._today_key(self._now())
+        kv_key = f"{self.AUTO_SCHEDULE_KV}:{scope_key}"
+        try:
+            if str(await self.db.call("kv_get", kv_key) or "") == today:
+                return ""
+        except Exception:
+            pass
+        # 先记上再干活：生成失败也别每个 tick 都去撞一次模型
+        try:
+            await self.db.call("kv_set", kv_key, today)
+        except Exception:
+            pass
+        try:
+            wanted = max(1, min(6, int(getattr(config, "per_day", 2) or 2)))
+        except (TypeError, ValueError):
+            wanted = 2
+        data = self.scoped_schedules() or {}
+        rows = [item for item in (data.get("schedules") or []) if isinstance(item, dict)]
+        # 顺手清掉过期没跑成的一次性安排：留着也不会再触发，只会挡着新日程
+        kept = [
+            item
+            for item in rows
+            if not (
+                item.get("once")
+                and str(item.get("date") or "")
+                and str(item.get("date")) < today
+            )
+        ]
+        dropped = len(rows) - len(kept)
+        result = await self.generate_schedules(
+            wanted, "once", str(getattr(config, "extra_prompt", "") or "")
+        )
+        drafts = list(result.get("schedules") or [])
+        used = {str(item.get("id") or "") for item in kept}
+        added = 0
+        for draft in drafts:
+            item = dict(draft)
+            base = str(item.get("id") or "auto_plan")
+            candidate = base
+            index = 2
+            while candidate in used:
+                candidate = f"{base}_{index}"
+                index += 1
+            item["id"] = candidate
+            used.add(candidate)
+            kept.append(item)
+            added += 1
+        if not added and not dropped:
+            self._log("info", "[my_world] 自动排日程：这次没生成出可用的安排")
+            return "自动排日程：这次没生成出可用的安排"
+        data["schedules"] = kept
+        self.save_scoped_schedules(data, reason="自动生成一次性日程")
+        self.reload_config()
+        note = f"自动排了 {added} 条一次性日程"
+        if dropped:
+            note += f"，清掉 {dropped} 条过期没跑的"
+        self._log("info", f"[my_world] {note}")
+        return note
+
     async def generate_events(
         self, count: Any = 0, flavor: str = "", extra_prompt: str = ""
     ) -> dict[str, Any]:
@@ -20453,6 +20655,46 @@ class MyWorldEngine(ScopedConfigMixin):
             ],
         }
 
+    async def thoughts_payload(self, session_id: str, limit: int = 120) -> dict[str, Any]:
+        """「内心活动」那一页要的数据：她自己留下的心里话，越新越靠前。"""
+
+        if not session_id:
+            return {"session": "", "thoughts": []}
+        try:
+            state = await self.load_state(session_id, cold_start=False)
+        except Exception:
+            return {"session": session_id, "thoughts": []}
+        rows: list[dict[str, Any]] = []
+        for item in list(state.thoughts or [])[-max(1, int(limit)):]:
+            if not isinstance(item, dict):
+                continue
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+            node_id = str(item.get("node_id") or "")
+            node = self.node(node_id)
+            rows.append(
+                {
+                    "content": content,
+                    "at": float(item.get("world_time") or 0.0),
+                    "node_id": node_id,
+                    "node_name": (node.name or node.id) if node is not None else "",
+                    "source": str(item.get("source") or ""),
+                }
+            )
+        rows.reverse()
+        return {"session": session_id, "thoughts": rows}
+
+    async def clear_thoughts(self, session_id: str) -> int:
+        """清掉留下的心里话（只删这一份记录，记忆和日志都不动）。"""
+
+        if not session_id:
+            return 0
+        async with self.session_state(session_id) as state:
+            removed = len([item for item in (state.thoughts or []) if isinstance(item, dict)])
+            state.thoughts = []
+        return removed
+
     async def preview_last_reply_request(self, session_id: str) -> str:
         """预览**上一轮真正发出去的那份请求**（只读，不改变任何状态）。
 
@@ -21034,7 +21276,9 @@ class MyWorldEngine(ScopedConfigMixin):
             # 复盘里那句「心里冒出来的一两句」也存下来：这样每聊一轮，
             # 「内心活动」都会跟着动，而不是等她自己想起来写 think 动作。
             self._remember_inner_thought(
-                state, str((parsed.reasoning or {}).get("inner") or "")
+                state,
+                str((parsed.reasoning or {}).get("inner") or ""),
+                source="聊完一轮",
             )
             applied_affinity = 0.0
             if ctx.user_id:

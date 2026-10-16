@@ -559,8 +559,6 @@ details.raw-json[open] summary {
   min-height: 56px;
   padding: 8px 18px;
   background: var(--topbar);
-  backdrop-filter: blur(14px) saturate(1.5);
-  -webkit-backdrop-filter: blur(14px) saturate(1.5);
   border-bottom: 1px solid var(--line);
 }
 
@@ -3302,8 +3300,6 @@ body.dragging-map-node {
   border-radius: var(--r-sm);
   background: color-mix(in srgb, var(--panel) 94%, transparent);
   box-shadow: var(--shadow-1);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
 }
 
 .action-bulk-bar.hidden {
@@ -5234,6 +5230,77 @@ button.tiny {
   letter-spacing: 0.02em;
 }
 
+.sidebar-toggle {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  margin-left: auto;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bg-inset);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sidebar-toggle:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* 收成图标栏：只留图标，鼠标停上去看 title */
+@media (min-width: 761px) {
+  #app.side-rail .sidebar {
+    flex: 0 0 62px;
+    width: 62px;
+    padding: 14px 8px;
+  }
+
+  #app.side-rail .brand {
+    flex-direction: column;
+    gap: 8px;
+    padding: 2px 0 10px;
+  }
+
+  #app.side-rail .brand-name,
+  #app.side-rail .nav-group,
+  #app.side-rail .sidebar-note {
+    display: none;
+  }
+
+  #app.side-rail .sidebar-toggle {
+    margin: 0;
+  }
+
+  #app.side-rail .tabs button {
+    justify-content: center;
+    height: 36px;
+    padding: 0;
+    font-size: 0;
+  }
+
+  #app.side-rail .tabs button::before {
+    font-size: 16px;
+    line-height: 1;
+  }
+
+  #app.side-rail .tabs button[data-tab="status"]::before { content: "🎛"; }
+  #app.side-rail .tabs button[data-tab="events"]::before { content: "🎲"; }
+  #app.side-rail .tabs button[data-tab="contacts"]::before { content: "👥"; }
+  #app.side-rail .tabs button[data-tab="memories"]::before { content: "🧠"; }
+  #app.side-rail .tabs button[data-tab="thoughts"]::before { content: "💭"; }
+  #app.side-rail .tabs button[data-tab="logs"]::before { content: "📜"; }
+  #app.side-rail .tabs button[data-tab="debug"]::before { content: "🐞"; }
+  #app.side-rail .tabs button[data-tab="map"]::before { content: "🗺"; }
+  #app.side-rail .tabs button[data-tab="actions"]::before { content: "🎬"; }
+  #app.side-rail .tabs button[data-tab="schedules"]::before { content: "⏰"; }
+  #app.side-rail .tabs button[data-tab="sessions"]::before { content: "💬"; }
+  #app.side-rail .tabs button[data-tab="settings"]::before { content: "⚙"; }
+  #app.side-rail .tabs button[data-tab="presets"]::before { content: "📦"; }
+}
+
 .sidebar .brand .dot {
   width: 24px;
   height: 24px;
@@ -6669,11 +6736,9 @@ label.inline > input[type="checkbox"]:checked + span {
   border: 1px solid color-mix(in srgb, var(--line-strong) 70%, transparent);
   border-radius: 11px;
   background: var(--panel);
-  /* 毛玻璃：半透明面板 + 高斯模糊，地图从底下透出来 */
-  background: color-mix(in srgb, var(--panel) 62%, transparent);
+  /* 只要透明，不要模糊：木纹般的地图从这一层直接透出来 */
+  background: color-mix(in srgb, var(--panel) 52%, transparent);
   box-shadow: var(--shadow-2), inset 0 1px 0 color-mix(in srgb, #fff 8%, transparent);
-  backdrop-filter: blur(18px) saturate(1.6);
-  -webkit-backdrop-filter: blur(18px) saturate(1.6);
 }
 
 .map-crumb {
@@ -7128,8 +7193,9 @@ label.inline > input[type="checkbox"]:checked + span {
 
 .node .node-here {
   position: absolute;
-  top: -9px;
-  left: 10px;
+  top: -12px;
+  left: 50%;
+  z-index: 3;
   padding: 1px 8px;
   border-radius: 999px;
   background: var(--accent);
@@ -7137,8 +7203,14 @@ label.inline > input[type="checkbox"]:checked + span {
   font-size: 10px;
   font-weight: 600;
   white-space: nowrap;
-  transform: none;
+  transform: translateX(-50%);
   box-shadow: 0 4px 12px -5px var(--accent);
+}
+
+/* 「X 个会话在这个区域」这个标记是挂在节点上沿的：节点本来 overflow:hidden，
+   标记会被拦腰截断，所以有线报的节点改成不裁切（名字/ID 自己带省略号）。 */
+.node.here {
+  overflow: visible;
 }
 
 .node.other {
@@ -7241,10 +7313,8 @@ label.inline > input[type="checkbox"]:checked + span {
   border: 1px solid color-mix(in srgb, var(--line-strong) 70%, transparent);
   border-radius: 10px;
   background: var(--panel);
-  background: color-mix(in srgb, var(--panel) 62%, transparent);
+  background: color-mix(in srgb, var(--panel) 52%, transparent);
   box-shadow: var(--shadow-2), inset 0 1px 0 color-mix(in srgb, #fff 8%, transparent);
-  backdrop-filter: blur(18px) saturate(1.6);
-  -webkit-backdrop-filter: blur(18px) saturate(1.6);
 }
 
 .map-zoom > button {
@@ -7284,11 +7354,8 @@ label.inline > input[type="checkbox"]:checked + span {
   border: 1px solid color-mix(in srgb, var(--line-strong) 70%, transparent);
   border-radius: 10px;
   background: var(--panel);
-  background: color-mix(in srgb, var(--panel) 62%, transparent);
+  background: color-mix(in srgb, var(--panel) 52%, transparent);
   box-shadow: var(--shadow-2), inset 0 1px 0 color-mix(in srgb, #fff 8%, transparent);
-  backdrop-filter: blur(18px) saturate(1.6);
-  -webkit-backdrop-filter: blur(18px) saturate(1.6);
-  -webkit-backdrop-filter: blur(12px);
   font-size: 11.5px;
 }
 
@@ -7381,6 +7448,54 @@ label.inline > input[type="checkbox"]:checked + span {
 /* ================================================================== */
 /* 9. 更紧凑的顶栏 / 范围说明气泡 / 地图底部控件                        */
 /* ================================================================== */
+
+/* ---- 内心活动：她自己留下的那些话 ---- */
+
+#thoughts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.thought-row {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+}
+
+.thought-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.thought-node,
+.thought-source {
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--bg-soft);
+}
+
+.thought-source {
+  border-color: var(--accent-ring);
+  color: var(--accent-ink);
+}
+
+.thought-text {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
 
 .config-bar-toggle {
   padding: 6px 11px;

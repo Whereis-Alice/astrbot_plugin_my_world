@@ -79,7 +79,7 @@ from .core.models import (
     pronoun_for,
 )
 from .core.nickname import compute_nickname
-from .core.plugin_compat import group_card_owner
+from .core.plugin_compat import group_card_owner, profile_weaver_active
 from .core.ports import CardResult, LLMReply, PokeResult, ToolCallResult, ToolInfo
 from .core.prompt import clip_line, prompt_section_index, readable_caption
 from .core.state import FORWARD_SUMMARY_MARK
@@ -3338,6 +3338,8 @@ class MyWorldPlugin(Star):
             # 扩展挂载点：扩展包（独立插件）拿到这个实例后自己 register
             extensions=self.extension_host,
         )
+        # 别的插件的数据目录在同一个 plugin_data 下（心迹画像的同步要用）
+        self.engine.external_data_root = str(self.store.data_dir.parent)
         # 调试回显实时发：工具/指令调用在发生的那一下就走这条通道，
         # 不再等整轮动作跑完才一起推给群里
         self.engine.debug_sink = self._send_debug_live
@@ -4383,11 +4385,17 @@ class MyWorldPlugin(Star):
                 )
             event.stop_event()
             return
-        plan = await self.engine.handle_reply(
-            ctx,
-            history=list(getattr(req, "contexts", None) or []),
-            inject_only=True,
-        )
+        # 只有"宿主这一轮"里心迹画像才会注入；我们自己发起的那些调用（自主决策、
+        # 复盘）走的是另一条路，那边不跳，画像照旧全给。所以这里用完就复位。
+        self.engine.weaver_injecting = profile_weaver_active(self.context)
+        try:
+            plan = await self.engine.handle_reply(
+                ctx,
+                history=list(getattr(req, "contexts", None) or []),
+                inject_only=True,
+            )
+        finally:
+            self.engine.weaver_injecting = False
         if isinstance(plan, ReplyOutcome):
             # 门禁 / 事件线提前认领了这一条：插件自己把该说的说完，然后不再交给宿主。
             pending = [
@@ -6020,6 +6028,13 @@ class MyWorldPlugin(Star):
         register(f"/{p}/logs", self.api_logs, ["GET"], "事件日志")
         register(f"/{p}/logs/export", self.api_logs_export, ["GET"], "导出事件日志")
         register(f"/{p}/memories", self.api_memories, ["GET"], "记忆列表")
+        register(f"/{p}/thoughts", self.api_thoughts, ["GET"], "内心活动：她留下的心里话")
+        register(
+            f"/{p}/thoughts/clear",
+            self.api_thoughts_clear,
+            ["POST"],
+            "清空某个会话留下的心里话",
+        )
         register(f"/{p}/memories/create", self.api_memory_create, ["POST"], "新增记忆")
         register(f"/{p}/memories/update", self.api_memory_update, ["POST"], "修改记忆")
         register(f"/{p}/memories/delete", self.api_memory_delete, ["POST"], "删除记忆")
@@ -8049,6 +8064,34 @@ class MyWorldPlugin(Star):
         if keyword:
             rows = [row for row in rows if keyword in str(row.get("content", ""))]
         return json_response({"memories": rows})
+
+    async def api_thoughts(self):
+        """内心活动：她自己留下的心里话（按会话取，越新越靠前）。"""
+
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        session_id = self._scope(request.query.get("session", ""))
+        try:
+            limit = int(request.query.get("limit", 120) or 120)
+        except (TypeError, ValueError):
+            limit = 120
+        if not session_id:
+            return error_response("缺少 session 参数")
+        return json_response(await self.engine.thoughts_payload(session_id, limit))
+
+    async def api_thoughts_clear(self):
+        """清空某个会话留下的心里话（记忆、日志、状态都不动）。"""
+
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload)
+        if guard is not None:
+            return guard
+        session_id = self._scope(payload.get("session"))
+        if not session_id:
+            return error_response("缺少 session 参数")
+        removed = await self.engine.clear_thoughts(session_id)
+        return json_response({"ok": True, "removed": removed})
 
     async def api_memory_create(self):
         payload = await request.json(default={}) or {}
