@@ -3580,6 +3580,17 @@ function bindFilterToggle(buttonId, scopeSelector) {
 }
 
 /** 切到某一页：导航高亮 + 顶栏标题 + 该页需要的数据。 */
+function setConfigBarCollapsed(collapsed) {
+  const bar = document.querySelector(".config-bar");
+  if (!bar) return;
+  bar.classList.toggle("compact", collapsed);
+  const toggle = $("config-bar-toggle");
+  if (toggle) {
+    toggle.textContent = collapsed ? "⌄ 展开" : "⌃ 收起";
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+  }
+}
+
 function showTab(name, button) {
   const target = button || document.querySelector(`#tabs button[data-tab="${name}"]`);
   document.querySelectorAll("#tabs button").forEach((item) => {
@@ -3590,6 +3601,9 @@ function showTab(name, button) {
   });
   const title = $("page-title");
   if (title && target) title.textContent = target.textContent.trim();
+  const app = $("app");
+  if (app) app.classList.toggle("map-focus", name === "map");
+  setConfigBarCollapsed(name === "map");
   if (name === "status") refreshStatus();
   if (name === "events") loadEvents();
   if (name === "contacts") loadContacts();
@@ -3606,6 +3620,12 @@ function showTab(name, button) {
 
 function bindButtons() {
   bindConfigScopes();
+  if ($("config-bar-toggle")) {
+    $("config-bar-toggle").addEventListener("click", () => {
+      const bar = document.querySelector(".config-bar");
+      setConfigBarCollapsed(!bar || !bar.classList.contains("compact"));
+    });
+  }
   $("save").addEventListener("click", saveAll);
   bindFilterToggle("memory-filter-toggle", "#tab-memories");
   bindFilterToggle("log-filter-toggle", "#tab-logs");
