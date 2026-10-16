@@ -182,6 +182,7 @@ class GenerationBrowserTests(unittest.TestCase):
         self.open_generator()
         inputs = self.page.locator('#dialog-body input[type="number"]')
         expect(inputs).to_have_count(2)
+        self.assertEqual(inputs.nth(1).get_attribute("max"), "8")
         inputs.nth(1).fill("4")
         self.page.locator('#dialog-body textarea').fill("爱丽丝的梦游仙境")
         self.page.locator("#dialog-ok").click()
@@ -298,6 +299,18 @@ class GenerationBrowserTests(unittest.TestCase):
         self.assertIn("collapsed", side.get_attribute("class") or "")
         self.page.locator("#map-side-toggle").click()
         self.assertNotIn("collapsed", side.get_attribute("class") or "")
+        self.assertEqual(self.errors, [])
+
+    def test_map_tab_is_full_bleed_with_topbar_session_filter(self):
+        self.page.locator('button[data-tab="map"]').click()
+        expect(self.page.locator(".config-bar")).to_be_hidden()
+        expect(self.page.locator("#map-session")).to_be_visible()
+        stage = self.page.locator("#map-stage").bounding_box()
+        self.assertGreater(stage["height"], 850)
+        canvas = self.page.locator("#canvas").bounding_box()
+        tools = self.page.locator("#map-bottom-tools").bounding_box()
+        self.assertGreater(tools["x"], canvas["x"] + canvas["width"] / 2)
+        self.assertGreater(tools["y"], canvas["y"] + canvas["height"] / 2)
         self.assertEqual(self.errors, [])
 
     def test_spring_layout_with_complex_routes_stays_readable(self):

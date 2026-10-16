@@ -285,14 +285,14 @@
                     <button id="map-fit-zone" class="ghost" type="button" title="把这个区域里的地点挪到画布中间">适应画布</button>
                   </div>
                 </details>
+              </div>
+
+              <div class="map-topbar-right">
                 <label class="map-select" title="查看这个会话此刻在哪个地点">
                   <span>会话</span>
                   <select id="map-session"></select>
                 </label>
-                <label class="map-check"><input id="map-show-all" type="checkbox" checked /><span>显示全部会话</span></label>
-              </div>
-
-              <div class="map-topbar-right">
+                <label class="map-check"><input id="map-show-all" type="checkbox" checked /><span>显示全部</span></label>
                 <div class="map-label-switch" role="group" aria-label="路线标签">
                   <button type="button" data-label-mode="smart" class="on" title="自动显示不重叠的路线名字，悬停可看被挡住的">智能</button>
                   <button type="button" data-label-mode="all" title="所有路线都显示两端名字">全部</button>
@@ -300,13 +300,6 @@
                 </div>
                 <button id="map-side-toggle" class="map-icon-btn" type="button" title="展开 / 收起属性面板">⛭</button>
               </div>
-            </div>
-
-            <div id="map-weather" class="map-weather map-float hidden">
-              <span id="map-weather-icon" class="weather-icon">🌤</span>
-              <span id="map-weather-main" class="weather-main"></span>
-              <span id="map-weather-age" class="weather-age"></span>
-              <button id="map-weather-refresh" class="ghost tiny" type="button">刷新</button>
             </div>
 
             <div id="canvas" class="canvas">
@@ -317,11 +310,19 @@
               </div>
             </div>
 
-            <div class="map-zoom map-float">
-              <button id="map-zoom-in" type="button" title="放大">＋</button>
-              <span id="map-zoom-label">100%</span>
-              <button id="map-zoom-out" type="button" title="缩小">－</button>
-              <button id="map-zoom-fit" type="button" title="适应画布">⤢</button>
+            <div id="map-bottom-tools" class="map-bottom-tools">
+              <div id="map-weather" class="map-weather hidden">
+                <span id="map-weather-icon" class="weather-icon">🌤</span>
+                <span id="map-weather-main" class="weather-main"></span>
+                <span id="map-weather-age" class="weather-age"></span>
+                <button id="map-weather-refresh" class="ghost tiny" type="button">刷新</button>
+              </div>
+              <div class="map-zoom">
+                <button id="map-zoom-out" type="button" title="缩小">－</button>
+                <span id="map-zoom-label">100%</span>
+                <button id="map-zoom-in" type="button" title="放大">＋</button>
+                <button id="map-zoom-fit" type="button" title="适应画布">⤢</button>
+              </div>
             </div>
 
             <aside id="map-side" class="map-side">

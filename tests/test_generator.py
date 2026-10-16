@@ -138,7 +138,7 @@ class TestParseGeneratedActions(unittest.TestCase):
     def test_limits_are_clamped(self):
         self.assertEqual(clamp_per_node(99), 5)
         self.assertEqual(clamp_per_node(0), 1)
-        self.assertEqual(clamp_node_count(99), 5)
+        self.assertEqual(clamp_node_count(99), 8)
         self.assertEqual(clamp_node_count("abc"), 3)
 
 

@@ -3890,6 +3890,8 @@ function bindButtons() {
     if (!mapSide) return;
     ui.mapSideOpen = open;
     mapSide.classList.toggle("collapsed", !open);
+    const stage = $("map-stage");
+    if (stage) stage.classList.toggle("side-open", open);
     if ($("map-side-toggle")) $("map-side-toggle").classList.toggle("on", open);
   };
   if ($("map-side-toggle")) {
@@ -7758,7 +7760,7 @@ function zoneGeneratorBox(zone) {
   countInput.max = "5";
   countInput.value = "3";
   countInput.className = "w-sm";
-  countInput.title = "一次生成几个地点（最多 5 个）";
+  countInput.title = "一次生成几个地点（最多 8 个）";
   const runNodes = el("button", "ghost", "生成地点");
   runNodes.type = "button";
   runNodes.addEventListener("click", () =>
@@ -8172,7 +8174,7 @@ function generateZoneDrafts() {
     hint: "读人设与已有世界起草新区域；先预览，改完确认才写进地图。",
     defaultValue: 2,
     max: 4,
-    second: { label: "每个区域生成几个地点", defaultValue: 2, min: 1, max: 5 },
+    second: { label: "每个区域生成几个地点（含入口）", defaultValue: 2, min: 1, max: 8 },
     extra: {
       label: "额外提示词（可选）",
       placeholder: "例如：爱丽丝的梦游仙境；偏童话、奇幻一点",
@@ -8317,7 +8319,7 @@ function generateWorldMapDrafts() {
     defaultValue: 4,
     min: 2,
     max: 6,
-    second: { label: "每个区域生成几个地点", defaultValue: 3, min: 1, max: 5 },
+    second: { label: "每个区域生成几个地点（含入口）", defaultValue: 3, min: 1, max: 8 },
     extra: {
       label: "额外提示词（可选）",
       placeholder: "例如：爱丽丝的梦游仙境；偏童话、奇幻一点",

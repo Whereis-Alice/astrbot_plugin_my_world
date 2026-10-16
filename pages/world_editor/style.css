@@ -7251,34 +7251,55 @@ label.inline > input[type="checkbox"]:checked + span {
 
 /* 地图聚焦：顶栏变薄，省下来的高度全给地图舞台 */
 #app.map-focus .topbar {
-  min-height: 44px;
-  padding: 4px 14px;
+  min-height: 40px;
+  padding: 2px 14px;
+  justify-content: flex-end;
 }
 
-#app.map-focus .page-title {
+#app.map-focus .topbar-left {
   display: none;
 }
 
-#app.map-focus .field-session {
-  flex-direction: row;
-  align-items: center;
-  gap: 6px;
+#app.map-focus .config-bar {
+  display: none;
 }
 
-#app.map-focus .field-session > span {
-  display: none;
+#app.map-focus main {
+  padding: 0;
 }
 
 #app.map-focus .map-stage {
-  height: calc(100vh - 132px);
+  height: calc(100vh - 40px);
+  min-height: 420px;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
+  border-radius: 0;
 }
 
-.config-bar.compact .scope-field select {
-  height: 30px;
+/* 天气 + 缩放：右下角一列悬浮工具，侧栏打开时自动让位 */
+.map-bottom-tools {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 14;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  transition: right 0.22s var(--ease);
 }
 
-.config-bar.compact {
-  padding: 4px 24px;
+#map-stage.side-open .map-bottom-tools {
+  right: 368px;
+}
+
+.map-bottom-tools .map-weather,
+.map-bottom-tools .map-zoom {
+  position: static;
+  left: auto;
+  right: auto;
+  bottom: auto;
 }
 
 /* 底部控件改成横向一条，天气贴在它上面 */
@@ -7307,13 +7328,16 @@ label.inline > input[type="checkbox"]:checked + span {
 
 @media (max-width: 1100px) {
   #app.map-focus .map-stage {
-    height: calc(100vh - 120px);
+    height: calc(100vh - 40px);
   }
 
-  .map-weather {
-    bottom: 50px;
-    max-width: calc(100% - 74px);
+  #map-stage.side-open .map-bottom-tools {
+    right: 12px;
   }
+}
+
+.map-bottom-tools .map-weather {
+  max-width: min(320px, 70vw);
 }
 
 @media (max-width: 640px) {

@@ -173,7 +173,7 @@ class ClampTests(unittest.TestCase):
         self.assertEqual(clamp_zone_count(0), 1)
         self.assertEqual(clamp_map_zone_count(99), 6)
         self.assertEqual(clamp_map_zone_count(0), 4)
-        self.assertEqual(clamp_map_nodes_per_zone(99), 5)
+        self.assertEqual(clamp_map_nodes_per_zone(99), 8)
         self.assertEqual(clamp_map_nodes_per_zone(0), 3)
         self.assertEqual(clamp_world_action_count(99), 24)
         self.assertEqual(clamp_world_action_count(0), 8)
