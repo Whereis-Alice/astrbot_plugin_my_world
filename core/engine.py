@@ -20676,7 +20676,10 @@ class MyWorldEngine(ScopedConfigMixin):
             rows.append(
                 {
                     "content": content,
-                    "at": float(item.get("world_time") or 0.0),
+                    # 老记录里只有世界时钟（那是个计数器，不是时间戳），
+                    # 读不出来时前端按"没有时间"处理，不硬编一个假时间。
+                    "at": float(item.get("at") or 0.0),
+                    "world_time": float(item.get("world_time") or 0.0),
                     "node_id": node_id,
                     "node_name": (node.name or node.id) if node is not None else "",
                     "source": str(item.get("source") or ""),

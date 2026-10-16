@@ -1256,9 +1256,10 @@ class WorldState:
                 "content": content,
                 "node_id": node_id or self.node_id,
                 "source": source,
-                # 世界时钟还没跑起来（例如离线补写）时用真实时间兜底，
-                # 免得「内心活动」那一页的时间栏永远是空的。
-                "world_time": float(self.world_time or 0.0) or time.time(),
+                # 两个时间都留着：``world_time`` 是她的世界时钟（给世界用），
+                # ``at`` 是真实时间（「内心活动」那一页要按人看的年月日排）。
+                "world_time": float(self.world_time or 0.0),
+                "at": time.time(),
             }
         )
         if len(self.thoughts) > keep:

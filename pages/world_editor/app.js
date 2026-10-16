@@ -13842,7 +13842,9 @@ function renderThoughts(data) {
   rows.forEach((row) => {
     const item = el("div", "thought-row");
     const head = el("div", "thought-head");
-    head.appendChild(el("span", "thought-time", formatStamp(row.at)));
+    head.appendChild(
+      el("span", "thought-time", row.at ? formatStamp(row.at) : "（更早的记录）"),
+    );
     if (row.node_name) head.appendChild(el("span", "thought-node", row.node_name));
     if (row.source) head.appendChild(el("span", "thought-source", row.source));
     item.appendChild(head);

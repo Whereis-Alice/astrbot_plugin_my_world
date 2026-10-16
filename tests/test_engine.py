@@ -10504,7 +10504,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["source"], "聊完一轮")
         self.assertEqual(row["node_id"], "study")
         self.assertTrue(row["node_name"])
-        self.assertGreater(row["at"], 0)
+        # at 是真实时间戳（世界时钟那串计数器不适合给人看年月日）
+        self.assertGreater(row["at"], 1_600_000_000)
 
         self.assertEqual(await self.engine.clear_thoughts(SESSION), 1)
         self.assertEqual((await self.engine.thoughts_payload(SESSION))["thoughts"], [])
