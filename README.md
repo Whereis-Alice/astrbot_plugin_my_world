@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v3.10.1-4f6bf5" alt="version" />
+  <img src="https://img.shields.io/badge/version-v3.11.0-4f6bf5" alt="version" />
   <img src="https://img.shields.io/badge/AstrBot-%E2%89%A5%204.20.0-8b6cf0" alt="AstrBot" />
   <img src="https://img.shields.io/badge/dependencies-%E6%97%A0-brightgreen" alt="dependencies" />
 </p>
@@ -220,7 +220,8 @@ v3.0.1 修了。控制台现在会读**平台上的真实名片**（dynamic_card
 python -m pytest -q
 ```
 
-代码结构：`main.py` 只做 AstrBot 适配；`core/` 放引擎、提示词、世界模型与存储；
+代码结构：`main.py` 只做编排（钩子、指令、生命周期与接线）；`core/` 放引擎、提示词、世界模型与存储；
+`adapters/` 是宿主绑定（模型 / 看图 / 指令 / 发送 / 工具 / 人设）；`web/` 是编辑器接口与访问密码；
 `pages/world_editor/` 是网页编辑器；`tests/` 是不依赖 AstrBot 的回归测试。
 
 ## 来源与许可

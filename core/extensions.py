@@ -1087,17 +1087,6 @@ class ExtensionHost:
         session = engine.session_config(str(session_id or ""))
         return str(getattr(session, "type", "") or "") == "private"
 
-    def node(self, state: Any) -> Any:
-        """她现在在哪个地点（地点定义对象；拿不到就是 None）。"""
-
-        engine = getattr(self.plugin, "engine", None)
-        if engine is None:
-            return None
-        try:
-            return engine.node(str(getattr(state, "node_id", "") or ""))
-        except Exception:
-            return None
-
     def nodes(self) -> list[dict[str, str]]:
         """主插件里所有地点（``id`` / ``name``）：扩展做"地点多选"时用。"""
 

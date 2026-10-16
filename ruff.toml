@@ -1,0 +1,12 @@
+# 只钉住「会真出错」的规则集：语法、导入、未定义名。
+# 风格类规则（行宽、命名、复杂度）全开会让老代码一提交就爆红，需要时再逐条收紧。
+# AstrBot 4.x 自身要求 Python >= 3.12（插件跟着走）
+target-version = "py312"
+line-length = 100
+
+[lint]
+select = ["E4", "E7", "E9", "F63", "F7", "F82"]
+
+[lint.per-file-ignores]
+# 测试用 `from __future__ import annotations`，注解里引用的 Any 不需要真的导入
+"tests/*" = ["F821"]

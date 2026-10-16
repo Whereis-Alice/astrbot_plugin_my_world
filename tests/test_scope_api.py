@@ -30,7 +30,8 @@ class ScopeApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def call(self, endpoint, *, method="GET", **data):
         request = types.SimpleNamespace(method=method, query=data, json=AsyncMock(return_value=data))
-        with patch.object(self.module, "request", request):
+        # 处理器现在住在 web.api 里，patch 要落在它真正读的那个模块上
+        with patch.object(self.module.web.api, "request", request):
             return await self.routes[endpoint]()
 
     async def test_scope_roundtrip_and_restoration(self):
