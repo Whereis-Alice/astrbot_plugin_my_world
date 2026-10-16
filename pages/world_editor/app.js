@@ -3204,9 +3204,16 @@ async function startApp() {
   bindTabs();
   bindButtons();
   syncTopbarHeight();
+  // 顶栏换了内容（会话列表、编辑范围、按钮文案）就可能换行，高度跟着变；
+  // 盯着它量，地图舞台永远按真实高度算，不会留一条缝或者被压掉一截。
+  if (window.ResizeObserver) {
+    const bar = document.querySelector(".topbar");
+    if (bar) new ResizeObserver(() => syncTopbarHeight()).observe(bar);
+  }
   renderHistoryWindows();
   watchPronoun();
   await loadAll();
+  syncTopbarHeight();
   // 第一次打开：把她"必须先配的"和"最影响手感的"集中问一遍（关掉也算看过，不反复弹）
   if (!ui.config || !ui.config.world) return;
   if (ui.config.world.wizard_done !== true) {
