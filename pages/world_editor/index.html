@@ -360,6 +360,7 @@
               <div class="toolbar">
                 <button id="action-add" class="primary">新增动作</button>
                 <button id="action-generate-world" class="ghost" title="读她的人设与整张地图，按地点生成一批虚拟动作；先预览、确认后才写进动作库">按人设与地图生成动作…</button>
+                <button id="action-generate-generic" class="ghost" title="不看人设，生成一批普通人都会做的小事（散步、泡茶、听歌…）；用来给空的动作库先铺一层底">生成通用动作…</button>
               </div>
               <label class="field grow">
                 <span>搜索</span>
@@ -372,6 +373,14 @@
                 <button id="action-view-cards" class="pill on" type="button" title="按卡片看，适合挑动作">卡片</button>
                 <button id="action-view-table" class="pill" type="button" title="按表格看，适合批量核对">表格</button>
               </div>
+              <button
+                id="action-select-mode"
+                class="pill"
+                type="button"
+                title="勾选多个动作，一次启用 / 停用 / 改分组 / 删除"
+              >
+                批量选择
+              </button>
               <div class="toolbar">
                 <details class="adv-menu">
                   <summary title="给会用的人准备的：批量导入导出、直接改结构">高级</summary>
@@ -394,16 +403,18 @@
             </div>
           </div>
           <p class="hint-line">
-            动作多的时候：左边按组筛、上面按条件筛，勾上「批量选择」可以一次启用 / 停用 / 改分组 / 删除一批。
+            动作多的时候：左边按组筛、上面按条件筛，点「批量选择」可以勾一批一次启用 / 停用 / 改分组 / 删除。
             动作是她的「虚拟动作 / 提示词事件」：她做什么、去哪里，只影响她的世界与提示词；
             工具调用走 AstrBot 原生 Agent，不在这里挂工具。旧版工具动作保留为「旧版」并停用，可以删掉或改写成虚拟动作。
             随插件附带的默认动作默认停用；想用哪些就打开它的开关，或在「高级 → 启用默认动作…」里一次打开。
           </p>
           <div class="action-filters">
+            <div class="toolbar filter-chips" role="group" aria-label="动作筛选">
+              <button id="action-filter-virtual" class="filter-chip" type="button">虚拟动作</button>
+              <button id="action-filter-legacy" class="filter-chip" type="button">旧版动作</button>
+              <button id="action-filter-disabled" class="filter-chip" type="button">已停用</button>
+            </div>
             <div class="toolbar">
-              <label class="inline"><input id="action-filter-virtual" type="checkbox" /><span>只看虚拟动作</span></label>
-              <label class="inline"><input id="action-filter-legacy" type="checkbox" /><span>只看旧版动作</span></label>
-              <label class="inline"><input id="action-filter-disabled" type="checkbox" /><span>只看已停用</span></label>
               <label class="field">
                 <span>排序</span>
                 <select id="action-sort">
@@ -413,15 +424,20 @@
                   <option value="status">停用的排最后</option>
                 </select>
               </label>
-              <label class="inline"><input id="action-select-mode" type="checkbox" /><span>批量选择</span></label>
+              <button id="action-filter-reset" class="ghost small" type="button" title="清掉搜索、筛选、分组和排序，回到全部动作">
+                重置
+              </button>
             </div>
-            <div id="action-bulk" class="toolbar hidden">
+            <div id="action-bulk" class="action-bulk-bar hidden">
               <span class="muted" id="action-bulk-count">已选 0 个</span>
+              <button id="action-bulk-all" class="ghost small" title="选中当前筛选出来的全部动作">全选当前结果</button>
+              <button id="action-bulk-invert" class="ghost small" title="选中的取消、没选的选上">反选</button>
+              <button id="action-bulk-clear" class="ghost small">取消选择</button>
+              <span class="action-bulk-divider" aria-hidden="true"></span>
               <button id="action-bulk-enable" class="ghost small">启用</button>
               <button id="action-bulk-disable" class="ghost small">停用</button>
               <button id="action-bulk-group" class="ghost small">改分组…</button>
               <button id="action-bulk-delete" class="danger small">删除</button>
-              <button id="action-bulk-clear" class="ghost small">清空选择</button>
             </div>
           </div>
           <div class="action-layout">
@@ -513,6 +529,13 @@
                 </button>
                 <button id="contacts-clear" class="ghost danger" title="把她在这个会话组里认识的人全部忘掉（画像、事实、关系、好感记录）">
                   清空通讯录
+                </button>
+                <button
+                  id="contacts-weaver-import"
+                  class="ghost"
+                  title="把「心迹画像」插件已经记下的人搬进这份通讯录：只读它的数据，字段变成这里的事实；重复导入不会攒重复项"
+                >
+                  从心迹画像搬过来
                 </button>
               </div>
             </div>

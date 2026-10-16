@@ -19,6 +19,46 @@ PART_KEYS = ("city", "temp", "desc", "humidity", "wind", "forecast")
 PART_SEP = "｜"
 _PART_SEPARATORS = ("｜", "|")
 
+# 工具名 / 说明里出现这些词，就当成「这是一把查天气的工具」。
+# 主回复的工具调用已经交回 AstrBot 原生，她用的天气工具可能是任何插件装的
+# （uapi_weather、get_weather、天气查询…），所以按名字和说明认，不写死工具名。
+WEATHER_TOOL_HINTS = ("weather", "forecast", "天气", "氣象", "气象")
+
+# 工具参数里这些键最可能是城市。
+_CITY_ARG_KEYS = (
+    "city",
+    "location",
+    "place",
+    "region",
+    "area",
+    "district",
+    "城市",
+    "地点",
+    "地区",
+)
+
+
+def looks_like_weather_tool(name: str, description: str = "") -> bool:
+    """工具名或说明里带 weather / 天气 这类词，就认它是天气工具。"""
+
+    haystack = f"{str(name or '')} {str(description or '')}".lower()
+    return any(hint in haystack for hint in WEATHER_TOOL_HINTS)
+
+
+def city_from_tool_args(args: Any) -> str:
+    """从工具参数里挑出城市；看不清就返回空串，绝不让调用方自己猜。"""
+
+    if not isinstance(args, dict):
+        return ""
+    for key in _CITY_ARG_KEYS:
+        for raw_key, raw_value in args.items():
+            if str(raw_key).strip().lower() != key:
+                continue
+            text = " ".join(str(raw_value or "").split()).strip()
+            if text:
+                return text[:40]
+    return ""
+
 
 @dataclass
 class WeatherRecord:

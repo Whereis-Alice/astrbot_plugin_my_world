@@ -264,6 +264,8 @@ DEFAULT_WORLD: dict[str, Any] = {
         "stale_hours": 24,
         # 结果先交给小模型压成「城市｜温度｜…」再存
         "normalize": True,
+        # 主回复的工具调用走 AstrBot 原生：她查到的天气顺手记下来
+        "from_tools": True,
     },
     # 夜晚时段：睡觉动作只在夜里可选，夜里醒着也要付熬夜代价
     "night": {

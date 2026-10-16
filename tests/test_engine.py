@@ -10424,6 +10424,54 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["temp"], "26℃")
         self.assertIn("天前", payload["age"])
 
+    async def test_native_weather_tool_result_is_remembered(self):
+        """主回复的工具调用交给 AstrBot 原生之后，她查到的天气要顺手记一份。"""
+
+        self.tools._tools = {"uapi_weather": "查询指定城市的实时天气、温度与空气质量"}
+        await self.set_state(node_id="study")
+        stored = await self.engine.note_tool_weather(
+            session_id=SESSION,
+            tool_name="uapi_weather",
+            args={"city": "武汉"},
+            result="武汉 今天晴 26℃ 湿度 40%",
+        )
+        self.assertTrue(stored)
+        record = await self.engine.weather_record()
+        self.assertEqual(record.source, "tool")
+        self.assertIn("26℃", record.text)
+        self.assertIn("外面的天气", await self.engine.weather_line())
+        payload = await self.engine.weather_payload()
+        self.assertEqual(payload["source"], "tool")
+
+    async def test_unrelated_tool_result_is_not_taken_as_weather(self):
+        """认不出是天气工具时什么都不做，别把搜索结果当成天气。"""
+
+        self.tools._tools = {"web_search": "搜索网页"}
+        await self.set_state(node_id="study")
+        stored = await self.engine.note_tool_weather(
+            session_id=SESSION, tool_name="web_search", result="今天的新闻"
+        )
+        self.assertFalse(stored)
+        self.assertTrue((await self.engine.weather_record()).empty)
+
+    async def test_weather_can_be_learned_from_a_tool_with_the_wrong_binding(self):
+        """「查天气」动作没绑工具时，自动认一把已注册的天气工具。"""
+
+        self.tools._tools = {"uapi_weather": "查询指定城市的实时天气"}
+        self.tools.results = {"uapi_weather": "武汉 26℃ 多云"}
+        self.tools.schemas["uapi_weather"] = {
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
+        }
+        self.set_weather_city("武汉")
+        await self.set_state(node_id="study")
+        record = await self.engine.refresh_weather(SESSION)
+        # 没配归一化模型时原文照存，但工具确实被自动选中并带上了城市
+        self.assertIn("26℃", record.text)
+        self.assertEqual([name for name, _params in self.tools.calls], ["uapi_weather"])
+        self.assertEqual(self.tools.calls[0][1].get("city"), "武汉")
+
     async def test_echo_actions_sends_them_as_messages(self):
         """开「把动作发到群里」后，动作与工具调用会作为普通消息发出来。"""
 

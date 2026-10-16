@@ -3258,8 +3258,63 @@ body.dragging-map-node {
   min-width: 120px;
 }
 
-#action-bulk {
+/* 筛选是「小胶囊」：点一下切换，不是那一排大开关 */
+.filter-chips {
+  gap: 6px;
+}
+
+.filter-chip {
+  padding: 4px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--bg-soft);
+  color: var(--text-2);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease);
+}
+
+.filter-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.filter-chip.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+/* 批量选择条：勾上动作之后要一直看得见，所以跟着滚动贴在顶上 */
+.action-bulk-bar {
+  position: sticky;
+  top: 8px;
+  z-index: 6;
+  display: flex;
   flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 9px;
+  border: 1px solid var(--accent-ring);
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  box-shadow: var(--shadow-1);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.action-bulk-bar.hidden {
+  display: none;
+}
+
+.action-bulk-divider {
+  width: 1px;
+  height: 18px;
+  margin: 0 2px;
+  background: var(--line-strong);
 }
 
 /* 卡片视图里的分组标题（收起来只留一行的那些） */
@@ -3482,6 +3537,39 @@ body.dragging-map-node {
 
 .action-card .card-head input[type="checkbox"]:checked::after {
   transform: translateX(13px);
+}
+
+/* 批量选择那个勾选框：做成方框，跟旁边的「启用」开关区分开。
+   两个一模一样的开关并排摆着，谁也看不出来哪个是选择。 */
+.action-card .card-head input.action-pick {
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--bg-inset);
+}
+
+.action-card .card-head input.action-pick::after {
+  left: 5px;
+  top: 1px;
+  width: 5px;
+  height: 10px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  transform: rotate(45deg) scale(0);
+  transition: transform var(--dur-1) var(--ease-out);
+}
+
+.action-card .card-head input.action-pick:checked {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.action-card .card-head input.action-pick:checked::after {
+  transform: rotate(45deg) scale(1);
 }
 
 .action-pick {
@@ -6573,16 +6661,19 @@ label.inline > input[type="checkbox"]:checked + span {
   right: 10px;
   display: flex;
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 7px 9px;
-  border: 1px solid var(--line-strong);
+  gap: 8px;
+  /* 一行到底：所有控件都挤在这一条上，宁可各自收窄也不换行——
+     换行会让地图凭空少掉一整条的空间。 */
+  flex-wrap: nowrap;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--line-strong) 70%, transparent);
   border-radius: 11px;
   background: var(--panel);
-  background: color-mix(in srgb, var(--panel) 86%, transparent);
-  box-shadow: var(--shadow-2);
-  backdrop-filter: blur(14px) saturate(1.35);
-  -webkit-backdrop-filter: blur(14px) saturate(1.35);
+  /* 毛玻璃：半透明面板 + 高斯模糊，地图从底下透出来 */
+  background: color-mix(in srgb, var(--panel) 62%, transparent);
+  box-shadow: var(--shadow-2), inset 0 1px 0 color-mix(in srgb, #fff 8%, transparent);
+  backdrop-filter: blur(18px) saturate(1.6);
+  -webkit-backdrop-filter: blur(18px) saturate(1.6);
 }
 
 .map-crumb {
@@ -6590,7 +6681,7 @@ label.inline > input[type="checkbox"]:checked + span {
   align-items: center;
   gap: 9px;
   min-width: 0;
-  flex: 1 1 240px;
+  flex: 0 1 auto;
 }
 
 /* 旧的 #map-back 是浮在画布左上角的；现在是顶栏里的返回按钮，回归文档流 */
@@ -6610,14 +6701,16 @@ label.inline > input[type="checkbox"]:checked + span {
 }
 
 .map-crumb-text strong {
+  overflow: hidden;
   color: var(--text);
   font-size: 13px;
   font-weight: 700;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .map-crumb-text span {
-  max-width: 34vw;
+  max-width: 260px;
   overflow: hidden;
   color: var(--muted);
   font-size: 11px;
@@ -6654,8 +6747,15 @@ label.inline > input[type="checkbox"]:checked + span {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
+  /* 屏幕再窄也不换行：工具条自己横向滚动，保住顶栏一行的高度。 */
+  flex-wrap: nowrap;
   min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.map-tools::-webkit-scrollbar {
+  display: none;
 }
 
 .tool-btn {
@@ -6663,7 +6763,7 @@ label.inline > input[type="checkbox"]:checked + span {
   align-items: center;
   gap: 5px;
   min-height: 30px;
-  padding: 0 11px;
+  padding: 0 9px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--bg-inset);
@@ -6759,8 +6859,9 @@ label.inline > input[type="checkbox"]:checked + span {
 .map-topbar-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   margin-left: auto;
+  flex: 0 0 auto;
 }
 
 .map-label-switch {
@@ -6798,7 +6899,7 @@ label.inline > input[type="checkbox"]:checked + span {
 
 .map-select select {
   height: 30px;
-  max-width: 190px;
+  max-width: 156px;
   font-size: 11.5px;
 }
 
@@ -7137,13 +7238,13 @@ label.inline > input[type="checkbox"]:checked + span {
   align-items: center;
   gap: 4px;
   padding: 6px;
-  border: 1px solid var(--line-strong);
+  border: 1px solid color-mix(in srgb, var(--line-strong) 70%, transparent);
   border-radius: 10px;
   background: var(--panel);
-  background: color-mix(in srgb, var(--panel) 88%, transparent);
-  box-shadow: var(--shadow-2);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  background: color-mix(in srgb, var(--panel) 62%, transparent);
+  box-shadow: var(--shadow-2), inset 0 1px 0 color-mix(in srgb, #fff 8%, transparent);
+  backdrop-filter: blur(18px) saturate(1.6);
+  -webkit-backdrop-filter: blur(18px) saturate(1.6);
 }
 
 .map-zoom > button {
@@ -7180,12 +7281,13 @@ label.inline > input[type="checkbox"]:checked + span {
   max-width: 340px;
   margin: 0;
   padding: 7px 10px;
-  border: 1px solid var(--line-strong);
+  border: 1px solid color-mix(in srgb, var(--line-strong) 70%, transparent);
   border-radius: 10px;
   background: var(--panel);
-  background: color-mix(in srgb, var(--panel) 88%, transparent);
-  box-shadow: var(--shadow-2);
-  backdrop-filter: blur(12px);
+  background: color-mix(in srgb, var(--panel) 62%, transparent);
+  box-shadow: var(--shadow-2), inset 0 1px 0 color-mix(in srgb, #fff 8%, transparent);
+  backdrop-filter: blur(18px) saturate(1.6);
+  -webkit-backdrop-filter: blur(18px) saturate(1.6);
   -webkit-backdrop-filter: blur(12px);
   font-size: 11.5px;
 }
@@ -7267,6 +7369,11 @@ label.inline > input[type="checkbox"]:checked + span {
   }
 
   .map-select {
+    display: none;
+  }
+
+  /* 只剩一个勾选框，给工具条腾地方 */
+  .map-check span {
     display: none;
   }
 }

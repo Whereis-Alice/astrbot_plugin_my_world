@@ -38,6 +38,7 @@ DEFAULT_MAP_NODES_PER_ZONE = 3
 DAY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 _ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,40}$")
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _ATTRS = ("energy", "loneliness", "curiosity", "affect", "boredom")
 # 群名片里的地点文案：「在书房」这种，短到不会把昵称挤没
 NODE_NICKNAME_CHARS = 5
@@ -1134,11 +1135,23 @@ def parse_generated_schedules(
             for day in (item.get("days") or [])
             if str(day).strip().lower()[:3] in DAY_KEYS
         ]
+        # 一次性安排：跑完那一遍就删掉。日期只认 YYYY-MM-DD，写歪了就当循环日程，
+        # 免得一条写错日期的一次性日程永远不会到来、也永远不会消失。
+        once = bool(item.get("once") or item.get("one_off"))
+        date_text = str(item.get("date") or "").strip()
+        if once and not _DATE_RE.match(date_text):
+            once, date_text = False, ""
+            problems.append(
+                f"{schedule_id}：写了一次性安排但日期看不懂（{item.get('date')!r}），"
+                "已按每天循环处理"
+            )
         payload = {
             "id": schedule_id,
             "enabled": True,
             "time": str(item.get("time") or "08:00").strip(),
-            "days": list(dict.fromkeys(days)) or list(DAY_KEYS),
+            "days": [] if once else (list(dict.fromkeys(days)) or list(DAY_KEYS)),
+            "once": once,
+            "date": date_text if once else "",
             "note": " ".join(str(item.get("note") or "").split()),
             "smart": bool(item.get("smart")),
             "action_chain": steps,
@@ -1184,5 +1197,16 @@ def parse_generated_events(
             problems.append(f"第 {index} 条没有事件内容，已跳过")
             continue
         title = " ".join(str(item.get("title") or "").split()) or body[:20]
-        events.append({"title": title[:40], "text": body[:300]})
+        # 味道（好事 / 糟心事 / 怪事 / 日常）和发生在哪儿：给编辑器做标记，
+        # 也让"这一批要什么味道"这个要求看得见有没有被落实。
+        kind = str(item.get("kind") or "").strip().lower()
+        if kind not in ("good", "bad", "weird", "daily"):
+            kind = ""
+        place = " ".join(str(item.get("place") or "").split())[:40]
+        draft = {"title": title[:40], "text": body[:300]}
+        if kind:
+            draft["kind"] = kind
+        if place:
+            draft["place"] = place
+        events.append(draft)
     return events, problems

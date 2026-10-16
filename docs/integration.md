@@ -141,7 +141,7 @@ AstrBot 的管线轮不到跑：准备调模型前 → `on_waiting_llm_request`�
 
 ### 已经专门适配过的插件
 
-这三个插件不需要为本插件改任何代码，装好即可一起用：
+下面这些插件不需要为本插件改任何代码，装好即可一起用：
 
 | 插件 | 对接点 | 本插件做了什么 |
 | --- | --- | --- |
@@ -149,6 +149,8 @@ AstrBot 的管线轮不到跑：准备调模型前 → `on_waiting_llm_request`�
 | [genie_tts_llm](https://github.com/Whereis-Alice/astrbot_plugin_genie_tts_llm) | `on_llm_response`（把回复换成语音） | 补发这道钩子，并识别"整条回复已被换成语音"：只发语音、不再把同一句念两遍；`audio_and_text` 模式下两者都发。`genie_tts_speak` 也能导入成动作 |
 | [worldtree_lore](https://github.com/Whereis-Alice/astrbot_plugin_worldtree_lore) | `on_llm_request` / `on_waiting_llm_request` | 它写进 `system_prompt` 或 `extra_user_content_parts` 的设定会一起进她的提示词；它通过 `selected_provider` 临时指定的模型，在接管这一轮同样生效（它自己的工具也能导入成动作） |
 | [helper_tools](https://github.com/Whereis-Alice/astrbot_plugin_helper_tools) | `on_llm_request`（priority 22 起） | **环境感知**（时间 / 节假日 / 农历 / 节气 / 平台 / 群名 / 当前发言者群内资料 / Bot 自己的群身份）写进 `extra_user_content_parts`，接管时整段带进「其他插件提供的上下文」；引用媒体标注、戳一戳上下文走同一条路。老版本 AstrBot 上没有 `extra_user_content_parts` 时，这些信息会被拼在 `req.prompt` 后面——本插件按空行边界把它摘出来单独带，不会让群友"被说"节假日。它注册的 LLM 工具也能一键导入成动作；在它面板上停用的模块不会出现在可导入列表里，误调时会明确提示"被停用" |
+| [uapipro_toolbox](https://github.com/lingyun14beta/astrbot_plugin_uapipro_toolbox) | `on_llm_tool_respond`（工具结果） | 它提供的 `uapi_weather` 等天气工具被调到时，**那一次的结果会被本插件记成世界天气**：写进下一轮提示词、显示在地图横幅上；后台静默刷新找不到绑定的工具时，也会自动认这类天气工具来用。它注册的其它工具照旧由 AstrBot 原生 Agent 调用，和本插件互不干扰 |
+| [profile_weaver](https://github.com/Whereis-Alice/astrbot_plugin_profile_weaver) | 只读它的 `profiles.json` | 通讯录页的「从心迹画像搬过来」把它的字段变成本插件的事实（人、爱好、忌口、备注…），走的是本插件的事实去重逻辑，重复搬不会攒重复项、冲突的留新的；对方插件的数据一个字节都不改，它继续跑也没关系 |
 
 另外两个可以按需关掉的干扰点：
 

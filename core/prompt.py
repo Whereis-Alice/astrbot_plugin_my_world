@@ -2095,6 +2095,7 @@ class PromptBuilder:
                 '    { "action": "think", "content": "内心活动" }\n'
                 "  ],\n"
                 '  "valid_until": 1800,\n'
+                '  "inner": "此刻你心里冒出来的一两句话（30 字以内，第一人称，只给自己看）",\n'
                 '  "reason": "为什么这样安排",\n'
                 '  "send_to": "整串话默认说给谁；每一步也可以各自写"\n'
                 "}\n\n"
@@ -2103,6 +2104,8 @@ class PromptBuilder:
                 "需要去哪就写 target_node，持续动作写 duration（秒）；"
                 "标着「时长由你定」的动作要按它给的范围写 duration。\n"
                 "- valid_until：这份计划大约管多少秒。\n"
+                "- inner：你此刻心里真实的那一句（不是台词、不发给谁），会留在你的「内心活动」里；"
+                "没什么可说的就留空。\n"
                 "- reason：一句话说明为什么这样安排。\n"
                 "- send_to：这句话说给哪个会话听（见「你能说话的地方」）。"
                 "**凡是别人看得见的动作（说话 / 分享 / 发图这类）都必须写**；"
@@ -2951,23 +2954,44 @@ class PromptBuilder:
         existing_schedules: list[dict[str, Any]] | None = None,
         relations: str = "",
         count: int = 3,
+        flavor: str = "",
+        today: str = "",
+        extra_prompt: str = "",
     ) -> tuple[str, str]:
         """基于她的人设与生活节奏，生成**日程**草稿。"""
 
-        system = (
-            "你是这个角色世界的规划者。读她的人设、住的地方和她手头能做的事，"
-            f"替她排 {max(1, int(count))} 条**日常生活日程**。\n\n"
-            "要求：\n"
-            "1. 日程要像一个人真正的生活：起床、吃饭、出门、工作/学习、爱好、回家、睡前；\n"
-            "2. 一条日程只做一件事，时间是 24 小时制 HH:MM；\n"
-            "3. 每一步只能引用给她的「动作 id」列表里的动作；跨区域要先走 walk_to；\n"
-            "4. 不要排满一天：留出她发呆、被打断、想别的事情的空间；\n"
-            "5. 每条给：id（小写英文 + 下划线）、time、days（mon~sun 的子集，"
-            "空数组 = 每天）、note（为什么排这条）、smart（true = 到点让模型按当下情况再决定）、"
-            "action_chain（步骤数组：[{\"type\":\"walk_to\",\"target_node\":\"...\"}, "
-            "{\"type\":\"<动作id>\",\"intent\":\"...\"}]）；\n"
-            "6. 只输出 JSON：{\"schedules\": [{...}]}，不要解释、不要代码块。"
-        )
+        once = str(flavor or "") == "once"
+        if once:
+            system = (
+                "你是这个角色世界的规划者。读她的人设、住的地方和她手头能做的事，"
+                f"替她排 {max(1, int(count))} 条**一次性安排**：只做这一次的事，不是每天重复的作息。\n\n"
+                "要求：\n"
+                "1. 像「今天下午去把书还了」「明天早上去买菜」这种具体安排，"
+                "跟她的人设、最近的状态有关，别写成每天都要做的日常；\n"
+                "2. 一条只做一件事，时间是 24 小时制 HH:MM；\n"
+                "3. 每一步只能引用给她的「动作 id」列表里的动作；跨区域要先走 walk_to；\n"
+                "4. 每条给：id（小写英文 + 下划线）、time、once（true）、date（YYYY-MM-DD，"
+                "只能是她今天或明天）、note（为什么排这条）、smart、"
+                "action_chain（步骤数组：[{\"type\":\"walk_to\",\"target_node\":\"...\"}, "
+                "{\"type\":\"<动作id>\",\"intent\":\"...\"}]）；\n"
+                "5. 跑完这条安排就结束了（会被自动删掉），所以别安排「每天都要做」的事；\n"
+                "6. 只输出 JSON：{\"schedules\": [{...}]}，不要解释、不要代码块。"
+            )
+        else:
+            system = (
+                "你是这个角色世界的规划者。读她的人设、住的地方和她手头能做的事，"
+                f"替她排 {max(1, int(count))} 条**日常生活日程**。\n\n"
+                "要求：\n"
+                "1. 日程要像一个人真正的生活：起床、吃饭、出门、工作/学习、爱好、回家、睡前；\n"
+                "2. 一条日程只做一件事，时间是 24 小时制 HH:MM；\n"
+                "3. 每一步只能引用给她的「动作 id」列表里的动作；跨区域要先走 walk_to；\n"
+                "4. 不要排满一天：留出她发呆、被打断、想别的事情的空间；\n"
+                "5. 每条给：id（小写英文 + 下划线）、time、days（mon~sun 的子集，"
+                "空数组 = 每天）、note（为什么排这条）、smart（true = 到点让模型按当下情况再决定）、"
+                "action_chain（步骤数组：[{\"type\":\"walk_to\",\"target_node\":\"...\"}, "
+                "{\"type\":\"<动作id>\",\"intent\":\"...\"}]）；\n"
+                "6. 只输出 JSON：{\"schedules\": [{...}]}，不要解释、不要代码块。"
+            )
         node_lines = [
             f"- {item.get('id')}｜{item.get('name')}"
             + (f"（{item.get('zone')}）" if item.get("zone") else "")
@@ -2994,6 +3018,10 @@ class PromptBuilder:
         ]
         if relations:
             blocks.append("# 她的人际关系\n" + str(relations).strip()[:800])
+        if once and today:
+            blocks.append(f"# 今天是\n{today}（date 只能写 {today} 或它的第二天）")
+        if extra_prompt:
+            blocks.append("# 额外要求（优先满足）\n" + str(extra_prompt).strip()[:600])
         blocks.append(f"现在生成 {max(1, int(count))} 条日程，只输出 JSON。")
         return system, "\n\n".join(blocks)
 
@@ -3006,9 +3034,30 @@ class PromptBuilder:
         recent_events: list[str] | None = None,
         relations: str = "",
         count: int = 3,
+        flavor: str = "",
+        extra_prompt: str = "",
     ) -> tuple[str, str]:
         """基于她的人设与最近经历，生成**事件**草稿（一句话就能投递的那种）。"""
 
+        # 「什么都有可能」：默认就要好事、糟心事、怪事各来一点，
+        # 用户选了倾向再收窄。生活本来就不是只有一种味道。
+        flavor_rule = {
+            "good": "这一批全部偏好事：意外的惊喜、久违的联系、正好赶上、被人记着——"
+            "别写成天降横财，也别跟现实脱节；",
+            "bad": "这一批全部偏糟心事：东西坏了、约好的事黄了、被误会、身体不舒服、"
+            "听到不想听的消息——写具体、可解决，别写绝症或生死；",
+            "weird": "这一批全部偏反常和莫名其妙：奇怪的邻居、看不懂的东西、"
+            "巧合得过分的事、做了个后劲很大的梦、忽然想起一件不对劲的旧事——"
+            "世界规则还是正常的，只是这件事本身很怪；",
+            "daily": "这一批全部偏日常小事：多出来的一点点麻烦、一点点甜、"
+            "一点点打断，安安静静但真的发生过；",
+        }.get(str(flavor or "").strip(), "")
+        if not flavor_rule:
+            flavor_rule = (
+                "好事、糟心事、莫名其妙的事、平平常常的小事都要有："
+                f"{max(1, int(count))} 件里至少一件偏好事、至少一件偏糟心、"
+                "至少一件让人觉得「这事有点怪」，剩下的随你；"
+            )
         system = (
             "你是这个角色世界的说书人。读她的人设、她生活的世界和最近发生的事，"
             f"替她编 {max(1, int(count))} 件**可能突然发生的事**。\n\n"
@@ -3018,8 +3067,11 @@ class PromptBuilder:
             "2. 每件事都留选择空间：她可以去看、去躲、去说清楚，不要规定结局；\n"
             "3. 不要重复最近已经发生过的事；\n"
             "4. 每件给 title（一句话标题）和 text（一段能直接投递给她的事件描述，"
-            "写清「发生了什么、跟她有什么关系」，30~80 字）；\n"
-            "5. 只输出 JSON：{\"events\": [{\"title\": \"...\", \"text\": \"...\"}]}，"
+            "写清「发生了什么、跟她有什么关系」，30~80 字）、"
+            "kind（good / bad / weird / daily 四选一）、"
+            "place（这件事发生在她的哪个地点，用上面列出的地点名；说不好就留空）；\n"
+            "5. 味道要配齐：" + flavor_rule + "不要全是同一种；\n"
+            "6. 只输出 JSON：{\"events\": [{\"title\": \"...\", \"text\": \"...\"}]}，"
             "不要解释、不要代码块。"
         )
         zone_lines = [
@@ -3037,6 +3089,8 @@ class PromptBuilder:
         ]
         if relations:
             blocks.append("# 她的人际关系\n" + str(relations).strip()[:800])
+        if extra_prompt:
+            blocks.append("# 额外要求（优先满足）\n" + str(extra_prompt).strip()[:600])
         blocks.append(f"现在生成 {max(1, int(count))} 件事，只输出 JSON。")
         return system, "\n\n".join(blocks)
 
@@ -3426,6 +3480,116 @@ class PromptBuilder:
             "}"
         )
         return system, prompt
+
+    def build_generic_action_generator_prompt(
+        self,
+        *,
+        zones: list[dict[str, Any]] | None = None,
+        nodes: list[dict[str, Any]] | None = None,
+        existing_actions: list[str] | None = None,
+        count: int = 8,
+        use_map: bool = True,
+    ) -> tuple[str, str]:
+        """生成一批**通用、普通**的虚拟动作（动作库的「生成通用动作」）。
+
+        和「按人设与地图生成动作」正相反：这里**故意不看人设**——
+        想要的是放在任何角色身上都说得通的小事（散步、泡茶、听歌、晒太阳…），
+        用来把空的动作库先铺一层底，再让用户自己挑和改。
+        地图可选：参考地图时按地点绑好，不参考时由调用方自己分配地点。
+        """
+
+        wanted = max(1, int(count))
+        node_lines = [
+            f"- id={item.get('id')}｜{item.get('name')}"
+            f"｜区域={item.get('zone_id')}"
+            for item in (nodes or [])
+        ]
+        zone_lines = [
+            f"- {item.get('name')}：{_one_line(item.get('note'), 50) or '（没有说明）'}"
+            for item in (zones or [])
+        ]
+        know = (
+            "、".join(list(existing_actions or [])[:60])
+            or "（还没有动作）"
+        )
+        system = (
+            "你在给一个虚拟角色挑「她平时会做的小事」。"
+            "输出必须是 JSON，不要解释、不要 Markdown。"
+        )
+        common_rules = (
+            f"1. 一共写 {wanted} 个动作，全都是**普通人真的会做的日常小事**："
+            "散步、泡茶、听歌、看书、发呆、晒太阳、做点吃的、收拾东西、洗衣服、"
+            "写日记、养花、看窗外、逛超市、逗猫狗、拉伸身体、翻旧照片……；\n"
+            "2. 每个动作都要有「做完之后能在群里随口说一句」的见闻感，"
+            "别写成一整套仪式、也别写成需要联网的事；\n"
+            "3. 不要写「说话」「分享」「查资料」这类通用动作，"
+            "也不要写需要调用工具才能完成的事（工具由 AstrBot 原生 Agent 处理）；\n"
+            "4. 效果幅度要小：属性只允许 energy / loneliness / curiosity / affect / boredom，"
+            "写成 +0.05、-0.05、=0.5 这类；心情写成 mood:满足；\n"
+            "5. 持续动作给 duration_mode=llm 和 duration_min / duration_max（秒）；\n"
+            "6. 这些动作**不针对某个具体的人**，所以 intimacy 一律不写或写 0。\n"
+        )
+        blocks = [
+            "# 任务\n"
+            "下面这些动作是给任何一个角色都能用的「通用动作」，"
+            "所以**不要**参考某个角色的性格、身世、世界观——"
+            "写成一个普通人居家过日子会做的事就行。",
+            f"# 已经有的动作（不要重复这些名字和意图）\n{know}",
+        ]
+        if use_map and node_lines:
+            blocks.append(
+                "# 她生活的区域\n" + "\n".join(zone_lines)
+            )
+            blocks.append(
+                "# 可绑的地点（node_id 只能写这里面的 id，按动作合不合适挑）\n"
+                + "\n".join(node_lines)
+            )
+            blocks.append(
+                "# 要求\n"
+                + common_rules
+                + "7. node_id 必须用上面列出的地点 id，选跟这件事最搭的那个；"
+                "同一个地点最多 2~3 个动作。\n\n"
+                "# 输出格式（只输出这个 JSON）\n"
+                '{\n  "actions": [\n    {\n'
+                '      "id": "英文小写下划线，例如 kitchen_brew_tea",\n'
+                '      "node_id": "上面列出的地点 id",\n'
+                '      "name": "中文名，例如 泡一壶茶",\n'
+                '      "description": "一句话说明她会做什么",\n'
+                '      "category": "instant 或 continuous",\n'
+                '      "llm_level": "single",\n'
+                '      "duration_mode": "llm",\n'
+                '      "duration_min": 300,\n'
+                '      "duration_max": 1800,\n'
+                '      "template": "",\n'
+                '      "on_complete": {\n'
+                '        "trigger": "llm_followup",\n'
+                '        "prompt_hint": "让她用第一人称随口讲这件事，不要说教",\n'
+                '        "effects": {"boredom": "-0.05", "affect": "+0.05"}\n'
+                "      }\n    }\n  ]\n}"
+            )
+        else:
+            blocks.append(
+                "# 要求\n"
+                + common_rules
+                + "7. 不要写 node_id，也不用管地点：这些动作之后会被随机铺到她的地图上。\n\n"
+                "# 输出格式（只输出这个 JSON）\n"
+                '{\n  "actions": [\n    {\n'
+                '      "id": "英文小写下划线，例如 brew_tea",\n'
+                '      "name": "中文名，例如 泡一壶茶",\n'
+                '      "description": "一句话说明她会做什么",\n'
+                '      "category": "instant 或 continuous",\n'
+                '      "llm_level": "single",\n'
+                '      "duration_mode": "llm",\n'
+                '      "duration_min": 300,\n'
+                '      "duration_max": 1800,\n'
+                '      "template": "",\n'
+                '      "on_complete": {\n'
+                '        "trigger": "llm_followup",\n'
+                '        "prompt_hint": "让她用第一人称随口讲这件事，不要说教",\n'
+                '        "effects": {"boredom": "-0.05", "affect": "+0.05"}\n'
+                "      }\n    }\n  ]\n}"
+            )
+        return system, "\n\n".join(blocks)
 
     def build_tool_action_naming_prompt(
         self,

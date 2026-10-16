@@ -371,6 +371,64 @@ class ProfileStore:
 
     # ---------------- 事实 ----------------
 
+    def import_external(
+        self,
+        session_id: str,
+        items: list[dict[str, Any]],
+        *,
+        source: str = "心迹画像",
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """把别的插件记的画像搬进来（只追加，不覆盖本插件已有的东西）。
+
+        每条事实都走 :meth:`note_fact`：一样的合并、冲突的留新的，
+        所以重复导入不会攒出一堆重复项；导入来源写进证据，方便回溯。
+        """
+
+        if not self.enabled():
+            return {
+                "ok": False,
+                "reason": "画像功能关着：先去「设置 → 记忆与画像」打开",
+                "people": 0,
+                "added": 0,
+                "merged": 0,
+            }
+        key = self.group_key(session_id)
+        if not key:
+            return {"ok": False, "reason": "先选一个会话", "people": 0, "added": 0, "merged": 0}
+        stamp = float(now if now is not None else time.time())
+        people = added = merged = 0
+        for item in items or []:
+            uid = str(item.get("user_id") or "").strip()
+            if not uid:
+                continue
+            created = self.touch(
+                session_id,
+                uid,
+                str(item.get("name") or ""),
+                now=stamp,
+                count_message=False,
+            )
+            if created is None:
+                continue
+            people += 1
+            for kind, text in item.get("facts") or []:
+                result = self.note_fact(
+                    session_id,
+                    uid,
+                    text=str(text or ""),
+                    kind=str(kind or "profile"),
+                    evidence=f"导入自{source}",
+                    confidence=0.9,
+                    source_session=str(item.get("source_session") or ""),
+                )
+                action = str(result.get("action") or "")
+                if action in ("add", "replace"):
+                    added += 1
+                elif action == "merge":
+                    merged += 1
+        return {"ok": True, "people": people, "added": added, "merged": merged}
+
     def note_fact(
         self,
         session_id: str,

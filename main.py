@@ -4699,6 +4699,19 @@ class MyWorldPlugin(Star):
             )
         except Exception:
             entry["ms"] = 0
+        # 原生工具查到的天气顺手记一份：地图横幅和下一轮的提示词立刻就有真数据，
+        # 本插件不用再单独查一遍。认不出是天气工具就什么都不做。
+        session_id = str(turn.get("session_id") or "")
+        if session_id:
+            try:
+                await self.engine.note_tool_weather(
+                    session_id=session_id,
+                    tool_name=name,
+                    args=tool_args if isinstance(tool_args, dict) else {},
+                    result=_tool_result_text(tool_result),
+                )
+            except Exception as exc:
+                self.logger.debug(f"[my_world] 天气记录没更新：{exc}")
 
     @filter.after_message_sent()
     @session_scoped
@@ -5956,6 +5969,12 @@ class MyWorldPlugin(Star):
             ["POST"],
             "按人设与整张地图生成动作",
         )
+        register(
+            f"/{p}/generate/generic-actions",
+            self.api_generate_generic_actions,
+            ["POST"],
+            "生成一批通用普通动作（不看人设，地图可选）",
+        )
         register(f"/{p}/generate/nodes", self.api_generate_nodes, ["POST"], "按区域生成地点")
         register(
             f"/{p}/generate/zones",
@@ -6078,6 +6097,18 @@ class MyWorldPlugin(Star):
             "通讯录：清空（忘掉全部）",
         )
         register(f"/{p}/profile/consolidate", self.api_profile_consolidate, ["POST"], "立刻整理一次（记忆 + 画像）")
+        register(
+            f"/{p}/profile/weaver",
+            self.api_profile_weaver,
+            ["GET"],
+            "心迹画像桥：能不能搬、有多少人的画像",
+        )
+        register(
+            f"/{p}/profile/weaver/import",
+            self.api_profile_weaver_import,
+            ["POST"],
+            "把心迹画像的数据搬进本插件的通讯录",
+        )
         register(f"/{p}/extensions", self.api_extensions, ["GET", "POST"], "扩展包：设置与数据")
 
     # ---------------- 通讯录（用户画像）----------------
@@ -6463,6 +6494,34 @@ class MyWorldPlugin(Star):
         # 她"今天还能主动找几个人"的额度也跟着清，免得留下没人认领的计数
         store.drop_daily_people(group_id)
         return json_response({"ok": True, "people": forgotten, "removed": removed})
+
+    async def api_profile_weaver(self):
+        """心迹画像桥：看看能不能搬、有多少人的画像在那儿。"""
+
+        query = request.query
+        guard = self._guard(query if hasattr(query, "get") else {})
+        if guard is not None:
+            return guard
+        data_root = str(self.store.data_dir.parent)
+        status = self.engine.profile_weaver_status(data_root)
+        status["session"] = self._profile_scope(query.get("session") or "")
+        return json_response(status)
+
+    async def api_profile_weaver_import(self):
+        """把心迹画像已经记下的东西搬进本插件的通讯录（只读对方的数据）。"""
+
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload)
+        if guard is not None:
+            return guard
+        session_id = self._profile_scope(payload.get("session"))
+        if not session_id:
+            return error_response("先选一个会话，再把画像搬进这个会话的通讯录")
+        data_root = str(self.store.data_dir.parent)
+        result = await self.engine.import_profile_weaver(session_id, data_root)
+        if not result.get("ok"):
+            return error_response(str(result.get("reason") or "导入失败"))
+        return json_response(result)
 
     async def api_profile_consolidate(self):
         """立刻整理一次（编辑器上的"现在整理一次"）：消化这段时间的经历。"""
@@ -7269,7 +7328,12 @@ class MyWorldPlugin(Star):
         guard = self._guard(payload)
         if guard is not None:
             return guard
-        return await self._generate_drafts_response(self.engine.generate_schedules, payload.get("count"))
+        return await self._generate_drafts_response(
+            self.engine.generate_schedules,
+            payload.get("count"),
+            payload.get("flavor"),
+            payload.get("extra_prompt"),
+        )
 
     async def api_generate_events(self):
         """按她的人设与最近经历生成事件草稿（不落库）。"""
@@ -7278,7 +7342,25 @@ class MyWorldPlugin(Star):
         guard = self._guard(payload)
         if guard is not None:
             return guard
-        return await self._generate_drafts_response(self.engine.generate_events, payload.get("count"))
+        return await self._generate_drafts_response(
+            self.engine.generate_events,
+            payload.get("count"),
+            payload.get("flavor"),
+            payload.get("extra_prompt"),
+        )
+
+    async def api_generate_generic_actions(self):
+        """生成一批通用普通动作（不参考人设，地图可选）。"""
+
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload)
+        if guard is not None:
+            return guard
+        return await self._generate_drafts_response(
+            self.engine.generate_generic_actions,
+            payload.get("count"),
+            payload.get("use_map", True),
+        )
 
     async def api_deliver_event(self):
         """把编辑器里挑好的事件草稿投递给她（等价于 /mw event 一句话）。"""

@@ -1031,6 +1031,8 @@ def parse_plan_payload(
         "current_step": 0,
         "valid_for": max(60, valid_for),
         "reason": str(payload.get("reason", "") or ""),
+        # 她这一轮心里冒出来的那一句：编辑器「内心活动」会留着，她自己下一轮也看得见
+        "inner": _clean_note(payload.get("inner")),
         # 她想把这些话说给谁：会话组里的哪个群 / 私聊（留空 = 落点默认）
         "send_to": _clean_send_to(payload.get("send_to")),
         "source": "llm",

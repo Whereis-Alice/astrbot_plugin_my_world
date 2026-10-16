@@ -21,6 +21,7 @@ from core.engine import MyWorldEngine  # noqa: E402
 from core.generator import (  # noqa: E402
     ASPECT_MAX,
     ASPECT_MIN,
+    DAY_KEYS,
     auto_layout_ring,
     connect_zone_graph,
     clamp_event_count,
@@ -149,6 +150,33 @@ class ScheduleParserTests(unittest.TestCase):
         self.assertEqual(schedules, [])
         self.assertTrue(any("重复" in item for item in problems))
 
+    def test_one_off_schedule_keeps_its_date_and_clears_the_weekdays(self):
+        text = (
+            '{"schedules": [{"id": "buy_fish", "time": "17:30", "once": true, '
+            '"date": "2026-10-18", "note": "答应给她买鱼", "action_chain": [{"type": "say"}]}]}'
+        )
+        schedules, problems = parse_generated_schedules(
+            text, action_ids={"say"}, node_ids=set()
+        )
+        self.assertEqual(len(schedules), 1)
+        schedule = schedules[0]
+        self.assertTrue(schedule["once"])
+        self.assertEqual(schedule["date"], "2026-10-18")
+        self.assertEqual(schedule["days"], [])
+        self.assertEqual(problems, [])
+
+    def test_one_off_schedule_with_a_broken_date_falls_back_to_daily(self):
+        text = (
+            '{"schedules": [{"id": "buy_fish", "time": "17:30", "once": true, '
+            '"date": "下周三", "action_chain": [{"type": "say"}]}]}'
+        )
+        schedules, problems = parse_generated_schedules(text, action_ids={"say"})
+        self.assertEqual(len(schedules), 1)
+        self.assertFalse(schedules[0]["once"])
+        self.assertEqual(schedules[0]["date"], "")
+        self.assertEqual(schedules[0]["days"], list(DAY_KEYS))
+        self.assertTrue(any("日期" in item for item in problems))
+
 
 class EventParserTests(unittest.TestCase):
     def test_accepts_dicts_and_bare_strings(self):
@@ -170,6 +198,23 @@ class EventParserTests(unittest.TestCase):
         events, problems = parse_generated_events(text)
         self.assertEqual([item["title"] for item in events], ["有"])
         self.assertTrue(any("没有事件内容" in item for item in problems))
+
+    def test_event_flavor_and_place_are_kept_for_the_editor(self):
+        text = (
+            '{"events": ['
+            '{"title": "门口的小猫", "text": "楼下保安在门口捡到一只小猫。", '
+            '"kind": "good", "place": "公寓玄关"},'
+            '{"title": "水管爆了", "text": "厨房水管突然漏水。", "kind": "BAD"},'
+            '{"title": "怪事", "text": "她发现窗台上多了一颗不认识的石子。", "kind": "玄学"}'
+            "]}"
+        )
+        events, _problems = parse_generated_events(text, max_events=4)
+        self.assertEqual(len(events), 3)
+        self.assertEqual(events[0]["kind"], "good")
+        self.assertEqual(events[0]["place"], "公寓玄关")
+        # 大小写照收，认不出的味道不写（别把自由文本当成枚举塞给前端）
+        self.assertEqual(events[1]["kind"], "bad")
+        self.assertNotIn("kind", events[2])
 
 
 class ClampTests(unittest.TestCase):
@@ -484,6 +529,50 @@ class GeneratorPromptTests(unittest.TestCase):
         )
         self.assertIn("通用工具", legacy_scene)
 
+    def test_generic_action_prompt_drops_persona_and_can_drop_the_map(self):
+        builder = PromptBuilder(parse_world(default_world())[0])
+        zones = [{"id": "home", "name": "家里", "note": "她住的地方"}]
+        nodes = [{"id": "kitchen", "name": "厨房", "zone_id": "home"}]
+        _system, free = builder.build_generic_action_generator_prompt(
+            zones=zones, nodes=nodes, existing_actions=[], count=6, use_map=False
+        )
+        # 不看地图时连地点名都不给模型看，它写的是与地点无关的通用小事
+        self.assertNotIn("kitchen", free)
+        self.assertNotIn("厨房", free)
+        self.assertIn("通用动作", free)
+        _system, with_map = builder.build_generic_action_generator_prompt(
+            zones=zones, nodes=nodes, existing_actions=[], count=6, use_map=True
+        )
+        self.assertIn("kitchen", with_map)
+        self.assertIn("厨房", with_map)
+
+    def test_event_prompt_asks_for_good_bad_and_weird(self):
+        builder = PromptBuilder(parse_world(default_world())[0])
+        system, prompt = builder.build_event_generator_prompt(
+            persona_text="她住在海边小镇。", count=4
+        )
+        self.assertIn("好事", system)
+        self.assertIn("糟心事", system)
+        self.assertIn("怪", system)
+        self.assertIn("她住在海边小镇", prompt)
+        weird_system, _prompt = builder.build_event_generator_prompt(
+            persona_text="她住在海边小镇。", count=2, flavor="weird"
+        )
+        self.assertIn("反常", weird_system)
+
+    def test_one_off_schedule_prompt_carries_today_and_extra_prompt(self):
+        builder = PromptBuilder(parse_world(default_world())[0])
+        system, prompt = builder.build_schedule_generator_prompt(
+            persona_text="她住在海边小镇。",
+            count=2,
+            flavor="once",
+            today="2026-10-16",
+            extra_prompt="这周末要去参加朋友的婚礼",
+        )
+        self.assertIn("一次性", system)
+        self.assertIn("2026-10-16", prompt)
+        self.assertIn("婚礼", prompt)
+
     def test_world_action_prompt_carries_persona_map_and_count(self):
         system, prompt = self.builder.build_world_action_generator_prompt(
             persona_text="她喜欢做饭，也喜欢在阳台养花。",
@@ -704,6 +793,50 @@ class EngineGeneratorTests(unittest.IsolatedAsyncioTestCase):
         events = result["events"]
         self.assertEqual(len(events), 1)
         self.assertIn("信", events[0]["text"])
+
+    async def test_generate_generic_actions_spreads_them_when_the_map_is_ignored(self):
+        self.creator.replies = [
+            '{"actions": ['
+            '{"id": "brew_tea", "name": "泡一壶茶", "description": "慢慢泡一壶茶"},'
+            '{"id": "fold_clothes", "name": "叠衣服", "description": "把晾干的衣服叠好"}'
+            "]}"
+        ]
+        result = await self.engine.generate_generic_actions(2, False)
+        actions = result["actions"]
+        self.assertEqual(len(actions), 2)
+        known = {node.id for node in self.engine.world.nodes}
+        # 不看地图生成的动作也要落在真地点上，而且不会全堆在同一个地点
+        self.assertTrue(all(action["node_id"] in known for action in actions))
+        self.assertEqual(len({action["node_id"] for action in actions}), 2)
+        self.assertTrue(all(action["scope"] == "node" for action in actions))
+        prompt = self.creator.calls[-1]["prompt"]
+        # 通用动作用的提示词里不该出现人设
+        self.assertNotIn("你是一个住在老城区的女孩", prompt)
+
+    async def test_generate_schedules_can_ask_for_one_off_plans(self):
+        self.creator.replies = [
+            '{"schedules": [{"id": "buy_fish", "time": "17:30", "once": true, '
+            '"date": "2026-10-18", "note": "答应给她买鱼", '
+            '"action_chain": [{"type": "think", "content": "出门买鱼"}]}]}'
+        ]
+        result = await self.engine.generate_schedules(1, "once", "这周末要请客")
+        schedules = result["schedules"]
+        self.assertEqual(len(schedules), 1)
+        self.assertTrue(schedules[0]["once"])
+        self.assertEqual(schedules[0]["date"], "2026-10-18")
+        call = self.creator.calls[-1]
+        self.assertIn("一次性", call["system_prompt"])
+        self.assertIn("这周末要请客", call["prompt"])
+
+    async def test_generate_events_passes_the_flavor_to_the_prompt(self):
+        self.creator.replies = [
+            '{"events": [{"title": "怪事", "text": "窗台上多了一颗石子。", "kind": "weird"}]}'
+        ]
+        result = await self.engine.generate_events(1, "weird", "多写点做梦的事")
+        self.assertEqual(result["events"][0]["kind"], "weird")
+        call = self.creator.calls[-1]
+        self.assertIn("反常", call["system_prompt"])
+        self.assertIn("多写点做梦的事", call["prompt"])
 
     async def test_editor_generators_preserve_provider_failure_reason(self):
         self.creator.generate = AsyncMock(return_value=LLMReply(ok=False, error="HTTP 429: quota exceeded"))

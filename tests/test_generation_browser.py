@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import http.server
 import json
+import re
 import threading
 import unittest
 
@@ -244,6 +245,29 @@ class GenerationBrowserTests(unittest.TestCase):
         )
         self.assertEqual(self.errors, [])
 
+    def test_action_filters_and_bulk_bar_are_usable(self):
+        self.page.locator('button[data-tab="actions"]').click()
+        expect(self.page.locator("#action-grid .action-card").first).to_be_visible()
+
+        # 筛选是胶囊按钮：点一下亮起来、再点一下关掉；「重置」把它们全清掉
+        legacy = self.page.locator("#action-filter-legacy")
+        legacy.click()
+        expect(legacy).to_have_class(re.compile(r"\bon\b"))
+        self.page.locator("#action-filter-reset").click()
+        expect(legacy).not_to_have_class(re.compile(r"\bon\b"))
+
+        # 批量选择：全选当前结果 → 计数跟着变 → 取消选择清零
+        self.page.locator("#action-select-mode").click()
+        expect(self.page.locator("#action-bulk")).to_be_visible()
+        expect(self.page.locator("#action-bulk-count")).to_contain_text("已选 0 个")
+        self.page.locator("#action-bulk-all").click()
+        expect(self.page.locator("#action-bulk-count")).not_to_contain_text("已选 0 个")
+        self.page.locator("#action-bulk-clear").click()
+        expect(self.page.locator("#action-bulk-count")).to_contain_text("已选 0 个")
+        self.page.locator("#action-select-mode").click()
+        expect(self.page.locator("#action-bulk")).to_be_hidden()
+        self.assertEqual(self.errors, [])
+
     def test_default_actions_can_be_bulk_enabled_and_disabled(self):
         self.page.locator('button[data-tab="actions"]').click()
         advanced = self.page.locator("#tab-actions details.adv-menu")
@@ -417,6 +441,9 @@ class GenerationBrowserTests(unittest.TestCase):
         expect(self.page.locator("#canvas-nodes .node")).to_have_count(5)
         first_label = self.page.locator("#canvas-labels text.edge-ticks").first
         self.assertIn("rotate(", first_label.get_attribute("transform") or "")
-        self.assertEqual(first_label.locator("tspan").count(), 2)
+        # 路线名字是一行「入口 → 入口」：三段同基线，中间那一段是箭头。
+        self.assertEqual(first_label.locator("tspan").count(), 3)
+        # SVG 里的 tspan 不是 HTMLElement，读文本要用 text_content
+        self.assertEqual(first_label.locator("tspan").nth(1).text_content(), " → ")
         self.host.screenshot(path=str(self.shots / "ring-layout.png"))
         self.assertEqual(self.errors, [])

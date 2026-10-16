@@ -2608,6 +2608,18 @@ class TestPlanKeepsIntent(unittest.TestCase):
         assert plan is not None
         self.assertEqual(plan["steps"][0]["intent"], "今天的新闻")
 
+    def test_parse_plan_payload_keeps_the_inner_voice(self):
+        """计划里那句「此刻心里冒出来的话」要留下来，编辑器用它填「内心活动」。"""
+
+        plan, _warnings = parse_plan_payload(
+            '{"plan":[{"action":"think","content":"发呆"}],'
+            '"inner":"今天风挺舒服的","reason":"外面凉快"}',
+            available_actions={"think"},
+        )
+        self.assertIsNotNone(plan)
+        assert plan is not None
+        self.assertEqual(plan["inner"], "今天风挺舒服的")
+
 
 class TestDecisionSampleRate(unittest.TestCase):
     """「要不要问大模型」的概率跟着决策意愿走，而不是写死 10%。"""

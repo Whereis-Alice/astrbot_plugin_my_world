@@ -356,6 +356,9 @@ class DialogueInjectTests(unittest.TestCase):
             str((state.last_reflection.get("reasoning") or {}).get("inner")),
             "他来了呀",
         )
+        # 复盘里那句「心里冒出来的话」也进「内心活动」那一栏：
+        # 以前只有 think 动作才写，模型不选那个动作就永远看不到更新。
+        self.assertIn("他来了呀", [str(item.get("content")) for item in state.thoughts])
         self.assertTrue(state.reflection_log)
         plugin.db.raw.close()
 

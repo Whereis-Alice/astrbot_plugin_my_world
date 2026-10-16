@@ -55,7 +55,7 @@ const ui = {
   // 动作库左侧菜单选中的那一组（""=全部；"group:名字" / "ext:扩展名"）
   actionGroup: "",
   // 动作库的筛选 / 排序 / 批量选择（动作一多，光靠分组不够用）
-  actionFilters: { tools: false, imported: false, missing: false, disabled: false },
+  actionFilters: { virtual: false, legacy: false, disabled: false },
   actionSort: "recent",
   actionSelectMode: false,
   actionSelected: new Set(),
@@ -3916,6 +3916,9 @@ function bindButtons() {
       loadContacts();
     });
   }
+  if ($("contacts-weaver-import")) {
+    $("contacts-weaver-import").addEventListener("click", importProfileWeaver);
+  }
   if ($("contacts-goto-sessions")) {
     $("contacts-goto-sessions").addEventListener("click", () => {
       const button = document.querySelector('#tabs button[data-tab="sessions"]');
@@ -4086,6 +4089,9 @@ function bindButtons() {
   if ($("action-generate-world")) {
     $("action-generate-world").addEventListener("click", generateWorldActions);
   }
+  if ($("action-generate-generic")) {
+    $("action-generate-generic").addEventListener("click", generateGenericActions);
+  }
   // 旧版「从工具导入」入口已经下线（工具调用交回 AstrBot 原生）；元素不在时不要绑。
   $("action-search").addEventListener("input", renderActionGrid);
   $("action-json").addEventListener("click", editActionsJson);
@@ -4111,8 +4117,10 @@ function bindButtons() {
   Object.entries(filterMap).forEach(([id, key]) => {
     const box = $(id);
     if (!box) return;
-    box.addEventListener("change", () => {
-      ui.actionFilters[key] = box.checked;
+    // 筛选是「小胶囊」按钮，不是开关：点一下切换，选中的亮起来。
+    box.addEventListener("click", () => {
+      ui.actionFilters[key] = !ui.actionFilters[key];
+      box.classList.toggle("on", Boolean(ui.actionFilters[key]));
       renderActionGrid();
     });
   });
@@ -4120,8 +4128,20 @@ function bindButtons() {
     ui.actionSort = $("action-sort").value || "recent";
     renderActionGrid();
   });
-  $("action-select-mode").addEventListener("change", () => {
-    ui.actionSelectMode = $("action-select-mode").checked;
+  $("action-filter-reset").addEventListener("click", () => {
+    ui.actionFilters = {};
+    ui.actionGroup = "";
+    ui.actionSort = "recent";
+    if ($("action-search")) $("action-search").value = "";
+    if ($("action-sort")) $("action-sort").value = "recent";
+    Object.keys(filterMap).forEach((id) => {
+      if ($(id)) $(id).classList.remove("on");
+    });
+    renderActionGrid();
+  });
+  $("action-select-mode").addEventListener("click", () => {
+    ui.actionSelectMode = !ui.actionSelectMode;
+    $("action-select-mode").classList.toggle("on", ui.actionSelectMode);
     if (!ui.actionSelectMode) ui.actionSelected = new Set();
     renderActionGrid();
   });
@@ -4129,6 +4149,21 @@ function bindButtons() {
   $("action-bulk-disable").addEventListener("click", () => setSelectedActionsEnabled(false));
   $("action-bulk-group").addEventListener("click", setSelectedActionsGroup);
   $("action-bulk-delete").addEventListener("click", deleteSelectedActions);
+  $("action-bulk-all").addEventListener("click", () => {
+    // 只选「现在看得见的」：筛选剩下的就是这么几个动作时，一次全勾上
+    visibleActions().forEach((action) => ui.actionSelected.add(String(action.id)));
+    renderActionGrid();
+  });
+  $("action-bulk-invert").addEventListener("click", () => {
+    const next = new Set(ui.actionSelected);
+    visibleActions().forEach((action) => {
+      const id = String(action.id);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+    });
+    ui.actionSelected = next;
+    renderActionGrid();
+  });
   $("action-bulk-clear").addEventListener("click", () => {
     ui.actionSelected = new Set();
     renderActionGrid();
@@ -6721,7 +6756,11 @@ async function refreshStatus() {
       ? reasoningLines
       : ["（她还没动过大模型，或者这次没写草稿）"];
     const thoughts = (data.thoughts || []).map((item) => item.content).filter(Boolean);
-    if (thoughts.length) innerLines.push(`她主动留下的心里话：${thoughts.join("；")}`);
+    if (thoughts.length) {
+      // 每一轮复盘 / 自主决策都会补一句，所以一条一行比挤成一行好读
+      innerLines.push(`她主动留下的心里话（最近 ${thoughts.length} 条，越往下越近）：`);
+      thoughts.forEach((text) => innerLines.push(`  · ${text}`));
+    }
     $("status-thoughts").textContent = innerLines.join("\n");
 
     // 更早的群聊摘要（只有在「上下文 → 留档超了怎么办 = 压成摘要」时才有）
@@ -7073,14 +7112,15 @@ function textPixelWidth(text, size = 9.5) {
 }
 
 function labelRect(point, leftText, rightText, above) {
-  const width = Math.max(textPixelWidth(leftText), textPixelWidth(rightText)) + 14;
-  const height = 27;
+  // 路线名字写成一行「入口 → 入口」：线多的时候比两行叠着好认，也不会挤成一块。
+  const width = textPixelWidth(`${leftText} → ${rightText}`) + 14;
+  const height = 15;
   const rad = (point.angle * Math.PI) / 180;
   const cos = Math.abs(Math.cos(rad));
   const sin = Math.abs(Math.sin(rad));
   const boxW = width * cos + height * sin;
   const boxH = width * sin + height * cos;
-  const centerY = point.y + (above ? -11 : 11);
+  const centerY = point.y + (above ? -9 : 9);
   return {
     x: point.x - boxW / 2,
     y: centerY - boxH / 2,
@@ -7226,10 +7266,16 @@ function renderWeatherBanner() {
     main.textContent = "还没有天气记录";
     main.className = "weather-main muted";
     age.textContent = "";
+    box.setAttribute("title", "她（或群友）在聊天里查一次天气，这里就会记下来");
     return;
   }
   box.classList.remove("hidden");
-  box.setAttribute("title", text);
+  const sourceLabel = weather.source === "tool"
+    ? "她在聊天里查到的"
+    : weather.source === "manual"
+      ? "手动刷新"
+      : "";
+  box.setAttribute("title", sourceLabel ? `${text}（${sourceLabel}）` : text);
   $("map-weather-icon").textContent = weatherIcon(weather.desc);
   main.className = "weather-main";
   const head = [weather.city, weather.desc, weather.temp].filter(Boolean).join(" ");
@@ -7241,6 +7287,10 @@ function renderWeatherBanner() {
     age.appendChild(el("span", "", " · "));
   }
   age.appendChild(el("span", "", weatherAge(weather.at)));
+  if (sourceLabel) {
+    age.appendChild(el("span", "", " · "));
+    age.appendChild(el("span", "", sourceLabel));
+  }
   if (!head) main.textContent = text;
 }
 
@@ -7428,18 +7478,28 @@ function renderWorldMap() {
     const toNode = nodeById[edge.to_node];
     const fromColor = (fromNode && fromNode.color) || from.color || "";
     const toColor = (toNode && toNode.color) || to.color || "";
-    const first = document.createElementNS(MAP_NS, "tspan");
-    first.setAttribute("x", point.x);
-    first.setAttribute("dy", above ? "-16" : "5");
-    if (fromColor) first.setAttribute("fill", fromColor);
-    first.textContent = fromText;
-    const second = document.createElementNS(MAP_NS, "tspan");
-    second.setAttribute("x", point.x);
-    second.setAttribute("dy", "11");
-    if (toColor) second.setAttribute("fill", toColor);
-    second.textContent = toText;
-    pair.appendChild(first);
-    pair.appendChild(second);
+    const lineOffset = above ? "-9" : "9";
+    // 一行「入口 → 入口」：三段各自上色，所以要自己算好每一段的起点
+    // （每个 tspan 都带 x 的话，text-anchor 会各自居中，三段就叠在一起了）。
+    const fromWidth = textPixelWidth(fromText);
+    const arrowWidth = textPixelWidth(" → ");
+    const totalWidth = fromWidth + arrowWidth + textPixelWidth(toText);
+    let cursor = point.x - totalWidth / 2;
+    const spells = [
+      { text: fromText, fill: fromColor, width: fromWidth, dy: lineOffset },
+      { text: " → ", fill: "", width: arrowWidth, dy: "0" },
+      { text: toText, fill: toColor, width: textPixelWidth(toText), dy: "0" },
+    ];
+    spells.forEach((spell) => {
+      const span = document.createElementNS(MAP_NS, "tspan");
+      span.setAttribute("x", cursor);
+      span.setAttribute("dy", spell.dy);
+      if (spell.fill) span.setAttribute("fill", spell.fill);
+      span.textContent = spell.text;
+      pair.appendChild(span);
+      cursor += spell.width;
+    });
+    pair.setAttribute("text-anchor", "start");
     labelLayer.appendChild(pair);
 
     const tickPoint = edgeAnchorPoint(x1, y1, x2, y2, cx, cy, index !== 0, above ? 10 : -10);
@@ -8098,6 +8158,45 @@ function generateWorldActions() {
   });
 }
 
+/** 动作库通用生成：不看人设，写一批普通人都会做的小事；地图可选参考。 */
+function generateGenericActions() {
+  askGenerateCount({
+    title: "生成通用动作",
+    hint: "不看人设，写一批普通人过日子都会做的小事（散步、泡茶、听歌、晒太阳…）；"
+      + "先预览，确认后才写进动作库，之后随时可以自己改。",
+    defaultValue: 12,
+    min: 1,
+    max: 24,
+    choice: {
+      label: "绑到哪儿",
+      defaultValue: "map",
+      options: [
+        { value: "map", text: "参考地图：按地点绑好（推荐）" },
+        { value: "free", text: "不看地图：生成后由插件铺到地点上" },
+      ],
+    },
+    onRun: async (count, _second, _extra, choiceValue) => {
+      const result = await apiPost("generate/generic-actions", {
+        count,
+        use_map: choiceValue !== "free",
+      });
+      const drafts = result.actions || [];
+      if (!drafts.length) {
+        throw new Error(
+          (result.problems || []).join("；") || "没有生成出可用的动作，请重试",
+        );
+      }
+      return () => openCustomDialog({
+        title: `生成的通用动作（${drafts.length} 个）`,
+        hint: "这些都是通用的小事，已经绑好地点；改名、调地点、勾选之后才会写进动作库。",
+        confirmText: "确认加入选中的",
+        build: (body) => buildActionDraftList(body, drafts, result.problems || []),
+        onSubmit: () => commitGeneratedActions(drafts),
+      });
+    },
+  });
+}
+
 function buildActionDraftList(body, drafts, problems) {
   drafts.forEach((draft) => {
     draft._pick = draft._pick !== false;
@@ -8230,14 +8329,21 @@ async function commitGeneratedActions(drafts) {
  * 先问「生成几个」，再拿去调生成接口。
  * 生成会读她的人设与已有世界，结果永远先当草稿，用户改完确认才落库。
  */
-function askGenerateCount({ title, hint, defaultValue, min = 1, max, second, extra, onRun }) {
+function askGenerateCount({
+  title, hint, defaultValue, min = 1, max, second, extra, choice, onRun,
+}) {
   let value = String(defaultValue);
   let secondValue = second ? String(second.defaultValue) : "";
   let extraValue = extra ? String(extra.defaultValue || "") : "";
+  const choiceOptions = (choice && choice.options) || [];
+  let choiceValue = choice
+    ? String(choice.defaultValue ?? (choiceOptions[0] || {}).value ?? "")
+    : "";
   let status;
   let input;
   let secondInput;
   let extraInput;
+  let choiceInput;
   openCustomDialog({
     title,
     hint,
@@ -8282,6 +8388,20 @@ function askGenerateCount({ title, hint, defaultValue, min = 1, max, second, ext
         extraField.appendChild(extraInput);
         body.appendChild(extraField);
       }
+      if (choice) {
+        const choiceField = el("label", "field");
+        choiceField.appendChild(el("span", "", choice.label || "类型"));
+        choiceInput = document.createElement("select");
+        choiceOptions.forEach((item) => {
+          choiceInput.add(new Option(item.text, item.value));
+        });
+        choiceInput.value = choiceValue;
+        choiceInput.addEventListener("change", () => {
+          choiceValue = choiceInput.value;
+        });
+        choiceField.appendChild(choiceInput);
+        body.appendChild(choiceField);
+      }
       status = el("p", "muted generation-status");
       status.setAttribute("role", "status");
       body.appendChild(status);
@@ -8309,6 +8429,7 @@ function askGenerateCount({ title, hint, defaultValue, min = 1, max, second, ext
       input.disabled = true;
       if (secondInput) secondInput.disabled = true;
       if (extraInput) extraInput.disabled = true;
+      if (choiceInput) choiceInput.disabled = true;
       const update = () => {
         const seconds = Math.floor((Date.now() - started) / 1000);
         status.textContent = `正在生成草稿，已等待 ${seconds} 秒…`;
@@ -8318,7 +8439,7 @@ function askGenerateCount({ title, hint, defaultValue, min = 1, max, second, ext
       let timer;
       try {
         const preview = await Promise.race([
-          onRun(count, secondCount, extraValue.trim()),
+          onRun(count, secondCount, extraValue.trim(), choiceValue),
           new Promise((_, reject) => {
             timer = window.setTimeout(
               () => reject(new Error("等待生成结果超时，请检查 AstrBot 连接和内容生成模型后重试")),
@@ -8334,6 +8455,7 @@ function askGenerateCount({ title, hint, defaultValue, min = 1, max, second, ext
         input.disabled = false;
         if (secondInput) secondInput.disabled = false;
         if (extraInput) extraInput.disabled = false;
+        if (choiceInput) choiceInput.disabled = false;
         status.textContent = "";
       }
     },
@@ -8661,11 +8783,27 @@ async function commitGeneratedWorldMap(zones, nodes, edges, zoneEdges) {
 function generateScheduleDrafts() {
   askGenerateCount({
     title: "生成日程",
-    hint: "读人设与她的日常起草日程；先预览，改完确认才写进配置。",
+    hint: "读人设、地图与她的日常起草日程；先预览，改完确认才写进配置。",
     defaultValue: 3,
     max: 6,
-    onRun: async (count) => {
-      const result = await apiPost("generate/schedules", { count });
+    choice: {
+      label: "排哪一种",
+      defaultValue: "routine",
+      options: [
+        { value: "routine", text: "日常作息（每天循环）" },
+        { value: "once", text: "一次性安排（做完自动删除）" },
+      ],
+    },
+    extra: {
+      label: "额外要求（可选）",
+      placeholder: "例如：这周在准备考试，晚上多在书房；或者今天想去买点东西",
+    },
+    onRun: async (count, _second, extraPrompt, flavor) => {
+      const result = await apiPost("generate/schedules", {
+        count,
+        flavor,
+        extra_prompt: extraPrompt,
+      });
       const drafts = result.schedules || [];
       if (!drafts.length) {
         throw new Error((result.problems || []).join("；") || "没有生成出可用的日程，请重试");
@@ -8705,6 +8843,19 @@ function openScheduleDraftDialog(drafts, problems) {
         });
         timeField.appendChild(timeInput);
         fields.appendChild(timeField);
+        // 一次性安排：跑完就删，所以要写清哪一天
+        if (draft.once) {
+          const dateField = el("label", "field");
+          dateField.appendChild(el("span", "", "哪一天（YYYY-MM-DD，只做这一次）"));
+          const dateInput = document.createElement("input");
+          dateInput.value = draft.date || "";
+          dateInput.placeholder = "2026-10-16";
+          dateInput.addEventListener("input", () => {
+            draft.date = dateInput.value.trim();
+          });
+          dateField.appendChild(dateInput);
+          fields.appendChild(dateField);
+        }
         const daysField = el("label", "field");
         daysField.appendChild(el("span", "", "星期（mon,tue,… 空 = 每天）"));
         const daysInput = document.createElement("input");
@@ -8746,6 +8897,13 @@ function openScheduleDraftDialog(drafts, problems) {
         toast("至少要选一条日程");
         return false;
       }
+      const badDate = chosen.find(
+        (draft) => draft.once && !/^\d{4}-\d{2}-\d{2}$/.test(String(draft.date || "")),
+      );
+      if (badDate) {
+        toast(`${badDate.id} 是一次性日程，要先写清日期（YYYY-MM-DD）`);
+        return false;
+      }
       const used = new Set(schedules().map((item) => item.id));
       chosen.forEach((draft) => {
         const payload = { ...draft };
@@ -8755,7 +8913,14 @@ function openScheduleDraftDialog(drafts, problems) {
           .split(",")
           .map((item) => item.trim().toLowerCase())
           .filter(Boolean);
-        payload.days = days.length ? days : ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+        if (draft.once) {
+          payload.once = true;
+          payload.days = [];
+        } else {
+          payload.once = false;
+          payload.date = "";
+          payload.days = days.length ? days : ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+        }
         if (!used.has(payload.id)) schedules().push(payload);
       });
       await saveAll();
@@ -8767,11 +8932,30 @@ function openScheduleDraftDialog(drafts, problems) {
 function generateEventDrafts() {
   askGenerateCount({
     title: "生成事件",
-    hint: "读人设与最近经历起草事件；勾中的才会投递给她。",
+    hint: "读人设、地图与最近经历起草事件；好事、糟心事、怪事都能有，勾中的才会投递给她。",
     defaultValue: 3,
     max: 6,
-    onRun: async (count) => {
-      const result = await apiPost("generate/events", { count });
+    choice: {
+      label: "这一批的味道",
+      defaultValue: "",
+      options: [
+        { value: "", text: "混合（好事 / 糟心事 / 怪事 / 日常都有）" },
+        { value: "good", text: "偏好事" },
+        { value: "bad", text: "偏糟心事" },
+        { value: "weird", text: "偏莫名其妙的事" },
+        { value: "daily", text: "偏日常小事" },
+      ],
+    },
+    extra: {
+      label: "额外要求（可选）",
+      placeholder: "例如：最近她刚搬完家，围绕新邻居写几件事",
+    },
+    onRun: async (count, _second, extraPrompt, flavor) => {
+      const result = await apiPost("generate/events", {
+        count,
+        flavor,
+        extra_prompt: extraPrompt,
+      });
       const drafts = result.events || [];
       if (!drafts.length) {
         throw new Error((result.problems || []).join("；") || "没有生成出可用的事件，请重试");
@@ -8810,6 +8994,15 @@ function openEventDraftDialog(drafts, problems) {
         });
         titleField.appendChild(titleInput);
         fields.appendChild(titleField);
+        // 这一批事件要「好事、糟心事、怪事、日常」都有：把模型标的味道显出来，
+        // 一眼能看出有没有全是同一种，也能自己改标题时顺手判断。
+        const kindLabels = { good: "好事", bad: "糟心事", weird: "怪事", daily: "日常" };
+        if (draft.kind || draft.place) {
+          const bits = [];
+          if (draft.kind) bits.push(`味道：${kindLabels[draft.kind] || draft.kind}`);
+          if (draft.place) bits.push(`发生在：${draft.place}`);
+          fields.appendChild(el("p", "muted", bits.join(" · ")));
+        }
         const textField = el("label", "field");
         textField.appendChild(el("span", "", "发生什么（投递原文）"));
         const textInput = document.createElement("textarea");
@@ -10944,6 +11137,17 @@ function updateActionBulkBar() {
   const bar = $("action-bulk");
   if (!bar) return;
   bar.classList.toggle("hidden", !ui.actionSelectMode);
+  if ($("action-select-mode")) {
+    $("action-select-mode").classList.toggle("on", Boolean(ui.actionSelectMode));
+  }
+  const visible = visibleActions();
+  if ($("action-bulk-all")) {
+    $("action-bulk-all").disabled = visible.length === 0;
+    $("action-bulk-all").textContent = visible.length > 1
+      ? `全选当前结果（${visible.length}）`
+      : "全选当前结果";
+  }
+  if ($("action-bulk-invert")) $("action-bulk-invert").disabled = visible.length === 0;
   // 选中的动作可能已经被筛掉 / 删掉，这里顺手清一遍
   const ids = new Set(actions().map((item) => String(item.id)));
   Array.from(ui.actionSelected).forEach((id) => {
@@ -12789,6 +12993,56 @@ function formatStamp(seconds) {
   const date = new Date(Number(seconds) * 1000);
   const pad = (value) => String(value).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/**
+ * 从「心迹画像」搬数据：只读对方插件的数据目录，字段变成这边的事实。
+ * 只是搬家，不是接管对方——它继续跑也完全没问题。
+ */
+async function importProfileWeaver() {
+  const button = $("contacts-weaver-import");
+  const session = ($("contacts-session") && $("contacts-session").value) || ui.scope || "";
+  if (!session) {
+    toast("先在通讯录里选一个会话，再决定搬进谁的通讯录");
+    return;
+  }
+  let status;
+  try {
+    status = await apiGet("profile/weaver", { session });
+  } catch (error) {
+    toast(error.message || "读不到心迹画像的数据");
+    return;
+  }
+  if (!status || !status.installed) {
+    toast("没找到心迹画像的数据：它还没装，或者还没有任何画像");
+    return;
+  }
+  if (!status.people) {
+    toast("心迹画像里还没有画像，先去那边记几条再搬");
+    return;
+  }
+  const sure = await confirmDialog({
+    title: "从心迹画像搬过来",
+    message:
+      `那边有 ${status.people} 个人、约 ${status.facts} 条字段。` +
+      "搬过来会变成这个会话组通讯录里的「事实」（只追加，重复搬不会攒重复项），" +
+      "对方插件的数据不会被改动，它继续跑也没关系。",
+    confirmText: "开始搬",
+  });
+  if (!sure) return;
+  const release = busyButton(button, "搬运中…");
+  try {
+    const result = await apiPost("profile/weaver/import", { session });
+    toast(
+      `搬完了：${result.people} 个人，新增 ${result.added} 条事实` +
+        (result.merged ? `，${result.merged} 条本来就有` : ""),
+    );
+    await loadContacts();
+  } catch (error) {
+    toast(error.message || "导入失败");
+  } finally {
+    release();
+  }
 }
 
 async function loadContacts() {
@@ -16691,7 +16945,7 @@ function renderSettings() {
   world.weather = world.weather || {};
   const weather = settingsSection(
     "天气",
-    "她所在城市的天气：后台每隔几小时静默查一次，查到的结果会当背景写进提示词。",
+    "她所在城市的天气：她在聊天里查到、或者后台静默查到的，都会当背景写进提示词。",
     "填了城市就按它查，不用模型猜；超过「多旧就不再提」的时间后，提示词里不再带这份天气。" +
       "当前天气也会显示在地图页顶部。",
   );
@@ -16701,6 +16955,16 @@ function renderSettings() {
       world.weather.enabled !== false,
       (value) => (world.weather.enabled = value),
       { hint: "关闭后不后台查天气、也不写进提示词；她主动查天气照常可用。" },
+    ),
+  );
+  weather._fields.appendChild(
+    checkboxField(
+      "记住她在聊天里查到的天气",
+      world.weather.from_tools !== false,
+      (value) => (world.weather.from_tools = value),
+      {
+        hint: "她（或群友）在聊天里查到的天气会顺手记下来，横幅和下一轮提示词直接用。",
+      },
     ),
   );
   weather._fields.appendChild(

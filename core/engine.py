@@ -136,9 +136,12 @@ from .weather import (
     WEATHER_TRY_KEY,
     WeatherRecord,
     banner as weather_banner,
+    city_from_tool_args,
+    looks_like_weather_tool,
     parse_parts,
     prompt_block as weather_prompt_block,
 )
+from . import profile_weaver as profile_weaver_bridge
 from .tool_policy import allowed_tools, is_self_send_tool
 from .mood import (
     SELF_CARE_NOTE,
@@ -8465,6 +8468,59 @@ class MyWorldEngine(ScopedConfigMixin):
         }
         return cold
 
+    # ---------------- 心迹画像（跨插件搬家） ----------------
+
+    def profile_weaver_status(self, data_root: str) -> dict[str, Any]:
+        """看看心迹画像装没装、有多少人的画像可以搬过来。"""
+
+        path = profile_weaver_bridge.profiles_path(data_root)
+        if path is None:
+            return {"installed": False, "path": "", "people": 0, "facts": 0, "modified_at": 0.0}
+        items = profile_weaver_bridge.iter_import_items(
+            profile_weaver_bridge.load_profiles(path)
+        )
+        stats = profile_weaver_bridge.summarize(items)
+        try:
+            modified = float(path.stat().st_mtime)
+        except OSError:
+            modified = 0.0
+        return {
+            "installed": True,
+            "path": str(path),
+            "people": int(stats.get("people") or 0),
+            "facts": int(stats.get("facts") or 0),
+            "modified_at": modified,
+        }
+
+    async def import_profile_weaver(
+        self, session_id: str, data_root: str
+    ) -> dict[str, Any]:
+        """把心迹画像已经记下的东西搬进本插件的通讯录（只追加事实）。
+
+        那个插件继续跑也完全没问题：这里只是**读**它的 profiles.json，
+        把字段变成本插件的事实。之后提示词、通讯录、睡眠整理都在本插件这边继续。
+        """
+
+        path = profile_weaver_bridge.profiles_path(data_root)
+        if path is None:
+            return {
+                "ok": False,
+                "reason": "没找到心迹画像的数据（它还没装，或者还没有任何画像）",
+            }
+        items = profile_weaver_bridge.iter_import_items(
+            profile_weaver_bridge.load_profiles(path)
+        )
+        if not items:
+            return {"ok": False, "reason": "心迹画像的数据还在，但里面没有可搬的画像"}
+        result = self.profiles.import_external(session_id, items, source="心迹画像")
+        if result.get("ok"):
+            self._log(
+                "info",
+                f"[my_world] 从心迹画像导入：{result.get('people')} 个人、"
+                f"{result.get('added')} 条事实（{result.get('merged')} 条已存在）",
+            )
+        return {**result, "source_people": len(items)}
+
     # ---------------- 睡眠整理 ----------------
 
     CONSOLIDATE_NAP_MINUTES = 5.0
@@ -11351,8 +11407,8 @@ class MyWorldEngine(ScopedConfigMixin):
 
         definition = self.world.action_map().get("check_weather")
         channel = self._weather_channel(definition)
-        if definition is None or not channel:
-            return WeatherRecord(), "「查天气」动作没配成工具型或指令型"
+        if definition is None:
+            return WeatherRecord(), "动作库里没有「查天气」这个动作了，先加回来再让它后台查"
         try:
             state = await self.load_state(session_id, cold_start=False)
         except Exception:
@@ -11396,8 +11452,16 @@ class MyWorldEngine(ScopedConfigMixin):
             if record.empty:
                 return record, "指令返回了内容，但没能整理成天气（日志里有原因）"
             return record, ""
+        # 没绑工具（或者绑的那个已经卸了）时，从已注册的工具里自动认一把天气工具：
+        # 用户装了 uapipro 工具箱这类插件就能直接用上，不用回动作库手配。
+        definition = self._weather_definition_with_tool(definition, state)
         if self.tools is None:
             return WeatherRecord(), "拿不到 AstrBot 的工具通道"
+        if not self.resolve_tools(definition, state.node_id):
+            return WeatherRecord(), (
+                "「查天气」还没选工具，AstrBot 里也没找到像天气的工具："
+                "先装一个天气工具（例如 uapipro 工具箱），或者把它改成指令型动作"
+            )
         outcome = TickOutcome(session_id=session_id)
         outcome.place = session_id
         action = PlannedAction(type=definition.id, intent="现在外面的天气")
@@ -11423,10 +11487,86 @@ class MyWorldEngine(ScopedConfigMixin):
             return record, "天气工具没返回可用的内容（日志里有原因）"
         return record, ""
 
+    def weather_tool_candidates(self) -> list[str]:
+        """已注册的工具里，哪些像是查天气的（按名字和说明认，不写死工具名）。"""
+
+        found: list[str] = []
+        for name, description in (self.available_tools() or {}).items():
+            if looks_like_weather_tool(name, description):
+                found.append(str(name))
+        return found
+
+    def _weather_definition_with_tool(
+        self, definition: ActionDef | None, state: WorldState
+    ) -> ActionDef | None:
+        """「查天气」没绑工具时，自动挑一把已注册的天气工具。
+
+        只在原本没绑、或者绑的那个已经不在时会挑；挑不到就原样返回，
+        让上层照旧去提示用户自己绑。
+        """
+
+        if definition is None:
+            return None
+        if self.resolve_tools(definition, state.node_id):
+            return definition
+        candidates = self.weather_tool_candidates()
+        if not candidates:
+            return definition
+        return definition.model_copy(
+            update={"tool_names": [candidates[0]], "tool_fallbacks": []}
+        )
+
+    async def note_tool_weather(
+        self,
+        *,
+        session_id: str,
+        tool_name: str,
+        args: Any = None,
+        result: str = "",
+        images: list[str] | None = None,
+    ) -> bool:
+        """原生工具查到天气时顺手记一份。
+
+        主回复的工具调用已经在 AstrBot 原生那边跑完了，本插件只做记账：
+        认得出是天气工具、又拿到了结果，就存进全局天气记录。这样地图横幅和
+        下一轮的提示词立刻有真数据，不用再让本插件自己单独查一次。
+        返回是否真的记下来了。
+        """
+
+        config = self.world.weather
+        if not bool(getattr(config, "enabled", True)):
+            return False
+        if not bool(getattr(config, "from_tools", True)):
+            return False
+        if not session_id:
+            return False
+        description = str((self.available_tools() or {}).get(tool_name) or "")
+        if not looks_like_weather_tool(tool_name, description):
+            return False
+        text = str(result or "").strip()
+        pics = [str(item) for item in (images or []) if str(item).strip()]
+        if not text and not pics:
+            return False
+        try:
+            state = await self.load_state(session_id, cold_start=False)
+        except Exception:
+            return False
+        city = city_from_tool_args(args)
+        if city and city not in text:
+            # 把城市写在最前面：归一化的小模型就知道这轮问的是哪儿
+            text = f"城市：{city}\n{text}"
+        record = await self._store_weather(
+            state,
+            None,
+            {"tool_result": text, "tool_images": pics},
+            source="tool",
+        )
+        return not record.empty
+
     async def _store_weather(
         self,
         state: WorldState,
-        definition: ActionDef,
+        definition: ActionDef | None,
         action: dict[str, Any],
         *,
         source: str,
@@ -11462,7 +11602,7 @@ class MyWorldEngine(ScopedConfigMixin):
             state,
             "weather",
             {
-                "action": definition.id,
+                "action": str(getattr(definition, "id", "") or "native_tool"),
                 "source": source,
                 "text": record.line(),
                 "images": len(images),
@@ -12209,6 +12349,27 @@ class MyWorldEngine(ScopedConfigMixin):
         state.add_event("chain", {"schedule": schedule_id})
         await self._run_chain(state, target.action_chain, outcome, depth=depth)
 
+    def _remember_inner_thought(self, state: WorldState, text: str) -> None:
+        """把这一轮她心里冒出来的那一句留下来（编辑器「内心活动」那一栏）。
+
+        以前只有 ``think`` 动作会写它，而模型很少主动选那个动作，
+        于是那一栏动不动停在一句很多轮之前的旧话上。现在两条路都会补一句：
+        回合复盘里的 reasoning.inner，和自主决策计划里的 inner。
+        同一句连着出现就跳过，免得连着几条一模一样的。
+        """
+
+        clean = " ".join(str(text or "").split()).strip()[:120]
+        if not clean:
+            return
+        recent = [
+            str(item.get("content") or "").strip()
+            for item in state.thoughts[-3:]
+            if isinstance(item, dict)
+        ]
+        if clean in recent:
+            return
+        state.add_thought(clean)
+
     def _remember_action(
         self, state: WorldState, definition: ActionDef, action: dict[str, Any]
     ) -> None:
@@ -12592,6 +12753,9 @@ class MyWorldEngine(ScopedConfigMixin):
         }
         if plan.get("reason"):
             state.note_reasoning({"intent": str(plan.get("reason"))}, source="plan")
+        # 自主决策时她心里那一句也留下：以前只有 think 动作才写，
+        # 模型不主动想，「内心活动」那一栏就长期只有一行旧内容。
+        self._remember_inner_thought(state, str(plan.get("inner") or ""))
         state.add_event(
             "plan", {"reason": plan.get("reason"), "source": plan.get("source")}
         )
@@ -12730,7 +12894,7 @@ class MyWorldEngine(ScopedConfigMixin):
             + "按你自己的节奏决定接下来做什么，输出计划 JSON：\n"
             '{"plan":[{"action":"walk_to","target_node":"window"},'
             '{"action":"stare","duration":600},{"action":"think","content":"..."}],'
-            '"valid_until":1800,"reason":"为什么这样安排"}\n'
+            '"valid_until":1800,"inner":"此刻心里的一句话","reason":"为什么这样安排"}\n'
             "计划的长度由你决定：可以是几分钟的小事，也可以睡一整晚"
             "（duration 是这一步持续多少秒，睡觉是 28800；valid_until 是这份计划大概管多少秒）。\n"
             "结合上面的日期时间、你的状态和作息挑一件最合适的事："
@@ -17360,6 +17524,111 @@ class MyWorldEngine(ScopedConfigMixin):
             "raw": _clip_text(reply, 1200),
         }
 
+    async def generate_generic_actions(
+        self, count: Any = 0, use_map: Any = True
+    ) -> dict[str, Any]:
+        """生成一批**通用普通动作**（动作库的「生成通用动作」）。
+
+        和「按人设与地图生成动作」相反：这里故意不看人设，写的是普通人过日子
+        都会做的小事，任何角色身上都说得通。地图可选——
+        ``use_map=False`` 时连地图都不给模型看，生成完由插件自己把动作铺到地点上。
+        """
+
+        wanted = clamp_world_action_count(count)
+        session_id = self._generator_session_id()
+        with_map = bool(use_map)
+        zones = [
+            {"id": zone.id, "name": zone.name or zone.id, "note": zone.note}
+            for zone in self.world.zones
+        ]
+        zone_names = {zone["id"]: zone["name"] for zone in zones}
+        nodes = [
+            {
+                "id": node.id,
+                "name": node.name or node.id,
+                "zone_id": node.zone_id,
+                "zone_name": zone_names.get(node.zone_id, ""),
+                "prompt": node.prompt or node.atmosphere.describe(),
+            }
+            for node in self.world.nodes
+        ]
+        if not nodes:
+            return {
+                "actions": [],
+                "problems": ["地图里还没有地点，先建好地图再生成动作"],
+            }
+        system_prompt, prompt = self.prompts.build_generic_action_generator_prompt(
+            zones=zones,
+            nodes=nodes,
+            existing_actions=[
+                action.name or action.id
+                for action in self.world.actions
+                if action.enabled and not bool(getattr(action, "legacy", False))
+            ],
+            count=wanted,
+            use_map=with_map,
+        )
+        reply = await self._ask_creator(
+            session_id, system_prompt, prompt, raise_errors=True
+        )
+        node_ids = [node["id"] for node in nodes]
+        # 不看地图时模型不写 node_id，全都会先落到第一个地点；
+        # 上限按总数放，免得解析阶段就把多出来的丢掉（之后再由插件铺开）。
+        per_node_cap = (
+            max(
+                2,
+                min(
+                    MAX_ACTIONS_PER_NODE,
+                    (wanted + len(nodes) - 1) // len(nodes) + 1,
+                ),
+            )
+            if with_map
+            else wanted
+        )
+        actions, problems = parse_generated_actions(
+            reply,
+            node_ids=node_ids,
+            tool_names=set(),
+            max_per_node=per_node_cap,
+            existing_ids={action.id for action in self.world.actions},
+            max_total=wanted,
+        )
+        if not with_map and actions:
+            self._spread_generic_actions(actions, nodes)
+        return {
+            "actions": actions,
+            "problems": problems,
+            "raw": _clip_text(reply, 1200),
+        }
+
+    @staticmethod
+    def _spread_generic_actions(
+        actions: list[dict[str, Any]], nodes: list[dict[str, Any]]
+    ) -> None:
+        """把「不看地图」生成的动作铺到地点上：能对上名字的按名字，剩下的轮流放。
+
+        只是把动作绑到某个地点而已，不动动作本身的内容；用户在预览里随时能改。
+        """
+
+        if not actions or not nodes:
+            return
+        assigned: dict[str, int] = {str(node["id"]): 0 for node in nodes}
+        for action in actions:
+            haystack = f"{action.get('name') or ''}{action.get('id') or ''}" \
+                f"{action.get('description') or ''}"
+            picked = ""
+            for node in nodes:
+                label = str(node.get("name") or node.get("id") or "")
+                if len(label) >= 2 and any(char in haystack for char in label):
+                    picked = str(node["id"])
+                    break
+            if not picked:
+                picked = min(assigned, key=lambda key: assigned[key])
+            assigned[picked] = assigned.get(picked, 0) + 1
+            action["node_id"] = picked
+            action["allowed_nodes"] = [picked]
+            action["scope"] = "node"
+
     async def generate_nodes_for_zone(
         self, zone_id: str, count: Any = 0
     ) -> dict[str, Any]:
@@ -17842,8 +18111,14 @@ class MyWorldEngine(ScopedConfigMixin):
             "raw": _clip_text(reply, 1200),
         }
 
-    async def generate_schedules(self, count: Any = 0) -> dict[str, Any]:
-        """按她的生活节奏生成日程草稿（不落库，先给用户改）。"""
+    async def generate_schedules(
+        self, count: Any = 0, flavor: str = "", extra_prompt: str = ""
+    ) -> dict[str, Any]:
+        """按她的生活节奏生成日程草稿（不落库，先给用户改）。
+
+        ``flavor="once"`` 时排的是**一次性安排**：模型写 once + date，
+        跑完那一遍插件会把它删掉；默认排的是每天循环的日常作息。
+        """
 
         wanted = clamp_schedule_count(count)
         session_id = self._generator_session_id()
@@ -17880,6 +18155,13 @@ class MyWorldEngine(ScopedConfigMixin):
             existing_schedules=existing,
             relations=self.relations_brief(session_id),
             count=wanted,
+            flavor=str(flavor or ""),
+            today=(
+                self._today_key(self._now())
+                if str(flavor or "") == "once"
+                else ""
+            ),
+            extra_prompt=str(extra_prompt or ""),
         )
         reply = await self._ask_creator(session_id, system_prompt, prompt, raise_errors=True)
         schedules, problems = parse_generated_schedules(
@@ -17895,8 +18177,14 @@ class MyWorldEngine(ScopedConfigMixin):
             "raw": _clip_text(reply, 1200),
         }
 
-    async def generate_events(self, count: Any = 0) -> dict[str, Any]:
-        """按她的人设与最近经历生成事件草稿（不落库，先给用户改）。"""
+    async def generate_events(
+        self, count: Any = 0, flavor: str = "", extra_prompt: str = ""
+    ) -> dict[str, Any]:
+        """按她的人设与最近经历生成事件草稿（不落库，先给用户改）。
+
+        ``flavor`` 是这一批事件的倾向：``good`` 好事 / ``bad`` 糟心事 /
+        ``weird`` 怪事 / ``daily`` 日常小事；留空就是混着来（默认）。
+        """
 
         wanted = clamp_event_count(count)
         session_id = self._generator_session_id()
@@ -17932,6 +18220,8 @@ class MyWorldEngine(ScopedConfigMixin):
             recent_events=recent,
             relations=self.relations_brief(session_id),
             count=wanted,
+            flavor=str(flavor or ""),
+            extra_prompt=str(extra_prompt or ""),
         )
         reply = await self._ask_creator(session_id, system_prompt, prompt, raise_errors=True)
         events, problems = parse_generated_events(reply, max_events=wanted)
@@ -20740,6 +21030,11 @@ class MyWorldEngine(ScopedConfigMixin):
         async with self.session_state(session_id) as state:
             if parsed.reasoning:
                 state.note_reasoning(parsed.reasoning, source="reflect")
+            # 复盘里那句「心里冒出来的一两句」也存下来：这样每聊一轮，
+            # 「内心活动」都会跟着动，而不是等她自己想起来写 think 动作。
+            self._remember_inner_thought(
+                state, str((parsed.reasoning or {}).get("inner") or "")
+            )
             applied_affinity = 0.0
             if ctx.user_id:
                 applied_affinity = self.profiles.apply_reply_affinity(
