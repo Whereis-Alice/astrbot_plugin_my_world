@@ -67,31 +67,43 @@
               <span>会话</span>
               <select id="status-session"></select>
             </label>
+            <label class="field field-scope" for="config-scope">
+              <span>编辑范围</span>
+              <select id="config-scope"><option value="">全局默认</option></select>
+            </label>
+            <label
+              class="proactive-control"
+              for="proactive-enabled"
+              title="关掉「自主搭话」只停她主动开口；日程与事件照常发言"
+            >
+              <input id="proactive-enabled" type="checkbox" role="switch" />
+              <span>自主搭话</span><strong id="proactive-state"></strong>
+            </label>
           </div>
           <div class="topbar-right">
             <span id="save-state" class="muted"></span>
             <button id="theme-toggle" class="ghost" title="切换深色 / 浅色主题（记住选择）">🌙 深色</button>
             <button id="save" class="primary">保存</button>
+            <button
+              id="config-bar-toggle"
+              class="config-bar-toggle"
+              type="button"
+              aria-expanded="false"
+              title="本页单独配置与继承说明"
+            >
+              范围说明
+            </button>
+          </div>
+          <div id="scope-popover" class="scope-popover hidden">
+            <div class="scope-inheritance" id="scope-inheritance">
+              <label id="scope-edit-label"><input id="scope-edit" type="checkbox" /> 本页单独配置</label>
+              <span id="scope-note" class="muted" role="status"></span>
+            </div>
+            <p class="scope-hint muted">
+              关掉「自主搭话」只停她主动开口，日程与事件照常发言；被 @ 或收到消息后的回复也不受影响。
+            </p>
           </div>
         </header>
-
-        <div class="config-bar" aria-label="配置范围与自主搭话">
-          <div class="config-bar-row">
-            <label class="scope-field" for="config-scope">编辑范围
-              <select id="config-scope"><option value="">全局默认</option></select>
-            </label>
-            <label class="proactive-control" for="proactive-enabled">
-              <input id="proactive-enabled" type="checkbox" role="switch" />
-              <span>全局自主搭话</span><strong id="proactive-state"></strong>
-            </label>
-            <span class="muted scope-detail">日程与事件照常发言</span>
-            <button id="config-bar-toggle" class="config-bar-toggle" type="button" aria-expanded="true" title="收起 / 展开编辑范围与自主搭话配置">⌃ 收起</button>
-          </div>
-          <div class="config-bar-row scope-inheritance" id="scope-inheritance">
-            <label id="scope-edit-label"><input id="scope-edit" type="checkbox" /> 本页单独配置</label>
-            <span id="scope-note" class="muted" role="status"></span>
-          </div>
-        </div>
 
         <main>
         <!-- 控制台：人物面板 + 当前状态 -->
@@ -269,6 +281,7 @@
                   <div class="tool-menu-body">
                     <button id="zone-delete" class="danger" type="button">删除选中区域</button>
                     <button id="map-fit" class="ghost" type="button" title="把所有区域挪到画布中间，方便一眼看全">适应画布</button>
+                    <button id="map-relayout" class="ghost" type="button" title="按当前窗口形状把区域重新摆开：路线相连的靠近，窗口多宽地图就多宽">重新铺开</button>
                     <button id="map-json" class="ghost" type="button" title="直接编辑地图结构的 JSON，方便批量导入导出">编辑地图 JSON…</button>
                   </div>
                 </details>
@@ -283,6 +296,7 @@
                   <summary title="更多地点操作">⋯</summary>
                   <div class="tool-menu-body">
                     <button id="map-fit-zone" class="ghost" type="button" title="把这个区域里的地点挪到画布中间">适应画布</button>
+                    <button id="map-relayout-zone" class="ghost" type="button" title="按当前窗口形状把这个区域里的地点重新排成网格">重新铺开</button>
                   </div>
                 </details>
               </div>
@@ -321,7 +335,10 @@
                 <button id="map-zoom-out" type="button" title="缩小">－</button>
                 <span id="map-zoom-label">100%</span>
                 <button id="map-zoom-in" type="button" title="放大">＋</button>
-                <button id="map-zoom-fit" type="button" title="适应画布">⤢</button>
+                <div class="map-fill-switch" role="group" aria-label="取景方式">
+                  <button id="map-zoom-fit" type="button" class="on" title="整张地图都放进视野，四边可能留白">适应</button>
+                  <button id="map-zoom-cover" type="button" title="放大到铺满整块画布，不再留半屏空白；代价是会裁掉边角">填满</button>
+                </div>
               </div>
             </div>
 

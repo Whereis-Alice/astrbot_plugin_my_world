@@ -125,8 +125,8 @@ class ScopeBrowserTests(unittest.TestCase):
         self.assertEqual(self.errors, [])
 
     def test_global_pause_is_immediate_and_mobile_bar_fits(self):
-        # 地图页现在把编辑范围栏整栏收起；暂停开关在普通页面的配置栏里操作，
-        # 移动端“配置栏不溢出”的检查也在同一个地方做。
+        # 「编辑范围 / 自主搭话」常驻顶栏（地图页也一样，不再单占一行），
+        # 这里顺带检查顶栏在移动端不会横向溢出。
         self.select_local("settings")
         self.page.locator("#proactive-enabled").uncheck()
         expect(self.page.locator("#proactive-state")).to_have_text("已暂停")
@@ -136,6 +136,6 @@ class ScopeBrowserTests(unittest.TestCase):
         self.host.set_viewport_size({"width": 390, "height": 844})
         expect(self.page.locator("#proactive-state")).to_have_text("已暂停")
         self.host.screenshot(path=str(self.shots / "scope-mobile.png"))
-        self.assertTrue(self.page.locator(".config-bar").evaluate("node => node.scrollWidth <= node.clientWidth"))
+        self.assertTrue(self.page.locator(".topbar").evaluate("node => node.scrollWidth <= node.clientWidth"))
         self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
         self.assertEqual(self.errors, [])

@@ -25,12 +25,18 @@ GENERATION_BRIDGE = r"""
   window.generationCalls = [];
   window.saveCalls = [];
   window.pendingGeneration = [];
+  window.layoutCalls = [];
+  window.layoutReply = { positions: {}, level: "world" };
   window.AstrBotPluginPage.apiPost = (endpoint, data) => {
     if (endpoint.startsWith("generate/")) {
       window.generationCalls.push({endpoint, data});
       return new Promise((resolve, reject) => {
         window.pendingGeneration.push({resolve, reject});
       });
+    }
+    if (endpoint === "map/layout") {
+      window.layoutCalls.push({endpoint, data});
+      return Promise.resolve(window.layoutReply);
     }
     if (endpoint.startsWith("config/")) window.saveCalls.push(endpoint);
     return original(endpoint, data);
@@ -301,9 +307,13 @@ class GenerationBrowserTests(unittest.TestCase):
         self.assertNotIn("collapsed", side.get_attribute("class") or "")
         self.assertEqual(self.errors, [])
 
-    def test_map_tab_is_full_bleed_with_topbar_session_filter(self):
+    def test_map_tab_keeps_scope_controls_and_uses_its_own_session_filter(self):
         self.page.locator('button[data-tab="map"]').click()
-        expect(self.page.locator(".config-bar")).to_be_hidden()
+        # 地图页把整页让给画布，但「编辑范围 / 自主搭话」这两件事必须留在顶栏里，
+        # 不能跟着会话下拉一起消失；地图自己的会话筛选则用工具栏上那一份。
+        expect(self.page.locator("#config-scope")).to_be_visible()
+        expect(self.page.locator("#proactive-enabled")).to_be_visible()
+        expect(self.page.locator(".field-session")).to_be_hidden()
         expect(self.page.locator("#map-session")).to_be_visible()
         stage = self.page.locator("#map-stage").bounding_box()
         self.assertGreater(stage["height"], 850)
@@ -311,6 +321,32 @@ class GenerationBrowserTests(unittest.TestCase):
         tools = self.page.locator("#map-bottom-tools").bounding_box()
         self.assertGreater(tools["x"], canvas["x"] + canvas["width"] / 2)
         self.assertGreater(tools["y"], canvas["y"] + canvas["height"] / 2)
+        self.assertEqual(self.errors, [])
+
+    def test_map_canvas_fills_stage_and_relayout_uses_the_window_shape(self):
+        self.page.locator('button[data-tab="map"]').click()
+        expect(self.page.locator("#canvas-nodes .node").first).to_be_visible()
+        stage = self.page.locator("#map-stage").bounding_box()
+        canvas = self.page.locator("#canvas").bounding_box()
+        # 旧版给过 .canvas 一个固定 440px 的高度，地图因此永远只占上半屏；
+        # 画布要跟着舞台长高，下面的空白才真正还给地图。
+        self.assertGreater(canvas["height"], stage["height"] - 8)
+
+        before = self.page.locator('#canvas-nodes .node[data-id="home"]').get_attribute("style") or ""
+        self.page.evaluate(
+            "window.layoutReply = {positions: {home: [420, 260]}, level: 'world'}"
+        )
+        self.page.locator("#toolbar-world details.tool-menu summary").click()
+        self.page.locator("#map-relayout").click()
+        self.page.locator("#dialog-ok").click()
+        expect(self.page.locator("#canvas-nodes .node[data-id='home']")).to_be_visible()
+        self.host.wait_for_timeout(300)
+        after = self.page.locator('#canvas-nodes .node[data-id="home"]').get_attribute("style") or ""
+        self.assertIn("left: 420px", after)
+        self.assertNotEqual(before, after)
+        call = self.page.evaluate("window.layoutCalls.at(-1)")
+        self.assertEqual(call["data"]["level"], "world")
+        self.assertGreater(call["data"]["aspect"], 0)
         self.assertEqual(self.errors, [])
 
     def test_spring_layout_with_complex_routes_stays_readable(self):

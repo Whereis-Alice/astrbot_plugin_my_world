@@ -19,6 +19,8 @@ from core.db import AsyncDatabase  # noqa: E402
 from core.defaults import default_world  # noqa: E402
 from core.engine import MyWorldEngine  # noqa: E402
 from core.generator import (  # noqa: E402
+    ASPECT_MAX,
+    ASPECT_MIN,
     auto_layout_ring,
     connect_zone_graph,
     clamp_event_count,
@@ -27,6 +29,9 @@ from core.generator import (  # noqa: E402
     clamp_schedule_count,
     clamp_world_action_count,
     clamp_zone_count,
+    grid_layout_nodes,
+    layout_frame,
+    normalize_aspect,
     parse_generated_actions,
     parse_generated_events,
     parse_generated_schedules,
@@ -327,6 +332,69 @@ class LayoutTests(unittest.TestCase):
         self.assertLess(distance("z0", "z1"), distance("z0", "z4"))
         self.assertLess(distance("z3", "z4"), distance("z0", "z4"))
 
+    def test_aspect_ratio_is_clamped_and_garbage_falls_back_to_square(self):
+        self.assertEqual(normalize_aspect("abc"), 1.0)
+        self.assertEqual(normalize_aspect(0), 1.0)
+        self.assertEqual(normalize_aspect(None), 1.0)
+        self.assertEqual(normalize_aspect(99), ASPECT_MAX)
+        self.assertEqual(normalize_aspect(0.01), ASPECT_MIN)
+        self.assertAlmostEqual(normalize_aspect("1.5"), 1.5)
+
+    def test_layout_frame_keeps_the_canvas_shape(self):
+        for aspect in (0.6, 1.0, 2.0):
+            width, height = layout_frame(6, aspect)
+            self.assertAlmostEqual(width / height, aspect, delta=1e-6)
+        # 区域越多，画框越大；不然十来个区域会挤成一团。
+        self.assertLess(layout_frame(2, 1.0)[0], layout_frame(9, 1.0)[0])
+
+    def test_spring_layout_fills_the_shape_it_is_asked_for(self):
+        # 生成地图时前端会把画布形状传进来：算出来的图要跟窗口一个形状，
+        # 否则一张扁图放进高窗口，永远只在上面占一小块。
+        zones = [{"id": f"z{index}", "is_home": index == 0} for index in range(6)]
+        edges = [
+            {"from_zone": "z0", "to_zone": "z1"},
+            {"from_zone": "z1", "to_zone": "z2"},
+            {"from_zone": "z2", "to_zone": "z3"},
+            {"from_zone": "z3", "to_zone": "z4"},
+        ]
+        for aspect in (0.7, 1.0, 2.4):
+            positions = spring_layout_zones(zones, edges, aspect=aspect)
+            xs = [x for x, _y in positions.values()]
+            ys = [y for _x, y in positions.values()]
+            box_w = max(xs) - min(xs)
+            box_h = max(ys) - min(ys)
+            self.assertGreater(box_w, 0)
+            self.assertGreater(box_h, 0)
+            self.assertAlmostEqual(box_w / box_h, aspect, delta=0.05)
+
+    def test_seeded_layout_keeps_hand_placed_zones_on_their_side(self):
+        zones = [{"id": "home"}, {"id": "street"}, {"id": "cafe"}, {"id": "park"}]
+        edges = [
+            {"from_zone": "home", "to_zone": "cafe"},
+            {"from_zone": "street", "to_zone": "park"},
+            {"from_zone": "home", "to_zone": "street"},
+        ]
+        positions = spring_layout_zones(
+            zones,
+            edges,
+            aspect=1.0,
+            seed={"home": (80.0, 80.0), "street": (520.0, 90.0)},
+        )
+        # 增量生成新区域时，既有区域不能整个翻掉：左右关系保持原样。
+        self.assertLess(positions["home"][0], positions["street"][0])
+        self.assertEqual(set(positions), {"home", "street", "cafe", "park"})
+
+    def test_grid_layout_follows_the_canvas_shape(self):
+        wide = grid_layout_nodes(8, aspect=2.2)
+        tall = grid_layout_nodes(8, aspect=0.6)
+        self.assertEqual(len(wide), 8)
+        self.assertEqual(len(tall), 8)
+        # 宽画布排成一排更多列、行更少；高画布反过来。
+        self.assertGreater(max(x for x, _y in wide), max(x for x, _y in tall))
+        self.assertLess(max(y for _x, y in wide), max(y for _x, y in tall))
+        self.assertEqual(grid_layout_nodes(0), [])
+        self.assertEqual(grid_layout_nodes("nonsense"), [])
+
 
 class GeneratorPromptTests(unittest.TestCase):
     @classmethod
@@ -551,6 +619,41 @@ class EngineGeneratorTests(unittest.IsolatedAsyncioTestCase):
         }
         self.assertIn(frozenset(("z0", "z2")), pairs)
         self.assertIn(frozenset(("z1", "z3")), pairs)
+
+    async def test_generate_world_map_shapes_the_map_like_the_canvas(self):
+        # 前端会把画布宽高比传进来，草稿的坐标要铺成同样的形状。
+        self.creator.replies = [
+            '{"zones": ['
+            '{"id": "z0", "name": "A", "is_home": true, "nodes": [{"id": "n0", "name": "a"}]},'
+            '{"id": "z1", "name": "B", "nodes": [{"id": "n1", "name": "b"}]},'
+            '{"id": "z2", "name": "C", "nodes": [{"id": "n2", "name": "c"}]},'
+            '{"id": "z3", "name": "D", "nodes": [{"id": "n3", "name": "d"}]}'
+            "],"
+            '"connections": ['
+            '{"from_zone": "z0", "from_node": "n0", "to_zone": "z1", "to_node": "n1", "ticks": 2},'
+            '{"from_zone": "z1", "from_node": "n1", "to_zone": "z2", "to_node": "n2", "ticks": 2},'
+            '{"from_zone": "z2", "from_node": "n2", "to_zone": "z3", "to_node": "n3", "ticks": 2}'
+            "]}"
+        ]
+        result = await self.engine.generate_world_map(4, 1, "", 2.2)
+        xs = [zone["x"] for zone in result["zones"]]
+        ys = [zone["y"] for zone in result["zones"]]
+        self.assertAlmostEqual((max(xs) - min(xs)) / (max(ys) - min(ys)), 2.2, delta=0.1)
+
+    async def test_generate_zones_returns_positions_for_the_whole_map(self):
+        self.creator.replies = [
+            '{"zones": [{"id": "old_library", "name": "旧图书馆", "note": "她小时候常来"}]}'
+        ]
+        result = await self.engine.generate_zones(1, 1, "", 1.4)
+        positions = result["positions"]
+        # 既有区域也要给回新坐标，前端才能一次性把整张图铺开。
+        self.assertEqual(
+            set(positions), {zone.id for zone in self.engine.world.zones} | {"old_library"}
+        )
+        self.assertEqual(result["zones"][0]["x"], positions["old_library"][0])
+        xs = [point[0] for point in positions.values()]
+        ys = [point[1] for point in positions.values()]
+        self.assertAlmostEqual((max(xs) - min(xs)) / (max(ys) - min(ys)), 1.4, delta=0.1)
 
     async def test_generate_world_actions_reads_persona_and_the_whole_map(self):
         # 已停用的动作不该再出现在"不要重复"清单里，默认动作按需启用后尤其重要。

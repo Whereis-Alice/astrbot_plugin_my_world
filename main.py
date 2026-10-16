@@ -69,6 +69,7 @@ from .core.engine import (
     ReplyOutcome,
 )
 from .core.extensions import ExtensionHost, ExtensionSpec
+from .core.generator import grid_layout_nodes, spring_layout_zones
 from .core.json_actions import extract_json_object
 from .core.models import (
     DEFAULT_INTIMACY,
@@ -5969,6 +5970,12 @@ class MyWorldPlugin(Star):
             "按人设一键重建整张地图（区域 / 地点 / 路线）",
         )
         register(
+            f"/{p}/map/layout",
+            self.api_map_layout,
+            ["POST"],
+            "按当前画布形状重新铺开地图（只出坐标，不落库）",
+        )
+        register(
             f"/{p}/generate/schedules",
             self.api_generate_schedules,
             ["POST"],
@@ -7188,6 +7195,7 @@ class MyWorldPlugin(Star):
             payload.get("count"),
             payload.get("nodes_per_zone"),
             payload.get("extra_prompt"),
+            payload.get("aspect"),
         )
 
     async def api_generate_world_map(self):
@@ -7202,6 +7210,56 @@ class MyWorldPlugin(Star):
             payload.get("count"),
             payload.get("nodes_per_zone"),
             payload.get("extra_prompt"),
+            payload.get("aspect"),
+        )
+
+    async def api_map_layout(self):
+        """重新铺开：按当前画布形状算一组新坐标（只出坐标，不落库）。
+
+        编辑器里的地图是「先改本地草稿、点保存才写盘」，所以这里也不碰
+        世界配置：前端拿到坐标套进草稿，用户不满意直接不保存就行。
+        区域用带路线的力导布局，区域内部的地点用网格——各管各的坐标空间。
+        """
+
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload)
+        if guard is not None:
+            return guard
+        aspect = payload.get("aspect")
+        level = str(payload.get("level") or "world")
+        if level == "zone":
+            positions = grid_layout_nodes(payload.get("count"), aspect=aspect)
+            return json_response(
+                {"positions": [[x, y] for x, y in positions], "level": "zone"}
+            )
+        zones = payload.get("zones")
+        edges = payload.get("zone_edges")
+        if not isinstance(zones, list):
+            return error_response("参数不对：「zones」需要是数组")
+        if edges is None:
+            edges = []
+        if not isinstance(edges, list):
+            return error_response("参数不对：「zone_edges」需要是数组")
+        clean_zones = [
+            {
+                "id": str(zone.get("id") or ""),
+                "is_home": bool(zone.get("is_home")),
+            }
+            for zone in zones
+            if isinstance(zone, dict)
+        ]
+        positions = spring_layout_zones(
+            clean_zones,
+            [edge for edge in edges if isinstance(edge, dict)],
+            aspect=aspect,
+        )
+        return json_response(
+            {
+                "positions": {
+                    zone_id: [x, y] for zone_id, (x, y) in positions.items()
+                },
+                "level": "world",
+            }
         )
 
     async def api_generate_schedules(self):

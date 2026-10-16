@@ -164,6 +164,7 @@ from .generator import (
     clamp_world_action_count,
     clamp_zone_count,
     connect_zone_graph,
+    grid_layout_nodes,
     link_plan,
     looks_like_portal,
     parse_generated_actions,
@@ -17565,11 +17566,17 @@ class MyWorldEngine(ScopedConfigMixin):
         return "\n".join(head)
 
     async def generate_zones(
-        self, count: Any = 0, nodes_per_zone: Any = 0, extra_prompt: str = ""
+        self,
+        count: Any = 0,
+        nodes_per_zone: Any = 0,
+        extra_prompt: str = "",
+        aspect: Any = None,
     ) -> dict[str, Any]:
         """按她的人设与已有世界生成新区域草稿（不落库，先给用户改）。
 
         ``nodes_per_zone`` 控制每个新区域同时生成几个地点；默认 1 个落脚点。
+        ``aspect`` 是编辑器画布的宽高比：整张图会按这个形状重新铺开，
+        新区域顺着既有地图的轮廓长出去，而不是一律堆在右边。
         """
 
         wanted = clamp_zone_count(count)
@@ -17622,13 +17629,6 @@ class MyWorldEngine(ScopedConfigMixin):
                 "problems": problems,
                 "raw": _clip_text(reply, 1200),
             }
-        positions = auto_layout(
-            [(float(zone.x), float(zone.y)) for zone in self.world.zones],
-            len(zones),
-            step=190,
-        )
-        for zone, (x, y) in zip(zones, positions):
-            zone["x"], zone["y"] = x, y
         # 新区域里的地点各自在区域坐标系里摆开；区域之间再按最近原则连起来。
         nodes_by_zone: dict[str, list[dict[str, Any]]] = {
             zone.id: [
@@ -17643,17 +17643,23 @@ class MyWorldEngine(ScopedConfigMixin):
                 for node in nodes
                 if str(node.get("zone_id") or "") == str(zone["id"])
             ]
-            for node, (x, y) in zip(inside, auto_layout([], len(inside), step=150)):
+            for node, (x, y) in zip(inside, grid_layout_nodes(len(inside), aspect=aspect)):
                 node["x"], node["y"] = x, y
             nodes_by_zone.setdefault(str(zone["id"]), []).extend(inside)
         all_zone_dicts = [
-            {"id": zone.id, "x": float(zone.x), "y": float(zone.y)}
+            {
+                "id": zone.id,
+                "x": float(zone.x),
+                "y": float(zone.y),
+                "is_home": bool(getattr(zone, "is_home", False)),
+            }
             for zone in self.world.zones
         ] + [
             {
                 "id": str(zone["id"]),
                 "x": float(zone["x"]),
                 "y": float(zone["y"]),
+                "is_home": bool(zone.get("is_home")),
             }
             for zone in zones
         ]
@@ -17671,21 +17677,53 @@ class MyWorldEngine(ScopedConfigMixin):
             for edge in added_edges
             if edge["from_zone"] in new_zone_ids or edge["to_zone"] in new_zone_ids
         ]
+        # 整张地图（含既有区域）按当前画布形状重新铺开：既有区域从原位起步，
+        # 新区域被弹簧拉到该去的邻居旁边。位置随草稿一起返回，确认后前端一次性套用。
+        positions = spring_layout_zones(
+            all_zone_dicts,
+            [
+                {"from_zone": edge.from_zone, "to_zone": edge.to_zone}
+                for edge in (getattr(self.world, "zone_edges", None) or [])
+            ]
+            + zone_edges,
+            aspect=aspect,
+            seed={
+                str(zone["id"]): (float(zone["x"]), float(zone["y"]))
+                for zone in all_zone_dicts[: len(self.world.zones)]
+            },
+        )
+        for zone in all_zone_dicts:
+            zone_id = str(zone["id"])
+            if zone_id in positions:
+                zone["x"], zone["y"] = positions[zone_id]
+        for zone in zones:
+            zone["x"], zone["y"] = positions.get(
+                str(zone["id"]), (float(zone["x"]), float(zone["y"]))
+            )
         return {
             "zones": zones,
             "nodes": nodes,
             "zone_edges": zone_edges,
+            "positions": {
+                str(zone["id"]): [float(zone["x"]), float(zone["y"])]
+                for zone in all_zone_dicts
+            },
             "problems": problems,
             "raw": _clip_text(reply, 1200),
         }
 
     async def generate_world_map(
-        self, count: Any = 0, nodes_per_zone: Any = 0, extra_prompt: str = ""
+        self,
+        count: Any = 0,
+        nodes_per_zone: Any = 0,
+        extra_prompt: str = "",
+        aspect: Any = None,
     ) -> dict[str, Any]:
         """按人设一键重建整张地图：区域、地点、区内路线与跨区路线一次配好。
 
         这是**草稿**：用户在编辑器里确认后才会替换当前地图。默认地图会被换掉，
         所以调用方必须把"会替换"讲清楚。
+        ``aspect`` 是编辑器画布的宽高比，决定整张图铺开的形状。
         """
 
         wanted = clamp_map_zone_count(count)
@@ -17738,7 +17776,7 @@ class MyWorldEngine(ScopedConfigMixin):
 
         # 先按模型给的跨区路线做弹簧布局：有路的区域靠近、没路的推开，
         # 这样复杂路线能保留，线也不会横七竖八。
-        positions = spring_layout_zones(zones, draft["connections"])
+        positions = spring_layout_zones(zones, draft["connections"], aspect=aspect)
         for zone in zones:
             x, y = positions.get(str(zone["id"]), (70.0, 70.0))
             zone["x"], zone["y"] = x, y
@@ -17747,7 +17785,7 @@ class MyWorldEngine(ScopedConfigMixin):
             nodes_by_zone.setdefault(str(node.get("zone_id") or ""), []).append(node)
         for zone in zones:
             inside = nodes_by_zone.get(str(zone["id"]), [])
-            for node, (x, y) in zip(inside, auto_layout([], len(inside), step=150)):
+            for node, (x, y) in zip(inside, grid_layout_nodes(len(inside), aspect=aspect)):
                 node["x"], node["y"] = x, y
 
         edges: list[dict[str, Any]] = []

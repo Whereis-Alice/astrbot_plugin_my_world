@@ -29,6 +29,15 @@ const ui = {
       return "smart";
     }
   })(),
+  // 取景方式：默认「适应」——整张图都在视野里；想铺满整块画布可以切「填满」。
+  mapFillMode: (() => {
+    try {
+      return window.localStorage.getItem("mw-map-fill-mode") || "contain";
+    } catch (error) {
+      return "contain";
+    }
+  })(),
+  scopePanelOpen: false,
   mapHoverNode: "",
   mapHoverEdge: "",
   mapHoverFrom: "",
@@ -3194,6 +3203,7 @@ async function startApp() {
   applyTheme(currentTheme(), false);
   bindTabs();
   bindButtons();
+  syncTopbarHeight();
   renderHistoryWindows();
   watchPronoun();
   await loadAll();
@@ -3370,6 +3380,12 @@ function renderConfigScope() {
     section.classList.toggle("scope-locked", section.inert);
   });
   ["sessions", "presets"].forEach((key) => { $(`tab-${key}`).inert = local; });
+  // 顶栏那颗按钮跟着范围变：全局时是「范围说明」，切到某个会话时提醒这是「本页配置」。
+  const toggle = $("config-bar-toggle");
+  if (toggle) {
+    toggle.classList.toggle("local", local);
+    toggle.textContent = local ? "本页配置" : "范围说明";
+  }
   // Maintenance operations always act on global files.
   const purge = $("action-purge-legacy");
   if (purge) purge.disabled = local;
@@ -3392,6 +3408,9 @@ function bindConfigScopes() {
         renderSettingsTabs();
       }
     } finally { release(); $("config-scope").disabled = false; }
+    // 切到某个会话（会话组）之后，最该看到的就是「本页单独配置」这一条，
+    // 所以顺手把范围说明展开；切回全局默认则收起来。
+    setScopePanelOpen(Boolean(next));
   });
   $("scope-edit").addEventListener("change", async (event) => {
     const block = currentConfigBlock();
@@ -3430,10 +3449,7 @@ function bindTabs() {
 
 /** 「更多筛选」：把次要筛选条件收起来，默认只留会话 + 关键词。 */
 
-/**
- * 「适应画布」：把当前层的区域 / 地点整体挪到画布中间。
- * 只改坐标、不改缩放，所以拖拽的手感不变；也只在点按钮时跑一次，不会在拖动过程中抖。
- */
+/** 把当前的缩放与平移真正写到画布上（节点、连线和标签一起动）。 */
 function applyMapView() {
   const world = $("canvas-world");
   if (!world) return;
@@ -3459,7 +3475,47 @@ function mapZoomBy(factor, clientX, clientY) {
   applyMapView();
 }
 
-function fitMapToCanvas({ silent = false } = {}) {
+/**
+ * 生成地图时用的形状（宽 ÷ 高）：按「适应画布」实际能用的那块地方算
+ * ——也就是去掉左边距、顶栏和右侧属性面板之后剩下的区域。
+ * 形状一致，生成出来的地图天生就是铺满的，不用再靠放大裁切去凑。
+ */
+function mapViewportAspect() {
+  const canvas = $("canvas");
+  if (!canvas) return 0;
+  const width = canvas.clientWidth || 0;
+  const height = canvas.clientHeight || 0;
+  if (width < 60 || height < 60) return 0;
+  const side = $("map-side");
+  const sideOpen = side && !side.classList.contains("collapsed");
+  const rightPad = sideOpen && width > 980 ? 380 : 28;
+  const roomW = Math.max(120, width - 28 - rightPad);
+  const roomH = Math.max(120, height - 78 - 36);
+  return Math.round((roomW / roomH) * 100) / 100;
+}
+
+/** 取景方式：适应（默认，整张图都在视野里）/ 填满（放大到铺满整块画布）。 */
+function mapFillMode() {
+  return ui.mapFillMode === "contain" ? "contain" : "cover";
+}
+
+function renderMapFillSwitch() {
+  const mode = mapFillMode();
+  if ($("map-zoom-fit")) $("map-zoom-fit").classList.toggle("on", mode === "contain");
+  if ($("map-zoom-cover")) $("map-zoom-cover").classList.toggle("on", mode === "cover");
+}
+
+function setMapFillMode(mode) {
+  ui.mapFillMode = mode === "contain" ? "contain" : "cover";
+  try {
+    window.localStorage.setItem("mw-map-fill-mode", ui.mapFillMode);
+  } catch (error) {
+    /* 隐私模式下写不进缓存，本次仍然生效 */
+  }
+  renderMapFillSwitch();
+}
+
+function fitMapToCanvas({ silent = false, mode = "" } = {}) {
   const canvas = $("canvas");
   if (!canvas) return;
   if (canvas.clientWidth < 60 || canvas.clientHeight < 60) return;
@@ -3487,10 +3543,15 @@ function fitMapToCanvas({ silent = false } = {}) {
   const bottomPad = 36;
   const availW = Math.max(120, vw - leftPad - rightPad);
   const availH = Math.max(120, vh - topPad - bottomPad);
-  const scale = Math.max(
-    MAP_MIN_SCALE,
-    Math.min(1.3, Math.min(availW / contentW, availH / contentH)),
-  );
+  // 「适应」按短边算：整张图都在视野里；「填满」按长边算：放大到盖住整块画布。
+  // 两个都用同一套缩放上下限，切来切去不会越切越奇怪。
+  const cover = (mode || mapFillMode()) === "cover";
+  const ratio = cover
+    ? Math.max(availW / contentW, availH / contentH)
+    : Math.min(availW / contentW, availH / contentH);
+  // 「适应」在很空的图上不至于糊成一片；「填满」为了铺满可以放大得多一点，
+  // 但也不至于把两三个节点撑满整块画布。
+  const scale = Math.max(MAP_MIN_SCALE, Math.min(cover ? 2.0 : 1.6, ratio));
   ui.mapView = {
     scale,
     x: leftPad + (availW - contentW * scale) / 2 - minX * scale,
@@ -3499,6 +3560,74 @@ function fitMapToCanvas({ silent = false } = {}) {
   ui.mapViewReady = true;
   applyMapView();
   if (!silent) toast(level === "zone" ? "地点已经放进视野" : "区域已经放进视野");
+}
+
+/**
+ * 重新铺开：把当前这一层的坐标交给后端按窗口形状重算。
+ * 只改编辑器里的草稿，不点保存就什么都不会写进配置。
+ */
+async function relayoutMap() {
+  const level = ui.mapLevel === "zone" ? "zone" : "world";
+  const zone = zones().find((item) => item.id === ui.selectedZone);
+  const inside = level === "zone" ? nodesInZone(ui.selectedZone) : [];
+  const count = level === "zone" ? inside.length : zones().length;
+  if (count < 2) {
+    toast(level === "zone" ? "这个区域里至少要有两个地点" : "至少要有两个区域");
+    return;
+  }
+  const ok = await confirmDialog({
+    title: level === "zone" ? "重新铺开这个区域" : "重新铺开整张地图",
+    message: level === "zone"
+      ? "把区域里的地点按当前窗口形状重新排成网格。位置会先体现在草稿里，点「保存」才写进配置。"
+      : "按当前窗口形状重新摆放所有区域：有路线的靠近，没路线的散开，整张图铺满画布。"
+        + "位置先体现在草稿里，点「保存」才写进配置。",
+    confirmText: "重新铺开",
+  });
+  if (!ok) return;
+  let result;
+  if (level === "zone") {
+    result = await apiPost("map/layout", {
+      level: "zone",
+      count,
+      aspect: mapViewportAspect(),
+    });
+    const positions = result.positions || [];
+    inside.forEach((node, index) => {
+      const point = positions[index];
+      if (!Array.isArray(point)) return;
+      node.x = Math.round(num(point[0]));
+      node.y = Math.round(num(point[1]));
+    });
+  } else {
+    result = await apiPost("map/layout", {
+      level: "world",
+      aspect: mapViewportAspect(),
+      zones: zones().map((item) => ({
+        id: item.id,
+        is_home: Boolean(item.is_home),
+      })),
+      zone_edges: zoneEdges().map((edge) => ({
+        from_zone: edge.from_zone,
+        to_zone: edge.to_zone,
+      })),
+    });
+    const positions = result.positions || {};
+    zones().forEach((item) => {
+      const point = positions[item.id];
+      if (!Array.isArray(point)) return;
+      item.x = Math.round(num(point[0]));
+      item.y = Math.round(num(point[1]));
+    });
+  }
+  markDirty();
+  renderMap();
+  renderNodeForm();
+  centerMapView();
+  toast(
+    level === "zone"
+      ? `已重新铺开「${(zone && (zone.name || zone.id)) || "这个区域"}」，记得保存`
+      : `已重新铺开 ${count} 个区域，记得保存`,
+  );
 }
 
 /** 只调整视野，不移动任何节点；生成完地图后用。 */
@@ -3579,15 +3708,25 @@ function bindFilterToggle(buttonId, scopeSelector) {
   });
 }
 
-/** 切到某一页：导航高亮 + 顶栏标题 + 该页需要的数据。 */
-function setConfigBarCollapsed(collapsed) {
-  const bar = document.querySelector(".config-bar");
+/** 顶栏里那一行控件会随窗口换行，量一次实际高度，地图舞台才知道自己该多高。 */
+function syncTopbarHeight() {
+  const bar = document.querySelector(".topbar");
   if (!bar) return;
-  bar.classList.toggle("compact", collapsed);
+  const height = Math.round(bar.getBoundingClientRect().height);
+  if (height > 0) {
+    document.documentElement.style.setProperty("--topbar-h", `${height}px`);
+  }
+}
+
+/** 「范围说明」气泡：本页单独配置 + 继承说明。默认收起，顶栏永远只有一行。 */
+function setScopePanelOpen(open) {
+  ui.scopePanelOpen = Boolean(open);
+  const panel = $("scope-popover");
+  if (panel) panel.classList.toggle("hidden", !ui.scopePanelOpen);
   const toggle = $("config-bar-toggle");
   if (toggle) {
-    toggle.textContent = collapsed ? "⌄ 展开" : "⌃ 收起";
-    toggle.setAttribute("aria-expanded", String(!collapsed));
+    toggle.setAttribute("aria-expanded", String(ui.scopePanelOpen));
+    toggle.classList.toggle("on", ui.scopePanelOpen);
   }
 }
 
@@ -3603,7 +3742,7 @@ function showTab(name, button) {
   if (title && target) title.textContent = target.textContent.trim();
   const app = $("app");
   if (app) app.classList.toggle("map-focus", name === "map");
-  setConfigBarCollapsed(name === "map");
+  syncTopbarHeight();
   if (name === "status") refreshStatus();
   if (name === "events") loadEvents();
   if (name === "contacts") loadContacts();
@@ -3621,9 +3760,17 @@ function showTab(name, button) {
 function bindButtons() {
   bindConfigScopes();
   if ($("config-bar-toggle")) {
-    $("config-bar-toggle").addEventListener("click", () => {
-      const bar = document.querySelector(".config-bar");
-      setConfigBarCollapsed(!bar || !bar.classList.contains("compact"));
+    $("config-bar-toggle").addEventListener("click", (event) => {
+      event.stopPropagation();
+      setScopePanelOpen(!ui.scopePanelOpen);
+    });
+    document.addEventListener("click", (event) => {
+      if (!ui.scopePanelOpen) return;
+      if (event.target.closest("#scope-popover") || event.target.closest("#config-bar-toggle")) return;
+      setScopePanelOpen(false);
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && ui.scopePanelOpen) setScopePanelOpen(false);
     });
   }
   $("save").addEventListener("click", saveAll);
@@ -3637,7 +3784,15 @@ function bindButtons() {
     $("hero-goto-events").addEventListener("click", () => showTab("events"));
   }
   ["map-fit", "map-fit-zone"].forEach((id) => {
-    if ($(id)) $(id).addEventListener("click", fitMapToCanvas);
+    if ($(id)) {
+      $(id).addEventListener("click", () => {
+        setMapFillMode("contain");
+        fitMapToCanvas({ mode: "contain" });
+      });
+    }
+  });
+  ["map-relayout", "map-relayout-zone"].forEach((id) => {
+    if ($(id)) $(id).addEventListener("click", relayoutMap);
   });
   if ($("debug-expand")) {
     $("debug-expand").addEventListener("click", () => {
@@ -3872,8 +4027,18 @@ function bindButtons() {
     $("map-zoom-out").addEventListener("click", () => mapZoomBy(1 / 1.2));
   }
   if ($("map-zoom-fit")) {
-    $("map-zoom-fit").addEventListener("click", () => fitMapToCanvas());
+    $("map-zoom-fit").addEventListener("click", () => {
+      setMapFillMode("contain");
+      fitMapToCanvas({ mode: "contain" });
+    });
   }
+  if ($("map-zoom-cover")) {
+    $("map-zoom-cover").addEventListener("click", () => {
+      setMapFillMode("cover");
+      fitMapToCanvas({ mode: "cover" });
+    });
+  }
+  renderMapFillSwitch();
   document.querySelectorAll("#tab-map [data-label-mode]").forEach((button) => {
     button.addEventListener("click", () => {
       ui.mapLabelMode = button.dataset.labelMode || "smart";
@@ -3904,6 +4069,7 @@ function bindButtons() {
   }
   setMapSide(window.innerWidth >= 1100);
   window.addEventListener("resize", () => {
+    syncTopbarHeight();
     const mapTab = $("tab-map");
     if (!mapTab || !mapTab.classList.contains("active")) return;
     if (!ui.mapViewReady) fitMapToCanvas({ silent: true });
@@ -8184,6 +8350,7 @@ function generateZoneDrafts() {
         count,
         nodes_per_zone: nodesPerZone,
         extra_prompt: extraPrompt,
+        aspect: mapViewportAspect(),
       });
       const drafts = result.zones || [];
       if (!drafts.length) {
@@ -8195,18 +8362,26 @@ function generateZoneDrafts() {
           result.problems || [],
           result.nodes || [],
           result.zone_edges || [],
+          result.positions || {},
         );
     },
   });
 }
 
-function openZoneDraftDialog(drafts, problems, draftNodes = [], draftZoneEdges = []) {
+function openZoneDraftDialog(
+  drafts,
+  problems,
+  draftNodes = [],
+  draftZoneEdges = [],
+  draftPositions = {},
+) {
   drafts.forEach((draft) => {
     draft._pick = true;
   });
   openCustomDialog({
     title: `生成的新区域（${drafts.length} 个）`,
-    hint: "改名字和说明，勾掉不要的；确认后写入地图，新区域会自动带落脚点并接到已有区域。",
+    hint: "改名字和说明，勾掉不要的；确认后写入地图，新区域会自动带落脚点、接到已有区域，"
+      + "并跟整张地图一起按当前窗口形状铺开。",
     confirmText: "加入选中的",
     build: (body) => {
       const list = el("div", "list");
@@ -8301,6 +8476,14 @@ function openZoneDraftDialog(drafts, problems, draftNodes = [], draftZoneEdges =
             id: `${edge.id || "z"}_${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`,
           });
         });
+      // 后端把整张地图（含既有区域）按当前窗口形状重算过一次位置：
+      // 新区域落在该去的邻居旁边，老区域不会被推得到处乱跑。
+      Object.entries(draftPositions).forEach(([zoneId, point]) => {
+        const zone = zones().find((item) => item.id === zoneId);
+        if (!zone || !Array.isArray(point)) return;
+        zone.x = Math.round(num(point[0]));
+        zone.y = Math.round(num(point[1]));
+      });
       await saveAll();
       renderMap();
       loadOverview();
@@ -8329,6 +8512,7 @@ function generateWorldMapDrafts() {
         count,
         nodes_per_zone: nodesPerZone,
         extra_prompt: extraPrompt,
+        aspect: mapViewportAspect(),
       });
       const zones = result.zones || [];
       if (!zones.length) {

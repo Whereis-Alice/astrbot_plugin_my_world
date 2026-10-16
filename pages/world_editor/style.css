@@ -83,39 +83,100 @@
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 }
 
-.config-bar {
-  padding: 12px 24px;
-  border-bottom: 1px solid var(--border);
+/* 「编辑范围」和「自主搭话」常驻顶栏：这两件事任何时候都要能一眼看到、
+   一按就生效，所以不再单占一行。需要解释的部分（本页单独配置、继承说明）
+   收进「范围说明」里，顶栏始终只有一行高。 */
+.field-scope,
+.proactive-control {
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.field-scope select {
+  max-width: 260px;
+  min-width: 0;
+}
+
+.proactive-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.proactive-control input {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+
+.proactive-control strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.proactive-control strong:empty {
+  display: none;
+}
+
+.scope-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 18px;
+  z-index: 40;
+  width: min(420px, calc(100vw - 32px));
+  padding: 12px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
   background: var(--panel);
-  min-width: 0;
+  box-shadow: var(--shadow-3);
 }
-.config-bar-row {
+
+.scope-popover.hidden {
+  display: none;
+}
+
+.scope-inheritance {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px 18px;
-  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.6;
 }
-.scope-field {
+
+.scope-inheritance span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+#scope-edit-label {
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-width: 0;
-  flex: 1 1 280px;
+  gap: 8px;
 }
-.scope-field select { width: 100%; max-width: 420px; min-width: 0; }
-.scope-field, .proactive-control { font-size: 13px; }
-.proactive-control, #scope-edit-label { display: flex; align-items: center; gap: 8px; }
-.proactive-control { flex-wrap: wrap; }
-.proactive-control input, #scope-edit { width: 16px; height: 16px; flex: 0 0 16px; }
-.proactive-control strong { color: var(--text); font-size: 12px; }
-.scope-inheritance { margin-top: 8px; font-size: 12px; line-height: 1.6; }
-.scope-inheritance span { min-width: 0; overflow-wrap: anywhere; }
-.scope-locked { opacity: 0.7; }
-@media (max-width: 600px) {
-  .config-bar { padding: 10px 14px; }
-  .scope-field { flex-basis: 100%; }
-  .scope-field select { flex: 1; width: 0; }
+
+#scope-edit {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+}
+
+.scope-hint {
+  margin: 10px 0 0;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.scope-locked {
+  opacity: 0.7;
+}
+
+@media (max-width: 720px) {
+  .field-session select,
+  .field-scope select {
+    max-width: 100%;
+  }
 }
 
 /* 浅色：白天用。切主题就是换这一组值，别的地方不用改 */
@@ -6755,6 +6816,10 @@ label.inline > input[type="checkbox"]:checked + span {
 .canvas {
   position: absolute;
   inset: 0;
+  /* 旧版给过 height: 440px + overflow: auto；这里是全屏舞台，
+     画布必须跟着舞台长高，否则下半屏永远空着（地图只能占上面一小块）。 */
+  height: auto;
+  min-height: 0;
   margin: 0;
   overflow: hidden;
   border: 0;
@@ -7081,7 +7146,7 @@ label.inline > input[type="checkbox"]:checked + span {
   -webkit-backdrop-filter: blur(12px);
 }
 
-.map-zoom button {
+.map-zoom > button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -7095,7 +7160,7 @@ label.inline > input[type="checkbox"]:checked + span {
   cursor: pointer;
 }
 
-.map-zoom button:hover {
+.map-zoom > button:hover {
   border-color: var(--accent);
   color: var(--accent);
 }
@@ -7207,39 +7272,16 @@ label.inline > input[type="checkbox"]:checked + span {
 }
 
 /* ================================================================== */
-/* 9. 更紧凑的顶栏 / 配置栏 / 地图底部控件                              */
+/* 9. 更紧凑的顶栏 / 范围说明气泡 / 地图底部控件                        */
 /* ================================================================== */
 
-.config-bar.compact {
-  padding: 6px 24px;
-}
-
-.config-bar.compact .config-bar-row {
-  gap: 6px 14px;
-}
-
-.config-bar.compact #scope-inheritance,
-.config-bar.compact .scope-detail {
-  display: none;
-}
-
-.config-bar.compact .scope-field {
-  flex: 0 1 280px;
-  white-space: nowrap;
-}
-
-.config-bar.compact .scope-field select {
-  max-width: 280px;
-}
-
 .config-bar-toggle {
-  margin-left: auto;
-  padding: 4px 10px;
+  padding: 6px 11px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 9px;
   background: var(--bg-inset);
-  color: var(--muted);
-  font-size: 11px;
+  color: var(--text-2);
+  font-size: 12px;
   white-space: nowrap;
   cursor: pointer;
 }
@@ -7249,18 +7291,28 @@ label.inline > input[type="checkbox"]:checked + span {
   color: var(--accent);
 }
 
-/* 地图聚焦：顶栏变薄，省下来的高度全给地图舞台 */
+.config-bar-toggle[aria-expanded="true"],
+.config-bar-toggle.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.config-bar-toggle.local {
+  border-color: var(--accent-ring);
+  color: var(--accent-ink);
+}
+
+/* 地图聚焦：顶栏变薄，省下来的高度全给地图舞台。
+   编辑范围 / 自主搭话本来就该一直看得见，所以它们留在顶栏里；
+   只是地图页有自己更贴切的「会话」筛选，顶栏那份在这里收起来。 */
 #app.map-focus .topbar {
-  min-height: 40px;
-  padding: 2px 14px;
-  justify-content: flex-end;
+  min-height: 44px;
+  padding: 5px 14px;
+  gap: 8px 14px;
 }
 
-#app.map-focus .topbar-left {
-  display: none;
-}
-
-#app.map-focus .config-bar {
+#app.map-focus .field-session {
   display: none;
 }
 
@@ -7269,12 +7321,44 @@ label.inline > input[type="checkbox"]:checked + span {
 }
 
 #app.map-focus .map-stage {
-  height: calc(100vh - 40px);
+  height: calc(100vh - var(--topbar-h, 46px));
   min-height: 420px;
   border-right: 0;
   border-bottom: 0;
   border-left: 0;
   border-radius: 0;
+}
+
+/* 取景方式：适应 = 整张图都看得见；填满 = 铺满画布、不留空白。 */
+.map-fill-switch {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-soft);
+}
+
+.map-fill-switch button {
+  height: 24px;
+  padding: 0 9px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.map-fill-switch button:hover {
+  color: var(--text);
+  background: rgba(127, 137, 155, 0.12);
+}
+
+.map-fill-switch button.on {
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow-1);
 }
 
 /* 天气 + 缩放：右下角一列悬浮工具，侧栏打开时自动让位 */
@@ -7310,7 +7394,7 @@ label.inline > input[type="checkbox"]:checked + span {
   padding: 5px 7px;
 }
 
-.map-zoom button {
+.map-zoom > button {
   width: 26px;
   height: 26px;
 }
@@ -7328,7 +7412,7 @@ label.inline > input[type="checkbox"]:checked + span {
 
 @media (max-width: 1100px) {
   #app.map-focus .map-stage {
-    height: calc(100vh - 40px);
+    height: calc(100vh - var(--topbar-h, 46px));
   }
 
   #map-stage.side-open .map-bottom-tools {
@@ -7341,7 +7425,7 @@ label.inline > input[type="checkbox"]:checked + span {
 }
 
 @media (max-width: 640px) {
-  .config-bar.compact {
-    padding: 5px 12px;
+  .map-fill-switch button {
+    padding: 0 7px;
   }
 }

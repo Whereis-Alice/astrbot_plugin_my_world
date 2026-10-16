@@ -390,28 +390,143 @@ def auto_layout_ring(
     return positions
 
 
+#: 画布宽高比的可接受范围。窗口再极端也按边界处理，
+#: 不然一个超宽屏能把地图拉成一条横线、一个竖屏能把它挤成一列。
+ASPECT_MIN = 0.45
+ASPECT_MAX = 3.0
+
+
+def normalize_aspect(value: Any) -> float:
+    """把前端传来的「画布宽 ÷ 画布高」收进可用范围；拿不准就当作正方形。"""
+
+    try:
+        ratio = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    if not math.isfinite(ratio) or ratio <= 0:
+        return 1.0
+    return max(ASPECT_MIN, min(ASPECT_MAX, ratio))
+
+
+def layout_frame(
+    count: int, aspect: Any = None, *, unit: float = 240.0
+) -> tuple[float, float]:
+    """给 ``count`` 个节点算一块「够摆得下、形状跟画布一致」的画布。
+
+    面积只跟节点数有关，宽高比跟着编辑器的画布走：宽窗口铺得宽、高窗口铺得高。
+    生成完的地图因此能真正占满整块画布，而不是一条扁带贴在上半截、
+    下面空出一大片。
+    """
+
+    try:
+        total = max(1, int(count))
+    except (TypeError, ValueError):
+        total = 1
+    # 每个节点按 unit × unit 的面积留位置，但整张地图至少有这么大方圆，
+    # 免得只有两三个区域时挤成一小团、一放大就糊在一起。
+    area = max(560.0 * 560.0, total * unit * unit)
+    ratio = normalize_aspect(aspect)
+    width = math.sqrt(area * ratio)
+    return width, width / ratio
+
+
+def grid_layout_nodes(
+    count: Any,
+    *,
+    aspect: Any = None,
+    step_x: float = 190.0,
+    step_y: float = 150.0,
+) -> list[tuple[float, float]]:
+    """把区域里的地点排成一块网格，列数跟着画布宽高比走。
+
+    每个区域的坐标系是独立的（只在它的区域地图里显示），所以这里不用力导：
+    规规矩矩的网格更好认，也不会让新加的入口类地点飞到角落。
+    宽画布多排几列、高画布多排几行，最后一行不满时居中，免得右下角空一块。
+    """
+
+    try:
+        total = max(0, int(count))
+    except (TypeError, ValueError):
+        total = 0
+    if total <= 0:
+        return []
+    ratio = normalize_aspect(aspect)
+    columns = max(1, min(total, int(round(math.sqrt(total * ratio))) or 1))
+    rows = math.ceil(total / columns)
+    positions: list[tuple[float, float]] = []
+    for index in range(total):
+        row, column = divmod(index, columns)
+        row_count = columns if row < rows - 1 else total - row * columns
+        centered = (columns - row_count) * step_x / 2
+        positions.append(
+            (
+                round(70.0 + column * step_x + centered, 1),
+                round(70.0 + row * step_y, 1),
+            )
+        )
+    return positions
+
+
 def spring_layout_zones(
     zones: list[dict[str, Any]],
     edges: list[dict[str, Any]] | None = None,
     *,
     iterations: int = 180,
     ideal: float = 240.0,
+    aspect: Any = None,
+    seed: dict[str, tuple[float, float]] | None = None,
 ) -> dict[str, tuple[float, float]]:
     """按跨区路线摆放区域：有路线的区域互相靠近，没路线的互相推开。
 
     用圆环做确定性种子，再跑一套简化版 Fruchterman-Reingold：
     路线是弹簧，区域之间是斥力，``is_home`` 的区域额外往重心收一点。
     纯计算、无随机数，同一张地图每次得到的布局一致。
+
+    ``aspect`` 是画布宽高比（宽 ÷ 高）：算完会把整张图铺到同形状的画框里，
+    窗口多宽地图就多宽，不会剩半个屏幕。
+    ``seed`` 是「这些区域现在就在这儿」：既有区域从原位起步、并留一点回位力，
+    新区域从整张图外圈起步再被弹簧拉进合适的位置——增量生成时不会把
+    用户手排好的地图整个翻掉。
     """
 
     total = len(zones)
     ids = [str(zone.get("id") or "") for zone in zones if str(zone.get("id") or "")]
     if total <= 0 or not ids:
         return {}
+    anchors: dict[str, tuple[float, float]] = {}
+    for zone_id, point in (seed or {}).items():
+        if zone_id not in ids or not isinstance(point, (list, tuple)) or len(point) < 2:
+            continue
+        try:
+            anchors[zone_id] = (float(point[0]), float(point[1]))
+        except (TypeError, ValueError):
+            continue
     if len(ids) == 1:
         return {ids[0]: (260.0, 260.0)}
-    seed = auto_layout_ring(len(ids))
-    pos = {zone_id: [seed[index][0], seed[index][1]] for index, zone_id in enumerate(ids)}
+    ring = auto_layout_ring(len(ids))
+    pos = {zone_id: [ring[index][0], ring[index][1]] for index, zone_id in enumerate(ids)}
+    if anchors:
+        # 既有区域从原位起步；新区域围着既有地图的轮廓排一圈，
+        # 再交给下面的力导收敛，比从远处硬拽过来稳得多。
+        center_x = sum(point[0] for point in anchors.values()) / len(anchors)
+        center_y = sum(point[1] for point in anchors.values()) / len(anchors)
+        spread = max(
+            (
+                ((point[0] - center_x) ** 2 + (point[1] - center_y) ** 2) ** 0.5
+                for point in anchors.values()
+            ),
+            default=ideal,
+        )
+        for zone_id, point in anchors.items():
+            pos[zone_id] = [point[0], point[1]]
+        fresh = [zone_id for zone_id in ids if zone_id not in anchors]
+        radius = max(ideal, spread + ideal * 0.9)
+        for index, zone_id in enumerate(fresh):
+            angle = -math.pi / 2 + (2 * math.pi * index / max(1, len(fresh)))
+            pos[zone_id] = [
+                center_x + radius * math.cos(angle),
+                center_y + radius * math.sin(angle),
+            ]
     links: set[tuple[str, str]] = set()
     for edge in edges or []:
         if not isinstance(edge, dict):
@@ -452,6 +567,10 @@ def spring_layout_zones(
         for zone_id in homes:
             disp[zone_id][0] += (center_x - pos[zone_id][0]) * 0.08
             disp[zone_id][1] += (center_y - pos[zone_id][1]) * 0.08
+        # 手排过的区域只给一点点回位力：允许让路，但不跟着新区域乱跑。
+        for zone_id, anchor in anchors.items():
+            disp[zone_id][0] += (anchor[0] - pos[zone_id][0]) * 0.05
+            disp[zone_id][1] += (anchor[1] - pos[zone_id][1]) * 0.05
         for zone_id in ids:
             dx, dy = disp[zone_id]
             length = max(1e-6, (dx * dx + dy * dy) ** 0.5)
@@ -463,14 +582,17 @@ def spring_layout_zones(
     ys = [point[1] for point in pos.values()]
     min_x, max_x = min(xs), max(xs)
     min_y, max_y = min(ys), max(ys)
-    span = max(1.0, max_x - min_x, max_y - min_y)
-    scale = min(1.0, 560.0 / span)
-    if span < 260.0:
-        scale = 260.0 / span
+    width = max(1.0, max_x - min_x)
+    height = max(1.0, max_y - min_y)
+    frame_w, frame_h = layout_frame(len(ids), aspect, unit=ideal)
+    # 两个轴各自铺满画框：地图的形状从此跟窗口一致，
+    # 放大到填满画布时不会有半边空着，也不会把有内容的那半边裁掉。
+    scale_x = frame_w / width
+    scale_y = frame_h / height
     return {
         zone_id: (
-            round((pos[zone_id][0] - min_x) * scale + 70.0, 1),
-            round((pos[zone_id][1] - min_y) * scale + 70.0, 1),
+            round((pos[zone_id][0] - min_x) * scale_x + 70.0, 1),
+            round((pos[zone_id][1] - min_y) * scale_y + 70.0, 1),
         )
         for zone_id in ids
     }
