@@ -16954,7 +16954,9 @@ function renderSettings() {
       "启用天气",
       world.weather.enabled !== false,
       (value) => (world.weather.enabled = value),
-      { hint: "关闭后不后台查天气、也不写进提示词；她主动查天气照常可用。" },
+      {
+        hint: "关闭后不后台查、也不写进提示词；她在聊天里查到的仍会显示在地图横幅上。",
+      },
     ),
   );
   weather._fields.appendChild(

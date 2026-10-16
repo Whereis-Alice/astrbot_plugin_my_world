@@ -11534,8 +11534,9 @@ class MyWorldEngine(ScopedConfigMixin):
         """
 
         config = self.world.weather
-        if not bool(getattr(config, "enabled", True)):
-            return False
+        # 这里**不看**「启用天气」总开关：那个开关管的是"本插件要不要自己去查、
+        # 要不要写进提示词"。主回复已经用原生工具查过一次了，记下来不额外花钱，
+        # 地图横幅上能看见她刚查到的天气；不想记就把「记住她在聊天里查到的天气」关掉。
         if not bool(getattr(config, "from_tools", True)):
             return False
         if not session_id:

@@ -10454,6 +10454,27 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(stored)
         self.assertTrue((await self.engine.weather_record()).empty)
 
+    async def test_tool_weather_is_kept_even_when_background_refresh_is_off(self):
+        """关掉「启用天气」只是不后台查；她在聊天里查到的照样记下来画在横幅上。"""
+
+        raw = self.store.raw_world()
+        raw["weather"] = {**(raw.get("weather") or {}), "enabled": False}
+        self.store.save_world(raw)
+        self.engine.reload_config()
+        self.tools._tools = {"uapi_weather": "查询指定城市的实时天气"}
+        await self.set_state(node_id="study")
+        stored = await self.engine.note_tool_weather(
+            session_id=SESSION,
+            tool_name="uapi_weather",
+            args={"city": "武汉"},
+            result="武汉 26℃ 多云",
+        )
+        self.assertTrue(stored)
+        payload = await self.engine.weather_payload()
+        self.assertIn("26℃", payload["text"])
+        # 但提示词里不带（那是「启用天气」管的事）
+        self.assertEqual(await self.engine.weather_line(), "")
+
     async def test_weather_can_be_learned_from_a_tool_with_the_wrong_binding(self):
         """「查天气」动作没绑工具时，自动认一把已注册的天气工具。"""
 
