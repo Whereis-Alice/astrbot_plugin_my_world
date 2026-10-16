@@ -43,6 +43,8 @@ const ui = {
   mapHoverFrom: "",
   mapHoverTo: "",
   mapSideOpen: true,
+  // 调试页是否已经预览过（没预览过就给一句说明，不留空框）
+  debugHasOutput: false,
   // 全局设置：当前选中的分类标签，以及哪些标签里有未保存的改动
   settingsTab: "basic",
   dirtyTabs: new Set(),
@@ -723,6 +725,34 @@ function el(tag, className, text) {
   if (className) node.className = className;
   if (text !== undefined) node.textContent = text;
   return node;
+}
+
+/**
+ * 统一的「这里还没有内容」：虚线框 + 图标 + 一句人话（+ 可选按钮）。
+ * 各页的空状态长得一样，整页看起来才像做完的，而不是没加载出来。
+ */
+function emptyState(icon, text, buttons = []) {
+  const box = el("div", "empty-state");
+  if (icon) box.appendChild(el("div", "empty-icon", icon));
+  box.appendChild(el("div", "empty-text", text));
+  const usable = (buttons || []).filter(Boolean);
+  if (usable.length) {
+    const bar = el("div", "toolbar empty-actions");
+    usable.forEach((item) => bar.appendChild(item));
+    box.appendChild(bar);
+  }
+  return box;
+}
+
+/** 空状态里的「去某一页」按钮：点了就切过去。 */
+function gotoButton(label, tab) {
+  const button = el("button", "ghost small", label);
+  button.type = "button";
+  button.addEventListener("click", () => {
+    const target = document.querySelector(`#tabs button[data-tab="${tab}"]`);
+    if (target) target.click();
+  });
+  return button;
 }
 
 function option(value, label) {
@@ -3761,7 +3791,10 @@ function showTab(name, button) {
     renderMap();
     loadOverview();
   }
-  if (name === "debug") loadTools();
+  if (name === "debug") {
+    loadTools();
+    showDebugPlaceholder();
+  }
   if (name === "presets") loadPresets();
   renderConfigScope();
 }
@@ -4867,9 +4900,59 @@ function setStatusEmpty(text) {
     const box = $(id);
     if (!box) return;
     box.innerHTML = "";
-    statusLine(box, "", text, "muted");
   });
+  // 以前三块各写一遍「还没有会话」，一页三行同样的灰字；现在收成一块空状态。
+  const card = document.querySelector("#tab-status .status-card");
+  if (card) card.classList.add("hidden");
+  const box = $("status-empty");
+  if (box) {
+    box.classList.remove("hidden");
+    box.innerHTML = "";
+    box.appendChild(
+      emptyState("💬", text || "还没有可以观察的会话。", [
+        gotoButton("去会话页添加", "sessions"),
+      ]),
+    );
+  }
+  // 趋势图那一块没有会话时也没数据：收掉空画布，换成一句说明
+  if ($("history-canvas")) $("history-canvas").classList.add("hidden");
+  if ($("history-empty")) $("history-empty").classList.remove("hidden");
+  if ($("history-metrics")) $("history-metrics").textContent = "";
+  // 右边那几张只读卡片同理：给占位说明，别留一排像输入框的空盒子
+  const valuesBox = $("status-values");
+  if (valuesBox) {
+    valuesBox.innerHTML = "";
+    valuesBox.appendChild(el("p", "muted", "选了会话才看得到她的数值。"));
+  }
+  setStatusPre("status-plan", "", "（选了会话才看得到）");
+  setStatusPre("status-thoughts", "", "（选了会话才看得到）");
+  setStatusPre("status-context", "", "（选了会话才看得到）");
   $("status-warn").innerHTML = "";
+}
+
+/** 有数据了：把空状态收起来，把三块状态放回去。 */
+function clearStatusEmpty() {
+  const box = $("status-empty");
+  if (box) {
+    box.classList.add("hidden");
+    box.innerHTML = "";
+  }
+  const card = document.querySelector("#tab-status .status-card");
+  if (card) card.classList.remove("hidden");
+}
+
+/** 只读展示框：没内容时给一句浅色占位，别留一个看着像输入框的空盒子。 */
+function setStatusPre(id, text, placeholder = "") {
+  const box = $(id);
+  if (!box) return;
+  const body = String(text == null ? "" : text).trim();
+  if (body) {
+    box.textContent = body;
+    box.classList.remove("pre-empty");
+    return;
+  }
+  box.textContent = placeholder;
+  box.classList.add("pre-empty");
 }
 
 /**
@@ -5303,7 +5386,15 @@ function renderHistoryWindows() {
 async function renderHistory() {
   const sessionId = $("status-session").value;
   const canvas = $("history-canvas");
-  if (!canvas || !sessionId || ui.historyBusy) return;
+  if (!canvas || ui.historyBusy) return;
+  const emptyBox = $("history-empty");
+  if (!sessionId) {
+    // 没选会话：别留一个空画布占半屏，直接给一块说明
+    canvas.classList.add("hidden");
+    $("history-metrics").textContent = "";
+    if (emptyBox) emptyBox.classList.remove("hidden");
+    return;
+  }
   ui.historyBusy = true;
   let data = null;
   try {
@@ -5315,15 +5406,17 @@ async function renderHistory() {
   }
   const points = (data && data.points) || [];
   ui.historyPoints = points;
-  drawHistoryChart(canvas, points);
+  const hasChart = points.length >= 2;
+  canvas.classList.toggle("hidden", !hasChart);
+  if (hasChart) drawHistoryChart(canvas, points);
   const metrics = (data && data.metrics) || {};
-  $("history-metrics").textContent = points.length
+  $("history-metrics").textContent = hasChart
     ? `起伏 ${num(metrics.swing_per_hour, 0).toFixed(2)}/小时 · 峰值心潮 ${num(
         metrics.peak_arousal,
         0,
       ).toFixed(2)} · 低谷 ${Math.round(num(metrics.low_minutes, 0))} 分钟`
-    : "还没有足够的数据";
-  $("history-empty").classList.toggle("hidden", points.length >= 2);
+    : "";
+  if (emptyBox) emptyBox.classList.toggle("hidden", hasChart);
 }
 
 /** 两条线：心潮（蓝）与效价（橙），虚线是效价的中性位。 */
@@ -5752,7 +5845,7 @@ function renderRecentThreads(box, data) {
   const activeId = data.active_id || "";
   const others = (data.threads || []).filter((item) => item.id !== activeId).slice(0, 4);
   if (!others.length) {
-    box.appendChild(el("p", "muted", "还没有别的线索。"));
+    box.appendChild(emptyState("🧵", "还没有别的线索：她遇上的事会一条条记在这里。"));
     return;
   }
   others.forEach((thread) => {
@@ -6626,8 +6719,7 @@ function renderEventsPanel() {
   if (hintBox) {
     hintBox.textContent = data.enabled === false
       ? "事件系统关着（在「全局设置 → 世界与事件 → 事件」里打开）。"
-      : "她遇上的事都是按当前场景现编的；投递的事件会立刻发生，也会进日志。" +
-        "雷达图是她的底子（只有事件结果会改它），每一幕的细节在上面的「现在这件事」和历史事件里。";
+      : "";
   }
 }
 
@@ -6719,6 +6811,7 @@ async function refreshStatus() {
   try {
     const data = await apiGet("state", { session: sessionId });
     ui.status = data;
+    clearStatusEmpty();
     // 扩展想显示的状态优先（例如亲密扩展在戏里时说"兴奋中"）：
     // 这是编辑器里的一行字，群名片不受影响
     const stateLabel = stateLabelOf(data.state, data);
@@ -6762,7 +6855,7 @@ async function refreshStatus() {
     $("state-interrupt").disabled = !currentAction.type;
     $("state-wake").disabled = !sleeping;
 
-    $("status-plan").textContent = formatPlan(data.current_plan);
+    setStatusPre("status-plan", formatPlan(data.current_plan), "（她还没安排接下来要做什么）");
     // 「内心活动」= 最近一次推理草稿（她动手前对处境/心情/对象的确认）。
     // 以前这里显示的是 think 动作，但模型很少每次都写，面板长期是空的。
     const reasoning = data.last_reasoning || {};
@@ -6781,7 +6874,7 @@ async function refreshStatus() {
       innerLines.push(`她主动留下的心里话（最近 ${thoughts.length} 条，越往下越近）：`);
       thoughts.forEach((text) => innerLines.push(`  · ${text}`));
     }
-    $("status-thoughts").textContent = innerLines.join("\n");
+    setStatusPre("status-thoughts", innerLines.join("\n"), "（她还没留下什么心里话）");
 
     // 更早的群聊摘要（只有在「上下文 → 留档超了怎么办 = 压成摘要」时才有）
     const summaryBlock = $("status-context");
@@ -6790,12 +6883,12 @@ async function refreshStatus() {
       ? data.chat_summaries.filter((item) => String((item && item.text) || "").trim())
       : [];
     const head = `留档 ${Number(data.chat_history_count || 0)} 条（本会话）`;
-    summaryBlock.textContent = summaryRows.length
+    setStatusPre("status-context", summaryRows.length
       ? `${head}；更早的群聊摘要：\n` +
         summaryRows
           .map((item) => `〔${item.label || item.session}〕${String(item.text).trim()}`)
           .join("\n")
-      : `${head}，暂无摘要。`;
+      : `${head}，暂无摘要。`, "");
 
     const logs = await apiGet("logs", { session: sessionId, limit: 60 });
     const events = logs.events || [];
@@ -12191,12 +12284,14 @@ function renderScheduleList() {
     const head = el("div", "schedule-row-head");
     const clock = el("span", `schedule-time${schedule.enabled === false ? " off" : ""}`, schedule.time);
     head.appendChild(clock);
-    head.appendChild(el("span", "schedule-name", schedule.name || schedule.id));
+    const scheduleName = String(schedule.name || "").trim() || schedule.id;
+    head.appendChild(el("span", "schedule-name", scheduleName));
     if (schedule.once) head.appendChild(el("span", "badge", "只做一次"));
     if (schedule.enabled === false) head.appendChild(el("span", "badge off", "已停用"));
-    head.appendChild(
-      el("span", "muted schedule-id", schedule.id === String(schedule.name || "") ? "" : schedule.id),
-    );
+    // 只有"名字和 id 不一样"时才需要把 id 再写一遍，否则一行里同一个词出现两次
+    if (scheduleName !== schedule.id) {
+      head.appendChild(el("span", "muted schedule-id", schedule.id));
+    }
     info.appendChild(head);
     const stepNames = (schedule.action_chain || [])
       .map((step) => actionLabel(step.type) || step.type)
@@ -12289,7 +12384,9 @@ function renderScheduleForm() {
   const schedule = schedules().find((item) => item.id === ui.selectedSchedule);
   $("schedule-title").textContent = schedule ? `日程属性：${schedule.id}` : "日程属性";
   if (!schedule) {
-    form.appendChild(el("p", "muted", "点击左侧日程进行编辑。"));
+    form.appendChild(
+      emptyState("⏰", "点左边任意一条日程，在这里改时间、动作链和落点。"),
+    );
     return;
   }
   schedule.conditions = schedule.conditions || {};
@@ -13158,8 +13255,14 @@ async function loadContacts() {
       await loadContactDetail(ui.contactUser);
     } else {
       $("contacts-title").textContent = "还没有认识的人";
-      $("contacts-detail").innerHTML =
-        "<p class='muted'>等她在群里见过人之后，这里就有画像了。</p>";
+      $("contacts-detail").innerHTML = "";
+      $("contacts-detail").appendChild(
+        emptyState(
+          "🪪",
+          "她在这个会话组里还没见过人。等群里有人说过话，这里就会有画像；"
+            + "装了心迹画像的话，也可以用上面的「从心迹画像搬过来」直接搬一份。",
+        ),
+      );
     }
   } catch (error) {
     list.innerHTML = `<p class='muted'>读取失败：${error.message || error}</p>`;
@@ -13180,7 +13283,9 @@ function renderContactsList() {
     );
   });
   if (!rows.length) {
-    box.appendChild(el("p", "muted", keyword ? "没有匹配的人。" : "还没有认识的人。"));
+    box.appendChild(
+      emptyState("👥", keyword ? "没有匹配的人，换个词试试。" : "还没有认识的人。"),
+    );
     return;
   }
   rows.forEach((item) => {
@@ -13920,14 +14025,17 @@ async function loadMemories() {
     ]);
     const statsBox = $("memory-stats");
     statsBox.innerHTML = "";
+    // 没选会话 / 后端没给全时也别显示 undefined：数字缺了就补 0，权重缺了显示 —
+    const byType = stats.by_type || {};
+    const avgWeight = Number(stats.avg_weight);
     [
-      `总数 ${stats.total}`,
-      `场景 ${stats.by_type?.scene || 0}`,
-      `内心 ${stats.by_type?.inner || 0}`,
-      `互动 ${stats.by_type?.interaction || 0}`,
-      `今日新增 ${stats.today_added}`,
-      `今日召回 ${stats.today_recalled}`,
-      `平均权重 ${stats.avg_weight}`,
+      `总数 ${Number(stats.total || 0)}`,
+      `场景 ${Number(byType.scene || 0)}`,
+      `内心 ${Number(byType.inner || 0)}`,
+      `互动 ${Number(byType.interaction || 0)}`,
+      `今日新增 ${Number(stats.today_added || 0)}`,
+      `今日召回 ${Number(stats.today_recalled || 0)}`,
+      `平均权重 ${Number.isFinite(avgWeight) ? avgWeight.toFixed(2) : "—"}`,
     ].forEach((text) => statsBox.appendChild(el("span", "", text)));
 
     // 上次整理到底干了什么：不写这一行，"记忆没变化"永远只能靠猜
@@ -13991,7 +14099,24 @@ async function loadMemories() {
       item.appendChild(box);
       list.appendChild(item);
     });
-    if (!(data.memories || []).length) list.appendChild(el("p", "muted", "没有符合条件的记忆。"));
+    if (!(data.memories || []).length) {
+      const keyword = ($("memory-keyword") || {}).value || "";
+      const clear = el("button", "ghost small", "清掉关键词");
+      clear.type = "button";
+      clear.addEventListener("click", () => {
+        if ($("memory-keyword")) $("memory-keyword").value = "";
+        loadMemories();
+      });
+      list.appendChild(
+        emptyState(
+          "🧠",
+          keyword
+            ? "没有匹配的记忆，换个词试试，或者清掉筛选。"
+            : "这一栏还空着：她聊过、经历过之后，整理出来的记忆会出现在这里。",
+          keyword ? [clear] : [],
+        ),
+      );
+    }
   } catch (error) {
     list.innerHTML = "";
     list.appendChild(el("p", "muted", error.message || "加载失败"));
@@ -17459,8 +17584,17 @@ function renderPresetList() {
   const list = $("preset-list");
   list.innerHTML = "";
   if (!(ui.presets || []).length) {
+    const create = el("button", "ghost small", "把当前配置存成预设");
+    create.type = "button";
+    create.addEventListener("click", () => {
+      if ($("preset-save")) $("preset-save").click();
+    });
     list.appendChild(
-      el("p", "muted", "还没有预设。改好当前配置后点「把当前配置存成预设」，就能随时切回来。"),
+      emptyState(
+        "📦",
+        "还没有预设。改好当前配置之后存一份，以后就能一键切回来。",
+        [create],
+      ),
     );
     return;
   }
@@ -18348,6 +18482,20 @@ async function loadPrompt(mode) {
   }
 }
 
+/** 还没预览过时，输出区里放一句说明，别留一个空框。 */
+function showDebugPlaceholder() {
+  const box = $("debug-output");
+  if (!box || ui.debugHasOutput) return;
+  box.innerHTML = "";
+  box.appendChild(
+    emptyState(
+      "🔍",
+      "点右上角「预览接管请求」看这一轮真正发出去的提示词，"
+        + "或者「预览自主提示词」看她自己安排事情时看到的版本。",
+    ),
+  );
+}
+
 /**
  * 预览输出：把一次几千字的提示词拆成"可折叠的段落"。
  * 一屏只看一段，剩下的折起来；原来那段纯文本一点没丢，只是好翻了。
@@ -18355,6 +18503,7 @@ async function loadPrompt(mode) {
 function renderDebugOutput(data, mode) {
   const box = $("debug-output");
   if (!box) return;
+  ui.debugHasOutput = true;
   const prompt = String(data.prompt || "");
   const slots = data.state_slots || [];
   const samples = data.voice_samples || [];

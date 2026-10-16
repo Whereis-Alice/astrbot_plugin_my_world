@@ -164,6 +164,7 @@
                 <div class="hero-kpis" id="hero-kpis" data-keep-text></div>
                 <div id="status-banner" class="banner hidden" data-keep-text></div>
                 <div id="status-head" class="status-head" data-keep-text></div>
+                <div id="status-empty" class="hidden"></div>
                 <div class="status-card" data-keep-text>
                   <section class="status-block">
                     <h3>时间与日程</h3>
@@ -212,9 +213,12 @@
                 </h2>
                 <canvas id="history-canvas" class="history-canvas"></canvas>
                 <p class="muted" id="history-metrics">还没有足够的数据</p>
-                <p class="muted hidden" id="history-empty">
-                  每个 tick 会记一帧数值；跑一会儿再回来看，就能看到她的心情曲线。
-                </p>
+                <div class="empty-state hidden" id="history-empty">
+                  <div class="empty-icon">📈</div>
+                  <div class="empty-text">
+                    每过一会儿就记一帧数值；她在群里活动一阵子，这里就有心情曲线了。
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -412,10 +416,8 @@
             </div>
           </div>
           <p class="hint-line">
-            动作多的时候：左边按组筛、上面按条件筛，点「批量选择」可以勾一批一次启用 / 停用 / 改分组 / 删除。
-            动作是她的「虚拟动作 / 提示词事件」：她做什么、去哪里，只影响她的世界与提示词；
-            工具调用走 AstrBot 原生 Agent，不在这里挂工具。旧版工具动作保留为「旧版」并停用，可以删掉或改写成虚拟动作。
-            随插件附带的默认动作默认停用；想用哪些就打开它的开关，或在「高级 → 启用默认动作…」里一次打开。
+            动作是她的「虚拟动作 / 提示词事件」，只影响她的世界与提示词；工具调用走 AstrBot 原生 Agent，不在这里挂工具。
+            动作多了就左边按组筛、上面按条件筛，点「批量选择」一次改一批；默认动作默认停用，用哪些开哪些。
           </p>
           <div class="action-filters">
             <div class="toolbar filter-chips" role="group" aria-label="动作筛选">
