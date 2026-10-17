@@ -290,8 +290,8 @@ class FrontendSyntaxTest(unittest.TestCase):
         self.assertIn("function stateLabelOf(", source)
         self.assertIn("data.extension_status", source)
         self.assertIn("(item.during || {}).state", source)
-        # 两处显示状态的地方都走这个统一函数
-        self.assertEqual(
+        # 凡是要显示状态名的地方都走这个统一函数（定义 + 各个调用点）
+        self.assertGreaterEqual(
             len(re.findall(r"stateLabelOf\(", source)), 3, "状态名要统一走 stateLabelOf"
         )
 

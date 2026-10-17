@@ -1243,12 +1243,22 @@ class WorldState:
             self.recent_events = self.recent_events[-keep:]
 
     def add_thought(
-        self, content: str, node_id: str = "", source: str = "", keep: int = 120
+        self,
+        content: str,
+        node_id: str = "",
+        source: str = "",
+        keep: int = 120,
+        target: str = "",
+        quote: str = "",
+        reply: str = "",
     ) -> None:
         """留下她的一句心里话。
 
         ``keep`` 给得比较宽（120 条）：这些是编辑器「内心活动」那一页的内容，
         只留最近二十条的话，翻着翻着就没了；提示词那边只会取最后三条，不影响预算。
+
+        ``target`` / ``quote`` / ``reply`` 是这一轮的对话上下文（跟谁、对方说了什么、
+        她回了什么）：编辑器那一页要能看出"这句心里话是回谁、回哪条"。
         """
 
         self.thoughts.append(
@@ -1260,6 +1270,9 @@ class WorldState:
                 # ``at`` 是真实时间（「内心活动」那一页要按人看的年月日排）。
                 "world_time": float(self.world_time or 0.0),
                 "at": time.time(),
+                "target": " ".join(str(target or "").split())[:40],
+                "quote": " ".join(str(quote or "").split())[:120],
+                "reply": " ".join(str(reply or "").split())[:200],
             }
         )
         if len(self.thoughts) > keep:

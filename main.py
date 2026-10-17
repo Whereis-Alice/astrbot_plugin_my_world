@@ -610,14 +610,9 @@ class MyWorldPlugin(WebApiMixin, Star):
                 if next_at < time.time():
                     # 落后太多（宿主机卡顿 / 长时间睡眠）就重新对齐，别追赶
                     next_at = time.time() + self.tick_interval
-                outcomes = await self.engine.tick()
-                if self.debug and outcomes:
-                    for outcome in outcomes:
-                        self.logger.info(
-                            f"[my_world] tick {outcome.session_id}: "
-                            f"{'; '.join(outcome.notes)} "
-                            f"messages={outcome.messages}"
-                        )
+                await self.engine.tick()
+                # tick 的逐拍明细不再写后台日志（翻起来全是「t=1902 node=…」），
+                # 只留在引擎的内存环里，编辑器「运行记录」页读它。
                 # 一个会话组只催一次决策：按"会话"逐个催的话，同一个她会被催好几遍，
                 # 而且第二次很可能挂在别的会话名下决定（落点就跟着跑了）
                 for session_id in self.engine.tick_session_ids():

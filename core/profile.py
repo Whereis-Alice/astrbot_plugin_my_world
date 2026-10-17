@@ -412,6 +412,14 @@ class ProfileStore:
             if created is None:
                 continue
             people += 1
+            # 它的「昵称 / 称呼」：本插件这边还没写过"你怎么称呼他"时，借它补上。
+            # 只补空——主人自己起过的称呼不动（explicit=False 时已有称呼会被拒绝）。
+            imported_name = str(item.get("name") or "").strip()
+            current = dict(created.get("payload") or {})
+            if imported_name and not str(current.get("call_him") or "").strip():
+                self.set_call_names(
+                    session_id, uid, call_him=imported_name, explicit=False
+                )
             for kind, text in item.get("facts") or []:
                 result = self.note_fact(
                     session_id,

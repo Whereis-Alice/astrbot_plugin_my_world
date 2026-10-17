@@ -145,6 +145,7 @@ class WebApiMixin:
         register(f"/{p}/states", self.api_states, ["GET"], "所有会话的简要状态")
         register(f"/{p}/state/action", self.api_state_action, ["POST"], "手动触发动作")
         register(f"/{p}/logs", self.api_logs, ["GET"], "事件日志")
+        register(f"/{p}/ticks", self.api_ticks, ["GET"], "运行记录：最近几拍 tick 的明细")
         register(f"/{p}/logs/export", self.api_logs_export, ["GET"], "导出事件日志")
         register(f"/{p}/memories", self.api_memories, ["GET"], "记忆列表")
         register(f"/{p}/thoughts", self.api_thoughts, ["GET"], "内心活动：她留下的心里话")
@@ -259,6 +260,18 @@ class WebApiMixin:
             return payload
         payload["person"] = self.engine.person_payload(session_id, user_id)
         payload["facts"] = store.facts(session_id, user_id, statuses=["active", "candidate", "past"])
+        # 备注：本插件这边还没写过时，借「心迹画像」搬过来的那条备注来填（只补空，不覆盖）
+        person = payload.get("person")
+        if isinstance(person, dict) and not str(person.get("note") or "").strip():
+            notes = [
+                str(item.get("text") or "").strip()
+                for item in payload["facts"]
+                if str(item.get("kind") or "") == "note"
+                and str(item.get("text") or "").strip()
+            ]
+            if notes:
+                person["note"] = "；".join(dict.fromkeys(notes))[:200]
+                person["note_from"] = "心迹画像"
         # 垫底的"陌生人"和同类里被顶掉的旧关系都不往外露（老数据靠这一层收干净）
         bonds = store.visible_bonds(session_id, user_id)
         for item in bonds:
@@ -2106,6 +2119,14 @@ class WebApiMixin:
         if guard is not None:
             return guard
         return json_response({"sessions": await self.engine.overview()})
+
+    async def api_ticks(self):
+        """运行记录：最近几拍 tick 的明细（tick 不再写进 AstrBot 后台日志）。"""
+
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        return json_response(self.engine.tick_log_payload())
 
     async def api_logs(self):
         guard = self._guard()

@@ -48,11 +48,12 @@
         <nav id="tabs" class="tabs">
           <span class="nav-group">观察</span>
           <button data-tab="status" class="active" title="控制台">控制台</button>
+          <button data-tab="thoughts" title="内心活动">内心活动</button>
           <button data-tab="events" title="事件">事件</button>
           <button data-tab="contacts" title="通讯录">通讯录</button>
           <button data-tab="memories" title="记忆库">记忆库</button>
-          <button data-tab="thoughts" title="内心活动">内心活动</button>
           <button data-tab="logs" title="日志">日志</button>
+          <button data-tab="ticks" title="运行记录">运行</button>
           <button data-tab="debug" title="调试">调试</button>
           <span class="nav-group">编辑</span>
           <button data-tab="map" title="地图">地图</button>
@@ -200,10 +201,8 @@
                 </div>
                 <h3>当前计划</h3>
                 <pre id="status-plan" class="pre" data-keep-text></pre>
-                <h3>内心活动</h3>
-                <pre id="status-thoughts" class="pre" data-keep-text></pre>
                 <h3>群聊上下文</h3>
-                <pre id="status-context" class="pre" data-keep-text></pre>
+                <div id="status-context" class="chat-context" data-keep-text></div>
               </div>
 
               <div class="card">
@@ -384,7 +383,7 @@
               <span class="muted" id="action-count"></span>
               <div class="toolbar view-switch">
                 <button id="action-view-cards" class="pill on" type="button" title="按卡片看，适合挑动作">卡片</button>
-                <button id="action-view-table" class="pill" type="button" title="按表格看，适合批量核对">表格</button>
+                <button id="action-view-table" class="pill" type="button" title="按列表看，适合批量核对与勾选">列表</button>
               </div>
               <button
                 id="action-select-mode"
@@ -441,6 +440,7 @@
             </div>
             <div id="action-bulk" class="action-bulk-bar hidden">
               <span class="muted" id="action-bulk-count">已选 0 个</span>
+              <span class="muted action-bulk-hint">点卡片 / 整行的任意处即可勾选，按住 Shift 点＝选中一整段</span>
               <button id="action-bulk-all" class="ghost small" title="选中当前筛选出来的全部动作">全选当前结果</button>
               <button id="action-bulk-invert" class="ghost small" title="选中的取消、没选的选上">反选</button>
               <button id="action-bulk-clear" class="ghost small">取消选择</button>
@@ -525,6 +525,16 @@
               <h2 id="schedule-title">日程属性</h2>
               <div id="schedule-form" class="form"></div>
             </div>
+          </div>
+          <div class="card">
+            <h2 class="values-head">
+              <span>执行记录</span>
+              <button id="schedule-history-refresh" class="ghost small">刷新</button>
+            </h2>
+            <p class="hint-line">
+              到点触发或手动执行过哪条日程、那一串动作是什么；更早的去「日志」页筛「只看日程」。
+            </p>
+            <div id="schedule-history" class="list" data-keep-text></div>
           </div>
         </section>
 
@@ -712,6 +722,13 @@
             每聊完一轮、每做一次自主决定，她心里冒出来的那一两句都会留在这儿；
             这里显示的是最近的记录，越上面越新。同一句连着出现只记一次。
           </p>
+          <div class="card">
+            <h2 class="values-head">
+              <span>最近一次推理草稿</span>
+              <span class="muted" id="thoughts-reasoning-note"></span>
+            </h2>
+            <div id="thoughts-reasoning" class="thought-reasoning" data-keep-text></div>
+          </div>
           <div id="thoughts-list" class="list" data-keep-text></div>
         </section>
 
@@ -779,6 +796,28 @@
               <summary>实时事件流（最近 60 条原始记录）</summary>
               <pre id="status-logs" class="pre tall" data-keep-text></pre>
             </details>
+          </div>
+        </section>
+
+        <!-- 运行记录：每一拍 tick 的明细（tick 不再写进 AstrBot 后台日志） -->
+        <section id="tab-ticks" class="tab">
+          <div class="page-head">
+            <div class="page-head-left">
+              <div class="toolbar">
+                <button id="ticks-refresh" class="ghost">刷新</button>
+                <label class="inline"><input id="ticks-auto" type="checkbox" /><span>自动刷新</span></label>
+              </div>
+            </div>
+            <div class="page-head-right">
+              <span class="muted" id="ticks-note"></span>
+            </div>
+          </div>
+          <p class="hint-line">
+            世界时钟每走一拍都在这里留一条：她在哪、什么状态、这一拍做了什么、说了什么。
+            这些不再写进 AstrBot 后台日志，只留最近这几拍。
+          </p>
+          <div class="card">
+            <div id="ticks-list" class="tick-list" data-keep-text></div>
           </div>
         </section>
 

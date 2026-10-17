@@ -16,6 +16,13 @@ class TickOutcome:
 
     session_id: str
     messages: list[str] = field(default_factory=list)
+    summary: dict[str, Any] = field(default_factory=dict)
+    """这一拍「她在哪、什么状态、什么心情」的结构化摘要。
+
+    以前这段是拼成一行文本塞进 ``notes`` 再写进后台日志的；现在留给「运行记录」页，
+    后台日志不再打印 tick。
+    """
+
     routed: dict[str, list[str]] = field(default_factory=dict)
     """要说给**别的会话**的话：``{session_id: [文本…]}``。
 

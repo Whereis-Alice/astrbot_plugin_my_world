@@ -27,10 +27,20 @@ from .constants import (
     DEBUG_ONLY_ECHO_TYPES,
     EXTENSION_LAYER_HEADING,
     PROMPT_SNAPSHOT_KEEP,
+    TICK_LOG_KEEP,
     _DEBUG_ECHO_TYPES,
 )
 from .models import TickOutcome
 from .util import _echo_payload
+
+
+def _is_tick_summary(note: str) -> bool:
+    """``t=1902 node=loft_tatami_corner state=idle mood=…`` 那行机器摘要。
+
+    运行记录里已经有结构化字段了，这行不用再重复显示一遍。
+    """
+
+    return note.startswith("t=") and " node=" in note
 
 
 class SnapshotMixin:
@@ -436,6 +446,9 @@ class SnapshotMixin:
                     "node_id": node_id,
                     "node_name": (node.name or node.id) if node is not None else "",
                     "source": str(item.get("source") or ""),
+                    "target": str(item.get("target") or ""),
+                    "quote": str(item.get("quote") or ""),
+                    "reply": str(item.get("reply") or ""),
                 }
             )
         rows.reverse()
@@ -831,6 +844,48 @@ class SnapshotMixin:
         method = getattr(self.logger, level, None)
         if callable(method):
             method(f"[my_world] {message}")
+
+    # ---------------- 运行记录：tick 只进这里，不进后台日志 ----------------
+
+    def _record_tick(self, outcomes: list[TickOutcome]) -> None:
+        """把这一轮 tick 收进内存环，供编辑器的「运行记录」页查看。
+
+        tick 属于运行时噪音：以前它会以 INFO 写进 AstrBot 后台日志，翻起来全是
+        「t=1902 node=…」。现在只在内存里留最近 ``TICK_LOG_KEEP`` 拍。
+        """
+
+        self._tick_log.appendleft(
+            {
+                "at": self._now(),
+                "count": len(outcomes),
+                "sessions": [
+                    {
+                        "session_id": str(outcome.session_id or ""),
+                        "summary": dict(outcome.summary or {}),
+                        "notes": [
+                            str(note)
+                            for note in (outcome.notes or [])
+                            if str(note).strip() and not _is_tick_summary(str(note))
+                        ],
+                        "messages": [
+                            str(item)
+                            for item in (outcome.messages or [])
+                            if str(item).strip()
+                        ],
+                    }
+                    for outcome in outcomes
+                ],
+            }
+        )
+
+    def tick_log_payload(self) -> dict[str, Any]:
+        """「运行记录」页要的数据：最近几拍她分别在哪儿、做了什么、说了什么。"""
+
+        return {
+            "keep": TICK_LOG_KEEP,
+            "at": self._now(),
+            "entries": [dict(entry) for entry in self._tick_log],
+        }
 
     async def _log_event(
         self,

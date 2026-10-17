@@ -10454,6 +10454,32 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(stored)
         self.assertTrue((await self.engine.weather_record()).empty)
 
+    async def test_report_tool_result_is_not_stored_as_weather(self):
+        """说明里提过「天气」的分析类工具：结果不像天气就别记（见 #9）。"""
+
+        self.tools._tools = {"group_report": "群聊日常分析报告，含话题、活跃度与天气"}
+        await self.set_state(node_id="study")
+        stored = await self.engine.note_tool_weather(
+            session_id=SESSION,
+            tool_name="group_report",
+            result="### 群聊日常分析报告\n1. 曹军曹怀与新番吐槽\n2. 新星同盟带典纸溯源",
+        )
+        self.assertFalse(stored)
+        self.assertTrue((await self.engine.weather_record()).empty)
+
+    async def test_weather_tool_pick_prefers_the_name_match(self):
+        """候选排序：名字里带 weather / 天气 的排前面，说明里提过的排后面。"""
+
+        self.tools._tools = {
+            "group_report": "群聊日常分析报告，含天气",
+            "uapi_weather": "查询指定城市的实时天气",
+        }
+        self.assertEqual(self.engine.weather_tool_candidates(), ["uapi_weather"])
+        self.tools._tools["helper_weather"] = "查天气"
+        candidates = self.engine.weather_tool_candidates()
+        self.assertEqual(set(candidates), {"uapi_weather", "helper_weather"})
+        self.assertNotIn("group_report", candidates)
+
     async def test_tool_weather_is_kept_even_when_background_refresh_is_off(self):
         """关掉「启用天气」只是不后台查；她在聊天里查到的照样记下来画在横幅上。"""
 
@@ -10509,6 +10535,53 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(await self.engine.clear_thoughts(SESSION), 1)
         self.assertEqual((await self.engine.thoughts_payload(SESSION))["thoughts"], [])
+
+    async def test_thoughts_keep_who_and_what_she_replied_to(self):
+        """内心活动要能看出「回了谁、对方说了什么、她回了什么」。"""
+
+        await self.set_state(node_id="study")
+        async with self.engine.session_state(SESSION) as state:
+            state.add_thought(
+                "这话听着耳熟",
+                source="聊完一轮",
+                target="小鲸鱼",
+                quote="今天风挺大",
+                reply="是啊，出门记得带外套",
+            )
+        row = (await self.engine.thoughts_payload(SESSION))["thoughts"][0]
+        self.assertEqual(row["target"], "小鲸鱼")
+        self.assertEqual(row["quote"], "今天风挺大")
+        self.assertEqual(row["reply"], "是啊，出门记得带外套")
+        # 自主决策留下的那种没有对话上下文，字段留空而不是编一个
+        async with self.engine.session_state(SESSION) as state:
+            state.add_thought("今天想早点睡", source="自主决定")
+        latest = (await self.engine.thoughts_payload(SESSION))["thoughts"][0]
+        self.assertEqual(latest["target"], "")
+        self.assertEqual(latest["quote"], "")
+        self.assertEqual(latest["reply"], "")
+
+    async def test_tick_goes_to_the_runtime_log_not_the_backend_log(self):
+        """每一拍的明细进「运行记录」的内存环，不再拼成一行写进后台日志。"""
+
+        await self.set_state(node_id="study")
+        outcomes = await self.engine.tick()
+        payload = self.engine.tick_log_payload()
+
+        self.assertEqual(len(payload["entries"]), 1)
+        entry = payload["entries"][0]
+        self.assertEqual(entry["count"], len(outcomes))
+        session = entry["sessions"][0]
+        self.assertEqual(session["summary"]["node_id"], "study")
+        self.assertGreater(session["summary"]["world_time"], 0)
+        self.assertTrue(session["summary"]["node_name"])
+        # 那行机器摘要（t=… node=… state=… mood=…）结构化字段里已经有了，不再重复
+        self.assertFalse([note for note in session["notes"] if note.startswith("t=")])
+
+        # 环里只留最近几拍，不会无限涨
+        keep = payload["keep"]
+        for _ in range(keep + 5):
+            await self.engine.tick()
+        self.assertEqual(len(self.engine.tick_log_payload()["entries"]), keep)
 
     async def test_weather_can_be_learned_from_a_tool_with_the_wrong_binding(self):
         """「查天气」动作没绑工具时，自动认一把已注册的天气工具。"""

@@ -48,8 +48,13 @@ from core.search import (  # noqa: E402
 from core.weather import (  # noqa: E402
     WeatherRecord,
     age_text,
+    extract_parts,
     format_parts,
+    looks_like_weather_text,
+    looks_like_weather_tool,
     parse_parts,
+    parts_for,
+    weather_tool_score,
     prompt_block as weather_prompt_block,
 )
 from core.models import (  # noqa: E402
@@ -397,6 +402,47 @@ class TestWeather(unittest.TestCase):
         )
         self.assertEqual(record.line(), "武汉｜26℃")
         self.assertEqual(record.at, 123.0)
+
+
+class TestWeatherParsing(unittest.TestCase):
+    """天气原文的识别与拆字段：报告类工具不能混进来，原文也要能看出城市/温度。"""
+
+    RAW = (
+        "广州市 报告 地理位置:广东省广州市 实时天气:多云|26℃(体感28℃)"
+        "|今日温差:最低23℃~最高32℃|空气质量:优(AQI:46)"
+        "|降水预报:未来两小时不会降雨，可以放心出门|风力湿度:东北风3级 湿度77%"
+    )
+
+    def test_weather_tool_name_beats_a_description_only_match(self):
+        self.assertEqual(weather_tool_score("uapi_weather", "查询天气"), 3)
+        self.assertEqual(weather_tool_score("helper", "查询天气与温度"), 1)
+        # 说明里提到"天气"但整体是分析报告：不认
+        self.assertEqual(weather_tool_score("group_report", "群聊日常分析报告，含话题与天气"), 0)
+        self.assertFalse(looks_like_weather_tool("group_report", "群聊日常分析报告，含话题与天气"))
+        self.assertTrue(looks_like_weather_tool("uapi_weather", "查询天气"))
+
+    def test_report_text_is_not_weather(self):
+        report = "### 群聊日常分析报告\n1. 曹军曹怀与新番吐槽\n2. 新星同盟带典纸溯源"
+        self.assertFalse(looks_like_weather_text(report))
+        self.assertTrue(looks_like_weather_text("武汉 26℃ 多云"))
+
+    def test_raw_tool_output_is_not_mistaken_for_the_normalized_line(self):
+        # 半角竖线 + 长字段：以前会被按下标硬套成"城市｜温度｜天气…"，现在不认
+        self.assertEqual(parse_parts(self.RAW), {})
+
+    def test_raw_tool_output_still_yields_fields(self):
+        parts = extract_parts(self.RAW)
+        self.assertEqual(parts["city"], "广州市")
+        self.assertEqual(parts["temp"], "26℃")
+        self.assertEqual(parts["desc"], "多云")
+        self.assertEqual(parts["humidity"], "77%")
+        self.assertIn("东北风3级", parts["wind"])
+        self.assertIn("未来两小时不会降雨", parts["forecast"])
+
+    def test_parts_for_prefers_the_normalized_line(self):
+        normalized = "武汉｜26℃｜多云｜湿度68%｜东南风3级｜夜里转小雨"
+        self.assertEqual(parts_for(normalized)["city"], "武汉")
+        self.assertEqual(parts_for(self.RAW)["city"], "广州市")
 
 
 class TestActionQueries(unittest.TestCase):

@@ -121,6 +121,10 @@ class TurnMixin:
                 state,
                 str((parsed.reasoning or {}).get("inner") or ""),
                 source="聊完一轮",
+                # 这一轮是回谁的、对方说了什么、她回了什么：内心活动那一页要看得见
+                target=str(user_name or user_id or ""),
+                quote=str(user_text or ""),
+                reply=str(reply_text or ""),
             )
             applied_affinity = 0.0
             if ctx.user_id:

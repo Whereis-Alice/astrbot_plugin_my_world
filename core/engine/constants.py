@@ -28,6 +28,10 @@ _DEBUG_ECHO_TYPES = ("tool_call", "tool_result", "command_call", "command_result
 DEBUG_ONLY_ECHO_TYPES = ("incoming",)
 # 没写意图、也没配主题/模板时的兜底搜索主题（见 PromptBuilder 里那段说明）
 DEFAULT_SEARCH_TOPIC = "今天有什么新鲜事"
+
+# 「运行记录」页留多少拍：60 秒一拍的话大约 4 小时，够回头查"刚才那几拍怎么了"。
+# 这些只放在内存里：tick 属于运行时噪音，不再往 AstrBot 后台日志写。
+TICK_LOG_KEEP = 240
 # 「合并重启」：她还在调模型时又来了新消息，就把几条并成一次请求重新发起。
 # 只在**还没开始发送**的窗口里做，所以不会出现"说了半句又改口"。
 MERGE_WINDOW_SECONDS = 5.0

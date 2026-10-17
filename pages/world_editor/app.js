@@ -61,7 +61,11 @@ const ui = {
   actionSort: "recent",
   actionSelectMode: false,
   actionSelected: new Set(),
+  // 上一次点中的位置：按住 Shift 再点就选中这一段（批量勾选不用一个个点）
+  actionLastIndex: null,
   actionCollapsed: new Set(),
+  // 「最近的线索」是不是展开成全部（默认只列前几条，多了给一个展开按钮）
+  eventThreadsExpanded: false,
   // 「从工具导入」弹窗的临时状态
   importState: null,
   presets: [],
@@ -3492,7 +3496,10 @@ function applyMapView() {
   const world = $("canvas-world");
   if (!world) return;
   const view = ui.mapView || { scale: 1, x: 0, y: 0 };
-  world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.scale})`;
+  // 平移吸附到整像素、缩放吸附到 1% 档位：小数变换会让浏览器先把这一层栅格化成
+  // 位图再拉伸，于是"一会儿糊一会儿清楚"；整数档位重复命中同一份栅格，稳定得多。
+  const scale = Math.max(0.05, Math.round(view.scale * 100) / 100);
+  world.style.transform = `translate(${Math.round(view.x)}px, ${Math.round(view.y)}px) scale(${scale})`;
   const label = $("map-zoom-label");
   if (label) label.textContent = `${Math.round(view.scale * 100)}%`;
 }
@@ -3787,6 +3794,8 @@ function showTab(name, button) {
   if (name === "memories") loadMemories();
   if (name === "thoughts") loadThoughts();
   if (name === "logs") loadLogs();
+  if (name === "schedules") loadScheduleHistory();
+  if (name === "ticks") loadTicks();
   if (name === "map") {
     renderMap();
     loadOverview();
@@ -3808,6 +3817,12 @@ function bindButtons() {
   }
   if ($("thoughts-refresh")) {
     $("thoughts-refresh").addEventListener("click", loadThoughts);
+  }
+  if ($("ticks-refresh")) {
+    $("ticks-refresh").addEventListener("click", loadTicks);
+  }
+  if ($("schedule-history-refresh")) {
+    $("schedule-history-refresh").addEventListener("click", loadScheduleHistory);
   }
   if ($("thought-session")) {
     $("thought-session").addEventListener("change", loadThoughts);
@@ -4192,6 +4207,7 @@ function bindButtons() {
     ui.actionSelectMode = !ui.actionSelectMode;
     $("action-select-mode").classList.toggle("on", ui.actionSelectMode);
     if (!ui.actionSelectMode) ui.actionSelected = new Set();
+    ui.actionLastIndex = null;
     renderActionGrid();
   });
   $("action-bulk-enable").addEventListener("click", () => setSelectedActionsEnabled(true));
@@ -4201,6 +4217,7 @@ function bindButtons() {
   $("action-bulk-all").addEventListener("click", () => {
     // 只选「现在看得见的」：筛选剩下的就是这么几个动作时，一次全勾上
     visibleActions().forEach((action) => ui.actionSelected.add(String(action.id)));
+    ui.actionLastIndex = null;
     renderActionGrid();
   });
   $("action-bulk-invert").addEventListener("click", () => {
@@ -4215,6 +4232,7 @@ function bindButtons() {
   });
   $("action-bulk-clear").addEventListener("click", () => {
     ui.actionSelected = new Set();
+    ui.actionLastIndex = null;
     renderActionGrid();
   });
   // 「从工具导入」弹窗
@@ -4348,6 +4366,9 @@ function bindButtons() {
   }, 10000);
   ui.logTimer = window.setInterval(() => {
     if ($("log-auto").checked && $("tab-logs").classList.contains("active")) loadLogs();
+  }, 5000);
+  ui.ticksTimer = window.setInterval(() => {
+    if ($("ticks-auto").checked && $("tab-ticks").classList.contains("active")) loadTicks();
   }, 5000);
   ui.mapTimer = window.setInterval(() => {
     if ($("tab-map").classList.contains("active")) loadOverview();
@@ -4925,8 +4946,11 @@ function setStatusEmpty(text) {
     valuesBox.appendChild(el("p", "muted", "选了会话才看得到她的数值。"));
   }
   setStatusPre("status-plan", "", "（选了会话才看得到）");
-  setStatusPre("status-thoughts", "", "（选了会话才看得到）");
-  setStatusPre("status-context", "", "（选了会话才看得到）");
+  const contextBox = $("status-context");
+  if (contextBox) {
+    contextBox.innerHTML = "";
+    contextBox.appendChild(el("p", "muted", "选了会话才看得到。"));
+  }
   $("status-warn").innerHTML = "";
 }
 
@@ -4953,6 +4977,50 @@ function setStatusPre(id, text, placeholder = "") {
   }
   box.textContent = placeholder;
   box.classList.add("pre-empty");
+}
+
+/**
+ * 群聊上下文：摘要本身是多行的、还带 **小标题**。
+ * 塞进一个 pre 里就是一大块同色文字，这里按行拆开渲染，标题和正文分色。
+ */
+function renderChatContext(data) {
+  const box = $("status-context");
+  if (!box) return;
+  box.innerHTML = "";
+  const count = Number((data && data.chat_history_count) || 0);
+  const rows = Array.isArray(data && data.chat_summaries)
+    ? data.chat_summaries.filter((item) => String((item && item.text) || "").trim())
+    : [];
+  const head = el("div", "chat-context-head");
+  head.appendChild(el("span", "chat-context-count", `留档 ${count} 条（本会话）`));
+  if (!rows.length) head.appendChild(el("span", "muted", "还没有更早的摘要"));
+  box.appendChild(head);
+  rows.forEach((item) => {
+    const card = el("div", "chat-summary");
+    card.appendChild(
+      el("div", "chat-summary-label", String(item.label || item.session || "")),
+    );
+    appendRichLines(card, String(item.text || ""));
+    box.appendChild(card);
+  });
+}
+
+/** 把带 **加粗** 的多行文本渲成节点；以 - / · 开头的行当成列表项。 */
+function appendRichLines(box, text) {
+  String(text || "")
+    .split("\n")
+    .forEach((line) => {
+      const body = line.trim();
+      if (!body) return;
+      const bullet = /^[-·•]\s+/.test(body);
+      const row = el("div", bullet ? "chat-line chat-bullet" : "chat-line");
+      body.split("**").forEach((part, index) => {
+        if (!part) return;
+        if (index % 2 === 1) row.appendChild(el("strong", "chat-strong", part));
+        else row.appendChild(el("span", "", part));
+      });
+      box.appendChild(row);
+    });
 }
 
 /**
@@ -5837,23 +5905,34 @@ function renderCurrentEvent(box, badgeBox, data) {
   box.appendChild(foot);
 }
 
-/** 最近的线索：一行一条，点开进历史弹窗看细节。 */
+/**
+ * 最近的线索：一行一条，点开进历史弹窗看细节。
+ *
+ * 以前硬切前 4 条，她经历过的事在页面上根本看不全（见 #2）。
+ * 现在默认列 6 条 + 一行钩子，还有更多就给一个「展开全部」。
+ */
 function renderRecentThreads(box, data) {
   if (!box) return;
   box.innerHTML = "";
   const now = num(data.now, Date.now() / 1000);
   const activeId = data.active_id || "";
-  const others = (data.threads || []).filter((item) => item.id !== activeId).slice(0, 4);
+  const others = (data.threads || []).filter((item) => item.id !== activeId);
   if (!others.length) {
     box.appendChild(emptyState("🧵", "还没有别的线索：她遇上的事会一条条记在这里。"));
     return;
   }
-  others.forEach((thread) => {
+  const limit = ui.eventThreadsExpanded ? others.length : 6;
+  others.slice(0, limit).forEach((thread) => {
     const meta = eventStatusMeta(thread);
     const row = el("button", "event-recent-row");
     row.type = "button";
     row.appendChild(el("span", `event-dot ${meta.cls}`));
-    row.appendChild(el("span", "event-recent-title", thread.title || "一件事"));
+    const mid = el("span", "event-recent-mid");
+    mid.appendChild(el("span", "event-recent-title", thread.title || "一件事"));
+    if (thread.hook) {
+      mid.appendChild(el("span", "event-recent-hook", String(thread.hook)));
+    }
+    row.appendChild(mid);
     row.appendChild(eventBadge(meta.label, `status ${meta.cls}`));
     row.appendChild(
       el(
@@ -5865,6 +5944,19 @@ function renderRecentThreads(box, data) {
     row.addEventListener("click", () => openEventModal(thread.id));
     box.appendChild(row);
   });
+  if (others.length > 6) {
+    const more = el(
+      "button",
+      "ghost small event-recent-more",
+      ui.eventThreadsExpanded ? "收起" : `展开全部（共 ${others.length} 条）`,
+    );
+    more.type = "button";
+    more.addEventListener("click", () => {
+      ui.eventThreadsExpanded = !ui.eventThreadsExpanded;
+      renderRecentThreads(box, data);
+    });
+    box.appendChild(more);
+  }
 }
 
 /* ---------------- 历史事件弹窗 ---------------- */
@@ -6856,39 +6948,10 @@ async function refreshStatus() {
     $("state-wake").disabled = !sleeping;
 
     setStatusPre("status-plan", formatPlan(data.current_plan), "（她还没安排接下来要做什么）");
-    // 「内心活动」= 最近一次推理草稿（她动手前对处境/心情/对象的确认）。
-    // 以前这里显示的是 think 动作，但模型很少每次都写，面板长期是空的。
-    const reasoning = data.last_reasoning || {};
-    const reasoningLines = REASONING_LABELS.filter(([key]) => reasoning[key]).map(
-      ([key, label]) => `${label}：${reasoning[key]}`,
-    );
-    if (reasoning._source) {
-      reasoningLines.push(`（来自 ${reasoning._source === "plan" ? "自主决策" : "回复"}）`);
-    }
-    const innerLines = reasoningLines.length
-      ? reasoningLines
-      : ["（她还没动过大模型，或者这次没写草稿）"];
-    const thoughts = (data.thoughts || []).map((item) => item.content).filter(Boolean);
-    if (thoughts.length) {
-      // 每一轮复盘 / 自主决策都会补一句，所以一条一行比挤成一行好读
-      innerLines.push(`她主动留下的心里话（最近 ${thoughts.length} 条，越往下越近）：`);
-      thoughts.forEach((text) => innerLines.push(`  · ${text}`));
-    }
-    setStatusPre("status-thoughts", innerLines.join("\n"), "（她还没留下什么心里话）");
+    // 「内心活动」整块搬到「内心活动」页了：那里有位置把"回了谁、回了哪条"一起排开，
+    // 控制台这边只留一个入口，不再挤一长条文字。
 
-    // 更早的群聊摘要（只有在「上下文 → 留档超了怎么办 = 压成摘要」时才有）
-    const summaryBlock = $("status-context");
-    // 摘要按会话分开存：这里把每个会话那一份都列出来（当前会话标成「这里」）
-    const summaryRows = Array.isArray(data.chat_summaries)
-      ? data.chat_summaries.filter((item) => String((item && item.text) || "").trim())
-      : [];
-    const head = `留档 ${Number(data.chat_history_count || 0)} 条（本会话）`;
-    setStatusPre("status-context", summaryRows.length
-      ? `${head}；更早的群聊摘要：\n` +
-        summaryRows
-          .map((item) => `〔${item.label || item.session}〕${String(item.text).trim()}`)
-          .join("\n")
-      : `${head}，暂无摘要。`, "");
+    renderChatContext(data);
 
     const logs = await apiGet("logs", { session: sessionId, limit: 60 });
     const events = logs.events || [];
@@ -7391,20 +7454,27 @@ function renderWeatherBanner() {
   box.setAttribute("title", sourceLabel ? `${text}（${sourceLabel}）` : text);
   $("map-weather-icon").textContent = weatherIcon(weather.desc);
   main.className = "weather-main";
-  const head = [weather.city, weather.desc, weather.temp].filter(Boolean).join(" ");
+  // 主行只放「城市 · 天气 · 温度」；原文整段进 title，别糊在横幅上
+  const headParts = [weather.city, weather.desc, weather.temp].filter(Boolean);
+  const head = headParts.join(" · ");
   main.textContent = head || text;
-  const rest = head && text !== head ? text : "";
   age.innerHTML = "";
-  if (rest) {
-    age.appendChild(el("span", "weather-line", rest));
-    age.appendChild(el("span", "", " · "));
+  if (head) {
+    // 湿度 / 风力 / 预报各自一小块：比一长串原文好扫
+    const chips = [weather.humidity, weather.wind, weather.forecast].filter(Boolean);
+    for (const chip of chips) {
+      age.appendChild(el("span", "weather-chip", chip));
+    }
+    if (!chips.length && text !== head) {
+      age.appendChild(el("span", "weather-line", text));
+    }
+    if (chips.length) age.appendChild(el("span", "", " · "));
   }
   age.appendChild(el("span", "", weatherAge(weather.at)));
   if (sourceLabel) {
     age.appendChild(el("span", "", " · "));
     age.appendChild(el("span", "", sourceLabel));
   }
-  if (!head) main.textContent = text;
 }
 
 async function refreshWeatherNow() {
@@ -7566,7 +7636,7 @@ function renderWorldMap() {
     svg.appendChild(path);
     const title = document.createElementNS(MAP_NS, "title");
     title.textContent =
-      `${nodeLabel(edge.from_node)} ↔ ${nodeLabel(edge.to_node)}（${num(edge.ticks, 1)} tick）`;
+      `${nodeLabel(edge.from_node)} ⟷ ${nodeLabel(edge.to_node)}（${num(edge.ticks, 1)} tick）`;
     path.appendChild(title);
 
     const fromText = nodeLabel(edge.from_node);
@@ -7810,7 +7880,7 @@ function renderZoneMap() {
     svg.appendChild(path);
     const title = document.createElementNS(MAP_NS, "title");
     title.textContent =
-      `${nodeLabel(edge.from)} ↔ ${nodeLabel(edge.to)}（${num(edge.ticks, 1)} tick）`;
+      `${nodeLabel(edge.from)} ⟷ ${nodeLabel(edge.to)}（${num(edge.ticks, 1)} tick）`;
     path.appendChild(title);
     const point = edgeAnchorPoint(x1, y1, x2, y2, 0, 0, false, 10);
     labelLayer.appendChild(
@@ -9309,7 +9379,7 @@ function portalEditor(zone) {
   title.appendChild(el("span", "", "跨区连线（通往其他区域的通道）"));
   title.appendChild(
     tipBox(
-      "每条线自带两端地点，例如「北门 ↔ 商场大门」。同一对区域可以有多条线，" +
+      "每条线自带两端地点，例如「北门 ⟷ 商场大门」。同一对区域可以有多条线，" +
         "她按最短路线自动挑一条。",
     ),
   );
@@ -9348,7 +9418,7 @@ function portalRow(edge, zone) {
     renderMap();
   });
   line.appendChild(hereSelect);
-  line.appendChild(el("span", "muted", "↔"));
+  line.appendChild(el("span", "muted", "⟷"));
 
   const zoneSelect = document.createElement("select");
   zoneSelect.title = "对面是哪个区域";
@@ -11327,11 +11397,28 @@ function updateActionBulkBar() {
   );
 }
 
-/** 选中 / 取消选中一个动作（批量模式用）。 */
-function toggleActionSelected(actionId) {
+/**
+ * 选中 / 取消选中一个动作（批量模式用）。
+ *
+ * ``shift`` 时按"当前列表顺序"整段选中——勾几十个动作时，一个个点那个小方框
+ * 是最烦的一步。列表顺序取的是当前筛选结果，所见即所选的区间。
+ */
+function toggleActionSelected(actionId, options = {}) {
   const key = String(actionId);
-  if (ui.actionSelected.has(key)) ui.actionSelected.delete(key);
-  else ui.actionSelected.add(key);
+  const order = visibleActions().map((item) => String(item.id));
+  const index = order.indexOf(key);
+  if (options.shift && index >= 0 && ui.actionLastIndex != null) {
+    const from = Math.min(ui.actionLastIndex, index);
+    const to = Math.max(ui.actionLastIndex, index);
+    for (let cursor = from; cursor <= to; cursor += 1) {
+      ui.actionSelected.add(order[cursor]);
+    }
+  } else if (ui.actionSelected.has(key)) {
+    ui.actionSelected.delete(key);
+  } else {
+    ui.actionSelected.add(key);
+  }
+  ui.actionLastIndex = index >= 0 ? index : null;
   markDirty();
   renderActionGrid();
 }
@@ -11563,7 +11650,9 @@ function renderActionTable(list) {
       pick.title = "选中这个动作（批量操作）";
       pick.checked = ui.actionSelected.has(String(action.id));
       pick.addEventListener("click", (event) => event.stopPropagation());
-      pick.addEventListener("change", () => toggleActionSelected(action.id));
+      pick.addEventListener("change", (event) =>
+        toggleActionSelected(action.id, { shift: event.shiftKey }),
+      );
       nameCell.insertBefore(pick, nameCell.firstChild);
     }
     nameCell.appendChild(el("small", "", action.id));
@@ -11636,7 +11725,12 @@ function renderActionTable(list) {
     row.appendChild(actionsCell);
 
     row.addEventListener("click", (event) => {
-      if (event.target.closest("button")) return;
+      if (event.target.closest("button, input, select, a")) return;
+      // 批量模式下整行就是"勾选框"：不用去点那个小方框
+      if (ui.actionSelectMode) {
+        toggleActionSelected(action.id, { shift: event.shiftKey });
+        return;
+      }
       openActionDrawer(action.id);
     });
     body.appendChild(row);
@@ -11658,7 +11752,9 @@ function actionCard(action) {
     pick.title = "选中这个动作，下面可以批量启用 / 停用 / 改分组 / 删除";
     pick.checked = ui.actionSelected.has(String(action.id));
     pick.addEventListener("click", (event) => event.stopPropagation());
-    pick.addEventListener("change", () => toggleActionSelected(action.id));
+    pick.addEventListener("change", (event) =>
+      toggleActionSelected(action.id, { shift: event.shiftKey }),
+    );
     head.appendChild(pick);
   }
   const toggle = document.createElement("input");
@@ -11739,7 +11835,15 @@ function actionCard(action) {
   tools.appendChild(remove);
   card.appendChild(tools);
 
-  card.addEventListener("click", () => openActionDrawer(action.id));
+  card.addEventListener("click", (event) => {
+    if (event.target.closest("button, input, select, a")) return;
+    // 批量模式下点卡片任意空白处就是选中：以前只能瞄准左上角那个小方框
+    if (ui.actionSelectMode) {
+      toggleActionSelected(action.id, { shift: event.shiftKey });
+      return;
+    }
+    openActionDrawer(action.id);
+  });
   return card;
 }
 
@@ -12341,6 +12445,49 @@ function renderScheduleList() {
   if (!schedules().length) list.appendChild(el("p", "muted", "还没有日程。"));
 }
 
+/**
+ * 日程执行记录：读日志里 event_type=schedule 的那几条（和「日志」页同一份数据）。
+ * 日程页以前只有"待办"，跑没跑、跑成什么样都得去日志页翻。
+ */
+async function loadScheduleHistory() {
+  const box = $("schedule-history");
+  if (!box) return;
+  box.innerHTML = "";
+  box.appendChild(el("p", "muted", "读取中…"));
+  try {
+    const session = $("schedule-session") ? $("schedule-session").value : "";
+    const data = await apiGet("logs", {
+      ...(session ? { session } : {}),
+      type: "schedule",
+      limit: 50,
+    });
+    renderScheduleHistory(data);
+  } catch (error) {
+    box.innerHTML = "";
+    box.appendChild(el("p", "muted", error.message || "读取失败"));
+  }
+}
+
+function renderScheduleHistory(data) {
+  const box = $("schedule-history");
+  if (!box) return;
+  box.innerHTML = "";
+  const rows = (data && data.events) || [];
+  if (!rows.length) {
+    box.appendChild(
+      el("p", "muted", "还没有执行记录：到点跑过一次，或者点一次「立即执行」，这里就会记下来。"),
+    );
+    return;
+  }
+  rows.forEach((row) => {
+    const line = el("div", "history-row");
+    line.appendChild(el("span", "history-tick", `t=${row.world_time}`));
+    const text = el("span", "history-text", String(row.text || row.event_type || ""));
+    line.appendChild(text);
+    box.appendChild(line);
+  });
+}
+
 /** 「立即执行」：现在就跑一遍这条日程的动作链。 */
 async function runScheduleNow(schedule) {
   const sessionId = $("schedule-session").value;
@@ -12372,7 +12519,11 @@ async function runScheduleNow(schedule) {
       force: true,
     });
     toast(result.ok ? result.note || "已执行" : result.reason || "没有执行");
-    if (result.ok) refreshStatus();
+    if (result.ok) {
+      refreshStatus();
+      // 刚跑完就把它记进「执行记录」里，不用手动刷新
+      loadScheduleHistory();
+    }
   } catch (error) {
     toast(error.message || "执行失败");
   }
@@ -13524,11 +13675,17 @@ function renderContactDetail(data) {
   note.placeholder = "备注（只给你看，不进模型）";
   note.value = person.note || "";
   note.dataset.act = "field-note";
+  if (person.note_from) {
+    note.title = `备注来自${person.note_from}（这边还没写过）；改动会写回本插件。`;
+  }
   const digest = el("input");
   digest.placeholder = "缩略版画像（给别人看的那一行）";
   digest.value = person.digest || "";
   digest.dataset.act = "field-digest";
   [callMe, callHim, note, digest].forEach((node) => fieldCard.appendChild(node));
+  if (person.note_from) {
+    fieldCard.appendChild(el("p", "muted", `备注先用了${person.note_from}那边记的；保存后以这边为准。`));
+  }
   const saveFields = el("button", "primary tiny", "保存这些字段");
   saveFields.dataset.act = "fields-save";
   fieldCard.appendChild(saveFields);
@@ -13917,18 +14074,49 @@ async function loadThoughts() {
   if (!list) return;
   const session = $("thought-session") ? $("thought-session").value : "";
   list.innerHTML = "";
+  renderThoughtsReasoning(null);
   if (!session) {
     list.appendChild(el("p", "muted", "还没有白名单会话。"));
     return;
   }
   list.appendChild(el("p", "muted", "读取中…"));
   try {
-    const data = await apiGet("thoughts", { session, limit: 120 });
+    // 推理草稿和心里话读的是同一份状态：一起拿，页面不会一半先到一半后到
+    const [data, state] = await Promise.all([
+      apiGet("thoughts", { session, limit: 120 }),
+      apiGet("state", { session }).catch(() => null),
+    ]);
+    renderThoughtsReasoning(state);
     renderThoughts(data);
   } catch (error) {
     list.innerHTML = "";
     list.appendChild(el("p", "muted", error.message || "读取失败"));
   }
+}
+
+/** 最近一次推理草稿：她动手前对处境 / 心情 / 对象的确认（原控制台那一块）。 */
+function renderThoughtsReasoning(state) {
+  const box = $("thoughts-reasoning");
+  if (!box) return;
+  const note = $("thoughts-reasoning-note");
+  box.innerHTML = "";
+  const reasoning = (state && state.last_reasoning) || {};
+  const rows = REASONING_LABELS.filter(([key]) => reasoning[key]);
+  if (note) {
+    note.textContent = reasoning._source
+      ? `来自 ${reasoning._source === "plan" ? "自主决策" : "回复"}`
+      : "";
+  }
+  if (!rows.length) {
+    box.appendChild(el("p", "muted", "（她还没动过大模型，或者这次没写草稿）"));
+    return;
+  }
+  rows.forEach(([key, label]) => {
+    const row = el("div", "reasoning-row");
+    row.appendChild(el("span", "reasoning-label", label));
+    row.appendChild(el("span", "reasoning-text", String(reasoning[key])));
+    box.appendChild(row);
+  });
 }
 
 function renderThoughts(data) {
@@ -13954,6 +14142,20 @@ function renderThoughts(data) {
     if (row.source) head.appendChild(el("span", "thought-source", row.source));
     item.appendChild(head);
     item.appendChild(el("div", "thought-text", String(row.content || "")));
+    // 回了谁、回了哪条、她回了什么：光有一句心里话看不出这一轮的来龙去脉
+    if (row.target || row.quote || row.reply) {
+      const context = el("div", "thought-context");
+      if (row.target) {
+        context.appendChild(el("span", "thought-chip", `回了 ${row.target}`));
+      }
+      if (row.quote) {
+        context.appendChild(el("span", "thought-quote", `对方说：${row.quote}`));
+      }
+      if (row.reply) {
+        context.appendChild(el("span", "thought-reply", `她回：${row.reply}`));
+      }
+      item.appendChild(context);
+    }
     list.appendChild(item);
   });
 }
@@ -13974,6 +14176,79 @@ async function clearThoughts() {
   } catch (error) {
     toast(error.message || "清空失败");
   }
+}
+
+/* ---------------- 运行记录：每一拍 tick 都干了什么 ---------------- */
+
+/** 会话显示名：优先用备注 / 群名，认不出来才退回 session_id。 */
+function sessionLabelOf(sessionId) {
+  const key = String(sessionId || "");
+  if (!key) return "";
+  const item = (ui.sessions || []).find((row) => String(row.session_id || "") === key);
+  if (item) return String(item.note || item.group_name || key);
+  return key;
+}
+
+async function loadTicks() {
+  const list = $("ticks-list");
+  if (!list) return;
+  list.innerHTML = "";
+  list.appendChild(el("p", "muted", "读取中…"));
+  try {
+    renderTicks(await apiGet("ticks"));
+  } catch (error) {
+    list.innerHTML = "";
+    list.appendChild(el("p", "muted", error.message || "读取失败"));
+  }
+}
+
+function renderTicks(data) {
+  const list = $("ticks-list");
+  if (!list) return;
+  list.innerHTML = "";
+  const entries = (data && data.entries) || [];
+  const note = $("ticks-note");
+  if (note) note.textContent = entries.length ? `最近 ${entries.length} 拍` : "";
+  if (!entries.length) {
+    list.appendChild(
+      el("p", "muted", "还没有记录：世界时钟跑过一拍之后，这里就会记下来。"),
+    );
+    return;
+  }
+  entries.forEach((entry) => {
+    const row = el("div", "tick-row");
+    const head = el("div", "tick-head");
+    head.appendChild(el("span", "tick-time", entry.at ? formatStamp(entry.at) : "（更早）"));
+    head.appendChild(
+      el(
+        "span",
+        "tick-count",
+        Number(entry.count) ? `${entry.count} 个会话在跑` : "这一拍没有会话",
+      ),
+    );
+    row.appendChild(head);
+    (entry.sessions || []).forEach((session) => {
+      const card = el("div", "tick-session");
+      const summary = session.summary || {};
+      const bits = [];
+      if (summary.world_time) bits.push(`第 ${summary.world_time} 拍`);
+      bits.push(summary.node_name || summary.node_id || "（不知道在哪）");
+      if (summary.state) bits.push(stateLabelOf(summary.state, {}));
+      if (summary.mood) bits.push(summary.mood);
+      if (summary.has_plan) bits.push("有计划");
+      card.appendChild(
+        el("div", "tick-where", `${sessionLabelOf(session.session_id)} · ${bits.join(" · ")}`),
+      );
+      (session.notes || []).forEach((text) => {
+        card.appendChild(el("div", "tick-note", String(text)));
+      });
+      (session.messages || []).forEach((text) => {
+        card.appendChild(el("div", "tick-say", `她说：${String(text)}`));
+      });
+      row.appendChild(card);
+    });
+    list.appendChild(row);
+  });
 }
 
 /* ---------------- 左侧导航：收成图标栏 ---------------- */

@@ -85,3 +85,32 @@ class ScopeApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.plugin.store.raw_world().get("persona", {}), before)
         with self.plugin.engine.config_scope(self.session):
             self.assertEqual(self.plugin.engine.world.persona.samples[0]["text"], "Local sample")
+
+    async def test_contact_note_merges_from_profile_weaver_facts(self):
+        """通讯录备注：本插件这边没写过时，借「心迹画像」搬来的那条（只补空）。"""
+
+        store = self.plugin.engine.profiles
+        store.touch(self.session, "42", "小明")
+        store.note_fact(
+            self.session,
+            "42",
+            text="上个月搬了新家",
+            kind="note",
+            evidence="导入自心迹画像",
+            confidence=0.9,
+        )
+        result = await self.call(
+            "profile/person", method="POST", session=self.session, user_id="42"
+        )
+        person = (result.get("data") or {}).get("person") or {}
+        self.assertEqual(person.get("note"), "上个月搬了新家")
+        self.assertEqual(person.get("note_from"), "心迹画像")
+
+        # 这边自己写过备注之后，就不再借它的（也不该丢掉自己的）
+        store.set_note(self.session, "42", "我自己的备注")
+        result = await self.call(
+            "profile/person", method="POST", session=self.session, user_id="42"
+        )
+        person = (result.get("data") or {}).get("person") or {}
+        self.assertEqual(person.get("note"), "我自己的备注")
+        self.assertNotIn("note_from", person)

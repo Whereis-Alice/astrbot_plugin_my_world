@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+from collections import deque
 from typing import Any
 from ..config_scope import ScopedConfigMixin
 from ..config_store import ConfigStore
@@ -60,6 +61,7 @@ from .constants import (
     DESIRE_TEASE_FLOOR,
     DESIRE_TEASE_CEIL,
     SEARCH_QUERY_RULES,
+    TICK_LOG_KEEP,
     MEMORY_REFUSAL_HINTS,
 )
 from .models import (
@@ -113,6 +115,7 @@ from .relations import RelationsMixin
 from .tools import ToolsMixin
 from .schedule import ScheduleMixin
 from .weather import WeatherMixin
+from .tick import TickMixin
 from .autonomy import AutonomyMixin
 from .actions import ActionsMixin
 from .schedule_actions import ScheduleActionsMixin
@@ -227,6 +230,7 @@ class MyWorldEngine(
     ToolsMixin,
     ScheduleMixin,
     WeatherMixin,
+    TickMixin,
     AutonomyMixin,
     ActionsMixin,
     ScheduleActionsMixin,
@@ -372,6 +376,9 @@ class MyWorldEngine(
 
         self._prompt_snapshots: list[dict[str, Any]] = []
         """最近几次"实际发出去的完整请求"（只读调试用，见 :meth:`preview_last_reply_request`）。"""
+
+        self._tick_log: deque[dict[str, Any]] = deque(maxlen=TICK_LOG_KEEP)
+        """最近几拍 tick 的结果（编辑器「运行记录」页读它；不进后台日志）。"""
 
         self._incoming_notes: dict[str, list[str]] = {}
         """handle_incoming 攒下的临时提示（冷启动、"刚被叫醒"这类）：会话 -> [提示]。
