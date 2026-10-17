@@ -8283,7 +8283,8 @@ function regenerateZoneDialog(zone) {
   askGenerateCount({
     title: `重做区域：${zone.name || zone.id}`,
     hint: `给这个区域重新起草一批地点。现在这个区域有 ${inside.length} 个地点；`
-      + "选「替换」的话，确认时会把它们连边一起清掉（挂在这些地点上的动作会改成全局）。",
+      + "选「替换」的话，确认时会把它们连边一起清掉，只绑定这些旧地点的专属动作也会删除；"
+      + "全局动作和仍绑定区域外地点的共享动作会保留。",
     defaultValue: Math.max(1, Math.min(6, inside.length || 3)),
     min: 1,
     max: 8,
@@ -8298,7 +8299,7 @@ function regenerateZoneDialog(zone) {
       defaultValue: "append",
       options: [
         { value: "append", text: "追加：老的留着，新的加进来" },
-        { value: "replace", text: "替换：确认时清掉这个区域现有的地点" },
+        { value: "replace", text: "替换：清掉现有地点，并删除只绑定旧地点的专属动作" },
       ],
     },
     extra: {
@@ -8330,7 +8331,9 @@ function openZoneRegenerateDialog(zone, result) {
   openCustomDialog({
     title: `重做「${zone.name || zone.id}」：${drafts.length} 个新地点`,
     hint: removeNodes.length
-      ? `确认后会把这个区域现有的 ${removeNodes.length} 个地点连边一起清掉，再写入这 ${drafts.length} 个新地点。`
+      ? `确认后会清掉这个区域现有的 ${removeNodes.length} 个地点和连边，`
+        + "删除只绑定这些地点的专属动作，再写入这 "
+        + `${drafts.length} 个新地点；全局及共享动作保留。`
       : "确认后把这批新地点加进这个区域，原有的地点留着。",
     confirmText: "写入这个区域",
     build: (body) => {
@@ -8368,6 +8371,10 @@ async function commitZoneRegenerate(zone, picked, newEdges, draftActions, remove
   ui.config.world.zone_edges = zoneEdges().filter(
     (edge) => !removed.has(edge.from_node) && !removed.has(edge.to_node),
   );
+  // 旧地点已经不存在了：只绑定这些地点的专属动作一并清掉；如果还绑着
+  // 区域外的地点，则保留成仍然可触发的共享动作。
+  const retainedNodeIds = new Set(nodes().map((node) => node.id));
+  const removedActions = pruneNodeScopedActions(retainedNodeIds);
   // 2) 写进新地点（id 撞了就往后排）
   const usedNodes = new Set(nodes().map((item) => item.id));
   const idMap = {};
@@ -8409,19 +8416,6 @@ async function commitZoneRegenerate(zone, picked, newEdges, draftActions, remove
       ...(item.node_id ? { node_id: remap(item.node_id) } : {}),
     }));
   const addedActions = pushActionDrafts(keptActions);
-  // 4) 被删掉的地点：限定它们的动作改成全局（和「一键重建」同一套处理）
-  let orphaned = 0;
-  (ui.config.world.actions || []).forEach((action) => {
-    if (action.scope !== "node" || !(action.allowed_nodes || []).length) return;
-    const kept = (action.allowed_nodes || []).filter((id) => !removed.has(id));
-    if (!kept.length) {
-      action.scope = "global";
-      action.allowed_nodes = [];
-      orphaned += 1;
-      return;
-    }
-    action.allowed_nodes = kept;
-  });
   markDirty();
   renderMap();
   renderNodeForm();
@@ -8429,7 +8423,7 @@ async function commitZoneRegenerate(zone, picked, newEdges, draftActions, remove
   const notes = [`已写入 ${picked.length} 个地点`];
   if (removed.size) notes.push(`清掉 ${removed.size} 个旧地点`);
   if (addedActions.length) notes.push(`顺带加入 ${addedActions.length} 个动作`);
-  if (orphaned) notes.push(`${orphaned} 个原本限定旧地点的动作已改为全局`);
+  if (removedActions) notes.push(`${removedActions} 个绑定旧地点的专属动作已一并清掉`);
   toast(notes.join("；"));
   return true;
 }
@@ -8695,6 +8689,26 @@ function buildActionDraftList(body, drafts, problems) {
   }
 
   renderDraftRows();
+}
+
+/**
+ * 地点没了以后整理专属动作：没有任何可用地点的动作直接删掉，
+ * 还绑着其他地点的共享动作只剔除失效地点。返回彻底删掉的动作数。
+ */
+function pruneNodeScopedActions(retainedNodeIds) {
+  const retained = retainedNodeIds instanceof Set
+    ? retainedNodeIds
+    : new Set(retainedNodeIds || []);
+  const current = actions();
+  const next = current.filter((action) => {
+    if (action.scope !== "node" || !(action.allowed_nodes || []).length) return true;
+    const kept = (action.allowed_nodes || []).filter((id) => retained.has(id));
+    if (!kept.length) return false;
+    action.allowed_nodes = kept;
+    return true;
+  });
+  ui.config.world.actions = next;
+  return current.length - next.length;
 }
 
 /** 把生成好的动作草稿并进动作库（**不保存**）：调用方自己 markDirty + saveAll。 */
@@ -9305,17 +9319,7 @@ async function commitGeneratedWorldMap(zones, nodes, edges, zoneEdges, newAction
   const newNodeIds = new Set(nodes.map((node) => node.id));
   // 整张地图都换了：绑在旧地点上的专属动作留着也没地方能触发，直接一起换掉。
   // 分组是按动作派生的，动作清空之后空分组自然消失。
-  let removedActions = 0;
-  ui.config.world.actions = (ui.config.world.actions || []).filter((action) => {
-    if (action.scope !== "node" || !(action.allowed_nodes || []).length) return true;
-    const kept = (action.allowed_nodes || []).filter((id) => newNodeIds.has(id));
-    if (!kept.length) {
-      removedActions += 1;
-      return false;
-    }
-    action.allowed_nodes = kept;
-    return true;
-  });
+  const removedActions = pruneNodeScopedActions(newNodeIds);
   let droppedWalks = 0;
   ((ui.config.schedules && ui.config.schedules.schedules) || []).forEach((schedule) => {
     const steps = schedule.action_chain || [];

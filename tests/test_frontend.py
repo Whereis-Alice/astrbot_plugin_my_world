@@ -329,6 +329,16 @@ class FrontendSyntaxTest(unittest.TestCase):
         self.assertIn('Array.isArray(detail.steps) ? detail.steps : []', source)
         self.assertIn("schedule-run-step", source)
 
+    def test_replaced_zones_prune_actions_bound_only_to_old_nodes(self) -> None:
+        source = APP_JS.read_text("utf-8")
+        self.assertIn("function pruneNodeScopedActions(", source)
+        start = source.index("async function commitZoneRegenerate(")
+        end = source.index("\nfunction nodeGeneratorBox(", start)
+        body = source[start:end]
+        self.assertIn("pruneNodeScopedActions(retainedNodeIds)", body)
+        self.assertIn("专属动作已一并清掉", body)
+        self.assertNotIn("原本限定旧地点的动作已改为全局", body)
+
     def test_map_edges_stay_straight(self) -> None:
         source = APP_JS.read_text("utf-8")
         self.assertIn("const d = `M ${x1} ${y1} L ${x2} ${y2}`;", source)

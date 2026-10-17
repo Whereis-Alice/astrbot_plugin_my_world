@@ -503,6 +503,82 @@ class GenerationBrowserTests(unittest.TestCase):
         )
         self.assertEqual(self.errors, [])
 
+    def test_zone_replace_removes_actions_bound_only_to_old_nodes(self):
+        """替换区域：旧地点专属动作删除，仍绑定区域外地点或全局的动作保留。"""
+
+        self.page.locator('button[data-tab="map"]').click()
+        fixture = self.page.evaluate(
+            """async () => {
+              const config = await AstrBotPluginPage.apiGet("config");
+              const actions = config.world.actions || [];
+              const exclusive = actions.find(
+                (action) => action.scope === "node"
+                  && (action.allowed_nodes || []).length === 1
+                  && config.world.nodes.some((node) => node.id === action.allowed_nodes[0]),
+              );
+              const nodeId = exclusive.allowed_nodes[0];
+              const node = config.world.nodes.find((item) => item.id === nodeId);
+              const shared = actions.find(
+                (action) => action.scope === "node"
+                  && (action.allowed_nodes || []).includes(nodeId)
+                  && (action.allowed_nodes || []).some((id) => id !== nodeId),
+              );
+              return {
+                zoneId: node.zone_id,
+                nodeId,
+                exclusiveActionId: exclusive.id,
+                sharedActionId: shared ? shared.id : "",
+              };
+            }"""
+        )
+        self.assertTrue(fixture["exclusiveActionId"])
+        self.page.locator(
+            f'#canvas-nodes .node[data-kind="zone"][data-id="{fixture["zoneId"]}"]'
+        ).click()
+        self.page.get_by_role("button", name="重做这个区域").click()
+        self.page.locator("#dialog-body select").select_option("replace")
+        self.page.locator("#dialog-ok").click()
+
+        call = self.page.evaluate("generationCalls").pop()
+        self.assertTrue(call["data"]["replace"])
+        self.page.evaluate(
+            """({zoneId, removeNode}) => finishGeneration({
+                zone: zoneId,
+                nodes: [{
+                  id: "replacement_spot",
+                  zone_id: zoneId,
+                  name: "新角落",
+                  prompt: "重新布置过的地方",
+                  x: 30,
+                  y: 30,
+                }],
+                edges: [],
+                actions: [],
+                remove_nodes: [removeNode],
+                problems: [],
+            })""",
+            {"zoneId": fixture["zoneId"], "removeNode": fixture["nodeId"]},
+        )
+        expect(self.page.locator("#dialog-title")).to_contain_text("重做")
+        expect(self.page.locator("#dialog-hint")).to_contain_text("专属动作")
+        self.page.locator("#dialog-ok").click()
+        expect(self.page.locator("#dialog")).to_be_hidden()
+
+        config = self.page.evaluate("AstrBotPluginPage.apiGet('config')")
+        action_ids = {item["id"] for item in config["world"]["actions"]}
+        self.assertNotIn(fixture["exclusiveActionId"], action_ids)
+        self.assertNotIn(fixture["nodeId"], {
+            item["id"] for item in config["world"]["nodes"]
+        })
+        if fixture["sharedActionId"]:
+            shared = next(
+                item
+                for item in config["world"]["actions"]
+                if item["id"] == fixture["sharedActionId"]
+            )
+            self.assertNotIn(fixture["nodeId"], shared["allowed_nodes"])
+        self.assertEqual(self.errors, [])
+
     def test_map_tools_can_collapse(self):
         """右下角的天气 + 缩放工具可以收起，给地图让位。"""
 
