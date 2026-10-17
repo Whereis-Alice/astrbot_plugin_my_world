@@ -86,6 +86,60 @@ class TestParseGeneratedActions(unittest.TestCase):
         # 超出范围的夹回 0~1
         self.assertEqual(by_id["lean"]["intimacy"], 1.0)
 
+    def test_bogus_duration_mode_is_normalized_instead_of_dropped(self):
+        """瞬间动作写 duration_mode=none、持续动作写奇怪模式：归一化，别整条丢掉。"""
+
+        text = (
+            '[{"id": "look_map", "node_id": "balcony", "name": "看地图",'
+            ' "category": "instant", "duration_mode": "none", "duration": 120},'
+            ' {"id": "watch_sky", "node_id": "balcony", "name": "看天",'
+            ' "category": "持续", "duration_mode": "whatever"}]'
+        )
+        actions, problems = parse_generated_actions(
+            text, node_ids=["balcony"], tool_names=set()
+        )
+        by_id = {item["id"]: item for item in actions}
+        self.assertEqual(set(by_id), {"look_map", "watch_sky"})
+        self.assertEqual(by_id["look_map"]["duration_mode"], "fixed")
+        self.assertEqual(by_id["look_map"]["duration"], 0)
+        self.assertEqual(by_id["watch_sky"]["category"], "continuous")
+        self.assertEqual(by_id["watch_sky"]["duration_mode"], "llm")
+        self.assertEqual(problems, [])
+
+    def test_completion_trigger_aliases_are_normalized(self):
+        text = (
+            '[{"id": "retell", "node_id": "balcony", "name": "说一句",'
+            ' "on_complete": {"trigger": "续说"}},'
+            ' {"id": "quiet", "node_id": "balcony", "name": "安静",'
+            ' "on_complete": {"trigger": "no"}}]'
+        )
+        actions, _problems = parse_generated_actions(
+            text, node_ids=["balcony"], tool_names=set()
+        )
+        by_id = {item["id"]: item for item in actions}
+        self.assertEqual(by_id["retell"]["on_complete"]["trigger"], "llm_followup")
+        self.assertEqual(by_id["quiet"]["on_complete"]["trigger"], "none")
+
+    def test_trailing_commas_are_tolerated(self):
+        text = '{"actions": [{"id": "look_a", "node_id": "balcony", "name": "A",},],}'
+        actions, problems = parse_generated_actions(
+            text, node_ids=["balcony"], tool_names=set()
+        )
+        self.assertEqual([item["id"] for item in actions], ["look_a"])
+        self.assertEqual(problems, [])
+
+    def test_truncated_json_keeps_the_complete_items(self):
+        """输出被截断：补上结尾括号，已经完整的动作照样留下。"""
+
+        text = (
+            '{"actions": [{"id": "look_a", "node_id": "balcony", "name": "A"},'
+            ' {"id": "look_b", "node_id": "balcony", "name": "B"'
+        )
+        actions, _problems = parse_generated_actions(
+            text, node_ids=["balcony"], tool_names=set()
+        )
+        self.assertEqual([item["id"] for item in actions], ["look_a", "look_b"])
+
     def test_bad_id_is_skipped_with_a_reason(self):
         actions, problems = parse_generated_actions(
             ACTIONS_JSON, node_ids=["balcony"], tool_names=set()

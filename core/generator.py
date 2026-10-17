@@ -81,8 +81,73 @@ def clamp_node_count(value: Any, default: int = DEFAULT_NODES_PER_RUN) -> int:
     return max(1, min(MAX_NODES_PER_RUN, number))
 
 
+def _strip_trailing_commas(text: str) -> str:
+    """去掉对象 / 数组末尾多余的逗号（``{"a": 1,}`` / ``[1, 2,]``）。
+
+    用一个小状态机跳过字符串内容，免得把正文里的 ``,}"`` 也改掉。
+    """
+
+    out: list[str] = []
+    in_string = False
+    escaped = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if in_string:
+            out.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            out.append(char)
+            index += 1
+            continue
+        if char == ",":
+            look = index + 1
+            while look < len(text) and text[look] in " \t\r\n":
+                look += 1
+            if look < len(text) and text[look] in "}]":
+                index += 1
+                continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def _balance_json(text: str) -> str:
+    """把被截断的 JSON 补上结尾的 ``}`` / ``]``（字符串没收尾就别硬补）。"""
+
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "{[":
+            stack.append(char)
+        elif char in "}]" and stack:
+            stack.pop()
+    if in_string or not stack:
+        return text
+    return text + "".join("}" if opener == "{" else "]" for opener in reversed(stack))
+
+
 def parse_json_payload(text: str) -> tuple[Any, list[str]]:
-    """把模型输出解析成 JSON 对象 / 数组：容忍 ```json 围栏和前后废话。"""
+    """把模型输出解析成 JSON 对象 / 数组：容忍围栏、前后废话、尾逗号与截断。"""
 
     raw = str(text or "").strip()
     if not raw:
@@ -90,19 +155,31 @@ def parse_json_payload(text: str) -> tuple[Any, list[str]]:
     fenced = re.search(r"```(?:json)?\s*(.+?)```", raw, re.S)
     if fenced:
         raw = fenced.group(1).strip()
+    candidates = [raw]
+    # 退一步：截取第一个 [ 到最后一个 ]（或 { 到 }）
+    for opener, closer in (("[", "]"), ("{", "}")):
+        start, end = raw.find(opener), raw.rfind(closer)
+        if start >= 0 and end > start:
+            sliced = raw[start : end + 1]
+            if sliced not in candidates:
+                candidates.append(sliced)
     payload: Any = None
-    try:
-        payload = json.loads(raw)
-    except Exception:
-        # 退一步：截取第一个 [ 到最后一个 ]（或 { 到 }）
-        for opener, closer in (("[", "]"), ("{", "}")):
-            start, end = raw.find(opener), raw.rfind(closer)
-            if start >= 0 and end > start:
-                try:
-                    payload = json.loads(raw[start : end + 1])
-                    break
-                except Exception:
-                    continue
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+            break
+        except Exception:
+            continue
+    if payload is None:
+        # 最后一招：尾逗号 / 被截断的括号。只在标准解析全失败时才动，
+        # 修坏了也只是回到"不是合法 JSON"，不会把好数据改没。
+        for candidate in candidates:
+            repaired = _balance_json(_strip_trailing_commas(candidate))
+            try:
+                payload = json.loads(repaired)
+                break
+            except Exception:
+                continue
     if payload is None:
         return None, ["模型输出不是合法 JSON"]
     return payload, []
@@ -129,6 +206,51 @@ def extract_items(text: str, key: str) -> tuple[list[Any], list[str]]:
 def _slug(value: Any) -> str:
     text = re.sub(r"[^a-z0-9_]+", "_", str(value or "").strip().lower())
     return re.sub(r"_+", "_", text).strip("_")
+
+
+# 模型经常用近义写法填字面量字段；这里统一收口，别让一条小偏差把整个动作丢掉
+_CATEGORY_ALIASES = {
+    "instant": "instant",
+    "one_shot": "instant",
+    "瞬时": "instant",
+    "瞬间": "instant",
+    "continuous": "continuous",
+    "sustained": "continuous",
+    "持续": "continuous",
+}
+_TARGET_ALIASES = {
+    "none": "none",
+    "no": "none",
+    "self": "none",
+    "无": "none",
+    "自己": "none",
+    "user": "user",
+    "person": "user",
+    "someone": "user",
+    "对方": "user",
+    "别人": "user",
+    "group": "group",
+    "all": "group",
+    "群": "group",
+    "群聊": "group",
+}
+_TRIGGER_ALIASES = {
+    "none": "none",
+    "no": "none",
+    "无": "none",
+    "llm_followup": "llm_followup",
+    "followup": "llm_followup",
+    "follow_up": "llm_followup",
+    "续说": "llm_followup",
+    "说一句": "llm_followup",
+    "schedule": "schedule",
+    "日程": "schedule",
+}
+
+
+def _pick_literal(value: Any, aliases: dict[str, str], default: str) -> str:
+    text = str(value or "").strip().lower()
+    return aliases.get(text, default)
 
 
 def parse_generated_actions(
@@ -187,8 +309,21 @@ def parse_generated_actions(
         payload["scope"] = "node"
         payload["allowed_nodes"] = [node_id]
         payload["node_id"] = node_id
-        payload.setdefault("category", "instant")
-        payload.setdefault("target_type", "none")
+        category = _pick_literal(payload.get("category"), _CATEGORY_ALIASES, "instant")
+        payload["category"] = category
+        payload["target_type"] = _pick_literal(
+            payload.get("target_type"), _TARGET_ALIASES, "none"
+        )
+        # duration_mode：模型给瞬间动作写 none / 空都见过，而 ActionDef 只认
+        # fixed / llm。瞬间动作一律 fixed（时长清零），持续动作认不出就按 llm。
+        mode = str(payload.get("duration_mode") or "").strip().lower()
+        if mode not in ("fixed", "llm"):
+            mode = "fixed" if category == "instant" else "llm"
+        payload["duration_mode"] = mode
+        if category == "instant":
+            payload["duration"] = 0
+            payload["duration_min"] = 0
+            payload["duration_max"] = 0
         payload.setdefault("visible", True)
         payload.setdefault("enabled", True)
         payload.setdefault("interruptible", True)
@@ -225,7 +360,9 @@ def parse_generated_actions(
         completed = payload.get("on_complete")
         if not isinstance(completed, dict):
             completed = {}
-        completed.setdefault("trigger", "llm_followup")
+        completed["trigger"] = _pick_literal(
+            completed.get("trigger"), _TRIGGER_ALIASES, "llm_followup"
+        )
         completed.setdefault("effects", {})
         completed.setdefault("effects_per_minute", {})
         completed["effects"] = _clean_effects(completed.get("effects"))
