@@ -8816,26 +8816,25 @@ function askGenerateCount({
       if (choiceInput) choiceInput.disabled = true;
       const update = () => {
         const seconds = Math.floor((Date.now() - started) / 1000);
-        status.textContent = `正在生成草稿，已等待 ${seconds} 秒…`;
+        // 整张地图 + 每个地点的动作本来就要几分钟：过一分钟给一句说明，
+        // 免得用户以为卡死了（服务端默认 10 分钟才判超时，设置里还能调大 / 关掉）。
+        status.textContent =
+          seconds >= 60
+            ? `正在生成草稿，已等待 ${seconds} 秒…内容多的时候几分钟很正常，别关窗口`
+            : `正在生成草稿，已等待 ${seconds} 秒…`;
       };
       update();
       const ticker = window.setInterval(update, 1000);
-      let timer;
       try {
-        const preview = await Promise.race([
-          onRun(count, secondCount, extraValue.trim(), choiceValue, thirdCount),
-          new Promise((_, reject) => {
-            timer = window.setTimeout(
-              () => reject(new Error("等待生成结果超时，请检查 AstrBot 连接和内容生成模型后重试")),
-              130000,
-            );
-          }),
-        ]);
+        // 这里不再自己掐 130 秒：生成多久由服务端的「生成超时」决定，
+        // 前端只负责显示已等待的时间。
+        const preview = await onRun(
+          count, secondCount, extraValue.trim(), choiceValue, thirdCount,
+        );
         // 用户关闭了等待窗口时，迟到的结果不能覆盖另一个弹窗。
         if (dialogState === current && typeof preview === "function") preview();
       } finally {
         window.clearInterval(ticker);
-        window.clearTimeout(timer);
         input.disabled = false;
         if (secondInput) secondInput.disabled = false;
         if (thirdInput) thirdInput.disabled = false;

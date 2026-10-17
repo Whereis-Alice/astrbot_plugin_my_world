@@ -37,6 +37,26 @@ from ..core.tool_import import build_drafts as build_tool_action_drafts
 from ..core.tool_import import merge_drafts as merge_tool_action_drafts
 
 
+def _generation_timeout_seconds(config: Any) -> float:
+    """内容生成的超时（秒）；0 = 不超时。
+
+    整张地图 + 每个地点的动作本来就是几分钟的大活，以前写死的 120 秒会把正常生成
+    当成失败。现在默认 10 分钟，实在慢可以在插件设置里调大（填 0 就不掐表）。
+    """
+
+    try:
+        raw = (config or {}).get("generator_timeout_minutes")
+    except Exception:
+        raw = None
+    try:
+        minutes = float(raw)
+    except (TypeError, ValueError):
+        minutes = 10.0
+    if minutes <= 0:
+        return 0.0
+    return max(60.0, min(1800.0, minutes * 60.0))
+
+
 class WebApiMixin:
     def _register_web_apis(self, plugin_id: str) -> None:
         def register(path, handler, methods, description):
@@ -1317,17 +1337,31 @@ class WebApiMixin:
             + (f"\n{detail}" if detail else f"\n{exc}")
         )
 
+    def _generator_timeout_seconds(self) -> float:
+        """内容生成超时（秒）：读插件配置，默认 10 分钟，0 = 不超时。"""
+
+        return _generation_timeout_seconds(getattr(self, "config", None))
+
     async def _generate_drafts_response(self, generate, *args, **kwargs):
-        """生成接口统一限时，并把失败原因交给编辑器展示。"""
+        """生成接口统一处理超时与失败，并把原因交给编辑器展示。"""
 
         label = getattr(generate, "__name__", "generate")
         self.logger.info(f"[my_world] 世界生成开始：{label}")
         started = time.monotonic()
+        timeout = _generation_timeout_seconds(getattr(self, "config", None))
         try:
-            result = await asyncio.wait_for(generate(*args, **kwargs), timeout=120)
+            pending = generate(*args, **kwargs)
+            if timeout <= 0:
+                result = await pending
+            else:
+                result = await asyncio.wait_for(pending, timeout=timeout)
         except asyncio.TimeoutError:
-            self.logger.warning(f"[my_world] 世界生成超时：{label}（120 秒）")
-            return error_response("生成超时（120 秒），请检查内容生成模型的连接，或减少生成数量后重试")
+            minutes = max(1, int(round(timeout / 60)))
+            self.logger.warning(f"[my_world] 世界生成超时：{label}（{minutes} 分钟）")
+            return error_response(
+                f"生成超过 {minutes} 分钟还没返回。内容多的时候几分钟是正常的；"
+                "可以让它继续重试，或到插件设置里把「生成超时（分钟）」调大（填 0 = 不超时）"
+            )
         except Exception as exc:
             detail = str(exc)[:500] or type(exc).__name__
             self.logger.warning(f"[my_world] 世界生成失败：{label}: {detail}")

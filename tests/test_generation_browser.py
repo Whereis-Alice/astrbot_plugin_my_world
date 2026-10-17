@@ -168,15 +168,20 @@ class GenerationBrowserTests(unittest.TestCase):
         expect(self.page.locator("#dialog-title")).to_have_text("生成日程")
         expect(self.page.locator("#dialog-ok")).to_have_text("开始生成")
 
-    def test_timeout_and_late_result_keep_retry_available(self):
-        self.host.clock.install()
+    def test_generation_failure_keeps_the_form_for_retry(self):
+        """服务端说生成失败（含超时）时，弹窗留着、参数还能改、可以再点一次。
+
+        前端不再自己掐 130 秒：等多久由服务端的「生成超时」决定。
+        """
+
         self.open_generator()
         self.page.locator("#dialog-ok").click()
-        self.host.clock.fast_forward(131000)
-        expect(self.page.locator("#dialog-error")).to_contain_text("超时")
+        self.page.evaluate(
+            "failGeneration('生成超过 10 分钟还没返回。内容多的时候几分钟是正常的')"
+        )
+        expect(self.page.locator("#dialog-error")).to_contain_text("10 分钟")
         expect(self.page.locator("#dialog-ok")).to_be_enabled()
-        self.page.evaluate("finishGeneration({zones: [{id: 'late', name: '迟到区域'}]})")
-        expect(self.page.locator("#dialog-title")).to_have_text("生成新区域")
+        expect(self.page.locator('#dialog-body input[type="number"]').nth(0)).to_be_enabled()
 
     def test_invalid_count_does_not_call_model(self):
         self.open_generator()

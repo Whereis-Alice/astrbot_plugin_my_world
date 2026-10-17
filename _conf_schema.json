@@ -102,6 +102,13 @@
     "type": "string",
     "default": ""
   },
+  "generator_timeout_minutes": {
+    "description": "生成超时（分钟）",
+    "hint": "一键重建地图 / 批量生成这类大活可能要跑几分钟，超过这个时间才算超时。填 0 = 不超时。默认 10 分钟。",
+    "obvious_hint": false,
+    "type": "int",
+    "default": 10
+  },
   "consolidate_provider_id": {
     "description": "睡眠整理模型（记忆 + 用户画像）",
     "hint": "她睡着时用它把这段时间的经历消化成记忆与画像：合并重复、提取要点、更新关系与缩略版、写梦。调用次数很少, 建议使用能力强的模型",

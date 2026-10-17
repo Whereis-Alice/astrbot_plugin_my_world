@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-v4.1.0-4f6bf5" alt="version" />
+  <img src="https://img.shields.io/badge/version-v4.1.1-4f6bf5" alt="version" />
   <img src="https://img.shields.io/badge/AstrBot-%E2%89%A5%204.20.0-8b6cf0" alt="AstrBot" />
   <img src="https://img.shields.io/badge/dependencies-%E6%97%A0-brightgreen" alt="dependencies" />
 </p>
@@ -172,7 +172,8 @@
 请升级到 v3.0.3 或更新版本并重新打开编辑器。生成成功后预览被立即关闭的问题已修复。
 生成时按钮显示「生成中」，窗口显示已等待的秒数；成功后保留可编辑的草稿，确认前不会保存或投递。
 失败原因会留在窗口内，可以直接重试。模型未配置、连接失败、额度不足、空回复和格式不符合要求
-都会显示相应提示；生成请求超过 120 秒会中止并提示超时。检查模型时，优先查看插件配置中的
+都会显示相应提示；生成超过「生成超时（分钟）」才会中止（默认 10 分钟，内容多时几分钟是正常的；
+可以在插件配置里调大，填 `0` = 不超时）。检查模型时，优先查看插件配置中的
 「内容生成模型」；留空则复用插件用模型，再回落到会话默认模型。
 
 **Q：动作库里那一堆「旧版」动作怎么清掉？**

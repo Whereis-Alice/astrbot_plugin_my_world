@@ -208,13 +208,42 @@ class GenerationResponseTests(unittest.IsolatedAsyncioTestCase):
 
         async def expire(coroutine, *, timeout):
             coroutine.close()
-            self.assertEqual(timeout, 120)
+            # 整张地图 + 每地点动作本来就要几分钟：默认 10 分钟才判超时
+            self.assertEqual(timeout, 600)
             raise TimeoutError
 
         with patch.object(self.module.asyncio, "wait_for", side_effect=expire):
             response = await call(plugin, AsyncMock(), 1)
-        self.assertIn("120 秒", response["message"])
-        self.assertIn("重试", response["message"])
+        self.assertIn("10 分钟", response["message"])
+        self.assertIn("调大", response["message"])
+
+    async def test_generation_timeout_can_be_raised_or_disabled(self):
+        call = self.module.MyWorldPlugin._generator_timeout_seconds
+        self.assertEqual(call(types.SimpleNamespace(config={})), 600)
+        self.assertEqual(
+            call(types.SimpleNamespace(config={"generator_timeout_minutes": 20})),
+            1200,
+        )
+        self.assertEqual(
+            call(types.SimpleNamespace(config={"generator_timeout_minutes": 0})),
+            0,
+        )
+
+    async def test_zero_timeout_means_no_timer(self):
+        """填 0 表示不掐表：直接等模型返回，不走 wait_for。"""
+
+        plugin = types.SimpleNamespace(
+            logger=Mock(), config={"generator_timeout_minutes": 0}
+        )
+        call = self.module.MyWorldPlugin._generate_drafts_response
+        drafts = {"zones": [{"id": "garden", "name": "花园"}], "problems": []}
+        with patch.object(
+            self.module.asyncio,
+            "wait_for",
+            side_effect=AssertionError("填 0 时不该限时"),
+        ):
+            response = await call(plugin, AsyncMock(return_value=drafts), 1)
+        self.assertEqual(response["data"], drafts)
 
     async def test_success_returns_drafts_without_writing(self):
         plugin = types.SimpleNamespace(logger=Mock())
