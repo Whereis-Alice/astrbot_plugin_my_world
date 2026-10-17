@@ -243,14 +243,45 @@ class GenerationResponseTests(unittest.IsolatedAsyncioTestCase):
             side_effect=AssertionError("填 0 时不该限时"),
         ):
             response = await call(plugin, AsyncMock(return_value=drafts), 1)
-        self.assertEqual(response["data"], drafts)
+        self.assertEqual(response["data"]["zones"], drafts["zones"])
+        self.assertIn("generation", response["data"])
+        self.assertGreaterEqual(response["data"]["generation"]["elapsed_seconds"], 0)
 
     async def test_success_returns_drafts_without_writing(self):
         plugin = types.SimpleNamespace(logger=Mock())
         call = self.module.MyWorldPlugin._generate_drafts_response
         drafts = {"zones": [{"id": "garden", "name": "花园"}], "problems": []}
         response = await call(plugin, AsyncMock(return_value=drafts), 1)
-        self.assertEqual(response["data"], drafts)
+        self.assertEqual(response["data"]["zones"], drafts["zones"])
+        self.assertFalse(response["data"]["generation"]["usage"]["available"])
+
+    async def test_success_collects_elapsed_and_token_usage(self):
+        from mw_plugin_under_test.core.llm_usage import record_llm_usage
+
+        plugin = types.SimpleNamespace(logger=Mock())
+        call = self.module.MyWorldPlugin._generate_drafts_response
+        drafts = {"zones": [{"id": "garden", "name": "花园"}], "problems": []}
+
+        async def generate(*_args):
+            record_llm_usage(
+                types.SimpleNamespace(input_other=1200, input_cached=300, output=450)
+            )
+            record_llm_usage(
+                types.SimpleNamespace(input_other=800, input_cached=0, output=150)
+            )
+            return drafts
+
+        response = await call(plugin, AsyncMock(side_effect=generate), 1)
+        generation = response["data"]["generation"]
+        usage = generation["usage"]
+        self.assertGreaterEqual(generation["elapsed_seconds"], 0)
+        self.assertTrue(usage["available"])
+        self.assertFalse(usage["partial"])
+        self.assertEqual(usage["responses"], 2)
+        self.assertEqual(usage["input"], 2300)
+        self.assertEqual(usage["input_cached"], 300)
+        self.assertEqual(usage["output"], 600)
+        self.assertEqual(usage["total"], 2900)
 
 
 if __name__ == "__main__":

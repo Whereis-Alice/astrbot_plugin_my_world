@@ -621,6 +621,42 @@ class TakeoverContextTests(BridgeCase):
 
 
 class TurnProviderTests(BridgeCase):
+    def test_adapter_records_provider_token_usage_for_generation(self):
+        """Web 生成任务里，每次模型响应都把自己的 usage 汇进总分。"""
+
+        from mw_bridge_plugin.core.llm_usage import collect_llm_usage
+
+        plugin = self._plugin()
+
+        async def fake_generate(**_kwargs):
+            class _Response:
+                completion_text = "好"
+                usage = types.SimpleNamespace(
+                    input_other=40,
+                    input_cached=5,
+                    output=15,
+                )
+
+            return _Response()
+
+        plugin.context.llm_generate = fake_generate
+        adapter = MODULE.AstrBotLLM(plugin, provider_id="creator-model", role="creator")
+
+        async def run():
+            with collect_llm_usage() as usage:
+                reply = await adapter.generate(
+                    session_id="s1", system_prompt="", prompt="你好"
+                )
+            return reply, usage.payload()
+
+        try:
+            reply, usage = asyncio.run(run())
+        finally:
+            plugin.db.raw.close()
+        self.assertTrue(reply.ok)
+        self.assertEqual(usage["total"], 60)
+        self.assertEqual(usage["responses"], 1)
+
     def test_selected_provider_is_used_for_main_call(self):
         """别的插件临时指定的模型，本插件接管时也要用。"""
 

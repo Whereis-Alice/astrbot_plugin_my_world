@@ -25,6 +25,7 @@ from ..core.defaults import (
 )
 from ..core.generator import grid_layout_nodes, spring_layout_zones
 from ..core.json_actions import extract_json_object
+from ..core.llm_usage import collect_llm_usage
 from ..core.models import (
     DEFAULT_INTIMACY,
     FIELD_LABELS,
@@ -1355,24 +1356,43 @@ class WebApiMixin:
         self.logger.info(f"[my_world] 世界生成开始：{label}")
         started = time.monotonic()
         timeout = _generation_timeout_seconds(getattr(self, "config", None))
-        try:
-            pending = generate(*args, **kwargs)
-            if timeout <= 0:
-                result = await pending
-            else:
-                result = await asyncio.wait_for(pending, timeout=timeout)
-        except asyncio.TimeoutError:
-            minutes = max(1, int(round(timeout / 60)))
-            self.logger.warning(f"[my_world] 世界生成超时：{label}（{minutes} 分钟）")
-            return error_response(
-                f"生成超过 {minutes} 分钟还没返回。内容多的时候几分钟是正常的；"
-                "可以让它继续重试，或到插件设置里把「生成超时（分钟）」调大（填 0 = 不超时）"
-            )
-        except Exception as exc:
-            detail = str(exc)[:500] or type(exc).__name__
-            self.logger.warning(f"[my_world] 世界生成失败：{label}: {detail}")
-            return error_response(f"生成失败：{detail}")
-        self.logger.info(f"[my_world] 世界生成完成：{label}，耗时 {time.monotonic() - started:.1f} 秒")
+        with collect_llm_usage() as usage:
+            try:
+                pending = generate(*args, **kwargs)
+                if timeout <= 0:
+                    result = await pending
+                else:
+                    result = await asyncio.wait_for(pending, timeout=timeout)
+            except asyncio.TimeoutError:
+                minutes = max(1, int(round(timeout / 60)))
+                self.logger.warning(f"[my_world] 世界生成超时：{label}（{minutes} 分钟）")
+                return error_response(
+                    f"生成超过 {minutes} 分钟还没返回。内容多的时候几分钟是正常的；"
+                    "可以让它继续重试，或到插件设置里把「生成超时（分钟）」调大（填 0 = 不超时）"
+                )
+            except Exception as exc:
+                detail = str(exc)[:500] or type(exc).__name__
+                self.logger.warning(f"[my_world] 世界生成失败：{label}: {detail}")
+                return error_response(f"生成失败：{detail}")
+        elapsed = time.monotonic() - started
+        token_usage = usage.payload()
+        if isinstance(result, dict):
+            result = {
+                **result,
+                "generation": {
+                    "elapsed_seconds": round(elapsed, 3),
+                    "usage": token_usage,
+                },
+            }
+        token_note = (
+            f"，tokens {token_usage['total']}（{token_usage['reported_responses']}/"
+            f"{token_usage['responses']} 次响应有用量）"
+            if token_usage["available"]
+            else "，Provider 未返回 token 用量"
+        )
+        self.logger.info(
+            f"[my_world] 世界生成完成：{label}，耗时 {elapsed:.1f} 秒{token_note}"
+        )
         return json_response(result)
 
     async def api_generate_actions(self):

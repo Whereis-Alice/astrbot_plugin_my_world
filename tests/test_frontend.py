@@ -329,6 +329,15 @@ class FrontendSyntaxTest(unittest.TestCase):
         self.assertIn('Array.isArray(detail.steps) ? detail.steps : []', source)
         self.assertIn("schedule-run-step", source)
 
+    def test_generation_preview_shows_total_time_and_tokens(self) -> None:
+        source = APP_JS.read_text("utf-8")
+        css = STYLE_CSS.read_text("utf-8")
+        self.assertIn("function generationSummaryBox(", source)
+        self.assertIn("function tokenUsageText(", source)
+        self.assertIn("chunk.generation", source)
+        self.assertIn("总耗时", source)
+        self.assertIn(".generation-summary", css)
+
     def test_replaced_zones_prune_actions_bound_only_to_old_nodes(self) -> None:
         source = APP_JS.read_text("utf-8")
         self.assertIn("function pruneNodeScopedActions(", source)

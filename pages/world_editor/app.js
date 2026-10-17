@@ -8337,6 +8337,8 @@ function openZoneRegenerateDialog(zone, result) {
       : "确认后把这批新地点加进这个区域，原有的地点留着。",
     confirmText: "写入这个区域",
     build: (body) => {
+      const summary = generationSummaryBox(result.generation);
+      if (summary) body.appendChild(summary);
       buildNodeDraftList(body, drafts);
       if (draftActions.length) {
         body.appendChild(
@@ -8751,6 +8753,82 @@ async function commitGeneratedActions(drafts) {
 /* 用大模型生成：区域 / 日程 / 事件                                    */
 /* ================================================================== */
 
+function emptyLLMUsage() {
+  return {
+    available: false,
+    partial: false,
+    responses: 0,
+    reported_responses: 0,
+    input: 0,
+    input_other: 0,
+    input_cached: 0,
+    output: 0,
+    total: 0,
+  };
+}
+
+function mergeLLMUsage(left, right) {
+  const current = { ...emptyLLMUsage(), ...(left || {}) };
+  const extra = { ...emptyLLMUsage(), ...(right || {}) };
+  const responses = num(current.responses) + num(extra.responses);
+  const reported = num(current.reported_responses) + num(extra.reported_responses);
+  return {
+    available: responses > 0 && reported > 0,
+    partial: responses > 0 && reported > 0 && reported < responses,
+    responses,
+    reported_responses: reported,
+    input: num(current.input) + num(extra.input),
+    input_other: num(current.input_other) + num(extra.input_other),
+    input_cached: num(current.input_cached) + num(extra.input_cached),
+    output: num(current.output) + num(extra.output),
+    total: num(current.total) + num(extra.total),
+  };
+}
+
+function generationDurationText(seconds) {
+  const total = Math.max(0, Math.round(num(seconds)));
+  if (total < 60) return `${total} 秒`;
+  const minutes = Math.floor(total / 60);
+  const rest = total % 60;
+  if (minutes < 60) return rest ? `${minutes} 分 ${rest} 秒` : `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours} 小时 ${minutes % 60} 分`;
+}
+
+function tokenUsageText(usage) {
+  const data = { ...emptyLLMUsage(), ...(usage || {}) };
+  if (!data.available) return "模型未返回 token 用量";
+  const parts = [
+    `输入 ${num(data.input).toLocaleString("zh-CN")}`,
+    `输出 ${num(data.output).toLocaleString("zh-CN")}`,
+  ];
+  if (num(data.input_cached)) {
+    parts.push(`其中缓存 ${num(data.input_cached).toLocaleString("zh-CN")}`);
+  }
+  if (data.partial) {
+    parts.push(`${num(data.reported_responses)}/${num(data.responses)} 次响应有用量`);
+  }
+  return `${num(data.total).toLocaleString("zh-CN")} tokens（${parts.join(" · ")}）`;
+}
+
+function generationSummaryBox(generation) {
+  if (!generation) return null;
+  const usage = generation.usage || {};
+  const box = el("div", "generation-summary");
+  const add = (label, value, hint = "") => {
+    const item = el("div", "generation-summary-item");
+    item.appendChild(el("span", "generation-summary-label", label));
+    item.appendChild(el("strong", "generation-summary-value", value));
+    if (hint) item.appendChild(el("span", "generation-summary-hint muted", hint));
+    box.appendChild(item);
+  };
+  add("总耗时", generationDurationText(generation.elapsed_seconds));
+  add("Token 消耗", tokenUsageText(usage));
+  const responses = num(usage.responses);
+  if (responses) add("模型响应", `${responses} 次`);
+  return box;
+}
+
 /**
  * 先问「生成几个」，再拿去调生成接口。
  * 生成会读她的人设与已有世界，结果永远先当草稿，用户改完确认才落库。
@@ -8969,6 +9047,7 @@ function generateZoneDrafts() {
           result.zone_edges || [],
           {},
           result.actions || [],
+          result.generation || null,
         );
     },
   });
@@ -8981,6 +9060,7 @@ function openZoneDraftDialog(
   draftZoneEdges = [],
   draftPositions = {},
   draftActions = [],
+  generation = null,
 ) {
   drafts.forEach((draft) => {
     draft._pick = true;
@@ -8991,6 +9071,8 @@ function openZoneDraftDialog(
       + "并跟整张地图一起按当前窗口形状铺开。",
     confirmText: "加入选中的",
     build: (body) => {
+      const summary = generationSummaryBox(generation);
+      if (summary) body.appendChild(summary);
       const list = el("div", "list");
       drafts.forEach((draft) => {
         const row = el("div", "row-item");
@@ -9138,13 +9220,26 @@ async function generateZonesInChunks({
   );
   const draft = resume
     ? saved.draft
-    : { zones: [], nodes: [], edges: [], zone_edges: [], actions: [], problems: [] };
+    : {
+        zones: [],
+        nodes: [],
+        edges: [],
+        zone_edges: [],
+        actions: [],
+        problems: [],
+        generation: null,
+      };
   const startAt = resume ? saved.index : 0;
+  let elapsedSeconds = resume ? num(saved.elapsed_seconds) : 0;
+  let usage = resume ? mergeLLMUsage(null, saved.usage) : emptyLLMUsage();
   const rows = draft.zones.map(
     (zone, index) => `第 ${index + 1}/${count} 块：${zone.name || zone.id}`,
   );
   for (let index = startAt; index < count; index += 1) {
-    report(`正在生成第 ${index + 1}/${count} 块`, [...rows]);
+    const liveUsage = usage.available
+      ? ` · 已用 ${num(usage.total).toLocaleString("zh-CN")} tokens`
+      : "";
+    report(`正在生成第 ${index + 1}/${count} 块${liveUsage}`, [...rows]);
     const chunk = await apiPost("generate/zone-chunk", {
       index,
       total: count,
@@ -9185,12 +9280,26 @@ async function generateZonesInChunks({
     });
     draft.actions.push(...(chunk.actions || []));
     draft.problems.push(...(chunk.problems || []));
+    elapsedSeconds += Math.max(0, num((chunk.generation || {}).elapsed_seconds));
+    usage = mergeLLMUsage(usage, (chunk.generation || {}).usage);
     rows.push(
       `第 ${index + 1}/${count} 块：${zone.name || zone.id}（${(chunk.nodes || []).length} 个地点）`,
     );
-    ui.zoneChunkBuild = { key, draft, index: index + 1 };
+    ui.zoneChunkBuild = {
+      key,
+      draft,
+      index: index + 1,
+      elapsed_seconds: elapsedSeconds,
+      usage,
+    };
   }
   ui.zoneChunkBuild = null;
+  draft.generation = {
+    elapsed_seconds: elapsedSeconds,
+    usage,
+    chunks: count,
+  };
+  report("生成完成，正在整理预览", [...rows]);
   return draft;
 }
 
@@ -9250,6 +9359,8 @@ function openWorldMapDraftDialog(result) {
       + "地点与连线之后还能在地图页继续调整。",
     confirmText: "替换当前地图",
     build: (body) => {
+      const summary = generationSummaryBox(result.generation);
+      if (summary) body.appendChild(summary);
       const list = el("div", "list");
       zones.forEach((zone) => {
         const row = el("div", "row-item");

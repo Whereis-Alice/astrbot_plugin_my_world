@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from ..core.llm_usage import record_llm_usage
 from ..core.ports import LLMReply
 
 if TYPE_CHECKING:
@@ -33,6 +34,12 @@ class AstrBotLLM:
         """
         self._sampling_rejected = False
         """Provider 不认这些参数时，退回只传温度，别让主回复跟着挂掉。"""
+
+    @staticmethod
+    def _record_usage(response: Any) -> None:
+        """把 Provider 返回的 usage 记进当前 Web 生成任务（不在任务里时为空操作）。"""
+
+        record_llm_usage(getattr(response, "usage", None))
 
     async def generate(
         self,
@@ -75,6 +82,7 @@ class AstrBotLLM:
                 image_urls=images or None,
                 **kwargs,
             )
+            self._record_usage(response)
         except Exception as exc:
             # 上游按内容安全拒了这次生成：同一段内容再要一次还是会被拒，
             # 别再把它当成"Provider 不认采样参数"反复重试——那会把真正的原因埋掉，
@@ -100,6 +108,7 @@ class AstrBotLLM:
                         image_urls=images or None,
                         **kwargs,
                     )
+                    self._record_usage(response)
                     if self.role == "main":
                         self.plugin.remember_llm_response(session_id, response)
                     text = getattr(response, "completion_text", "") or ""
@@ -116,6 +125,7 @@ class AstrBotLLM:
                         contexts=list(contexts) if contexts else None,
                         **kwargs,
                     )
+                    self._record_usage(response)
                     self.plugin.logger.warning(
                         f"[my_world] 带图片调用失败（{exc}），已退回纯文字"
                     )
@@ -140,6 +150,7 @@ class AstrBotLLM:
                         system_prompt=system_prompt,
                         **kwargs,
                     )
+                    self._record_usage(response)
                 except Exception as retry_exc:
                     return LLMReply(ok=False, error=str(retry_exc))
             else:

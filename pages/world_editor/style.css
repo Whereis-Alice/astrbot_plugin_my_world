@@ -1615,6 +1615,43 @@ button.pill:hover:not(.on) {
 }
 
 /* ---- 分块生成：一块一块的进度 ---- */
+.generation-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0 0 12px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--line);
+}
+
+.generation-summary-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 10px 12px;
+  background: var(--bg-inset);
+}
+
+.generation-summary-label {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.generation-summary-value {
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 650;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.generation-summary-hint {
+  font-size: 10.5px;
+}
+
 .generation-progress {
   display: flex;
   flex-direction: column;
@@ -1635,6 +1672,12 @@ button.pill:hover:not(.on) {
   position: absolute;
   left: 0;
   color: var(--good-text, #4ade80);
+}
+
+@media (max-width: 720px) {
+  .generation-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .status-meter {

@@ -69,6 +69,20 @@ GENERATION_BRIDGE = r"""
         zone_edges: [],
         actions: [],
         problems: [],
+        generation: {
+          elapsed_seconds: 2.5,
+          usage: {
+            available: true,
+            partial: false,
+            responses: 1,
+            reported_responses: 1,
+            input: 2800,
+            input_other: 2500,
+            input_cached: 300,
+            output: 700,
+            total: 3500,
+          },
+        },
       });
     }
     await window.finishZoneChunksPayload(chunks);
@@ -439,6 +453,10 @@ class GenerationBrowserTests(unittest.TestCase):
             [zone["id"] for zone in second["existing"]["zones"]], ["first_zone"]
         )
         expect(self.page.locator("#dialog-title")).to_contain_text("生成的新区域")
+        expect(self.page.locator(".generation-summary")).to_contain_text("总耗时")
+        expect(self.page.locator(".generation-summary")).to_contain_text("5 秒")
+        expect(self.page.locator(".generation-summary")).to_contain_text("7,000 tokens")
+        self.host.screenshot(path=str(self.shots / "generation-summary.png"))
         self.page.locator("#dialog-cancel").click()
 
         self.open_generator("map", "map-generate-all")
@@ -455,6 +473,8 @@ class GenerationBrowserTests(unittest.TestCase):
         self.assertEqual(calls[0]["data"]["total"], 3)
         self.assertEqual(calls[0]["data"]["actions_per_node"], 0)
         expect(self.page.locator("#dialog-title")).to_contain_text("一键重建地图")
+        expect(self.page.locator(".generation-summary")).to_contain_text("8 秒")
+        expect(self.page.locator(".generation-summary")).to_contain_text("10,500 tokens")
         self.assertEqual(self.errors, [])
 
     def test_zone_regenerate_carries_prompt_actions_and_replace(self):
