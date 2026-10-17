@@ -122,6 +122,10 @@ from .adapters.commands import AstrBotCommands
 from .adapters.llm import AstrBotLLM
 from .adapters.messenger import AstrBotMessenger
 from .adapters.persona import AstrBotPersona
+from .adapters.profile_commands import (
+    ProfileCommandsMixin,
+    install_profile_commands,
+)
 from .adapters.profile_weaver_tools import (
     ProfileWeaverForgetTool,
     ProfileWeaverRememberTool,
@@ -328,7 +332,7 @@ def _extra_components(chain: Any, *, skip_plain: bool = True) -> list[Any]:
     "给 Bot 一个私有空间、动作、日程、场景记忆和工具能力，让 ta 像住在群里一样生活。",
     PLUGIN_VERSION,
 )
-class MyWorldPlugin(WebApiMixin, Star):
+class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, Star):
     def __init__(self, context: Context, config: AstrBotConfig) -> None:
         super().__init__(context, config)
         self.config = config
@@ -3293,6 +3297,8 @@ class MyWorldPlugin(WebApiMixin, Star):
 # 小工具
 # ======================================================================
 
+install_profile_commands(MyWorldPlugin)
+
 
 def _help_text(pronoun: str = "她") -> str:
     """指令帮助文案。pronoun 由全局设置里的性别决定（她/他/ta）。"""
@@ -3303,6 +3309,7 @@ def _help_text(pronoun: str = "她") -> str:
         f"· /mw recall <话题>     让{pronoun}回忆某个话题\n"
         f"· /mw memory            看看{pronoun}记得你什么\n"
         "· /mw profile           查看 / 管理自己的通讯录详细画像\n"
+        "· /我的画像 /设置画像 /画像历史   兼容原心迹画像的顶层指令\n"
         f"· /mw forget me [话题]  让{pronoun}忘记关于你的记忆\n"
         f"· /mw event <一句话>   给她安排一件会发生的事（看她怎么处理）\n"
         f"· /mw event list       看最近的事件线索\n"

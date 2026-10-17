@@ -260,6 +260,29 @@ BRIDGE_JS = r"""
       enabled: true, consolidate_enabled: true, digest_limit: 5,
       weaver_enabled: true, weaver_session_based: false,
     },
+    "profile/contacts": {
+      people: [{
+        user_id: "10001", name: "小鲸鱼", display_name: "小鲸鱼",
+        qq_name: "小鲸鱼", affinity: 72, level: "亲近",
+        bonds: ["朋友"], claims: [], digest: "爱喝热茶、常熬夜，最近在准备考试",
+        message_count: 128, last_seen_at: 1760000000, first_seen_at: 1750000000,
+        days: 32, has_detailed_profile: true, profile_record_count: 1,
+        profile_locked_count: 1,
+        profile_preview: [
+          { name: "喜欢的话题", value: "猫、热茶、安静的房间" },
+        ],
+        weaver: {
+          display_name: "小鲸鱼", subject_name: "小鲸鱼",
+          completeness: 68.5, locked_count: 1, record_count: 1,
+          preview: [
+            { name: "爱好", value: "热茶、猫" },
+            { name: "喜欢的话题", value: "安静的房间" },
+          ],
+        },
+      }],
+      enabled: true, consolidate_enabled: true, digest_limit: 5,
+      weaver_enabled: true, weaver_session_based: false,
+    },
     "profile/person": {
       session: "aiocqhttp:GroupMessage:1001", user_id: "10001",
       person: {
@@ -294,6 +317,63 @@ BRIDGE_JS = r"""
           { name: "生日", filled: false },
         ],
       },
+    },
+    "profile/contact": {
+      session: "aiocqhttp:GroupMessage:1001", user_id: "10001",
+      identity: {
+        display_name: "小鲸鱼", call_me: "小鲸鱼", call_him: "小鲸",
+        note: "最近在准备考试", completeness: 68.5,
+        record_count: 1, locked_count: 1,
+      },
+      person: {
+        user_id: "10001", name: "小鲸鱼", qq_name: "小鲸鱼", affinity: 72,
+        affinities: ["朋友"], claims: [], past: [], call_me: "小鲸鱼",
+        call_him: "小鲸", facts: [{ kind: "喜好", text: "喜欢热茶", evidence: "我平时爱喝热茶" }],
+        digest: "爱喝热茶、常熬夜", note: "最近在准备考试",
+        message_count: 128, days_known: 32, cards: {},
+        level: { name: "亲近", index: 3, prompt: "", deny: [] },
+      },
+      facts: [{ id: 1, kind: "喜好", text: "喜欢热茶", status: "active", pinned: true }],
+      bonds: [{ id: 1, type: "朋友", status: "current", since_text: "2026-01-02" }],
+      affinity_logs: [],
+      bonds_config: [{ name: "朋友", slot: "friend", cap: 4, unique: false, negative: false }],
+      levels_config: [{ name: "亲近", min_affinity: 60, max_affinity: 79, deny: [], prompt: "" }],
+      grudge: null, own_topics: [], miss: { value: 0.2, waiting: false },
+      weaver: {
+        key: "10001", user_id: "10001", subject_name: "小鲸鱼",
+        display_name: "小鲸鱼", completeness: 68.5, locked_count: 1,
+        updated_at: "2026-10-12 20:11:00", record_count: 1,
+        fields: [
+          { name: "昵称", value: "小鲸鱼", is_custom: false, locked: true,
+            updated_at: "2026-10-12 20:10:00", evidence: "以后叫我小鲸鱼" },
+          { name: "喜欢的话题", value: "猫、热茶、安静的房间", is_custom: false,
+            locked: false, updated_at: "2026-10-12 20:11:00",
+            evidence: "我平时喜欢聊猫和热茶" },
+        ],
+        notes: ["最近在准备考试"],
+        available_fields: [
+          { name: "昵称", filled: true },
+          { name: "喜欢的话题", filled: true },
+          { name: "生日", filled: false },
+        ],
+      },
+      weaver_records: [{
+        key: "10001", session_id: "", completeness: 68.5, locked_count: 1,
+        updated_at: "2026-10-12 20:11:00",
+        fields: [
+          { name: "昵称", value: "小鲸鱼", locked: true },
+          { name: "喜欢的话题", value: "猫、热茶、安静的房间", locked: false },
+        ],
+        notes: ["最近在准备考试"],
+      }],
+    },
+    "profile/contact/records": {
+      user_id: "10001", preferred_key: "10001",
+      records: [{
+        key: "10001", user_id: "10001", session_id: "",
+        display_name: "小鲸鱼", completeness: 68.5, locked_count: 1,
+        field_count: 2, updated_at: "2026-10-12 20:11:00",
+      }],
     },
     "profile/weaver/meta": {
       enabled: true, session_based: false, webui_allow_edit: true,

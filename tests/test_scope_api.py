@@ -147,7 +147,6 @@ class ScopeApiTests(unittest.IsolatedAsyncioTestCase):
         )
         person = (result.get("data") or {}).get("person") or {}
         self.assertEqual(person.get("call_me"), "阿岚")
-        self.assertEqual(person.get("call_him"), "阿岚")
         self.assertEqual(person.get("note"), "最近在准备考试")
         self.assertEqual(person.get("note_from"), "详细画像")
 
@@ -169,9 +168,18 @@ class ScopeApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(library["status_code"], 200)
         self.assertEqual(library["data"]["items"][0]["key"], key)
 
-        detail = await self.call("profile/weaver/key", key=key)
+        contacts = await self.call("profile/contacts", session=self.session)
+        self.assertEqual(contacts["status_code"], 200)
+        self.assertEqual(contacts["data"]["people"][0]["user_id"], "42")
+
+        detail = await self.call("profile/contact", session=self.session, user_id="42")
         self.assertEqual(detail["status_code"], 200)
-        self.assertEqual(detail["data"]["profile"]["display_name"], "阿岚")
+        self.assertEqual(detail["data"]["identity"]["display_name"], "阿岚")
+        records = await self.call(
+            "profile/contact/records", session=self.session, user_id="42"
+        )
+        self.assertEqual(records["status_code"], 200)
+        self.assertEqual(records["data"]["preferred_key"], key)
 
         edited = await self.call(
             "profile/weaver/field",
@@ -222,6 +230,29 @@ class ScopeApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status_code"], 400)
         self.assertIn("只读", result.get("message", ""))
 
+    async def test_unified_identity_edit_writes_both_contact_layers(self):
+        self.plugin.engine.profiles.touch(self.session, "42", "阿岚")
+        result = await self.call(
+            "profile/contact",
+            method="POST",
+            session=self.session,
+            user_id="42",
+            call_me="岚岚",
+            call_him="小鲸鱼",
+            note="最近睡得很晚",
+            digest="常熬夜的学生",
+        )
+        self.assertEqual(result["status_code"], 200)
+        data = result["data"]
+        self.assertEqual(data["identity"]["call_me"], "岚岚")
+        self.assertEqual(data["identity"]["call_him"], "小鲸鱼")
+        self.assertEqual(data["identity"]["note"], "最近睡得很晚")
+        weaver_fields = {
+            item["name"]: item["value"] for item in data["weaver"]["fields"]
+        }
+        self.assertEqual(weaver_fields["昵称"], "岚岚")
+        self.assertIn("最近睡得很晚", data["weaver"]["notes"])
+
     async def test_profile_chat_command_roundtrip(self):
         event = types.SimpleNamespace(
             unified_msg_origin=self.session,
@@ -231,9 +262,35 @@ class ScopeApiTests(unittest.IsolatedAsyncioTestCase):
             is_admin=lambda: False,
             is_private_chat=lambda: True,
             get_messages=lambda: [],
+            plain_result=lambda text: text,
         )
         saved = await self.plugin._cmd_profile(event, ["set", "爱好", "摄影"])
         self.assertIn("已写入", saved)
         shown = await self.plugin._cmd_profile(event, ["show"])
         self.assertIn("爱好", shown)
         self.assertIn("摄影", shown)
+
+    async def test_original_profile_commands_are_installed(self):
+        event = types.SimpleNamespace(
+            unified_msg_origin=self.session,
+            message_str="/设置画像 爱好 摄影",
+            get_message_str=lambda: "/设置画像 爱好 摄影",
+            get_sender_id=lambda: "42",
+            get_sender_name=lambda: "阿岚",
+            is_admin=lambda: False,
+            is_private_chat=lambda: True,
+            get_messages=lambda: [],
+            plain_result=lambda text: text,
+        )
+        setter = getattr(self.plugin, "cmd_inherited_set_profile")
+        self.assertEqual(setter.__module__, self.module.__name__)
+        replies = [item async for item in setter(event)]
+        self.assertTrue(replies)
+        self.assertIn("已写入", replies[0])
+
+        event.message_str = "/我的画像"
+        shower = getattr(self.plugin, "cmd_inherited_show_my_profile")
+        replies = [item async for item in shower(event)]
+        self.assertTrue(replies)
+        self.assertIn("爱好", replies[0])
+        self.assertIn("摄影", replies[0])

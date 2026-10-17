@@ -88,20 +88,14 @@ const ui = {
   contacts: [],
   contactUser: "",
   contactDetail: null,
-  contactsView: "people",
+  contactsView: "contacts",
+  contactDetailTab: "overview",
+  contactsFilter: "all",
+  contactsSort: "recent",
   contactsMeta: {},
   contactsStats: null,
   contactsAudit: [],
   contactsBackups: [],
-  contactsLibrary: {
-    items: [],
-    total: 0,
-    page: 1,
-    pageSize: 40,
-    pageCount: 1,
-    selected: new Set(),
-    busy: false,
-  },
   contactFieldHistory: {},
 };
 
@@ -4027,77 +4021,33 @@ function bindButtons() {
   document.querySelectorAll("[data-contacts-view]").forEach((button) => {
     button.addEventListener("click", () => setContactsView(button.dataset.contactsView));
   });
-  if ($("contacts-library-search")) {
-    let timer = null;
-    $("contacts-library-search").addEventListener("input", () => {
-      window.clearTimeout(timer);
-      timer = window.setTimeout(() => {
-        ui.contactsLibrary.page = 1;
-        loadContactsLibrary();
-      }, 220);
-    });
-  }
-  [
-    "contacts-library-chat-type",
-    "contacts-library-platform",
-    "contacts-library-sort",
-    "contacts-library-locked",
-  ].forEach((id) => {
+  const contactFilterMap = {
+    "contacts-filter-all": "all",
+    "contacts-filter-detailed": "detailed",
+    "contacts-filter-locked": "locked",
+    "contacts-filter-duplicates": "duplicates",
+  };
+  Object.entries(contactFilterMap).forEach(([id, value]) => {
     if (!$(id)) return;
-    $(id).addEventListener("change", () => {
-      ui.contactsLibrary.page = 1;
-      loadContactsLibrary();
+    $(id).addEventListener("click", () => {
+      ui.contactsFilter = value;
+      Object.keys(contactFilterMap).forEach((buttonId) => {
+        $(buttonId)?.classList.toggle("on", contactFilterMap[buttonId] === value);
+      });
+      renderContactsList();
     });
   });
-  if ($("contacts-library-select-all")) {
-    $("contacts-library-select-all").addEventListener("change", () => {
-      const checked = $("contacts-library-select-all").checked;
-      ui.contactsLibrary.items.forEach((item) => {
-        if (checked) ui.contactsLibrary.selected.add(item.key);
-        else ui.contactsLibrary.selected.delete(item.key);
-      });
-      renderContactsLibrary();
+  if ($("contacts-sort")) {
+    $("contacts-sort").addEventListener("change", () => {
+      ui.contactsSort = $("contacts-sort").value || "recent";
+      renderContactsList();
     });
   }
-  if ($("contacts-library-export")) {
-    $("contacts-library-export").addEventListener("click", exportSelectedProfiles);
-  }
-  if ($("contacts-library-delete")) {
-    $("contacts-library-delete").addEventListener("click", deleteSelectedProfiles);
-  }
-  if ($("contacts-library-prev")) {
-    $("contacts-library-prev").addEventListener("click", () => {
-      if (ui.contactsLibrary.page <= 1) return;
-      ui.contactsLibrary.page -= 1;
-      loadContactsLibrary();
-    });
-  }
-  if ($("contacts-library-next")) {
-    $("contacts-library-next").addEventListener("click", () => {
-      if (ui.contactsLibrary.page >= ui.contactsLibrary.pageCount) return;
-      ui.contactsLibrary.page += 1;
-      loadContactsLibrary();
-    });
-  }
-  if ($("contacts-library-list")) {
-    $("contacts-library-list").addEventListener("click", (event) => {
-      const row = event.target.closest("[data-library-key]");
-      if (!row) return;
-      const action = event.target.closest("[data-library-act]");
-      if (action) {
-        contactsLibraryAction(action, row.dataset.libraryKey);
-        return;
-      }
-      const checkbox = event.target.closest("input[data-library-select]");
-      if (checkbox) {
-        if (checkbox.checked) ui.contactsLibrary.selected.add(row.dataset.libraryKey);
-        else ui.contactsLibrary.selected.delete(row.dataset.libraryKey);
-        updateContactsLibraryBulk();
-        return;
-      }
-      openContactsLibraryDetail(row.dataset.libraryKey);
-    });
-  }
+  document.querySelectorAll("[data-contact-detail-tab]").forEach((button) => {
+    button.addEventListener("click", () =>
+      setContactDetailTab(button.dataset.contactDetailTab),
+    );
+  });
   if ($("contacts-audit-refresh")) {
     $("contacts-audit-refresh").addEventListener("click", loadContactsAudit);
   }
@@ -14244,592 +14194,20 @@ async function importProfileWeaver() {
 }
 
 function setContactsView(view) {
-  ui.contactsView = ["people", "library", "overview", "audit", "data"].includes(view)
+  ui.contactsView = ["contacts", "overview", "audit", "data"].includes(view)
     ? view
-    : "people";
+    : "contacts";
   document.querySelectorAll("[data-contacts-view]").forEach((button) => {
     button.classList.toggle("on", button.dataset.contactsView === ui.contactsView);
   });
-  ["people", "library", "overview", "audit", "data"].forEach((name) => {
+  ["contacts", "overview", "audit", "data"].forEach((name) => {
     const panel = $(`contacts-view-${name}`);
     if (panel) panel.classList.toggle("hidden", name !== ui.contactsView);
   });
-  if (ui.contactsView === "people") loadContacts();
-  if (ui.contactsView === "library") loadContactsLibrary();
+  if (ui.contactsView === "contacts") loadContacts();
   if (ui.contactsView === "overview") loadContactsOverview();
   if (ui.contactsView === "audit") loadContactsAudit();
   if (ui.contactsView === "data") loadContactsData();
-}
-
-async function loadContactsLibrary() {
-  const list = $("contacts-library-list");
-  if (!list || ui.contactsLibrary.busy) return;
-  ui.contactsLibrary.busy = true;
-  list.innerHTML = "<p class='muted'>加载画像库…</p>";
-  try {
-    if (!ui.contactsMeta || !Object.keys(ui.contactsMeta).length) {
-      await loadContactsMeta();
-    }
-    const session = $("contacts-session") ? $("contacts-session").value : "";
-    const data = await apiGet("profile/weaver/library", {
-      session,
-      q: $("contacts-library-search") ? $("contacts-library-search").value.trim() : "",
-      chat_type: $("contacts-library-chat-type")
-        ? $("contacts-library-chat-type").value
-        : "all",
-      platform: $("contacts-library-platform")
-        ? $("contacts-library-platform").value
-        : "all",
-      sort: $("contacts-library-sort") ? $("contacts-library-sort").value : "updated_desc",
-      locked_only: $("contacts-library-locked") && $("contacts-library-locked").checked ? 1 : 0,
-      page: ui.contactsLibrary.page,
-      page_size: ui.contactsLibrary.pageSize,
-    });
-    ui.contactsLibrary.items = data.items || [];
-    ui.contactsLibrary.total = num(data.total);
-    ui.contactsLibrary.page = num(data.page, 1);
-    ui.contactsLibrary.pageCount = Math.max(1, num(data.page_count, 1));
-    ui.contactsLibrary.pageSize = Math.max(1, num(data.page_size, 40));
-    const platform = $("contacts-library-platform");
-    if (platform) {
-      const current = platform.value || "all";
-      platform.innerHTML = "";
-      platform.appendChild(option("all", "全部"));
-      (data.platforms || []).forEach((item) => platform.appendChild(option(item, item)));
-      platform.value = [...platform.options].some((item) => item.value === current)
-        ? current
-        : "all";
-    }
-    renderContactsLibrary();
-  } catch (error) {
-    list.innerHTML = "";
-    list.appendChild(emptyState("🗂", error.message || "读取画像库失败"));
-  } finally {
-    ui.contactsLibrary.busy = false;
-  }
-}
-
-function renderContactsLibrary() {
-  const list = $("contacts-library-list");
-  if (!list) return;
-  list.innerHTML = "";
-  const items = ui.contactsLibrary.items || [];
-  const canEdit = !ui.contactsMeta || ui.contactsMeta.webui_allow_edit !== false;
-  if ($("contacts-library-count")) {
-    $("contacts-library-count").textContent = `${ui.contactsLibrary.total} 条`;
-  }
-  if ($("contacts-library-page")) {
-    $("contacts-library-page").textContent =
-      `第 ${ui.contactsLibrary.page} / ${ui.contactsLibrary.pageCount} 页`;
-  }
-  if ($("contacts-library-prev")) {
-    $("contacts-library-prev").disabled = ui.contactsLibrary.page <= 1;
-  }
-  if ($("contacts-library-next")) {
-    $("contacts-library-next").disabled =
-      ui.contactsLibrary.page >= ui.contactsLibrary.pageCount;
-  }
-  if (!items.length) {
-    list.appendChild(
-      emptyState("🗂", "没有符合条件的详细画像。可以从聊天里自然记录，或回人物页手动添加。"),
-    );
-    updateContactsLibraryBulk();
-    return;
-  }
-  items.forEach((item) => {
-    const row = el("div", "contacts-library-row");
-    row.dataset.libraryKey = item.key;
-    row.classList.toggle("selected", ui.contactsLibrary.selected.has(item.key));
-    const check = document.createElement("input");
-    check.type = "checkbox";
-    check.dataset.librarySelect = "1";
-    check.checked = ui.contactsLibrary.selected.has(item.key);
-    check.setAttribute("aria-label", `选择 ${item.display_name || item.user_id}`);
-    row.appendChild(check);
-
-    const identity = el("div", "contacts-library-identity");
-    identity.appendChild(
-      el("strong", "", item.display_name || item.subject_name || item.user_id),
-    );
-    identity.appendChild(
-      el("span", "mono muted", `QQ ${item.user_id} · ${item.session_id || "全局"}`),
-    );
-    if (num(item.locked_count)) {
-      identity.appendChild(el("span", "pill pill-lock", `${num(item.locked_count)} 个锁`));
-    }
-    row.appendChild(identity);
-
-    const preview = el("div", "contacts-library-preview");
-    const previewItems = Array.isArray(item.preview) ? item.preview : [];
-    if (previewItems.length) {
-      previewItems.forEach((field) => {
-        const bit = el("span", "contacts-library-fact");
-        bit.appendChild(el("b", "", field.name || "字段"));
-        bit.appendChild(document.createTextNode(` ${field.value || ""}`));
-        preview.appendChild(bit);
-      });
-    } else {
-      preview.appendChild(el("span", "muted", "还没有可预览字段"));
-    }
-    row.appendChild(preview);
-
-    const meta = el("div", "contacts-library-meta");
-    meta.appendChild(
-      el(
-        "span",
-        "pill",
-        `${Math.round(num(item.completeness) * 10) / 10}% 完整`,
-      ),
-    );
-    meta.appendChild(el("span", "muted", `${num(item.field_count)} 个字段`));
-    if (num(item.custom_field_count)) {
-      meta.appendChild(el("span", "muted", `${num(item.custom_field_count)} 自定义`));
-    }
-    if (num(item.note_count)) {
-      meta.appendChild(el("span", "muted", `${num(item.note_count)} 条备注`));
-    }
-    meta.appendChild(el("span", "muted", item.updated_at || "时间未知"));
-    row.appendChild(meta);
-
-    const actions = el("div", "contacts-library-actions");
-    const open = el("button", "ghost tiny", "查看");
-    open.type = "button";
-    open.dataset.libraryAct = "detail";
-    actions.appendChild(open);
-    if (canEdit) {
-      const merge = el("button", "ghost tiny", "合并");
-      merge.type = "button";
-      merge.dataset.libraryAct = "merge";
-      actions.appendChild(merge);
-    }
-    const exportOne = el("button", "ghost tiny", "导出");
-    exportOne.type = "button";
-    exportOne.dataset.libraryAct = "export";
-    actions.appendChild(exportOne);
-    if (canEdit) {
-      const drop = el("button", "ghost tiny danger", "删除");
-      drop.type = "button";
-      drop.dataset.libraryAct = "delete";
-      actions.appendChild(drop);
-    }
-    row.appendChild(actions);
-    list.appendChild(row);
-  });
-  updateContactsLibraryBulk();
-}
-
-function updateContactsLibraryBulk() {
-  const selected = [...ui.contactsLibrary.selected];
-  const label = $("contacts-library-selected");
-  if (label) {
-    label.textContent = selected.length ? `已选择 ${selected.length} 条` : "未选择";
-  }
-  if ($("contacts-library-export")) $("contacts-library-export").disabled = !selected.length;
-  if ($("contacts-library-delete")) {
-    $("contacts-library-delete").disabled =
-      !selected.length || (ui.contactsMeta && ui.contactsMeta.webui_allow_edit === false);
-  }
-  const all = $("contacts-library-select-all");
-  if (all) {
-    const current = ui.contactsLibrary.items || [];
-    const picked = current.filter((item) => ui.contactsLibrary.selected.has(item.key)).length;
-    all.checked = Boolean(current.length && picked === current.length);
-    all.indeterminate = Boolean(picked && picked < current.length);
-  }
-}
-
-async function openContactsLibraryDetail(key) {
-  try {
-    const data = await apiGet("profile/weaver/key", { key });
-    const profile = data.profile || {};
-    openCustomDialog({
-      title: `详细画像：${profile.display_name || profile.user_id || key}`,
-      hint:
-        `${chatTypeName(profile.chat_type)} · ${profile.session_id || "全局"} · ` +
-        `完整度 ${Math.round(num(profile.completeness) * 10) / 10}% · ` +
-        `字段锁：${profile.field_lock_scope_label || "未知"}`,
-      confirmText: "关闭",
-      hideCancel: true,
-      onSubmit: () => true,
-      build: (body) => {
-        const toolbar = el("div", "contacts-library-detail-actions");
-        const canEdit =
-          !ui.contactsMeta || ui.contactsMeta.webui_allow_edit !== false;
-        const actions = [
-          ...(canEdit
-            ? [
-                ["edit-profile", "添加 / 更新字段"],
-                ["merge", "合并到另一条画像"],
-              ]
-            : []),
-          ["export", "导出这条画像"],
-          ...(canEdit ? [["delete", "删除整条画像"]] : []),
-        ];
-        actions.forEach(([action, label]) => {
-          const button = el(
-            "button",
-            action === "delete" ? "ghost tiny danger" : "ghost tiny",
-            label,
-          );
-          button.type = "button";
-          button.addEventListener("click", () =>
-            contactsLibraryAction(button, key, "", action),
-          );
-          toolbar.appendChild(button);
-        });
-        body.appendChild(toolbar);
-
-        const meta = el("div", "contacts-library-detail-meta");
-        [
-          ["创建", profile.created_at || "未知"],
-          ["更新", profile.updated_at || "未知"],
-          ["作用域", profile.field_lock_scope_label || "未知"],
-        ].forEach(([label, value]) => {
-          const item = el("div", "contacts-library-detail-meta-row");
-          item.appendChild(el("span", "muted", label));
-          item.appendChild(el("strong", "", value));
-          meta.appendChild(item);
-        });
-        body.appendChild(meta);
-
-        const fields = el("div", "weaver-field-list");
-        (profile.fields || []).forEach((field) => {
-          const row = el("div", "weaver-field-row");
-          const head = el("div", "weaver-field-head");
-          head.appendChild(el("strong", "weaver-field-name", field.name || "字段"));
-          if (field.is_custom) head.appendChild(el("span", "pill", "自定义"));
-          if (field.locked) head.appendChild(el("span", "pill pill-lock", "已锁定"));
-          if (field.updated_at) {
-            head.appendChild(el("span", "weaver-field-time", field.updated_at));
-          }
-          row.appendChild(head);
-          row.appendChild(el("div", "weaver-field-value", String(field.value || "")));
-          const detailBits = [
-            field.actor_name || field.updated_by,
-            field.source_kind,
-            field.evidence ? `依据：${field.evidence}` : "",
-          ].filter(Boolean);
-          if (detailBits.length) {
-            row.appendChild(
-              el("div", "weaver-field-evidence muted", detailBits.join(" · ")),
-            );
-          }
-          const fieldActions = el("div", "weaver-field-actions");
-          const canEdit =
-            !ui.contactsMeta || ui.contactsMeta.webui_allow_edit !== false;
-          const actions = [
-            ...(canEdit
-              ? [
-                  ["edit-field", "编辑"],
-                  ["lock-field", field.locked ? "解锁" : "锁定"],
-                ]
-              : []),
-            ["history-field", "历史"],
-            ...(canEdit ? [["delete-field", "删除"]] : []),
-          ];
-          actions.forEach(([action, label]) => {
-            const button = el(
-              "button",
-              action === "delete-field" ? "ghost tiny danger" : "ghost tiny",
-              label,
-            );
-            button.type = "button";
-            button.addEventListener("click", () =>
-              contactsLibraryAction(button, key, field.name, action),
-            );
-            fieldActions.appendChild(button);
-          });
-          row.appendChild(fieldActions);
-          fields.appendChild(row);
-        });
-        if (!(profile.fields || []).length) {
-          fields.appendChild(el("p", "muted", "这条画像还没有字段。"));
-        }
-        body.appendChild(fields);
-
-        if ((profile.notes || []).length) {
-          const notes = el("div", "weaver-notes");
-          notes.appendChild(el("h4", "", "备注"));
-          profile.notes.forEach((note, index) => {
-            notes.appendChild(el("div", "weaver-note-row", `${index + 1}. ${note}`));
-          });
-          body.appendChild(notes);
-        }
-      },
-    });
-  } catch (error) {
-    toast(error.message || "读取详细画像失败");
-  }
-}
-
-async function contactsLibraryAction(node, key, field = "", forced = "") {
-  const action = forced || node.dataset.libraryAct || "";
-  try {
-    if (action === "detail") {
-      await openContactsLibraryDetail(key);
-      return;
-    }
-    if (action === "export") {
-      await bridge.download(
-        "profile/weaver/export",
-        { keys: key, include_audit: true },
-        `my-world-profile-${String(key).replace(/[^\w.-]+/g, "_")}.json`,
-      );
-      return;
-    }
-    if (action === "delete") {
-      const sure = await confirmDialog({
-        title: "删除整条详细画像？",
-        message: "字段、备注、字段锁与审计历史记录会按现有备份策略处理，操作会写入审计。",
-        confirmText: "删除",
-      });
-      if (!sure) return;
-      const result = await apiPost("profile/weaver/delete", { keys: [key] });
-      if (result.ok === false) {
-        toast(result.message || result.failed?.join("；") || "删除失败");
-        return;
-      }
-      ui.contactsLibrary.selected.delete(key);
-      toast(result.message || "已删除");
-      await loadContactsLibrary();
-      return;
-    }
-    if (action === "merge") {
-      const data = await apiGet("profile/weaver/library", {
-        session: $("contacts-session") ? $("contacts-session").value : "",
-        page: 1,
-        page_size: 200,
-      });
-      const items = (data.items || []).filter((item) => item.key !== key);
-      if (!items.length) {
-        toast("没有可合并的另一条画像");
-        return;
-      }
-      openFormDialog({
-        title: "合并详细画像",
-        hint: "源画像的字段、锁、备注和元数据会合并到目标；默认合并后删除源记录。",
-        fields: [
-          {
-            key: "target",
-            label: "合并到",
-            type: "select",
-            options: items.map((item) => ({
-              value: item.key,
-              label: `${item.display_name || item.user_id} · ${item.session_id || "全局"}`,
-            })),
-            value: items[0].key,
-          },
-          {
-            key: "targetKey",
-            label: "或填写目标 key",
-            type: "text",
-            value: "",
-          },
-        ],
-        confirmText: "合并",
-        onSubmit: async (values) => {
-          const target = String(values.targetKey || "").trim() || values.target;
-          const result = await apiPost("profile/weaver/merge", {
-            source: key,
-            target,
-            drop_source: true,
-          });
-          if (!result.ok) {
-            toast(result.message || "合并失败");
-            return false;
-          }
-          toast(result.message || "已合并");
-          ui.contactsLibrary.selected.delete(key);
-          await loadContactsLibrary();
-          return true;
-        },
-      });
-      return;
-    }
-
-    const data = await apiGet("profile/weaver/key", { key });
-    const profile = data.profile || {};
-    const item = (profile.fields || []).find((entry) => entry.name === field);
-    if (action === "edit-profile") {
-      const available = profile.available_fields || [];
-      openFormDialog({
-        title: "添加或更新详细画像字段",
-        hint: "选已有字段，或直接输入一个新的自定义字段名。",
-        fields: [
-          {
-            key: "field",
-            label: "字段",
-            type: "select",
-            options: available.map((entry) => ({
-              value: entry.name,
-              label: `${entry.name}${entry.filled ? "（已有值）" : ""}`,
-            })),
-            value: available[0] ? available[0].name : "",
-          },
-          { key: "custom", label: "或自定义字段名", type: "text", value: "" },
-          { key: "value", label: "值", type: "textarea", rows: 4, value: "" },
-        ],
-        confirmText: "写入",
-        onSubmit: async (values) => {
-          const fieldName = String(values.custom || "").trim() || values.field;
-          if (!fieldName || !String(values.value || "").trim()) {
-            toast("字段和值都不能为空");
-            return false;
-          }
-          await apiPost("profile/weaver/field", {
-            key,
-            action: "upsert",
-            field: fieldName,
-            value: values.value,
-          });
-          toast("详细画像已更新");
-          await loadContactsLibrary();
-          return true;
-        },
-      });
-      return;
-    }
-    if (action === "edit-field") {
-      openFormDialog({
-        title: `编辑「${field}」`,
-        fields: [
-          {
-            key: "value",
-            label: field,
-            type: "textarea",
-            rows: 4,
-            value: item ? item.value : "",
-          },
-        ],
-        confirmText: "保存",
-        onSubmit: async (values) => {
-          await apiPost("profile/weaver/field", {
-            key,
-            action: "upsert",
-            field,
-            value: values.value,
-          });
-          toast("字段已更新");
-          await loadContactsLibrary();
-          return true;
-        },
-      });
-      return;
-    }
-    if (action === "lock-field") {
-      await apiPost("profile/weaver/field", {
-        key,
-        action: item && item.locked ? "unlock" : "lock",
-        field,
-      });
-      toast(item && item.locked ? "字段已解锁" : "字段已锁定");
-      await loadContactsLibrary();
-      return;
-    }
-    if (action === "history-field") {
-      const history = await apiGet("profile/weaver/history", {
-        key,
-        field,
-        limit: 50,
-      });
-      openCustomDialog({
-        title: `${field} · 变更历史`,
-        hint: "完整显示旧值、新值、操作者和原文依据。",
-        confirmText: "关闭",
-        hideCancel: true,
-        onSubmit: () => true,
-        build: (body) => {
-          if (!(history.items || []).length) {
-            body.appendChild(el("p", "muted", "还没有变更记录。"));
-            return;
-          }
-          history.items.forEach((entry) => {
-            const row = el("div", "weaver-history-row");
-            row.appendChild(
-              el(
-                "div",
-                "weaver-history-head",
-                `${entry.at || ""} · ${entry.action || "变更"} · ${entry.actor_name || entry.actor_type || ""}`,
-              ),
-            );
-            row.appendChild(
-              el(
-                "div",
-                "weaver-history-change",
-                `${entry.old_value || "（空）"} → ${entry.new_value || "（空）"}`,
-              ),
-            );
-            if (entry.evidence) {
-              row.appendChild(el("div", "muted", `依据：${entry.evidence}`));
-            }
-            body.appendChild(row);
-          });
-        },
-      });
-      return;
-    }
-    if (action === "delete-field") {
-      const sure = await confirmDialog({
-        title: `删除字段「${field}」？`,
-        message: "删除会写入审计，且不能用撤销按钮恢复。",
-        confirmText: "删除",
-      });
-      if (!sure) return;
-      await apiPost("profile/weaver/field", {
-        key,
-        action: "delete",
-        field,
-      });
-      toast("字段已删除");
-      await loadContactsLibrary();
-    }
-  } catch (error) {
-    toast(error.message || "画像操作失败");
-  }
-}
-
-async function exportSelectedProfiles() {
-  const keys = [...ui.contactsLibrary.selected];
-  if (!keys.length) {
-    toast("先选择要导出的画像");
-    return;
-  }
-  try {
-    await bridge.download(
-      "profile/weaver/export",
-      { keys: keys.join(","), include_audit: true },
-      "my-world-profiles-selected.json",
-    );
-  } catch (error) {
-    toast(error.message || "导出失败");
-  }
-}
-
-async function deleteSelectedProfiles() {
-  const keys = [...ui.contactsLibrary.selected];
-  if (!keys.length) {
-    toast("先选择要删除的画像");
-    return;
-  }
-  const sure = await confirmDialog({
-    title: `删除选中的 ${keys.length} 条画像？`,
-    message: "字段、备注、字段锁和画像记录都会删除；审计历史保留。",
-    confirmText: "删除",
-  });
-  if (!sure) return;
-  try {
-    const result = await apiPost("profile/weaver/delete", { keys });
-    if (result.ok === false) {
-      toast(result.message || result.failed?.join("；") || "批量删除失败");
-      await loadContactsLibrary();
-      return;
-    }
-    ui.contactsLibrary.selected.clear();
-    toast(result.message || "已删除");
-    await loadContactsLibrary();
-  } catch (error) {
-    toast(error.message || "批量删除失败");
-  }
 }
 
 async function loadContactsMeta() {
@@ -15002,6 +14380,7 @@ async function loadContactsData() {
       ["export-audit", "导出审计 CSV"],
       ["import", "导入画像 Bundle"],
       ["backup", "立即备份"],
+      ["records", "高级记录管理"],
     ].forEach(([action, label]) => {
       const button = el("button", action === "export" ? "primary" : "ghost", label);
       button.type = "button";
@@ -15139,6 +14518,10 @@ async function contactsDataAction(node) {
       await loadContactsData();
       return;
     }
+    if (action === "records") {
+      openProfileRecordsManager();
+      return;
+    }
     if (action === "download-backup") {
       await bridge.download(
         "profile/weaver/backup-download",
@@ -15171,6 +14554,127 @@ async function contactsDataAction(node) {
   }
 }
 
+function openProfileRecordsManager() {
+  const selected = new Set();
+  let rows = [];
+  openCustomDialog({
+    title: "高级画像记录管理",
+    hint: "这里是底层记录视图，只用于排查跨会话重复和批量清理。日常请从左侧联系人进入。",
+    confirmText: "关闭",
+    hideCancel: true,
+    wide: true,
+    onSubmit: () => true,
+    build: (body) => {
+      const controls = el("div", "contacts-library-toolbar");
+      const search = document.createElement("input");
+      search.placeholder = "搜索姓名 / QQ / 字段内容";
+      const locked = document.createElement("input");
+      locked.type = "checkbox";
+      const lockedLabel = el("label", "inline contacts-library-locked");
+      lockedLabel.appendChild(locked);
+      lockedLabel.appendChild(el("span", "", "只看字段锁"));
+      const exportButton = el("button", "ghost tiny", "导出选中");
+      exportButton.type = "button";
+      const deleteButton = el("button", "ghost tiny danger", "删除选中");
+      deleteButton.type = "button";
+      controls.appendChild(search);
+      controls.appendChild(lockedLabel);
+      controls.appendChild(exportButton);
+      controls.appendChild(deleteButton);
+      body.appendChild(controls);
+      const summary = el("p", "muted", "加载中…");
+      body.appendChild(summary);
+      const list = el("div", "contacts-library-list");
+      body.appendChild(list);
+
+      const updateSummary = () => {
+        summary.textContent = `${rows.length} 条记录 · 已选择 ${selected.size} 条`;
+      };
+      const paint = () => {
+        list.innerHTML = "";
+        rows.forEach((item) => {
+          const row = el("div", "contacts-library-row");
+          row.dataset.libraryKey = item.key;
+          const check = document.createElement("input");
+          check.type = "checkbox";
+          check.checked = selected.has(item.key);
+          check.addEventListener("change", () => {
+            if (check.checked) selected.add(item.key);
+            else selected.delete(item.key);
+            updateSummary();
+          });
+          row.appendChild(check);
+          const identity = el("div", "contacts-library-identity");
+          identity.appendChild(el("strong", "", item.display_name || item.user_id));
+          identity.appendChild(
+            el("span", "mono muted", `${item.key} · ${item.session_id || "全局"}`),
+          );
+          row.appendChild(identity);
+          const preview = el("div", "contacts-library-preview");
+          (item.preview || []).slice(0, 3).forEach((field) =>
+            preview.appendChild(
+              el("span", "contacts-library-fact", `${field.name}：${field.value}`),
+            ),
+          );
+          row.appendChild(preview);
+          const meta = el("div", "contacts-library-meta");
+          meta.appendChild(
+            el("span", "pill", `${Math.round(num(item.completeness) * 10) / 10}%`),
+          );
+          meta.appendChild(el("span", "muted", `${num(item.field_count)} 个字段`));
+          if (num(item.locked_count)) {
+            meta.appendChild(el("span", "pill pill-lock", `${num(item.locked_count)} 个锁`));
+          }
+          row.appendChild(meta);
+          list.appendChild(row);
+        });
+        updateSummary();
+      };
+      const load = async () => {
+        const data = await apiGet("profile/weaver/library", {
+          q: search.value.trim(),
+          locked_only: locked.checked ? 1 : 0,
+          page_size: 200,
+        });
+        rows = data.items || [];
+        paint();
+      };
+      search.addEventListener("input", () => {
+        window.clearTimeout(search._timer);
+        search._timer = window.setTimeout(() => load().catch(() => {}), 220);
+      });
+      locked.addEventListener("change", () => load().catch(() => {}));
+      exportButton.addEventListener("click", async () => {
+        if (!selected.size) {
+          toast("先选择记录");
+          return;
+        }
+        await bridge.download(
+          "profile/weaver/export",
+          { keys: [...selected].join(","), include_audit: true },
+          "my-world-profile-records.json",
+        );
+      });
+      deleteButton.addEventListener("click", async () => {
+        if (!selected.size) {
+          toast("先选择记录");
+          return;
+        }
+        const sure = await confirmDialog({
+          title: `删除选中的 ${selected.size} 条记录？`,
+          message: "只删除底层画像记录，联系人关系与好感保留。",
+          confirmText: "删除",
+        });
+        if (!sure) return;
+        await apiPost("profile/weaver/delete", { keys: [...selected] });
+        selected.clear();
+        await load();
+      });
+      load().catch((error) => toast(error.message || "读取记录失败"));
+    },
+  });
+}
+
 async function loadContacts() {
   const list = $("contacts-list");
   if (!list) return;
@@ -15179,7 +14683,7 @@ async function loadContacts() {
   try {
     const [, data] = await Promise.all([
       loadContactsMeta(),
-      apiGet("profile/people", { session }),
+      apiGet("profile/contacts", { session }),
     ]);
     ui.contacts = data.people || [];
     if ($("contacts-note")) {
@@ -15204,6 +14708,11 @@ async function loadContacts() {
       await loadContactDetail(ui.contactUser);
     } else {
       $("contacts-title").textContent = "还没有认识的人";
+      $("contacts-subtitle").textContent = "等她认识第一个人后，这里会出现统一画像。";
+      $("contacts-avatar").textContent = "?";
+      $("contacts-detail-tabs")?.classList.add("hidden");
+      $("contacts-detail-affinity")?.classList.add("hidden");
+      $("contacts-detail-completeness")?.classList.add("hidden");
       $("contacts-detail").innerHTML = "";
       $("contacts-detail").appendChild(
         emptyState(
@@ -15222,21 +14731,49 @@ function renderContactsList() {
   const box = $("contacts-list");
   const keyword = ($("contacts-search") ? $("contacts-search").value : "").trim();
   box.innerHTML = "";
-  const rows = ui.contacts.filter((item) => {
-    if (!keyword) return true;
-    return (
-      String(item.name || "").includes(keyword) ||
-      String(item.user_id || "").includes(keyword) ||
-      String(item.digest || "").includes(keyword) ||
-      String(item.qq_name || "").includes(keyword) ||
-      weaverPreviewText(item.weaver).includes(keyword) ||
-      String((item.weaver || {}).display_name || "").includes(keyword)
-    );
-  });
+  const rows = ui.contacts
+    .filter((item) => {
+      if (ui.contactsFilter === "detailed" && !item.has_detailed_profile) return false;
+      if (ui.contactsFilter === "locked" && !num(item.profile_locked_count)) return false;
+      if (ui.contactsFilter === "duplicates" && num(item.profile_record_count) < 2) {
+        return false;
+      }
+      if (!keyword) return true;
+      const preview = (item.profile_preview || [])
+        .map((field) => `${field.name || ""} ${field.value || ""}`)
+        .join(" ");
+      return [
+        item.name,
+        item.display_name,
+        item.user_id,
+        item.digest,
+        item.qq_name,
+        preview,
+        weaverPreviewText(item.weaver),
+        (item.weaver || {}).display_name,
+      ].some((value) => String(value || "").includes(keyword));
+    })
+    .sort((left, right) => {
+      if (ui.contactsSort === "name") {
+        return String(left.name || "").localeCompare(String(right.name || ""), "zh-CN");
+      }
+      if (ui.contactsSort === "affinity") {
+        return num(right.affinity) - num(left.affinity);
+      }
+      if (ui.contactsSort === "profile") {
+        return num((right.weaver || {}).completeness) - num((left.weaver || {}).completeness);
+      }
+      return num(right.last_seen_at) - num(left.last_seen_at);
+    });
   if ($("contacts-count")) $("contacts-count").textContent = `${rows.length} 人`;
   if (!rows.length) {
     box.appendChild(
-      emptyState("👥", keyword ? "没有匹配的人，换个词试试。" : "还没有认识的人。"),
+      emptyState(
+        "👥",
+        keyword || ui.contactsFilter !== "all"
+          ? "没有符合当前筛选的联系人。"
+          : "还没有认识的人。",
+      ),
     );
     return;
   }
@@ -15244,6 +14781,13 @@ function renderContactsList() {
     const row = el("div", "contact-row");
     row.classList.toggle("active", item.user_id === ui.contactUser);
     row.dataset.user = item.user_id;
+    const avatar = el(
+      "span",
+      "contact-row-avatar",
+      String(item.name || item.user_id || "?").trim().slice(0, 1),
+    );
+    row.appendChild(avatar);
+    const body = el("div", "contact-row-body");
     const head = el("div", "contact-row-head");
     head.appendChild(el("strong", "", item.name || item.user_id));
     (item.bonds || []).forEach((bond) => {
@@ -15252,35 +14796,38 @@ function renderContactsList() {
     (item.claims || []).forEach((bond) => {
       head.appendChild(contactBadge(`${bond}？`, "pill pill-claim"));
     });
-    row.appendChild(head);
+    if (num(item.profile_record_count) > 1) {
+      head.appendChild(contactBadge(`${num(item.profile_record_count)} 条记录`, "pill"));
+    }
+    body.appendChild(head);
     const meta = el(
       "div",
       "contact-row-meta",
-      `${item.level || "陌生人"} · 好感 ${Math.round(Number(item.affinity) || 0)} · 聊过 ${item.message_count || 0} 句 · ${formatStamp(item.last_seen_at)}`,
+      `${item.level || "陌生人"} · 好感 ${Math.round(Number(item.affinity) || 0)} · ` +
+        `${num(item.message_count)} 句 · ${formatStamp(item.last_seen_at)}`,
     );
-    row.appendChild(meta);
+    body.appendChild(meta);
     if (item.digest) {
-      row.appendChild(el("div", "contact-row-digest", item.digest));
+      body.appendChild(el("div", "contact-row-digest", item.digest));
     }
     const weaver = item.weaver || {};
     if (weaver.completeness != null) {
       const completeness = el("div", "contact-row-weaver");
       completeness.appendChild(
-        el(
-          "span",
-          "",
-          `画像完整度 ${Math.round(num(weaver.completeness) * 10) / 10}%`,
-        ),
+        el("span", "", `画像 ${Math.round(num(weaver.completeness) * 10) / 10}%`),
       );
       if (num(weaver.locked_count)) {
-        completeness.appendChild(el("span", "pill", `${num(weaver.locked_count)} 个字段锁`));
+        completeness.appendChild(
+          el("span", "pill pill-lock", `${num(weaver.locked_count)} 个字段锁`),
+        );
       }
-      row.appendChild(completeness);
+      body.appendChild(completeness);
       const preview = weaverPreviewText(weaver);
       if (preview) {
-        row.appendChild(el("div", "contact-row-weaver-preview muted", preview));
+        body.appendChild(el("div", "contact-row-weaver-preview muted", preview));
       }
     }
+    row.appendChild(body);
     box.appendChild(row);
   });
 }
@@ -15314,7 +14861,7 @@ async function loadContactDetail(userId) {
   const box = $("contacts-detail");
   box.innerHTML = "<p class='muted'>加载中…</p>";
   try {
-    const data = await apiGet("profile/person", { session, user_id: userId });
+    const data = await apiGet("profile/contact", { session, user_id: userId });
     ui.contactDetail = data;
     renderContactDetail(data);
   } catch (error) {
@@ -15322,9 +14869,94 @@ async function loadContactDetail(userId) {
   }
 }
 
+function setContactDetailTab(tab) {
+  const allowed = ["overview", "profile", "relation", "records"];
+  ui.contactDetailTab = allowed.includes(tab) ? tab : "overview";
+  document.querySelectorAll("[data-contact-detail-tab]").forEach((button) => {
+    button.classList.toggle(
+      "on",
+      button.dataset.contactDetailTab === ui.contactDetailTab,
+    );
+  });
+  document.querySelectorAll("[data-contact-panel]").forEach((panel) => {
+    panel.hidden = panel.dataset.contactPanel !== ui.contactDetailTab;
+  });
+}
+
+function contactRecordsSection(data) {
+  const card = el("div", "contact-section contact-records-section");
+  card.dataset.contactPanel = "records";
+  const records = data.weaver_records || [];
+  const canEdit = !ui.contactsMeta || ui.contactsMeta.webui_allow_edit !== false;
+  const head = el("div", "section-head");
+  head.appendChild(el("h3", "", `画像记录（${records.length}）`));
+  if (canEdit && records.length > 1) {
+    const merge = el("button", "primary tiny", "合并到当前会话记录");
+    merge.dataset.act = "records-merge";
+    head.appendChild(merge);
+  }
+  card.appendChild(head);
+  card.appendChild(
+    el(
+      "p",
+      "hint-line",
+      "联系人只有一个；下面这些是她在不同会话里保存的画像记录。字段和锁会统一显示，合并后只保留一条。",
+    ),
+  );
+  if (!records.length) {
+    card.appendChild(
+      el("p", "muted", "还没有详细画像记录，可以在「画像字段」里添加第一条。"),
+    );
+    return card;
+  }
+  const list = el("div", "contact-record-list");
+  records.forEach((record) => {
+    const row = el("div", "contact-record-row");
+    const main = el("div", "contact-record-main");
+    main.appendChild(
+      el(
+        "strong",
+        "",
+        record.session_id
+          ? sessionShortName(record.session_id)
+          : "跨会话共享记录",
+      ),
+    );
+    main.appendChild(
+      el(
+        "span",
+        "muted mono",
+        `${record.key || ""} · ${num(record.fields?.length)} 个字段 · ` +
+          `${num(record.locked_count)} 个锁 · ${record.updated_at || "时间未知"}`,
+      ),
+    );
+    row.appendChild(main);
+    row.appendChild(
+      el(
+        "span",
+        "pill",
+        `${Math.round(num(record.completeness) * 10) / 10}% 完整`,
+      ),
+    );
+    if (canEdit) {
+      const drop = el("button", "ghost tiny danger", "删除记录");
+      drop.dataset.act = "record-delete";
+      drop.dataset.key = record.key || "";
+      row.appendChild(drop);
+    }
+    list.appendChild(row);
+  });
+  card.appendChild(list);
+  return card;
+}
+
 function contactWeaverSection(data) {
   const detail = data.weaver || {};
   const canEdit = !ui.contactsMeta || ui.contactsMeta.webui_allow_edit !== false;
+  const managedNames = new Set(["昵称", "称呼", "网名", "名字", "别名"]);
+  const visibleFields = (detail.fields || []).filter(
+    (field) => !managedNames.has(String(field.name || "")),
+  );
   const card = el("div", "contact-section contact-weaver-section");
   const head = el("div", "section-head");
   head.appendChild(el("h3", "", "详细画像"));
@@ -15356,7 +14988,7 @@ function contactWeaverSection(data) {
   }
   const meta = el("p", "hint-line");
   meta.textContent =
-    `${detail.fields.length} 个已填字段 · ${detail.locked_count || 0} 个字段锁` +
+    `${(detail.fields || []).length} 个已填字段 · ${detail.locked_count || 0} 个字段锁` +
     ` · 更新于 ${detail.updated_at || "未知"}`;
   card.appendChild(meta);
   if (!canEdit) {
@@ -15365,9 +14997,9 @@ function contactWeaverSection(data) {
     );
   }
 
-  if ((detail.fields || []).length) {
+  if (visibleFields.length) {
     const fields = el("div", "weaver-field-list");
-    detail.fields.forEach((field) => {
+    visibleFields.forEach((field) => {
       const row = el("div", "weaver-field-row");
       const top = el("div", "weaver-field-head");
       const name = el("strong", "weaver-field-name", field.name);
@@ -15437,14 +15069,32 @@ function contactWeaverSection(data) {
 function renderContactDetail(data) {
   const box = $("contacts-detail");
   const person = data.person || {};
+  const identity = data.identity || {};
   ui.contactUser = data.user_id;
-  $("contacts-title").textContent =
-    `${person.call_him || person.name || data.user_id}（QQ ${data.user_id}）`;
+  const displayName =
+    identity.display_name || person.call_me || person.name || data.user_id;
+  const scopedRecords = num(identity.record_count);
+  const totalRecords = num(identity.total_record_count, scopedRecords);
+  $("contacts-title").textContent = displayName;
+  $("contacts-subtitle").textContent =
+    `QQ ${data.user_id} · ${scopedRecords} 条当前记录` +
+    (totalRecords > scopedRecords ? `（共 ${totalRecords} 条）` : "") +
+    " · " +
+    `${identity.call_him ? `你私下叫她「${identity.call_him}」` : person.level?.name || "陌生人"}`;
+  $("contacts-avatar").textContent = String(displayName).trim().slice(0, 1) || "?";
+  const affinityBadge = $("contacts-detail-affinity");
+  if (affinityBadge) {
+    affinityBadge.classList.remove("hidden");
+    affinityBadge.textContent =
+      `好感 ${Math.round(num(person.affinity))} · ${person.level?.name || "陌生人"}`;
+  }
+  $("contacts-detail-tabs")?.classList.remove("hidden");
   box.innerHTML = "";
   renderContactsList();
 
   // 零、她对他已知的概况：认识多久、聊过多少、群名片、关系上限
   const metaCard = el("div", "contact-section");
+  metaCard.dataset.contactPanel = "overview";
   const metaBits = [];
   if (person.days_known) metaBits.push(`认识 ${person.days_known} 天`);
   if (person.message_count) metaBits.push(`聊过 ${person.message_count} 句`);
@@ -15479,10 +15129,13 @@ function renderContactDetail(data) {
     ),
   );
   box.appendChild(metaCard);
-  box.appendChild(contactWeaverSection(data));
+  const profileSection = contactWeaverSection(data);
+  profileSection.dataset.contactPanel = "profile";
+  box.appendChild(profileSection);
 
   // 一、关系：这一页只放摘要（一长条关系表会把整页顶下去），要改点「管理关系…」进弹窗
   const bondCard = el("div", "contact-section");
+  bondCard.dataset.contactPanel = "relation";
   const bondHead = el("div", "section-head");
   bondHead.appendChild(el("h3", "", "关系"));
   const bondEdit = el("button", "ghost tiny", "管理关系…");
@@ -15508,6 +15161,7 @@ function renderContactDetail(data) {
 
   // 二、好感度：这一页只留一条概要（数值 + 当前档位），滑杆和分级说明点「调整…」进弹窗
   const affinityCard = el("div", "contact-section");
+  affinityCard.dataset.contactPanel = "relation";
   const affinityHead = el("div", "section-head");
   affinityHead.appendChild(el("h3", "", "好感度"));
   const affinityEdit = el("button", "ghost tiny", "调整…");
@@ -15551,6 +15205,7 @@ function renderContactDetail(data) {
   // 二点五、她记着的账：记了就会对他冷一档，所以这里要写清现在算不算数
   const grudge = data.grudge;
   const grudgeCard = el("div", "contact-section");
+  grudgeCard.dataset.contactPanel = "relation";
   grudgeCard.appendChild(el("h3", "", "她记着的账"));
   if (grudge) {
     const days = Number(grudge.days || 0);
@@ -15596,6 +15251,7 @@ function renderContactDetail(data) {
 
   // 三、称呼与备注
   const fieldCard = el("div", "contact-section");
+  fieldCard.dataset.contactPanel = "overview";
   fieldCard.appendChild(el("h3", "", "称呼与备注"));
   const callMe = el("input");
   callMe.placeholder = "他让你怎么称呼自己";
@@ -15617,6 +15273,16 @@ function renderContactDetail(data) {
   digest.value = person.digest || "";
   digest.dataset.act = "field-digest";
   [callMe, callHim, note, digest].forEach((node) => fieldCard.appendChild(node));
+  const managedActions = el("div", "contact-managed-actions");
+  const nicknameHistory = el("button", "ghost tiny", "昵称变更历史");
+  nicknameHistory.dataset.act = "weaver-history";
+  nicknameHistory.dataset.field = "昵称";
+  managedActions.appendChild(nicknameHistory);
+  const noteHistory = el("button", "ghost tiny", "备注变更历史");
+  noteHistory.dataset.act = "weaver-history";
+  noteHistory.dataset.field = "备注";
+  managedActions.appendChild(noteHistory);
+  fieldCard.appendChild(managedActions);
   if (person.call_me_from) {
     fieldCard.appendChild(
       el("p", "muted", `称呼先用了${person.call_me_from}里的昵称；保存后以这里为准。`),
@@ -15636,6 +15302,7 @@ function renderContactDetail(data) {
 
   // 四、事实列表
   const factCard = el("div", "contact-section");
+  factCard.dataset.contactPanel = "relation";
   factCard.appendChild(el("h3", "", "关于他（事实）"));
   const factRows = el("div", "list");
   // 攒多了会很长：置顶的永远在，其余默认只显示最近几条，想看全部再展开
@@ -15707,6 +15374,8 @@ function renderContactDetail(data) {
   forget.dataset.act = "person-forget";
   factCard.appendChild(forget);
   box.appendChild(factCard);
+  box.appendChild(contactRecordsSection(data));
+  setContactDetailTab(ui.contactDetailTab || "overview");
 }
 
 /** 预览整理的结果：提示词、模型原话、解析出来的 JSON 都摆出来。 */
@@ -15920,6 +15589,29 @@ async function contactAction(node) {
   if (!session || !userId) return;
   const detail = ui.contactDetail || {};
   try {
+    if (act === "records-merge") {
+      const result = await apiPost("profile/contact/records", {
+        session,
+        user_id: userId,
+        action: "merge_all",
+      });
+      toast(result.message || "画像记录已合并");
+      await loadContactDetail(userId);
+      return;
+    }
+    if (act === "record-delete") {
+      const key = node.dataset.key || "";
+      const sure = await confirmDialog({
+        title: "删除这条画像记录？",
+        message: "只删除这一条会话记录；联系人的关系、好感和其它来源画像会保留。",
+        confirmText: "删除",
+      });
+      if (!sure) return;
+      await apiPost("profile/weaver/delete", { keys: [key] });
+      toast("画像记录已删除");
+      await loadContactDetail(userId);
+      return;
+    }
     if (act === "weaver-edit") {
       const fieldName = node.dataset.field;
       const field = (detail.weaver || {}).fields
@@ -16133,7 +15825,7 @@ async function contactAction(node) {
       await apiPost("profile/grudge", { session, user_id: userId, action: "delete" });
     } else if (act === "fields-save") {
       const box = node.parentElement;
-      await apiPost("profile/person", {
+      await apiPost("profile/contact", {
         session,
         user_id: userId,
         call_me: box.querySelector("[data-act=field-call-me]").value,

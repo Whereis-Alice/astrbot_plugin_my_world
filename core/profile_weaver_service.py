@@ -638,10 +638,56 @@ class ProfileWeaverService:
             str(session_id or "") if self.session_based else None,
         )
 
+    def preferred_record_key(self, session_id: str, user_id: str) -> str:
+        exact = self.profile_key(session_id, user_id)
+        if exact in self.store.profiles:
+            return exact
+        global_key = self.store.profile_key(user_id, None)
+        if global_key in self.store.profiles:
+            return global_key
+        if self.session_based:
+            return exact
+        candidates: list[tuple[str, str]] = []
+        for key, record in self.store.profiles.items():
+            if not isinstance(record, dict):
+                continue
+            if str(record.get("subject_user_id") or "") != str(user_id or ""):
+                continue
+            candidates.append((str(record.get("updated_at") or ""), key))
+        return max(candidates, default=("", ""))[1]
+
+    def record_summaries_for_user(
+        self,
+        user_id: str,
+        *,
+        session_id: str | None = None,
+        include_all: bool = True,
+    ) -> list[dict[str, Any]]:
+        summaries: list[dict[str, Any]] = []
+        for key, record in self.store.profiles.items():
+            if not isinstance(record, dict):
+                continue
+            if str(record.get("subject_user_id") or "") != str(user_id or ""):
+                continue
+            source_session = str(record.get("session_id") or "")
+            if (
+                self.session_based
+                and not include_all
+                and source_session
+                and source_session != str(session_id or "")
+            ):
+                continue
+            summaries.append(self.store.summarize_profile(key, record))
+        summaries.sort(
+            key=lambda item: (str(item.get("updated_at") or ""), str(item.get("key") or "")),
+            reverse=True,
+        )
+        return summaries
+
     def summary_for(self, session_id: str, user_id: str) -> dict[str, Any] | None:
         if not self.enabled:
             return None
-        key = self.profile_key(session_id, user_id)
+        key = self.preferred_record_key(session_id, user_id)
         record = self.store.profiles.get(key)
         if not isinstance(record, dict):
             return None
@@ -650,7 +696,76 @@ class ProfileWeaverService:
     def detail_for(self, session_id: str, user_id: str) -> dict[str, Any]:
         if not self.enabled:
             return {}
-        return self.store.get_profile_detail(self.profile_key(session_id, user_id))
+        preferred_key = self.preferred_record_key(session_id, user_id)
+        preferred = self.store.get_profile_detail(preferred_key)
+        if not preferred:
+            return {}
+        details = [
+            self.store.get_profile_detail(str(item.get("key") or ""))
+            for item in self.record_summaries_for_user(
+                user_id,
+                session_id=session_id,
+                include_all=False,
+            )
+        ]
+        details = [item for item in details if item]
+        if len(details) <= 1:
+            return preferred
+
+        fields_by_name: dict[str, dict[str, Any]] = {}
+        for detail in details:
+            for field in detail.get("fields") or []:
+                if not isinstance(field, dict):
+                    continue
+                name = str(field.get("name") or "")
+                if not name:
+                    continue
+                current = fields_by_name.get(name)
+                if current is None or str(field.get("updated_at") or "") >= str(
+                    current.get("updated_at") or ""
+                ):
+                    fields_by_name[name] = dict(field)
+
+        locked_fields = sorted(
+            {
+                str(field)
+                for detail in details
+                for field in detail.get("locked_fields") or []
+                if str(field)
+            }
+        )
+        notes: list[str] = []
+        for detail in details:
+            for note in detail.get("notes") or []:
+                text = str(note or "").strip()
+                if text and text not in notes:
+                    notes.append(text)
+
+        available: dict[str, dict[str, Any]] = {}
+        for detail in details:
+            for field in detail.get("available_fields") or []:
+                name = str(field.get("name") or "")
+                if not name:
+                    continue
+                current = available.get(name, {**field})
+                current["filled"] = bool(current.get("filled") or field.get("filled"))
+                current["locked"] = bool(current.get("locked") or field.get("locked"))
+                available[name] = current
+
+        return {
+            **preferred,
+            "fields": list(fields_by_name.values()),
+            "notes": notes,
+            "locked_fields": locked_fields,
+            "locked_count": len(locked_fields),
+            "available_fields": list(available.values()),
+            "completeness": max(
+                float(item.get("completeness") or 0.0) for item in details
+            ),
+            "record_count": len(details),
+            "record_keys": [str(item.get("key") or "") for item in details],
+            "merged_from_records": True,
+        }
 
     def detail_by_key(self, key: str) -> dict[str, Any]:
         if not self.enabled:
@@ -660,26 +775,158 @@ class ProfileWeaverService:
     def people_for_session(self, session_id: str) -> dict[str, dict[str, Any]]:
         if not self.enabled:
             return {}
-        rows: list[dict[str, Any]] = []
-        page = 1
-        while True:
-            result = self.store.list_profiles(
-                page=page,
-                page_size=200,
-                session_id=str(session_id or "") if self.session_based else None,
-            )
-            rows.extend(result.get("items") or [])
-            if page >= int(result.get("page_count") or 1):
-                break
-            page += 1
-        people: dict[str, dict[str, Any]] = {}
-        for item in rows:
-            source_session = str(item.get("session_id") or "")
-            if self.session_based and source_session and source_session != str(session_id):
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for key, record in self.store.profiles.items():
+            if not isinstance(record, dict):
                 continue
-            people[str(item.get("user_id") or "")] = item
-        people.pop("", None)
+            summary = self.store.summarize_profile(key, record)
+            user_id = str(summary.get("user_id") or "")
+            source_session = str(summary.get("session_id") or "")
+            if not user_id:
+                continue
+            if (
+                self.session_based
+                and source_session
+                and source_session != str(session_id or "")
+            ):
+                continue
+            grouped.setdefault(user_id, []).append(summary)
+
+        people: dict[str, dict[str, Any]] = {}
+        for user_id, rows in grouped.items():
+            rows.sort(
+                key=lambda item: (
+                    str(item.get("updated_at") or ""),
+                    str(item.get("key") or ""),
+                ),
+                reverse=True,
+            )
+            preferred_key = self.preferred_record_key(session_id, user_id)
+            preferred = next(
+                (item for item in rows if str(item.get("key") or "") == preferred_key),
+                rows[0],
+            )
+            locked_fields = sorted(
+                {
+                    str(field)
+                    for item in rows
+                    for field in item.get("locked_fields") or []
+                    if str(field)
+                }
+            )
+            preview: list[dict[str, str]] = []
+            seen_preview: set[tuple[str, str]] = set()
+            for row in rows:
+                for item in row.get("preview") or []:
+                    pair = (
+                        str(item.get("name") or ""),
+                        str(item.get("value") or ""),
+                    )
+                    if not pair[0] or pair in seen_preview:
+                        continue
+                    seen_preview.add(pair)
+                    preview.append({"name": pair[0], "value": pair[1]})
+                    if len(preview) >= 6:
+                        break
+                if len(preview) >= 6:
+                    break
+            people[user_id] = {
+                **preferred,
+                "key": preferred_key,
+                "record_count": len(rows),
+                "record_keys": [str(item.get("key") or "") for item in rows],
+                "locked_count": len(locked_fields),
+                "locked_fields": locked_fields,
+                "preview": preview,
+            }
         return people
+
+    def records_for_user(self, user_id: str) -> list[dict[str, Any]]:
+        return [
+            self.store.get_profile_detail(str(item.get("key") or ""))
+            for item in self.record_summaries_for_user(user_id)
+            if str(item.get("key") or "") in self.store.profiles
+        ]
+
+    def sync_contact_identity(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        actor: AuditActor,
+        call_me: str = "",
+        note: str = "",
+    ) -> list[str]:
+        """Keep the canonical nickname and note fields in the detailed contact record."""
+
+        if not self.enabled:
+            return []
+        messages: list[str] = []
+        current = self.detail_for(session_id, user_id)
+        subject_name = str(
+            current.get("display_name")
+            or current.get("subject_name")
+            or user_id
+        )
+        nickname = str(call_me or "").strip()
+        if nickname:
+            result = self.store.upsert_field(
+                user_id=user_id,
+                subject_name=subject_name,
+                field_name="昵称",
+                value=nickname,
+                session_id=session_id if self.session_based else None,
+                actor=actor,
+                source_kind="manual_edit",
+                evidence="通讯录统一编辑",
+                allow_custom_field=False,
+            )
+            if result.ok:
+                messages.append(result.message)
+        note_text = str(note or "").strip()
+        if note_text:
+            existing = {
+                str(item).strip()
+                for item in (current.get("notes") or [])
+                if str(item).strip()
+            }
+            incoming_parts = [
+                item.strip()
+                for item in re.split(r"[；;|]+", note_text)
+                if item.strip()
+            ] or [note_text]
+            missing = [item for item in incoming_parts if item not in existing]
+            if missing:
+                result = self.store.upsert_field(
+                    user_id=user_id,
+                    subject_name=subject_name,
+                    field_name=NOTES_FIELD_NAME,
+                    value="；".join(missing),
+                    session_id=session_id if self.session_based else None,
+                    actor=actor,
+                    source_kind="manual_edit",
+                    evidence="通讯录统一编辑",
+                    allow_custom_field=False,
+                )
+                if result.ok:
+                    messages.append(result.message)
+        return messages
+
+    def delete_contact_records(
+        self, user_id: str, actor: AuditActor
+    ) -> tuple[int, list[str]]:
+        removed = 0
+        failures: list[str] = []
+        for summary in self.record_summaries_for_user(user_id):
+            key = str(summary.get("key") or "")
+            if not key:
+                continue
+            result = self.store.delete_profile_by_key(key, actor)
+            if result.ok:
+                removed += 1
+            else:
+                failures.append(result.message)
+        return removed, failures
 
     def prompt_block(
         self,

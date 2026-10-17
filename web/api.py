@@ -264,6 +264,24 @@ class WebApiMixin:
         register(f"/{p}/persona-source", self.api_persona_source, ["GET"], "读 AstrBot 当前给这个会话的人设")
         register(f"/{p}/profile/people", self.api_profile_people, ["GET"], "通讯录：认识的人")
         register(f"/{p}/profile/person", self.api_profile_person, ["GET", "POST"], "通讯录：一个人的画像")
+        register(
+            f"/{p}/profile/contacts",
+            self.api_profile_people,
+            ["GET"],
+            "统一通讯录：按联系人聚合关系与画像",
+        )
+        register(
+            f"/{p}/profile/contact",
+            self.api_profile_person,
+            ["GET", "POST"],
+            "统一通讯录：一个联系人的完整画像",
+        )
+        register(
+            f"/{p}/profile/contact/records",
+            self.api_profile_contact_records,
+            ["GET", "POST"],
+            "统一通讯录：联系人的画像记录",
+        )
         register(f"/{p}/profile/fact", self.api_profile_fact, ["POST"], "通讯录：改事实")
         register(f"/{p}/profile/bond", self.api_profile_bond, ["POST"], "通讯录：改关系")
         register(f"/{p}/profile/affinity", self.api_profile_affinity, ["POST"], "通讯录：改好感度")
@@ -880,8 +898,13 @@ class WebApiMixin:
                 "level": {"name": "仅有画像", "index": 0, "deny": [], "prompt": ""},
             }
         payload["weaver"] = weaver_detail
+        payload["weaver_records"] = (
+            weaver_service.records_for_user(user_id)
+            if weaver_service is not None
+            else []
+        )
         payload["facts"] = store.facts(session_id, user_id, statuses=["active", "candidate", "past"])
-        # 称呼与备注：关系画像没填时，用通讯录详细画像里的同名字段补齐。
+        # 称呼与备注：详细画像里的昵称/备注就是通讯录的规范字段，不再另造一套。
         person = payload.get("person")
         if isinstance(person, dict):
             weaver_fields = {
@@ -897,10 +920,10 @@ class WebApiMixin:
                 ),
                 None,
             )
-            if nickname and not str(person.get("call_him") or "").strip():
-                person["call_him"] = str(nickname.get("value") or "").strip()
-                person["call_him_from"] = "详细画像"
-            if not str(person.get("call_me") or "").strip():
+            if nickname and not str(person.get("call_me") or "").strip():
+                person["call_me"] = str(nickname.get("value") or "").strip()
+                person["call_me_from"] = "详细画像"
+            elif not str(person.get("call_me") or "").strip():
                 subject = str(
                     weaver_detail.get("display_name")
                     or weaver_detail.get("subject_name")
@@ -918,6 +941,24 @@ class WebApiMixin:
                 if weaver_notes:
                     person["note"] = "；".join(weaver_notes)[:200]
                     person["note_from"] = "详细画像"
+            payload["identity"] = {
+                "display_name": str(
+                    person.get("call_me")
+                    or weaver_detail.get("display_name")
+                    or person.get("name")
+                    or user_id
+                ),
+                "call_me": str(person.get("call_me") or ""),
+                "call_him": str(person.get("call_him") or ""),
+                "note": str(person.get("note") or ""),
+                "completeness": float(weaver_detail.get("completeness") or 0.0),
+                "record_count": int(
+                    weaver_detail.get("record_count")
+                    or (1 if weaver_detail else 0)
+                ),
+                "total_record_count": len(payload["weaver_records"]),
+                "locked_count": int(weaver_detail.get("locked_count") or 0),
+            }
         if isinstance(person, dict) and not str(person.get("note") or "").strip():
             notes = [
                 str(item.get("text") or "").strip()
@@ -1022,10 +1063,19 @@ class WebApiMixin:
             if view is None:
                 continue
             seen_users.add(user_id)
+            weaver = weaver_people.get(user_id) or {}
+            display_name = str(
+                view.call_me
+                or weaver.get("display_name")
+                or weaver.get("subject_name")
+                or view.name
+                or user_id
+            )
             people.append(
                 {
                     "user_id": user_id,
-                    "name": view.name,
+                    "name": display_name,
+                    "display_name": display_name,
                     "qq_name": view.qq_name,
                     "affinity": view.affinity,
                     "level": view.level.name,
@@ -1042,7 +1092,11 @@ class WebApiMixin:
                             if str(item)
                         ]
                     ),
-                    "weaver": weaver_people.get(user_id) or {},
+                    "weaver": weaver,
+                    "has_detailed_profile": bool(weaver),
+                    "profile_record_count": int(weaver.get("record_count") or 0),
+                    "profile_locked_count": int(weaver.get("locked_count") or 0),
+                    "profile_preview": list(weaver.get("preview") or []),
                 }
             )
         for user_id, summary in weaver_people.items():
@@ -1052,6 +1106,9 @@ class WebApiMixin:
                 {
                     "user_id": user_id,
                     "name": summary.get("display_name")
+                    or summary.get("subject_name")
+                    or user_id,
+                    "display_name": summary.get("display_name")
                     or summary.get("subject_name")
                     or user_id,
                     "qq_name": summary.get("subject_name") or "",
@@ -1065,6 +1122,10 @@ class WebApiMixin:
                     "first_seen_at": 0.0,
                     "days": 0,
                     "weaver": summary,
+                    "has_detailed_profile": True,
+                    "profile_record_count": int(summary.get("record_count") or 0),
+                    "profile_locked_count": int(summary.get("locked_count") or 0),
+                    "profile_preview": summary.get("preview") or [],
                 }
             )
         return json_response(
@@ -1098,8 +1159,20 @@ class WebApiMixin:
             return error_response("画像功能还没就绪")
         method = str(getattr(request, "method", "") or "").upper()
         if method == "POST" or str(request.query.get("_method", "")).upper() == "POST":
+            weaver_service = self._weaver_service()
+            sync_messages: list[str] = []
             if "note" in payload:
-                store.set_note(session_id, user_id, str(payload.get("note") or ""))
+                note = str(payload.get("note") or "")
+                store.set_note(session_id, user_id, note)
+                if weaver_service is not None and weaver_service.webui_allow_edit:
+                    sync_messages.extend(
+                        weaver_service.sync_contact_identity(
+                            session_id=session_id,
+                            user_id=user_id,
+                            actor=self._weaver_actor(),
+                            note=note,
+                        )
+                    )
             call_me = str(payload.get("call_me") or "").strip()
             call_him = str(payload.get("call_him") or "").strip()
             if call_me or call_him:
@@ -1113,9 +1186,96 @@ class WebApiMixin:
                 if result.get("rejected"):
                     reason = result["rejected"][0].get("reason") or "这个称呼不能用"
                     return error_response(reason)
+            if call_me and weaver_service is not None and weaver_service.webui_allow_edit:
+                sync_messages.extend(
+                    weaver_service.sync_contact_identity(
+                        session_id=session_id,
+                        user_id=user_id,
+                        actor=self._weaver_actor(),
+                        call_me=call_me,
+                    )
+                )
             if "digest" in payload:
                 store.set_digest(session_id, user_id, str(payload.get("digest") or ""))
+            response = await self._profile_person_payload(session_id, user_id)
+            response["sync_messages"] = sync_messages
+            return json_response(response)
         return json_response(await self._profile_person_payload(session_id, user_id))
+
+    async def api_profile_contact_records(self):
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload if payload else request.query)
+        if guard is not None:
+            return guard
+        service = self._weaver_service()
+        if service is None:
+            return error_response("通讯录画像内核未就绪")
+        session_id = self._profile_scope(
+            payload.get("session") or request.query.get("session", "")
+        )
+        user_id = str(
+            payload.get("user_id")
+            or request.query.get("user_id", "")
+            or ""
+        ).strip()
+        if not user_id:
+            return error_response("缺少 user_id")
+        method = str(getattr(request, "method", "") or "GET").upper()
+        records = service.record_summaries_for_user(user_id)
+        if method == "GET":
+            return json_response(
+                {
+                    "user_id": user_id,
+                    "preferred_key": service.preferred_record_key(
+                        session_id, user_id
+                    ),
+                    "records": records,
+                }
+            )
+        write_guard = self._weaver_write_guard(service)
+        if write_guard is not None:
+            return write_guard
+        action = str(payload.get("action") or "merge_all")
+        actor = self._weaver_actor()
+        if action == "delete":
+            removed, failures = service.delete_contact_records(user_id, actor)
+            return json_response(
+                {
+                    "ok": not failures,
+                    "removed": removed,
+                    "failed": failures,
+                    "message": f"已删除 {removed} 条画像记录",
+                }
+            )
+        if action != "merge_all":
+            return error_response("不认识的联系人画像记录操作")
+        target_key = str(payload.get("target_key") or "").strip()
+        if not target_key:
+            target_key = service.preferred_record_key(session_id, user_id)
+        if not target_key or target_key not in service.store.profiles:
+            return error_response("没有可合并到的目标画像记录")
+        merged = 0
+        for record in records:
+            source_key = str(record.get("key") or "")
+            if not source_key or source_key == target_key:
+                continue
+            result = service.store.merge_profile_records(
+                source_key=source_key,
+                target_key=target_key,
+                actor=actor,
+                drop_source=True,
+            )
+            if not result.ok:
+                return error_response(result.message)
+            merged += 1
+        return json_response(
+            {
+                "ok": True,
+                "merged": merged,
+                "target_key": target_key,
+                "message": f"已把 {merged} 条记录合并到当前联系人",
+            }
+        )
 
     async def api_profile_fact(self):
         payload = await request.json(default={}) or {}
@@ -1300,12 +1460,20 @@ class WebApiMixin:
         removed = store.db.delete_user_profile(
             group_id=store.group_key(session_id), user_id=user_id
         )
+        weaver_removed = 0
         service = self._weaver_service()
         if service is not None and service.enabled:
-            key = service.profile_key(session_id, user_id)
-            if key in service.store.profiles:
-                service.store.delete_profile_by_key(key, self._weaver_actor())
-        return json_response({"ok": True, "removed": removed})
+            weaver_removed, _failures = service.delete_contact_records(
+                user_id, self._weaver_actor()
+            )
+        return json_response(
+            {
+                "ok": True,
+                "removed": removed + weaver_removed,
+                "relation_removed": removed,
+                "profile_removed": weaver_removed,
+            }
+        )
 
     async def api_profile_forget_all(self):
         """通讯录上方那个「清空」：把这个会话组里她认识的人全忘掉。

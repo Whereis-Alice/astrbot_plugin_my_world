@@ -309,18 +309,23 @@ class FrontendSyntaxTest(unittest.TestCase):
         self.assertNotIn("leftText} → ${rightText}", source)
         self.assertNotIn('textPixelWidth(" → ")', source)
 
-    def test_contacts_library_is_a_first_class_view(self) -> None:
-        """通讯录画像库要能搜索、批量选择、合并与导出，不是只换一层皮。"""
+    def test_contacts_are_one_unified_workspace(self) -> None:
+        """人物和画像库不能再并列；联系人详情内部才分栏。"""
 
         source = APP_JS.read_text("utf-8")
         html = INDEX_HTML.read_text("utf-8")
-        self.assertIn('data-contacts-view="library"', html)
-        self.assertIn('id="contacts-library-list"', html)
-        self.assertIn("function loadContactsLibrary(", source)
-        self.assertIn("function renderContactsLibrary(", source)
-        self.assertIn("function contactsLibraryAction(", source)
-        self.assertIn("profile/weaver/merge", source)
-        self.assertIn("profile/weaver/delete", source)
+        self.assertIn('data-contacts-view="contacts"', html)
+        self.assertNotIn('data-contacts-view="people"', html)
+        self.assertNotIn('data-contacts-view="library"', html)
+        self.assertIn('id="contacts-view-contacts"', html)
+        self.assertIn('class="contacts-unified"', html)
+        self.assertIn('data-contact-detail-tab="profile"', html)
+        self.assertIn('data-contact-detail-tab="records"', html)
+        self.assertIn("function setContactDetailTab(", source)
+        self.assertIn("function contactRecordsSection(", source)
+        self.assertIn('apiGet("profile/contacts"', source)
+        self.assertIn('apiGet("profile/contact"', source)
+        self.assertIn('apiPost("profile/contact/records"', source)
         self.assertIn("function weaverPreviewText(", source)
         self.assertNotIn('String((item.weaver || {}).preview || "")', source)
 

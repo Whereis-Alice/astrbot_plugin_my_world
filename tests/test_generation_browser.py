@@ -675,25 +675,27 @@ class GenerationBrowserTests(unittest.TestCase):
 
     def test_contacts_merge_relationship_and_profile_views(self):
         self.page.locator('button[data-tab="contacts"]').click()
+        expect(self.page.locator(".contacts-unified")).to_be_visible()
         expect(self.page.locator(".contact-row")).to_have_count(1)
         expect(self.page.locator(".contact-row")).to_contain_text("小鲸鱼")
         self.page.locator(".contact-row").click()
-        expect(self.page.locator(".contact-weaver-section")).to_be_visible()
-        expect(self.page.locator(".weaver-field-row")).to_have_count(2)
-        expect(self.page.locator(".contact-weaver-section")).to_contain_text("字段锁")
+        expect(self.page.locator("#contacts-title")).to_have_text("小鲸鱼")
+        expect(self.page.locator("#contacts-subtitle")).to_contain_text("你私下叫她")
+        expect(self.page.locator("#contacts-detail-affinity")).to_contain_text("好感 72")
 
-        self.page.locator('[data-contacts-view="library"]').click()
-        expect(self.page.locator(".contacts-library-row")).to_have_count(1)
-        expect(self.page.locator(".contacts-library-row")).to_contain_text("小鲸鱼")
-        expect(self.page.locator(".contacts-library-row")).to_contain_text("热茶")
-        self.host.screenshot(path=str(self.shots / "contacts-library.png"))
-        self.page.locator(".contacts-library-row").click()
-        expect(self.page.locator("#dialog")).to_be_visible()
-        expect(self.page.locator("#dialog-body")).to_contain_text("喜欢的话题")
-        expect(self.page.locator("#dialog-body")).to_contain_text("以后叫我小鲸鱼")
-        self.host.screenshot(path=str(self.shots / "contacts-library-detail.png"))
-        self.page.locator("#dialog-ok").click()
-        expect(self.page.locator("#dialog")).to_be_hidden()
+        self.page.locator('[data-contact-detail-tab="profile"]').click()
+        expect(self.page.locator(".contact-weaver-section")).to_be_visible()
+        expect(self.page.locator(".weaver-field-row")).to_have_count(1)
+        expect(self.page.locator(".contact-weaver-section")).to_contain_text("喜欢的话题")
+
+        self.page.locator('[data-contact-detail-tab="relation"]').click()
+        expect(self.page.locator("#contacts-detail")).to_contain_text("关于他（事实）")
+        expect(self.page.locator("#contacts-detail")).to_contain_text("喜欢热茶")
+
+        self.page.locator('[data-contact-detail-tab="records"]').click()
+        expect(self.page.locator(".contact-records-section")).to_be_visible()
+        expect(self.page.locator(".contact-record-row")).to_have_count(1)
+        self.host.screenshot(path=str(self.shots / "contacts-unified-detail.png"))
 
         self.page.locator('[data-contacts-view="overview"]').click()
         expect(self.page.locator(".contacts-metric")).to_have_count(6)
@@ -708,21 +710,20 @@ class GenerationBrowserTests(unittest.TestCase):
         expect(self.page.locator(".contacts-backup-row")).to_have_count(1)
         self.assertEqual(self.errors, [])
 
-    def test_contacts_library_fits_mobile(self):
+    def test_contacts_workspace_fits_mobile(self):
         self.host.set_viewport_size({"width": 390, "height": 844})
         self.page.locator('button[data-tab="contacts"]').click()
-        self.page.locator('[data-contacts-view="library"]').click()
-        expect(self.page.locator(".contacts-library-row")).to_be_visible()
+        expect(self.page.locator(".contacts-unified")).to_be_visible()
+        expect(self.page.locator(".contact-row")).to_be_visible()
         self.assertLessEqual(
             self.page.evaluate("document.documentElement.scrollWidth"),
             self.page.evaluate("document.documentElement.clientWidth") + 1,
         )
-        self.page.locator(".contacts-library-row").click()
-        expect(self.page.locator("#dialog")).to_be_visible()
-        card = self.page.locator("#dialog-card").bounding_box()
-        self.assertGreaterEqual(card["x"], 0)
-        self.assertLessEqual(card["x"] + card["width"], 391)
-        self.host.screenshot(path=str(self.shots / "contacts-library-mobile.png"))
+        self.page.locator(".contact-row").click()
+        expect(self.page.locator("#contacts-detail-tabs")).to_be_visible()
+        self.page.locator('[data-contact-detail-tab="profile"]').click()
+        expect(self.page.locator(".contact-weaver-section")).to_be_visible()
+        self.host.screenshot(path=str(self.shots / "contacts-unified-mobile.png"))
         self.assertEqual(self.errors, [])
 
     def test_world_action_generator_lives_in_the_action_library(self):

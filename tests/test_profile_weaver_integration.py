@@ -155,6 +155,18 @@ class ProfileWeaverIntegrationTests(unittest.TestCase):
         sys.modules[spec.name] = module
         self.addCleanup(sys.modules.pop, spec.name, None)
         spec.loader.exec_module(module)
+        self.assertEqual(
+            {
+                module.VIEW_TOOL_NAME,
+                module.REMEMBER_TOOL_NAME,
+                module.FORGET_TOOL_NAME,
+            },
+            {
+                "profileweaver_view_profile",
+                "profileweaver_remember_field",
+                "profileweaver_forget_field",
+            },
+        )
         wrapper = module.ProfileWeaverRememberTool(plugin=service)
         context = types.SimpleNamespace(
             context=types.SimpleNamespace(event=_Event())
@@ -181,6 +193,30 @@ class ProfileWeaverIntegrationTests(unittest.TestCase):
             source_kind="self_preference",
         )
         self.assertIn("evidence", result)
+
+    def test_contact_view_merges_scoped_and_global_profile_records(self):
+        service = self.service({"weaver_session_based": True})
+        service.store.upsert_field(
+            user_id="42",
+            subject_name="阿岚",
+            field_name="职业",
+            value="学生",
+            session_id=None,
+            actor=service.actor(_Event(), "user_command"),
+            source_kind="manual_edit",
+            evidence="我是学生",
+            allow_custom_field=False,
+        )
+        detail = service.detail_for("aiocqhttp:GroupMessage:1001", "42")
+        values = {item["name"]: item["value"] for item in detail["fields"]}
+        self.assertEqual(values["爱好"], "摄影")
+        self.assertEqual(values["职业"], "学生")
+        self.assertEqual(detail["record_count"], 2)
+        self.assertIn("昵称", detail["locked_fields"])
+
+        contact = service.people_for_session("aiocqhttp:GroupMessage:1001")["42"]
+        self.assertEqual(contact["record_count"], 2)
+        self.assertEqual(contact["locked_count"], 1)
 
 
 if __name__ == "__main__":

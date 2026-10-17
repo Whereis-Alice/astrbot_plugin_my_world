@@ -8877,3 +8877,361 @@ label.inline > input[type="checkbox"]:checked + span {
     grid-template-columns: 1fr;
   }
 }
+
+/* ================================================================== */
+/* 通讯录统一联系人工作台                                               */
+/* ================================================================== */
+
+.contacts-unified {
+  display: grid;
+  grid-template-columns: minmax(300px, 350px) minmax(0, 1fr);
+  min-height: 620px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+}
+
+.contacts-directory {
+  display: flex;
+  min-width: 0;
+  min-height: 620px;
+  flex-direction: column;
+  border-right: 1px solid var(--line);
+  background: var(--bg-soft);
+}
+
+.contacts-directory-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 16px 16px 10px;
+}
+
+.contacts-directory-head h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+
+.contacts-directory-head .hint-line {
+  max-width: 260px;
+  margin: 0;
+}
+
+.contacts-search-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 14px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+}
+
+.contacts-search-box > span {
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.contacts-search-box input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+}
+
+.contacts-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.contacts-filter-bar .pill {
+  min-height: 28px;
+  padding: 0 10px;
+}
+
+.contacts-filter-bar select {
+  min-width: 116px;
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.contacts-directory-list {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 6px 8px 10px;
+}
+
+.contacts-directory .contact-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+}
+
+.contacts-directory .contact-row:hover {
+  background: var(--bg-inset);
+}
+
+.contacts-directory .contact-row.active {
+  border-color: var(--accent-ring);
+  background: var(--accent-soft);
+}
+
+.contact-row-avatar,
+.contacts-avatar {
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--accent-ring);
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+
+.contact-row-avatar {
+  width: 34px;
+  height: 34px;
+  font-size: 13px;
+}
+
+.contact-row-body {
+  min-width: 0;
+}
+
+.contact-row-body .contact-row-head strong {
+  overflow: hidden;
+  max-width: 100%;
+  color: var(--text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.contact-row-body .contact-row-meta,
+.contact-row-body .contact-row-digest,
+.contact-row-body .contact-row-weaver-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.contacts-directory-foot {
+  flex: 0 0 auto;
+  padding: 12px 14px;
+  border-top: 1px solid var(--line);
+}
+
+.contacts-directory-foot h3 {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.contacts-directory-foot .contact-place {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.contacts-profile-pane {
+  min-width: 0;
+  background: var(--panel);
+}
+
+.contacts-profile-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.contacts-profile-identity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.contacts-avatar {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  font-size: 17px;
+}
+
+.contacts-profile-identity h2,
+.contacts-profile-identity p {
+  overflow: hidden;
+  margin: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.contacts-profile-identity h2 {
+  color: var(--text);
+  font-size: 17px;
+}
+
+.contacts-profile-head-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.contacts-detail-tabs {
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  padding: 8px 18px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.contacts-detail-tabs button {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.contacts-detail-tabs button:hover {
+  color: var(--text);
+}
+
+.contacts-detail-tabs button.on {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+}
+
+.contacts-detail.unified {
+  padding: 16px 20px 28px;
+}
+
+.contacts-detail.unified .contact-section {
+  margin: 0;
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+}
+
+.contacts-detail.unified .contact-section:first-of-type {
+  border-top: 0;
+}
+
+.contacts-detail.unified .contact-section > h3 {
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.contacts-detail.unified .contact-weaver-section {
+  border-top: 0;
+}
+
+.contact-managed-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 4px 0 8px;
+}
+
+.contact-records-section {
+  min-width: 0;
+}
+
+.contact-record-list {
+  display: flex;
+  flex-direction: column;
+  margin-top: 8px;
+}
+
+.contact-record-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+}
+
+.contact-record-row:first-child {
+  border-top: 0;
+}
+
+.contact-record-main {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.contact-record-main > span {
+  overflow-wrap: anywhere;
+  font-size: 10.5px;
+}
+
+@media (max-width: 1000px) {
+  .contacts-unified {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .contacts-directory {
+    min-height: 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .contacts-directory-list {
+    max-height: 320px;
+  }
+}
+
+@media (max-width: 640px) {
+  .contacts-profile-head {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: 14px;
+  }
+
+  .contacts-profile-head-meta {
+    justify-content: flex-start;
+  }
+
+  .contacts-detail.unified {
+    padding: 12px 14px 22px;
+  }
+
+  .contact-record-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .contact-record-row > .pill {
+    grid-column: 2;
+  }
+}
