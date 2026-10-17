@@ -660,6 +660,58 @@ class EngineGeneratorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["actions"][0]["scope"], "node")
         self.assertEqual(result["actions"][0]["allowed_nodes"], ["deck"])
 
+    async def test_zone_chunk_first_block_becomes_home(self):
+        """分块重建：第一块只有一个区域，并且就是她的家。"""
+
+        self.creator.replies = [
+            '{"zones": [{"id": "old_town", "name": "老城区", "note": "她住的地方",'
+            ' "nodes": [{"id": "square", "name": "广场", "prompt": "很热闹"},'
+            ' {"id": "door", "name": "玄关", "prompt": "能出门"}]}], "connections": []}'
+        ]
+        result = await self.engine.generate_zone_chunk(0, 2, 2)
+
+        self.assertEqual(result["zone"]["id"], "old_town")
+        self.assertTrue(result["zone"]["is_home"])
+        self.assertEqual([node["id"] for node in result["nodes"]], ["square", "door"])
+        self.assertTrue(all(node["zone_id"] == "old_town" for node in result["nodes"]))
+        self.assertTrue(result["edges"])
+        self.assertEqual(result["zone_edges"], [])
+        self.assertIn("第一块", self.creator.calls[-1]["prompt"])
+
+    async def test_zone_chunk_uses_the_previous_map_as_context(self):
+        """第二块要带着已有的区域 / 地点，并且允许连到已有节点。"""
+
+        existing = {
+            "zones": [
+                {"id": "old_town", "name": "老城区", "note": "她住的地方", "x": 120, "y": 90,
+                 "is_home": True}
+            ],
+            "nodes": [{"id": "square", "name": "广场", "zone_id": "old_town"}],
+            "zone_edges": [],
+        }
+        self.creator.replies = [
+            '{"zones": [{"id": "river_bank", "name": "河边", "note": "晚上有风",'
+            ' "nodes": [{"id": "dock", "name": "码头", "prompt": "能看船"}]}],'
+            ' "connections": [{"from_zone": "river_bank", "from_node": "dock",'
+            ' "to_zone": "old_town", "to_node": "square", "ticks": 2}]}'
+        ]
+        result = await self.engine.generate_zone_chunk(1, 2, 1, existing=existing)
+
+        self.assertEqual(result["zone"]["id"], "river_bank")
+        self.assertFalse(result["zone"]["is_home"])
+        self.assertTrue(
+            [
+                edge
+                for edge in result["zone_edges"]
+                if {edge["from_node"], edge["to_node"]} == {"dock", "square"}
+            ],
+            result["zone_edges"],
+        )
+        # 上下文确实进了提示词：已有区域与本次是第几块
+        prompt = self.creator.calls[-1]["prompt"]
+        self.assertIn("老城区", prompt)
+        self.assertIn("第 2/2 块", prompt)
+
     async def test_actions_are_skipped_when_the_count_is_zero(self):
         """「每个地点生成几个动作」填 0 就不该多花那次调用。"""
 

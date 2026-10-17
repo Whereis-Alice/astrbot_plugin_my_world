@@ -30,7 +30,8 @@ GENERATION_BRIDGE = r"""
   window.layoutReply = { positions: {}, level: "world" };
   window.AstrBotPluginPage.apiPost = (endpoint, data) => {
     if (endpoint.startsWith("generate/")) {
-      window.generationCalls.push({endpoint, data});
+      // 快照一份：前端后来还会往同一个 draft 里追加区域
+      window.generationCalls.push({endpoint, data: JSON.parse(JSON.stringify(data))});
       return new Promise((resolve, reject) => {
         window.pendingGeneration.push({resolve, reject});
       });
@@ -44,6 +45,34 @@ GENERATION_BRIDGE = r"""
   };
   window.finishGeneration = (result) => window.pendingGeneration.shift().resolve(result);
   window.failGeneration = (message) => window.pendingGeneration.shift().reject(new Error(message));
+  // 分块生成：按顺序喂若干块，每块解析成一个区域草稿
+  window.finishZoneChunksPayload = async (chunks) => {
+    for (const chunk of chunks) {
+      while (!window.pendingGeneration.length) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      window.pendingGeneration.shift().resolve(chunk);
+    }
+  };
+  window.finishZoneChunks = async (count, zones = []) => {
+    const chunks = [];
+    for (let index = 0; index < count; index += 1) {
+      const zone = zones[index] || {
+        id: `zone_${index + 1}`, name: `区域${index + 1}`, note: "",
+        is_home: index === 0,
+      };
+      chunks.push({
+        index: index + 1,
+        zone,
+        nodes: [],
+        edges: [],
+        zone_edges: [],
+        actions: [],
+        problems: [],
+      });
+    }
+    await window.finishZoneChunksPayload(chunks);
+  };
 })();
 """
 
@@ -106,14 +135,20 @@ class GenerationBrowserTests(unittest.TestCase):
                 self.open_generator(tab, button)
                 self.page.locator("#dialog-ok").click()
                 expect(self.page.locator("#dialog-ok")).to_be_disabled()
-                expect(self.page.locator(".generation-status")).to_contain_text("正在生成草稿")
+                expect(self.page.locator(".generation-status")).to_contain_text("正在生成")
                 before = self.page.evaluate("generationCalls.length")
                 self.page.locator("#dialog-ok").dispatch_event("click")
                 self.page.locator("#dialog").press("Enter")
                 self.assertEqual(self.page.evaluate("generationCalls.length"), before)
                 if key == "zones":
                     self.host.screenshot(path=str(self.shots / "waiting-desktop.png"))
-                self.page.evaluate("result => finishGeneration(result)", {key: [draft], "problems": []})
+                    self.page.evaluate(
+                        "finishZoneChunks(2, [{id: 'garden', name: '花园', note: '休息'}])"
+                    )
+                else:
+                    self.page.evaluate(
+                        "result => finishGeneration(result)", {key: [draft], "problems": []}
+                    )
                 expect(self.page.locator("#dialog-title")).to_contain_text(title)
                 expect(self.page.locator("#dialog")).to_be_visible()
                 expect(self.page.locator("#dialog-ok")).to_be_enabled()
@@ -136,23 +171,27 @@ class GenerationBrowserTests(unittest.TestCase):
             "body => body.scrollWidth <= body.clientWidth"
         ))
         self.page.locator("#dialog-ok").click()
-        self.page.evaluate("finishGeneration({zones: [{id: 'garden', name: '花园'}], problems: []})")
+        self.page.evaluate(
+            "finishZoneChunks(2, [{id: 'garden', name: '花园'}])"
+        )
         expect(self.page.locator("#dialog-title")).to_contain_text("生成的新区域")
         expect(self.page.locator("#dialog-error")).to_be_empty()
 
     def test_no_usable_drafts_keeps_parser_reason(self):
         self.open_generator()
         self.page.locator("#dialog-ok").click()
-        self.page.evaluate("finishGeneration({zones: [], problems: ['模型输出不是有效 JSON']})")
+        self.page.evaluate("finishGeneration({zone: null, problems: ['模型输出不是有效 JSON']})")
         expect(self.page.locator("#dialog-error")).to_contain_text("不是有效 JSON")
         expect(self.page.locator("#dialog")).to_be_visible()
 
     def test_zone_preview_can_be_edited_and_saved_explicitly(self):
         self.open_generator()
         self.page.locator("#dialog-ok").click()
-        self.page.evaluate("finishGeneration({zones: [{id: 'garden', name: '花园', note: '散步'}]})")
+        self.page.evaluate(
+            "finishZoneChunks(2, [{id: 'garden', name: '花园', note: '散步'}])"
+        )
         expect(self.page.locator("#dialog-title")).to_contain_text("生成的新区域")
-        self.page.get_by_label("区域名", exact=True).fill("新花园")
+        self.page.get_by_label("区域名", exact=True).first.fill("新花园")
         self.page.locator("#dialog-ok").click()
         expect(self.page.locator("#dialog")).to_be_hidden()
         config = self.page.evaluate("AstrBotPluginPage.apiGet('config')")
@@ -190,7 +229,9 @@ class GenerationBrowserTests(unittest.TestCase):
         expect(self.page.locator("#dialog-error")).to_contain_text("1 到 4")
         self.assertEqual(self.page.evaluate("generationCalls"), [])
 
-    def test_both_map_generators_can_choose_nodes_per_zone(self):
+    def test_zone_generators_are_chunked_and_carry_context(self):
+        """地图生成按区域分块：每块一个短请求，后一块带着前面已经生成的区域。"""
+
         self.open_generator()
         inputs = self.page.locator('#dialog-body input[type="number"]')
         # 生成数量 / 每个区域的地点 / 每个地点的动作
@@ -200,26 +241,40 @@ class GenerationBrowserTests(unittest.TestCase):
         inputs.nth(2).fill("2")
         self.page.locator('#dialog-body textarea').fill("爱丽丝的梦游仙境")
         self.page.locator("#dialog-ok").click()
-        zone_call = self.page.evaluate("generationCalls").pop()
-        self.assertEqual(zone_call["endpoint"], "generate/zones")
-        self.assertEqual(zone_call["data"]["count"], 2)
-        self.assertEqual(zone_call["data"]["nodes_per_zone"], 4)
-        self.assertEqual(zone_call["data"]["actions_per_node"], 2)
-        self.assertEqual(zone_call["data"]["extra_prompt"], "爱丽丝的梦游仙境")
+        self.page.evaluate(
+            "finishZoneChunks(2, [{id: 'first_zone', name: '第一块', is_home: true}])"
+        )
+        calls = self.page.evaluate("generationCalls")
+        self.assertEqual({call["endpoint"] for call in calls}, {"generate/zone-chunk"})
+        first, second = calls[0]["data"], calls[1]["data"]
+        self.assertEqual(first["index"], 0)
+        self.assertEqual(first["total"], 2)
+        self.assertEqual(first["nodes_per_zone"], 4)
+        self.assertEqual(first["actions_per_node"], 2)
+        self.assertEqual(first["extra_prompt"], "爱丽丝的梦游仙境")
+        self.assertEqual(first["existing"]["zones"], [])
+        # 第二块必须带着第一块：模型才知道怎么接、怎么不重名
+        self.assertEqual(
+            [zone["id"] for zone in second["existing"]["zones"]], ["first_zone"]
+        )
+        expect(self.page.locator("#dialog-title")).to_contain_text("生成的新区域")
         self.page.locator("#dialog-cancel").click()
 
         self.open_generator("map", "map-generate-all")
         inputs = self.page.locator('#dialog-body input[type="number"]')
         expect(inputs).to_have_count(3)
-        inputs.nth(0).fill("5")
+        inputs.nth(0).fill("3")
         inputs.nth(1).fill("3")
         inputs.nth(2).fill("0")
+        self.page.evaluate("generationCalls.length = 0")
         self.page.locator("#dialog-ok").click()
-        world_call = self.page.evaluate("generationCalls").pop()
-        self.assertEqual(world_call["endpoint"], "generate/world-map")
-        self.assertEqual(world_call["data"]["count"], 5)
-        self.assertEqual(world_call["data"]["nodes_per_zone"], 3)
-        self.assertEqual(world_call["data"]["actions_per_node"], 0)
+        self.page.evaluate("finishZoneChunks(3)")
+        calls = self.page.evaluate("generationCalls")
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[0]["data"]["total"], 3)
+        self.assertEqual(calls[0]["data"]["actions_per_node"], 0)
+        expect(self.page.locator("#dialog-title")).to_contain_text("一键重建地图")
+        self.assertEqual(self.errors, [])
 
     def test_zone_regenerate_carries_prompt_actions_and_replace(self):
         """区域属性里的「重做这个区域…」：地点数 / 动作数 / 额外提示词 / 替换一起带上。"""
@@ -479,18 +534,26 @@ class GenerationBrowserTests(unittest.TestCase):
             }
             for index, link in enumerate(connections)
         ]
-        self.open_generator("map", "map-generate-all")
-        self.page.locator("#dialog-ok").click()
-        self.page.evaluate(
-            "result => finishGeneration(result)",
+        # 分块生成：一个区域一块，跨区路线挂在它涉及的那一块上
+        chunks = [
             {
-                "zones": zones,
-                "nodes": nodes,
+                "zone": zone,
+                "nodes": [node for node in nodes if node["zone_id"] == zone["id"]],
                 "edges": [],
-                "zone_edges": zone_edges,
+                "zone_edges": [
+                    link
+                    for link in zone_edges
+                    if zone["id"] in (link["from_zone"], link["to_zone"])
+                ],
+                "actions": [],
                 "problems": [],
-            },
-        )
+            }
+            for zone in zones
+        ]
+        self.open_generator("map", "map-generate-all")
+        self.page.locator('#dialog-body input[type="number"]').nth(0).fill("5")
+        self.page.locator("#dialog-ok").click()
+        self.page.evaluate("(chunks) => finishZoneChunksPayload(chunks)", chunks)
         expect(self.page.locator("#dialog-title")).to_contain_text("一键重建地图")
         self.page.locator("#dialog-ok").click()
         expect(self.page.locator("#dialog")).to_be_hidden()

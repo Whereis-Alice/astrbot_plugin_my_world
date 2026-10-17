@@ -978,15 +978,22 @@ def parse_generated_world_map(
     *,
     max_zones: int = MAX_MAP_ZONES,
     max_nodes_per_zone: int = MAX_MAP_NODES_PER_ZONE,
+    known_nodes: dict[str, str] | None = None,
+    known_zones: set[str] | None = None,
 ) -> dict[str, Any]:
     """解析"一键重建整张地图"的模型输出。
 
     只信任结构合规、id 合法、区域归属正确的部分；缺地点或漏连线的区域会在
     引擎里自动补落脚点与连通线，保证确认后拿到的地图一定能走通。
+
+    ``known_nodes`` / ``known_zones`` 是**分块生成**时已有的地图：这样新区域
+    连到已有区域的门户节点也能通过校验，同时保证新 id 不和旧的撞。
     """
 
     pack = parse_generated_zone_pack(
         text,
+        existing_zone_ids=known_zones,
+        existing_node_ids=set((known_nodes or {}).keys()),
         max_zones=max_zones,
         max_nodes_per_zone=max_nodes_per_zone,
     )
@@ -999,10 +1006,15 @@ def parse_generated_world_map(
     payload, _payload_problems = parse_json_payload(text)
     if not isinstance(payload, dict):
         return empty
-    zone_ids = {str(zone.get("id") or "") for zone in zones}
+    zone_ids = {str(zone.get("id") or "") for zone in zones} | {
+        str(item) for item in (known_zones or set())
+    }
     node_zone = {
         str(node.get("id") or ""): str(node.get("zone_id") or "") for node in nodes
     }
+    node_zone.update(
+        {str(key): str(value) for key, value in (known_nodes or {}).items()}
+    )
     connections: list[dict[str, Any]] = []
     used_connections: set[tuple[str, str]] = set()
     raw_connections = payload.get("connections")

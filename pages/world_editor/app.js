@@ -66,6 +66,8 @@ const ui = {
   actionCollapsed: new Set(),
   // 「最近的线索」是不是展开成全部（默认只列前几条，多了给一个展开按钮）
   eventThreadsExpanded: false,
+  // 分块生成区域时的进行中草稿：中途失败后可以接着上一块继续，不用从头再来
+  zoneChunkBuild: null,
   // 「从工具导入」弹窗的临时状态
   importState: null,
   presets: [],
@@ -8699,6 +8701,8 @@ function askGenerateCount({
     ? String(choice.defaultValue ?? (choiceOptions[0] || {}).value ?? "")
     : "";
   let status;
+  let progressBox;
+  let progressText = "";
   let input;
   let secondInput;
   let thirdInput;
@@ -8780,6 +8784,8 @@ function askGenerateCount({
       status = el("p", "muted generation-status");
       status.setAttribute("role", "status");
       body.appendChild(status);
+      progressBox = el("div", "generation-progress");
+      body.appendChild(progressBox);
     },
     onSubmit: async () => {
       const count = Number(value);
@@ -8816,12 +8822,24 @@ function askGenerateCount({
       if (choiceInput) choiceInput.disabled = true;
       const update = () => {
         const seconds = Math.floor((Date.now() - started) / 1000);
+        const base = progressText || "正在生成草稿";
         // 整张地图 + 每个地点的动作本来就要几分钟：过一分钟给一句说明，
         // 免得用户以为卡死了（服务端默认 10 分钟才判超时，设置里还能调大 / 关掉）。
         status.textContent =
           seconds >= 60
-            ? `正在生成草稿，已等待 ${seconds} 秒…内容多的时候几分钟很正常，别关窗口`
-            : `正在生成草稿，已等待 ${seconds} 秒…`;
+            ? `${base}，已等待 ${seconds} 秒…内容多的时候几分钟很正常，别关窗口`
+            : `${base}，已等待 ${seconds} 秒…`;
+      };
+      // 分块生成会一段一段来：这里把"第几块 / 已完成的块"实时显示出来
+      const report = (text, rows = []) => {
+        progressText = String(text || "");
+        if (progressBox) {
+          progressBox.innerHTML = "";
+          (rows || []).forEach((row) => {
+            progressBox.appendChild(el("div", "generation-progress-row", String(row)));
+          });
+        }
+        update();
       };
       update();
       const ticker = window.setInterval(update, 1000);
@@ -8829,7 +8847,7 @@ function askGenerateCount({
         // 这里不再自己掐 130 秒：生成多久由服务端的「生成超时」决定，
         // 前端只负责显示已等待的时间。
         const preview = await onRun(
-          count, secondCount, extraValue.trim(), choiceValue, thirdCount,
+          count, secondCount, extraValue.trim(), choiceValue, thirdCount, report,
         );
         // 用户关闭了等待窗口时，迟到的结果不能覆盖另一个弹窗。
         if (dialogState === current && typeof preview === "function") preview();
@@ -8865,25 +8883,25 @@ function generateZoneDrafts() {
       label: "额外提示词（可选）",
       placeholder: "例如：爱丽丝的梦游仙境；偏童话、奇幻一点",
     },
-    onRun: async (count, nodesPerZone, extraPrompt, _choice, actionsPerNode) => {
-      const result = await apiPost("generate/zones", {
+    onRun: async (count, nodesPerZone, extraPrompt, _choice, actionsPerNode, report) => {
+      const result = await generateZonesInChunks({
         count,
-        nodes_per_zone: nodesPerZone,
-        extra_prompt: extraPrompt,
-        aspect: mapViewportAspect(),
-        actions_per_node: actionsPerNode || 0,
+        nodesPerZone,
+        actionsPerNode,
+        extraPrompt,
+        report,
+        key: `zones|${count}|${nodesPerZone}|${actionsPerNode}|${extraPrompt}`,
       });
-      const drafts = result.zones || [];
-      if (!drafts.length) {
+      if (!result.zones.length) {
         throw new Error((result.problems || []).join("；") || "没有生成出可用的区域，请重试");
       }
       return () =>
         openZoneDraftDialog(
-          drafts,
+          result.zones,
           result.problems || [],
           result.nodes || [],
           result.zone_edges || [],
-          result.positions || {},
+          {},
           result.actions || [],
         );
     },
@@ -9035,6 +9053,74 @@ function openZoneDraftDialog(
   });
 }
 
+/**
+ * 分块生成区域：一次只生成一块，按顺序累积。
+ *
+ * 整张地图一次生成要几分钟，普通 HTTP 请求容易被 Cloudflare 的 100 秒掐断；
+ * 切成一块一块之后每个请求都短，而且后一块能看到前面已经生成的区域 / 地点 / 路线——
+ * 上下文不丢，地图的连通性和世界观也更容易保持一致。
+ *
+ * 中途失败时把进度留在 ``ui.zoneChunkBuild``：再点一次"开始生成"会从失败的那一块
+ * 继续（参数没变的前提下），已经生成好的区域不会重来。
+ */
+async function generateZonesInChunks({
+  count, nodesPerZone, actionsPerNode, extraPrompt, report, key,
+}) {
+  const saved = ui.zoneChunkBuild;
+  const resume = Boolean(
+    saved && saved.key === key && saved.draft && saved.index > 0 && saved.index < count,
+  );
+  const draft = resume
+    ? saved.draft
+    : { zones: [], nodes: [], edges: [], zone_edges: [], actions: [], problems: [] };
+  const startAt = resume ? saved.index : 0;
+  const rows = draft.zones.map(
+    (zone, index) => `第 ${index + 1}/${count} 块：${zone.name || zone.id}`,
+  );
+  for (let index = startAt; index < count; index += 1) {
+    report(`正在生成第 ${index + 1}/${count} 块`, [...rows]);
+    const chunk = await apiPost("generate/zone-chunk", {
+      index,
+      total: count,
+      nodes_per_zone: nodesPerZone,
+      actions_per_node: actionsPerNode || 0,
+      extra_prompt: extraPrompt,
+      existing: {
+        // 传快照：请求发出去之后本地还会继续追加，别让旧请求的 payload 跟着变
+        zones: [...draft.zones],
+        nodes: [...draft.nodes],
+        zone_edges: [...draft.zone_edges],
+      },
+      aspect: mapViewportAspect(),
+    });
+    const zone = chunk.zone;
+    if (!zone) {
+      throw new Error(
+        (chunk.problems || []).join("；") || `第 ${index + 1} 块没有生成出可用的区域`,
+      );
+    }
+    draft.zones.push(zone);
+    draft.nodes.push(...(chunk.nodes || []));
+    draft.edges.push(...(chunk.edges || []));
+    // 跨区连线按"两端地点"去重：模型给的 + 后端自动补的可能是同一条
+    (chunk.zone_edges || []).forEach((edge) => {
+      const pair = [edge.from_node, edge.to_node].sort().join("|");
+      const exists = draft.zone_edges.some(
+        (item) => [item.from_node, item.to_node].sort().join("|") === pair,
+      );
+      if (!exists) draft.zone_edges.push(edge);
+    });
+    draft.actions.push(...(chunk.actions || []));
+    draft.problems.push(...(chunk.problems || []));
+    rows.push(
+      `第 ${index + 1}/${count} 块：${zone.name || zone.id}（${(chunk.nodes || []).length} 个地点）`,
+    );
+    ui.zoneChunkBuild = { key, draft, index: index + 1 };
+  }
+  ui.zoneChunkBuild = null;
+  return draft;
+}
+
 function generateWorldMapDrafts() {
   if (ui.scope) {
     toast("一键重建会替换整张地图结构，请先切换到「全局默认」再操作；当前会话请用「生成区域」或手动编辑。");
@@ -9058,16 +9144,16 @@ function generateWorldMapDrafts() {
       label: "额外提示词（可选）",
       placeholder: "例如：爱丽丝的梦游仙境；偏童话、奇幻一点",
     },
-    onRun: async (count, nodesPerZone, extraPrompt, _choice, actionsPerNode) => {
-      const result = await apiPost("generate/world-map", {
+    onRun: async (count, nodesPerZone, extraPrompt, _choice, actionsPerNode, report) => {
+      const result = await generateZonesInChunks({
         count,
-        nodes_per_zone: nodesPerZone,
-        extra_prompt: extraPrompt,
-        aspect: mapViewportAspect(),
-        actions_per_node: actionsPerNode || 0,
+        nodesPerZone,
+        actionsPerNode,
+        extraPrompt,
+        report,
+        key: `world|${count}|${nodesPerZone}|${actionsPerNode}|${extraPrompt}`,
       });
-      const zones = result.zones || [];
-      if (!zones.length) {
+      if (!result.zones.length) {
         throw new Error((result.problems || []).join("；") || "没有生成出可用的地图，请重试");
       }
       return () => openWorldMapDraftDialog(result);

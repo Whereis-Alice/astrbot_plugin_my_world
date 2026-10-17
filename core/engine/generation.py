@@ -563,6 +563,213 @@ class GenerationMixin:
             "raw": drafted.get("raw", ""),
         }
 
+    async def generate_zone_chunk(
+        self,
+        index: Any = 0,
+        total: Any = 0,
+        nodes_per_zone: Any = 0,
+        actions_per_node: Any = 0,
+        extra_prompt: str = "",
+        existing: dict[str, Any] | None = None,
+        aspect: Any = None,
+    ) -> dict[str, Any]:
+        """分块重建地图：**一次只生成一个区域**，并接到已有地图上。
+
+        整张地图一次生成要几分钟，普通 HTTP 请求很容易被反向代理
+        （Cloudflare 默认 100 秒）掐断。按区域切开之后每块都短；后一块能读到
+        前面已经生成的区域 / 地点 / 路线，世界观和连通性反而更稳。
+
+        ``existing`` 是前端累积的草稿：``zones`` / ``nodes`` / ``zone_edges``，
+        一律只读，不改它。
+        """
+
+        payload = existing if isinstance(existing, dict) else {}
+        try:
+            order = max(1, int(index) + 1)  # 前端传的是 0-based
+        except (TypeError, ValueError):
+            order = 1
+        try:
+            total_count = max(order, int(total))
+        except (TypeError, ValueError):
+            total_count = order
+        per_zone = clamp_map_nodes_per_zone(
+            nodes_per_zone, default=DEFAULT_MAP_NODES_PER_ZONE
+        )
+        # 已有地点按区域分组：提示词要列"每个区域有哪些地点"，补线也要挑门户节点
+        nodes_by_zone: dict[str, list[dict[str, Any]]] = {}
+        existing_nodes: dict[str, str] = {}
+        for item in payload.get("nodes") or []:
+            if not isinstance(item, dict):
+                continue
+            node_id = str(item.get("id") or "")
+            zone_id = str(item.get("zone_id") or "")
+            if not node_id or not zone_id:
+                continue
+            existing_nodes[node_id] = zone_id
+            nodes_by_zone.setdefault(zone_id, []).append(
+                {"id": node_id, "name": str(item.get("name") or node_id)}
+            )
+        existing_zones: list[dict[str, Any]] = []
+        for item in payload.get("zones") or []:
+            if not isinstance(item, dict):
+                continue
+            zone_id = str(item.get("id") or "")
+            if not zone_id:
+                continue
+            existing_zones.append(
+                {
+                    "id": zone_id,
+                    "name": str(item.get("name") or zone_id),
+                    "note": str(item.get("note") or ""),
+                    "x": float(item.get("x") or 0.0),
+                    "y": float(item.get("y") or 0.0),
+                    "is_home": bool(item.get("is_home")),
+                    "nodes": nodes_by_zone.get(zone_id, []),
+                }
+            )
+        existing_edges = [
+            {
+                "from_zone": str(item.get("from_zone") or ""),
+                "to_zone": str(item.get("to_zone") or ""),
+            }
+            for item in payload.get("zone_edges") or []
+            if isinstance(item, dict)
+            and item.get("from_zone")
+            and item.get("to_zone")
+        ]
+        session_id = self._generator_session_id()
+        system_prompt, prompt = self.prompts.build_zone_chunk_prompt(
+            persona_text=await self._persona_text(session_id),
+            relations=self.relations_brief(session_id),
+            index=order,
+            total=total_count,
+            nodes_per_zone=per_zone,
+            extra_prompt=extra_prompt,
+            existing_zones=existing_zones,
+            existing_zone_edges=existing_edges,
+        )
+        reply = await self._ask_creator(
+            session_id, system_prompt, prompt, raise_errors=True
+        )
+        draft = parse_generated_world_map(
+            reply,
+            max_zones=1,
+            max_nodes_per_zone=per_zone,
+            known_nodes=existing_nodes,
+            known_zones={zone["id"] for zone in existing_zones},
+        )
+        zones = list(draft["zones"])
+        nodes = list(draft["nodes"])
+        problems = list(draft["problems"])
+        connections = list(draft["connections"])
+        if not zones:
+            return {
+                "zone": None,
+                "nodes": [],
+                "edges": [],
+                "zone_edges": [],
+                "actions": [],
+                "problems": problems or ["没有生成出可用的区域"],
+                "raw": _clip_text(reply, 1200),
+            }
+        zone = zones[0]
+        zone_id = str(zone.get("id") or "")
+        # 只有第一块是家：分块生成时不允许模型在后面又造一个"家"
+        zone["is_home"] = order == 1
+        inside = [
+            node for node in nodes if str(node.get("zone_id") or "") == zone_id
+        ]
+        for node, (x, y) in zip(inside, grid_layout_nodes(len(inside), aspect=aspect)):
+            node["x"], node["y"] = x, y
+        nodes_by_zone[zone_id] = [
+            {"id": str(node.get("id") or ""), "name": str(node.get("name") or "")}
+            for node in inside
+            if node.get("id")
+        ]
+        # 只保留和新区域有关的跨区路线；连到两个老区域的不要
+        connections = [
+            edge
+            for edge in connections
+            if zone_id in (edge.get("from_zone"), edge.get("to_zone"))
+        ]
+        if existing_zones and not connections:
+            problems.append("模型没给新区域的入口连线，已自动补一条")
+        # 新区域补线：只把"涉及新区域"的那几条留下（老区域之间的历史问题不在这里修）
+        added = [
+            edge
+            for edge in connect_zone_graph(
+                [
+                    {
+                        "id": item["id"],
+                        "x": item["x"],
+                        "y": item["y"],
+                    }
+                    for item in existing_zones
+                ]
+                + [{"id": zone_id, "x": 0.0, "y": 0.0}],
+                nodes_by_zone,
+                existing_edges=existing_edges
+                + [
+                    {"from_zone": item["from_zone"], "to_zone": item["to_zone"]}
+                    for item in connections
+                ],
+            )
+            if zone_id in (edge.get("from_zone"), edge.get("to_zone"))
+        ]
+        connections.extend(added)
+        # 区域位置：老区域原地不动，新区域被弹簧拉到它的邻居旁边
+        placed = [
+            {
+                "id": item["id"],
+                "x": item["x"],
+                "y": item["y"],
+                "is_home": item["is_home"],
+            }
+            for item in existing_zones
+        ] + [{"id": zone_id, "x": 0.0, "y": 0.0, "is_home": zone["is_home"]}]
+        positions = spring_layout_zones(
+            placed,
+            [
+                {"from_zone": item["from_zone"], "to_zone": item["to_zone"]}
+                for item in existing_edges + connections
+            ],
+            aspect=aspect,
+            seed={item["id"]: (item["x"], item["y"]) for item in existing_zones},
+        )
+        x, y = positions.get(zone_id, (260.0, 260.0))
+        zone["x"], zone["y"] = x, y
+        edges = [
+            {
+                "id": f"e_{src}_{dst}",
+                "from": src,
+                "to": dst,
+                "ticks": 1,
+                "bidirectional": True,
+            }
+            for src, dst in link_plan([str(node["id"]) for node in inside])
+        ]
+        actions: list[dict[str, Any]] = []
+        if inside and _wants_node_actions(actions_per_node):
+            made = await self._draft_actions_for_nodes(
+                nodes=inside,
+                zone_name=str(zone.get("name") or zone_id),
+                zone_note=str(zone.get("note") or ""),
+                per_node=actions_per_node,
+                extra_prompt=extra_prompt,
+            )
+            actions = made["actions"]
+            problems.extend(made["problems"])
+        return {
+            "index": order,
+            "zone": zone,
+            "nodes": inside,
+            "edges": edges,
+            "zone_edges": connections,
+            "actions": actions,
+            "problems": problems,
+            "raw": _clip_text(reply, 1200),
+        }
+
     async def generate_schedules(
         self, count: Any = 0, flavor: str = "", extra_prompt: str = ""
     ) -> dict[str, Any]:

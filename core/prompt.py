@@ -2951,6 +2951,109 @@ class PromptBuilder:
         )
         return system, "\n\n".join(blocks)
 
+    def build_zone_chunk_prompt(
+        self,
+        *,
+        persona_text: str,
+        relations: str = "",
+        index: int = 1,
+        total: int = 4,
+        nodes_per_zone: int = 3,
+        extra_prompt: str = "",
+        existing_zones: list[dict[str, Any]] | None = None,
+        existing_zone_edges: list[dict[str, Any]] | None = None,
+    ) -> tuple[str, str]:
+        """分块重建地图：**一次只生成一个区域**，并接到已有区域上。
+
+        整张地图一次生成，动辄几分钟，放在普通 HTTP 请求里很容易被反向代理
+        （例如 Cloudflare 的 100 秒）掐断。按区域切开之后每块都短，而且后一块
+        能看到前一块的区域 / 地点 / 路线，地图的完整性和连贯性反而更好。
+        """
+
+        per_zone = max(1, int(nodes_per_zone))
+        zones = list(existing_zones or [])
+        first = not zones
+        system = (
+            "你是这个角色世界的规划者。现在按顺序一块一块地设计她的世界地图："
+            "每次只生成**一个**区域，并把它接到已经存在的区域上。"
+            "输出必须是 JSON，不要解释、不要代码块。"
+        )
+        lines: list[str] = []
+        for zone in zones:
+            nodes = "、".join(
+                f"{item.get('name') or item.get('id')}（{item.get('id')}）"
+                for item in (zone.get("nodes") or [])
+                if item.get("id")
+            )
+            lines.append(
+                f"- {zone.get('name') or zone.get('id')}（{zone.get('id')}）"
+                f"：{_one_line(zone.get('note'), 60) or '（没写说明）'}"
+                f"｜地点：{nodes or '（还没有地点）'}"
+            )
+        edges = [
+            f"- {item.get('from_zone')} ⟷ {item.get('to_zone')}"
+            for item in (existing_zone_edges or [])
+            if item.get("from_zone") and item.get("to_zone")
+        ]
+        blocks = [
+            "# 她是谁\n"
+            + (str(persona_text or "").strip() or "（没有人设，按一个真实的人来写）"),
+        ]
+        if relations:
+            blocks.append("# 她的人际关系\n" + str(relations).strip()[:1200])
+        if first:
+            blocks.append(
+                "# 已经有的区域\n（现在是第一块，还没有任何区域：先搭她最常待的地方，"
+                "比如家，is_home 设为 true，并带一个明确的入口 / 门户地点。）"
+            )
+        else:
+            blocks.append("# 已经有的区域（按生成顺序）\n" + "\n".join(lines))
+            blocks.append(
+                "# 已经有的跨区路线\n"
+                + ("\n".join(edges) if edges else "（还没有跨区路线）")
+            )
+        if str(extra_prompt or "").strip():
+            blocks.append(
+                "# 额外要求（用户补充，优先满足，但不能违背人设与安全）\n"
+                + str(extra_prompt).strip()[:600]
+            )
+        blocks.append(
+            f"# 本次要生成的\n"
+            f"第 {max(1, int(index))}/{max(1, int(total))} 块：只生成 **1 个新区域**，"
+            f"配 {per_zone} 个地点（至少一个门户 / 入口类地点）。\n"
+            "要求：\n"
+            "1. 和已有区域保持同一套世界观：地名、生活逻辑要接得上；"
+            "不要重复已有区域 / 地点的 id 和名字；\n"
+            "2. 不是第一块时，**必须**给至少 1 条 connections，把新区域的门户节点"
+            "接到已有区域的入口类节点上；两端名字要能自然连起来"
+            "（例如『公寓玄关 ⟷ 街口』），不要出现『厨房 ⟷ 公园长椅』这种搭配；\n"
+            "3. 只有第一块可以 is_home=true，后面的都不要设家；\n"
+            "4. 不要给坐标，编辑器会自动摆位。\n\n"
+            "只输出 JSON：\n"
+            "{\n"
+            '  "zones": [\n'
+            "    {\n"
+            '      "id": "old_town", "name": "老城区", "note": "一句话说明",\n'
+            '      "icon": "🏘", "color": "#7FB2E5", "is_home": false,\n'
+            '      "nodes": [\n'
+            "        {\n"
+            '          "id": "old_town_square", "name": "老城广场",\n'
+            '          "nickname_text": "在广场", "prompt": "一句话描述",\n'
+            '          "icon": "⛲", "color": "#8B7DD8",\n'
+            '          "atmosphere": {"calm": 0.6, "intimacy": 0.2, "visibility": 0.8, '
+            '"liveliness": 0.7, "loneliness": 0.2, "curiosity": 0.6}\n'
+            "        }\n"
+            "      ]\n"
+            "    }\n"
+            "  ],\n"
+            '  "connections": [\n'
+            '    {"from_zone": "old_town", "from_node": "old_town_square", '
+            '"to_zone": "已有的区域 id", "to_node": "已有的入口节点 id", "ticks": 2}\n'
+            "  ]\n"
+            "}"
+        )
+        return system, "\n\n".join(blocks)
+
     def build_schedule_generator_prompt(
         self,
         *,

@@ -130,6 +130,12 @@ class WebApiMixin:
             "重做一个区域的草稿（地点 + 可选地点专属动作）",
         )
         register(
+            f"/{p}/generate/zone-chunk",
+            self.api_generate_zone_chunk,
+            ["POST"],
+            "分块重建地图：一次生成一个区域（可带动作）",
+        )
+        register(
             f"/{p}/generate/zones",
             self.api_generate_zones,
             ["POST"],
@@ -1438,6 +1444,28 @@ class WebApiMixin:
             str(payload.get("extra_prompt") or ""),
             payload.get("actions_per_node"),
             bool(payload.get("replace")),
+        )
+
+    async def api_generate_zone_chunk(self):
+        """分块重建地图：一次只生成一个区域。
+
+        整张地图一次生成几分钟，普通 HTTP 请求容易被 Cloudflare（100 秒）掐断；
+        按区域切开之后每块都短，而且后一块能读到前面的区域，上下文不丢。
+        """
+
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload)
+        if guard is not None:
+            return guard
+        return await self._generate_drafts_response(
+            self.engine.generate_zone_chunk,
+            payload.get("index"),
+            payload.get("total"),
+            payload.get("nodes_per_zone"),
+            payload.get("actions_per_node"),
+            str(payload.get("extra_prompt") or ""),
+            payload.get("existing"),
+            payload.get("aspect"),
         )
 
     async def api_purge_legacy_actions(self):
