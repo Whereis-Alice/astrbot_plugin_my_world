@@ -1,0 +1,328 @@
+"""打断与唤醒。"""
+
+from __future__ import annotations
+
+from typing import Any
+from ..generator import (
+    MAX_ACTIONS_PER_NODE,
+    auto_layout,
+    clamp_node_count,
+    clamp_per_node,
+    clamp_world_action_count,
+    link_plan,
+    parse_generated_actions,
+    parse_generated_nodes,
+)
+from .util import _clip_text
+
+
+class InterruptMixin:
+    # ================= 打断 / 唤醒 =================
+
+    async def _ask_creator(
+        self, session_id: str, system_prompt: str, prompt: str, *, raise_errors: bool = False
+    ) -> str | None:
+        """内容生成模型：编事件包，以及编辑器里批量生成动作 / 地点。"""
+
+        try:
+            if self.creator_llm is None:
+                raise ValueError("没有可用的内容生成模型，请在插件配置中选择模型或配置 AstrBot 默认对话模型")
+            reply = await self.creator_llm.generate(
+                session_id=session_id,
+                system_prompt=system_prompt,
+                prompt=prompt,
+                temperature=0.8,
+            )
+            if reply is None or not getattr(reply, "ok", True):
+                raise ValueError(getattr(reply, "error", "") or "模型没有返回内容")
+            text = getattr(reply, "text", "") or ""
+            if not text.strip():
+                raise ValueError("模型返回了空内容，请检查内容生成模型是否支持文本输出后重试")
+        except Exception as exc:
+            self._log("warning", f"内容生成模型调用失败: {exc}")
+            if raise_errors:
+                raise ValueError(f"内容生成失败：{str(exc)[:500] or type(exc).__name__}") from exc
+            return None
+        return text
+
+    def _generator_session_id(self) -> str:
+        """生成时借一个会话 id 去取人格（没有启用会话就用空字符串）。"""
+
+        if self.config_scope_id:
+            return self.config_scope_id
+        ids = self.enabled_session_ids()
+        return ids[0] if ids else ""
+
+    async def generate_actions_for_zone(
+        self, zone_id: str, per_node: Any = 0, node_ids: list[str] | None = None
+    ) -> dict[str, Any]:
+        """按区域里的**每个地点**批量生成动作草稿（不落库，交给编辑器预览勾选）。
+
+        只传了 ``node_ids`` 时就只为这几个地点生成（编辑器里"只给这个地点生成"）。
+        """
+
+        zone = self.world.zone_map().get(zone_id)
+        if zone is None:
+            return {"actions": [], "problems": ["找不到这个区域"]}
+        inside = self.world.nodes_in_zone(zone_id)
+        if node_ids:
+            wanted = {str(item) for item in node_ids if str(item)}
+            nodes = [node for node in inside if node.id in wanted]
+        else:
+            nodes = inside
+        if not nodes:
+            return {
+                "actions": [],
+                "problems": ["这个区域里还没有可用地点"],
+            }
+        count = clamp_per_node(per_node)
+        session_id = self._generator_session_id()
+        system_prompt, prompt = self.prompts.build_action_generator_prompt(
+            persona_text=await self._persona_text(session_id),
+            zone_name=zone.name or zone.id,
+            zone_note=zone.note,
+            nodes=[
+                {"id": node.id, "name": node.name, "prompt": node.prompt or node.atmosphere.describe()}
+                for node in nodes
+            ],
+            existing_actions=[
+                action.name or action.id
+                for action in self.world.actions
+                if action.enabled
+            ],
+            tools=sorted(self.available_tools()),
+            per_node=count,
+        )
+        reply = await self._ask_creator(session_id, system_prompt, prompt, raise_errors=True)
+        actions, problems = parse_generated_actions(
+            reply,
+            node_ids=[node.id for node in nodes],
+            tool_names=set(self.available_tools()),
+            existing_ids={action.id for action in self.world.actions},
+        )
+        return {"actions": actions, "problems": problems, "raw": _clip_text(reply, 1200)}
+
+    async def generate_world_actions(self, count: Any = 0) -> dict[str, Any]:
+        """按人设与**整张地图**生成一批虚拟动作草稿（动作库的全局生成入口）。
+
+        和「按区域生成」不同：这里会读全部区域与地点，让动作分摊到不同地点，
+        生成结果只是草稿，用户在动作库里勾选确认后才写进配置。
+        """
+
+        wanted = clamp_world_action_count(count)
+        session_id = self._generator_session_id()
+        zones = [
+            {"id": zone.id, "name": zone.name or zone.id, "note": zone.note}
+            for zone in self.world.zones
+        ]
+        zone_names = {zone["id"]: zone["name"] for zone in zones}
+        nodes = [
+            {
+                "id": node.id,
+                "name": node.name or node.id,
+                "zone_id": node.zone_id,
+                "zone_name": zone_names.get(node.zone_id, ""),
+                "prompt": node.prompt or node.atmosphere.describe(),
+            }
+            for node in self.world.nodes
+        ]
+        if not nodes:
+            return {
+                "actions": [],
+                "problems": ["地图里还没有地点，先建好地图再生成动作"],
+            }
+        system_prompt, prompt = self.prompts.build_world_action_generator_prompt(
+            persona_text=await self._persona_text(session_id),
+            zones=zones,
+            nodes=nodes,
+            existing_actions=[
+                action.name or action.id
+                for action in self.world.actions
+                if action.enabled and not bool(getattr(action, "legacy", False))
+            ],
+            count=wanted,
+        )
+        reply = await self._ask_creator(
+            session_id, system_prompt, prompt, raise_errors=True
+        )
+        per_node_cap = max(
+            2,
+            min(
+                MAX_ACTIONS_PER_NODE,
+                (wanted + len(nodes) - 1) // len(nodes) + 1,
+            ),
+        )
+        actions, problems = parse_generated_actions(
+            reply,
+            node_ids=[node["id"] for node in nodes],
+            tool_names=set(),
+            max_per_node=per_node_cap,
+            existing_ids={action.id for action in self.world.actions},
+            max_total=wanted,
+        )
+        return {
+            "actions": actions,
+            "problems": problems,
+            "raw": _clip_text(reply, 1200),
+        }
+
+    async def generate_generic_actions(
+        self, count: Any = 0, use_map: Any = True
+    ) -> dict[str, Any]:
+        """生成一批**通用普通动作**（动作库的「生成通用动作」）。
+
+        和「按人设与地图生成动作」相反：这里故意不看人设，写的是普通人过日子
+        都会做的小事，任何角色身上都说得通。地图可选——
+        ``use_map=False`` 时连地图都不给模型看，生成完由插件自己把动作铺到地点上。
+        """
+
+        wanted = clamp_world_action_count(count)
+        session_id = self._generator_session_id()
+        with_map = bool(use_map)
+        zones = [
+            {"id": zone.id, "name": zone.name or zone.id, "note": zone.note}
+            for zone in self.world.zones
+        ]
+        zone_names = {zone["id"]: zone["name"] for zone in zones}
+        nodes = [
+            {
+                "id": node.id,
+                "name": node.name or node.id,
+                "zone_id": node.zone_id,
+                "zone_name": zone_names.get(node.zone_id, ""),
+                "prompt": node.prompt or node.atmosphere.describe(),
+            }
+            for node in self.world.nodes
+        ]
+        if not nodes:
+            return {
+                "actions": [],
+                "problems": ["地图里还没有地点，先建好地图再生成动作"],
+            }
+        system_prompt, prompt = self.prompts.build_generic_action_generator_prompt(
+            zones=zones,
+            nodes=nodes,
+            existing_actions=[
+                action.name or action.id
+                for action in self.world.actions
+                if action.enabled and not bool(getattr(action, "legacy", False))
+            ],
+            count=wanted,
+            use_map=with_map,
+        )
+        reply = await self._ask_creator(
+            session_id, system_prompt, prompt, raise_errors=True
+        )
+        node_ids = [node["id"] for node in nodes]
+        # 不看地图时模型不写 node_id，全都会先落到第一个地点；
+        # 上限按总数放，免得解析阶段就把多出来的丢掉（之后再由插件铺开）。
+        per_node_cap = (
+            max(
+                2,
+                min(
+                    MAX_ACTIONS_PER_NODE,
+                    (wanted + len(nodes) - 1) // len(nodes) + 1,
+                ),
+            )
+            if with_map
+            else wanted
+        )
+        actions, problems = parse_generated_actions(
+            reply,
+            node_ids=node_ids,
+            tool_names=set(),
+            max_per_node=per_node_cap,
+            existing_ids={action.id for action in self.world.actions},
+            max_total=wanted,
+        )
+        if not with_map and actions:
+            self._spread_generic_actions(actions, nodes)
+        return {
+            "actions": actions,
+            "problems": problems,
+            "raw": _clip_text(reply, 1200),
+        }
+
+    @staticmethod
+    def _spread_generic_actions(
+        actions: list[dict[str, Any]], nodes: list[dict[str, Any]]
+    ) -> None:
+        """把「不看地图」生成的动作铺到地点上：能对上名字的按名字，剩下的轮流放。
+
+        只是把动作绑到某个地点而已，不动动作本身的内容；用户在预览里随时能改。
+        """
+
+        if not actions or not nodes:
+            return
+        assigned: dict[str, int] = {str(node["id"]): 0 for node in nodes}
+        for action in actions:
+            haystack = f"{action.get('name') or ''}{action.get('id') or ''}" \
+                f"{action.get('description') or ''}"
+            picked = ""
+            for node in nodes:
+                label = str(node.get("name") or node.get("id") or "")
+                if len(label) >= 2 and any(char in haystack for char in label):
+                    picked = str(node["id"])
+                    break
+            if not picked:
+                picked = min(assigned, key=lambda key: assigned[key])
+            assigned[picked] = assigned.get(picked, 0) + 1
+            action["node_id"] = picked
+            action["allowed_nodes"] = [picked]
+            action["scope"] = "node"
+
+    async def generate_nodes_for_zone(
+        self, zone_id: str, count: Any = 0
+    ) -> dict[str, Any]:
+        """给区域批量生成地点草稿：自动摆位 + 按方案 A 自动连线（同样不落库）。"""
+
+        zone = self.world.zone_map().get(zone_id)
+        if zone is None:
+            return {"nodes": [], "edges": [], "problems": ["找不到这个区域"]}
+        wanted = clamp_node_count(count)
+        session_id = self._generator_session_id()
+        inside = self.world.nodes_in_zone(zone_id)
+        system_prompt, prompt = self.prompts.build_node_generator_prompt(
+            persona_text=await self._persona_text(session_id),
+            zone_name=zone.name or zone.id,
+            zone_note=zone.note,
+            existing_nodes=[node.name or node.id for node in inside],
+            count=wanted,
+        )
+        reply = await self._ask_creator(session_id, system_prompt, prompt, raise_errors=True)
+        nodes, problems = parse_generated_nodes(
+            reply,
+            existing_ids={node.id for node in self.world.nodes},
+            max_nodes=wanted,
+        )
+        positions = auto_layout(
+            [(float(node.x), float(node.y)) for node in inside], len(nodes)
+        )
+        for node, (x, y) in zip(nodes, positions):
+            node["zone_id"] = zone_id
+            node["x"], node["y"] = x, y
+        # 方案 A：第一个新地点连到区域内最近的既有地点，之后依次串成链
+        anchor = ""
+        if inside and positions:
+            anchor = min(
+                inside,
+                key=lambda node: (float(node.x) - positions[0][0]) ** 2
+                + (float(node.y) - positions[0][1]) ** 2,
+            ).id
+        pairs = link_plan([node["id"] for node in nodes], anchor=anchor)
+        edges = [
+            {
+                "id": f"e_{src}_{dst}",
+                "from": src,
+                "to": dst,
+                "ticks": 1,
+                "bidirectional": True,
+            }
+            for src, dst in pairs
+        ]
+        return {
+            "nodes": nodes,
+            "edges": edges,
+            "problems": problems,
+            "raw": _clip_text(reply, 1200),
+        }

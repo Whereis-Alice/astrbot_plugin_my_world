@@ -9,7 +9,8 @@ astrbot_plugin_my_world/
 ├── main.py                  # 入口与编排：钩子、指令、生命周期、接线
 ├── metadata.yaml            # 插件标识与版本（插件市场读它）
 ├── _conf_schema.json        # AstrBot 面板里的插件配置项
-├── core/                    # 领域层（不依赖 AstrBot）：引擎、世界模型、提示词、状态、记忆、事件
+├── core/                    # 领域层（不依赖 AstrBot）：世界模型、提示词、状态、记忆、事件
+│   └── engine/              # 引擎本体：MyWorldEngine = 一组按职责拆分的 mixin（配置 / 事件 / 回复 / 行动…）
 ├── adapters/                # 宿主绑定：模型调用、看图、指令、发送、工具、人设
 ├── web/                     # 编辑器接口：WebApiMixin 与访问密码
 ├── pages/world_editor/      # 网页编辑器（HTML / CSS / 原生 JS）
@@ -18,8 +19,10 @@ astrbot_plugin_my_world/
 └── tools/                   # 开发脚本：logo、模拟、API 推送
 ```
 
-核心逻辑都在 `core/`；`adapters/` 只做「宿主能力 → `core/ports.py` 协议」的翻译，
-`web/` 只做编辑器 HTTP 接口，`main.py` 只做编排。测试替身在 `tests/fake_astrbot.py` 与
+核心逻辑都在 `core/`；`core/engine/` 里每个模块只放一块职责（`reply.py` 管接管回复、`weather.py` 管天气、
+`actions.py` 管动作执行……），`MyWorldEngine` 自己只负责 `__init__` 和把它们拼起来。
+`adapters/` 只做「宿主能力 → `core/ports.py` 协议」的翻译，`web/` 只做编辑器 HTTP 接口，
+`main.py` 只做编排。测试替身在 `tests/fake_astrbot.py` 与
 `tests/stub_ports.py` 里，所以跑测试不需要装 AstrBot、也不碰真实数据目录。
 
 ## 本地验证与测试
