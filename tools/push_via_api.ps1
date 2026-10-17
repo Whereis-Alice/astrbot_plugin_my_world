@@ -10,11 +10,13 @@
 
 做的事：
 1. 把 HEAD 里每个 blob 逐个上传（二进制安全，直接读 git 对象）；
-2. 建一棵新 tree、基于它建 commit（父提交为空：用于推第一个版本）；
-3. 创建或强推 refs/heads/main。
+   已经传过的按 blob SHA 记在 .git/mw_push_blobs.json 里，重跑不重复上传；
+2. 以远端现在的 main 为父提交建一个新 commit（**不是空父提交**，历史照样接着长）；
+3. 更新 refs/heads/main 指向这个新 commit。
 
-注意：这是"首次推送 / 强制覆盖远端"的工具，不是日常同步工具；
-日常同步还是用 git push。
+注意：它只能"以远端 HEAD 为父"往前推一个提交，做不了合并、rebase 之类的同步；
+能 `git push` 的时候还是用 git push。另外它建出来的 commit 与本地 HEAD 内容相同、
+但 commit SHA 不同（作者 / 时间戳由 API 决定），网络恢复后 `git fetch` + 对齐一次即可。
 #>
 
 param(
