@@ -146,6 +146,17 @@ class ProfileWeaverIntegrationTests(unittest.TestCase):
         values = {item["name"]: item["value"] for item in detail["fields"]}
         self.assertEqual(values["爱好"], "摄影、爬山、露营")
 
+    def test_upgrade_repairs_legacy_cross_session_collapse(self):
+        collapsed = self.service({"weaver_session_based": False})
+        self.assertIn("42", collapsed.store.profiles)
+
+        isolated = self.service({"weaver_session_based": True})
+        self.assertNotIn("42", isolated.store.profiles)
+        self.assertTrue(Path(isolated.scope_recovery_archive).exists())
+        detail = isolated.detail_for("aiocqhttp:GroupMessage:1001", "42")
+        self.assertEqual(detail["record_count"], 1)
+        self.assertEqual(detail["display_name"], "阿岚")
+
     def test_sync_llm_handlers_work_inside_async_tools(self):
         service = self.service({})
         path = Path(__file__).resolve().parents[1] / "adapters" / "profile_weaver_tools.py"
@@ -207,16 +218,44 @@ class ProfileWeaverIntegrationTests(unittest.TestCase):
             evidence="我是学生",
             allow_custom_field=False,
         )
+        service.store.upsert_field(
+            user_id="42",
+            subject_name="阿岚",
+            field_name="所在地",
+            value="另一个会话",
+            session_id="aiocqhttp:GroupMessage:2002",
+            actor=service.actor(_Event(), "user_command"),
+            source_kind="manual_edit",
+            evidence="我住在另一个会话",
+            allow_custom_field=False,
+        )
         detail = service.detail_for("aiocqhttp:GroupMessage:1001", "42")
         values = {item["name"]: item["value"] for item in detail["fields"]}
         self.assertEqual(values["爱好"], "摄影")
         self.assertEqual(values["职业"], "学生")
+        self.assertNotIn("所在地", values)
         self.assertEqual(detail["record_count"], 2)
         self.assertIn("昵称", detail["locked_fields"])
 
         contact = service.people_for_session("aiocqhttp:GroupMessage:1001")["42"]
         self.assertEqual(contact["record_count"], 2)
         self.assertEqual(contact["locked_count"], 1)
+
+        removed, failures = service.delete_contact_records(
+            "42",
+            service.actor(_Event(), "admin_command"),
+            session_id="aiocqhttp:GroupMessage:1001",
+        )
+        self.assertEqual(removed, 1)
+        self.assertEqual(failures, [])
+        other_values = {
+            item["name"]: item["value"]
+            for item in service.detail_for("aiocqhttp:GroupMessage:2002", "42")[
+                "fields"
+            ]
+        }
+        self.assertEqual(other_values["所在地"], "另一个会话")
+        self.assertEqual(other_values["职业"], "学生")
 
 
 if __name__ == "__main__":

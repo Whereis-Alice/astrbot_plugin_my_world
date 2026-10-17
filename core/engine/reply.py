@@ -221,6 +221,9 @@ class ReplyMixin:
         就不能赌是同一个人。
         """
 
+        style = getattr(self.world, "reply_style", None)
+        if not bool(getattr(style, "merge_continuous_messages", False)):
+            return []
         scope = self.merge_scope(session_id)
         budget = max(0, int(limit))
         if budget <= 0:
@@ -484,6 +487,8 @@ class ReplyMixin:
         """
 
         style = getattr(self.world, "reply_style", None)
+        if not bool(getattr(style, "merge_continuous_messages", False)):
+            return
         window = float(getattr(style, "merge_wait_seconds", 0.0) or 0.0)
         if window <= 0:
             return
@@ -761,6 +766,7 @@ class ReplyMixin:
                     return DialoguePlan(
                         ok=True,
                         system_prompt=system_prompt,
+                        user_prompt=user_prompt,
                         runtime_part=runtime_part,
                         batch=list(batch),
                         texts=list(texts),

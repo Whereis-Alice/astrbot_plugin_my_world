@@ -899,7 +899,10 @@ class WebApiMixin:
             }
         payload["weaver"] = weaver_detail
         payload["weaver_records"] = (
-            weaver_service.records_for_user(user_id)
+            weaver_service.records_for_user(
+                user_id,
+                session_id=session_id,
+            )
             if weaver_service is not None
             else []
         )
@@ -956,7 +959,6 @@ class WebApiMixin:
                     weaver_detail.get("record_count")
                     or (1 if weaver_detail else 0)
                 ),
-                "total_record_count": len(payload["weaver_records"]),
                 "locked_count": int(weaver_detail.get("locked_count") or 0),
             }
         if isinstance(person, dict) and not str(person.get("note") or "").strip():
@@ -1221,7 +1223,11 @@ class WebApiMixin:
         if not user_id:
             return error_response("缺少 user_id")
         method = str(getattr(request, "method", "") or "GET").upper()
-        records = service.record_summaries_for_user(user_id)
+        records = service.record_summaries_for_user(
+            user_id,
+            session_id=session_id,
+            include_all=False,
+        )
         if method == "GET":
             return json_response(
                 {
@@ -1238,7 +1244,11 @@ class WebApiMixin:
         action = str(payload.get("action") or "merge_all")
         actor = self._weaver_actor()
         if action == "delete":
-            removed, failures = service.delete_contact_records(user_id, actor)
+            removed, failures = service.delete_contact_records(
+                user_id,
+                actor,
+                session_id=session_id,
+            )
             return json_response(
                 {
                     "ok": not failures,
@@ -1464,7 +1474,9 @@ class WebApiMixin:
         service = self._weaver_service()
         if service is not None and service.enabled:
             weaver_removed, _failures = service.delete_contact_records(
-                user_id, self._weaver_actor()
+                user_id,
+                self._weaver_actor(),
+                session_id=session_id,
             )
         return json_response(
             {

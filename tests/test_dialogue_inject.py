@@ -260,6 +260,69 @@ class DialogueInjectTests(unittest.TestCase):
         self.assertFalse(any("你晚上有空吗" in item for item in earlier))
         plugin.db.raw.close()
 
+    def test_merged_messages_are_both_written_into_native_prompt(self):
+        """合并了第二条时，宿主的 req.prompt 必须换成完整 batch，不能只留第一条。"""
+
+        session = "aiocqhttp:GroupMessage:inject-merged-prompt"
+        plugin, _context = self._plugin(session)
+        plugin.engine.world.reply_style.merge_continuous_messages = True
+        plugin.engine.world.reply_style.merge_wait_seconds = 0
+        first = Event(
+            "第一句：在吗",
+            session=session,
+            message_id="merged-a",
+        )
+        second = Event(
+            "第二句：我还想问晚餐",
+            session=session,
+            message_id="merged-b",
+        )
+        plugin.engine.register_incoming(
+            session,
+            second.get_message_str(),
+            identity={
+                "message_id": "merged-b",
+                "user_id": second.get_sender_id(),
+                "user_name": second.get_sender_name(),
+                "raw_text": second.get_message_str(),
+                "model_text": second.get_message_str(),
+            },
+        )
+        req = Request("第一句：在吗")
+        asyncio.run(plugin.on_llm_request(first, req))
+
+        self.assertIn("第一句：在吗", req.prompt)
+        self.assertIn("第二句：我还想问晚餐", req.prompt)
+        self.assertFalse(first.is_stopped())
+        plugin.db.raw.close()
+
+    def test_continuous_merge_is_off_by_default(self):
+        session = "aiocqhttp:GroupMessage:inject-no-auto-merge"
+        plugin, _context = self._plugin(session)
+        first = Event("第一条", session=session, message_id="no-merge-a")
+        second = Event("第二条", session=session, message_id="no-merge-b")
+        second_record = plugin.engine.register_incoming(
+            session,
+            second.get_message_str(),
+            identity={
+                "message_id": "no-merge-b",
+                "user_id": second.get_sender_id(),
+                "user_name": second.get_sender_name(),
+                "raw_text": second.get_message_str(),
+                "model_text": second.get_message_str(),
+            },
+        )
+        first_req = Request("第一条")
+        asyncio.run(plugin.on_llm_request(first, first_req))
+        self.assertNotIn("第二条", first_req.prompt)
+        self.assertFalse(plugin.engine.was_absorbed(second_record))
+
+        second_req = Request("第二条")
+        asyncio.run(plugin.on_llm_request(second, second_req))
+        self.assertFalse(second.is_stopped())
+        self.assertIn("第二条", second_req.prompt)
+        plugin.db.raw.close()
+
     def test_after_message_sent_records_reply_and_advances_waterline(self):
         session = "aiocqhttp:GroupMessage:inject-record"
         plugin, _context = self._plugin(session)

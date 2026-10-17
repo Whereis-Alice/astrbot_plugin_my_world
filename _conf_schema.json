@@ -183,10 +183,10 @@
   },
   "weaver_session_based": {
     "description": "画像是否按会话隔离",
-    "hint": "关闭时同一用户跨群共享画像；开启后不同群聊和私聊分别维护。",
+    "hint": "默认开启，原心迹画像的多会话记录保持隔离；关闭后同一用户才会跨群共享一份画像。",
     "obvious_hint": true,
     "type": "bool",
-    "default": false
+    "default": true
   },
   "weaver_default_fields": {
     "description": "画像基础字段",

@@ -2038,6 +2038,13 @@ class WeatherConfig(Permissive):
 class ReplyStyle(Permissive):
     """说话的节奏：分段之间的打字延迟，以及"话太密"的判定。"""
 
+    merge_continuous_messages: bool = False
+    """是否自行合并同一个人短时间内的连续消息。
+
+    默认关闭：优先交给上层的消息防抖插件。开启后，合并进本轮的所有正文都会
+    作为完整 user prompt 交给模型，不会只保留第一条。
+    """
+
     quote_mode: Literal["off", "always", "smart"] = "smart"
     """回复群友时，第一条消息要不要引用触发她的那条消息（她发的图片同样算第一条）。
 

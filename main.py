@@ -1586,6 +1586,9 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, Star):
         if not getattr(plan, "ok", False):
             event.stop_event()
             return
+        # 合并了后续消息时，宿主的 req.prompt 必须换成完整 batch，不能只留第一条。
+        if len(getattr(plan, "batch", None) or []) > 1 and plan.user_prompt.strip():
+            req.prompt = plan.user_prompt
         # 换人设：宿主那份 persona 被摘掉，其余（工具说明、技能、安全提示、
         # 世界树 / helper_tools 之类写进 system_prompt 的内容）原样保留。
         preserved = _drop_persona_instructions(

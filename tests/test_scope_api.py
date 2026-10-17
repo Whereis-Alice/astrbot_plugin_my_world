@@ -123,7 +123,7 @@ class ScopeApiTests(unittest.IsolatedAsyncioTestCase):
             subject_name="阿岚",
             field_name="昵称",
             value="阿岚",
-            session_id=None,
+            session_id=self.session,
             actor=AuditActor("webui", "test", "测试"),
             source_kind="manual_edit",
             evidence="叫我阿岚",
@@ -157,14 +157,18 @@ class ScopeApiTests(unittest.IsolatedAsyncioTestCase):
             subject_name="阿岚",
             field_name="爱好",
             value="摄影",
-            session_id=None,
+            session_id=self.session,
             actor=AuditActor("webui", "test", "测试"),
             source_kind="manual_edit",
             evidence="我喜欢摄影",
             allow_custom_field=True,
         )
         key = service.profile_key(self.session, "42")
-        library = await self.call("profile/weaver/library", q="阿岚")
+        library = await self.call(
+            "profile/weaver/library",
+            session=self.session,
+            q="阿岚",
+        )
         self.assertEqual(library["status_code"], 200)
         self.assertEqual(library["data"]["items"][0]["key"], key)
 
@@ -252,6 +256,51 @@ class ScopeApiTests(unittest.IsolatedAsyncioTestCase):
         }
         self.assertEqual(weaver_fields["昵称"], "岚岚")
         self.assertIn("最近睡得很晚", data["weaver"]["notes"])
+
+    async def test_session_isolated_contact_never_reads_or_deletes_other_session(self):
+        service = self.plugin.profile_weaver_service
+        other_session = "test:GroupMessage:200"
+        for session_id, field, value in (
+            (self.session, "爱好", "摄影"),
+            (other_session, "所在地", "另一个会话"),
+        ):
+            service.store.upsert_field(
+                user_id="42",
+                subject_name="阿岚",
+                field_name=field,
+                value=value,
+                session_id=session_id,
+                actor=AuditActor("webui", "test", "测试"),
+                source_kind="manual_edit",
+                evidence=value,
+                allow_custom_field=True,
+            )
+        detail = await self.call(
+            "profile/contact",
+            session=self.session,
+            user_id="42",
+        )
+        values = {
+            item["name"]: item["value"]
+            for item in detail["data"]["weaver"]["fields"]
+        }
+        self.assertEqual(values["爱好"], "摄影")
+        self.assertNotIn("所在地", values)
+        self.assertEqual(detail["data"]["identity"]["record_count"], 1)
+        self.assertEqual(len(detail["data"]["weaver_records"]), 1)
+
+        deleted = await self.call(
+            "profile/forget",
+            method="POST",
+            session=self.session,
+            user_id="42",
+        )
+        self.assertEqual(deleted["status_code"], 200)
+        remaining = service.detail_for(other_session, "42")
+        self.assertEqual(
+            {item["name"]: item["value"] for item in remaining["fields"]}["所在地"],
+            "另一个会话",
+        )
 
     async def test_profile_chat_command_roundtrip(self):
         event = types.SimpleNamespace(

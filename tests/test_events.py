@@ -1808,6 +1808,7 @@ class EventEngineTest(unittest.IsolatedAsyncioTestCase):
 
         raw = self.store.raw_world()
         raw["reply_style"]["interrupt_pending"] = False  # 这一档要的是"合并"
+        raw["reply_style"]["merge_continuous_messages"] = True
         self.store.save_world(raw)
         self.engine.reload_config()
         self.main.replies = [SAY_REPLY, SAY_REPLY]
@@ -1844,6 +1845,7 @@ class EventEngineTest(unittest.IsolatedAsyncioTestCase):
 
         raw = self.store.raw_world()
         raw["reply_style"]["interrupt_pending"] = False
+        raw["reply_style"]["merge_continuous_messages"] = True
         self.store.save_world(raw)
         self.engine.reload_config()
         original = engine_module.MERGE_WINDOW_SECONDS
@@ -1873,6 +1875,7 @@ class EventEngineTest(unittest.IsolatedAsyncioTestCase):
     async def test_new_message_interrupts_the_pending_reply(self):
         """默认（打断）：正在生成时又来一条，这一次生成作废，交给新那条重新触发。"""
 
+        self.engine.world.reply_style.merge_continuous_messages = True
         self.main.replies = [SAY_REPLY, SAY_REPLY]
         holder: dict[str, Any] = {}
 

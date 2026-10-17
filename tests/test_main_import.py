@@ -1396,6 +1396,7 @@ class TestMainImport(unittest.TestCase):
         plugin, context, session = self._plugin_with_session(
             session="aiocqhttp:GroupMessage:probe-serial"
         )
+        plugin.engine.world.reply_style.merge_continuous_messages = True
         busy = {"now": 0, "peak": 0}
         prompts: list[str] = []
 
@@ -1442,6 +1443,7 @@ class TestMainImport(unittest.TestCase):
         plugin, context, session = self._plugin_with_session(
             session="aiocqhttp:GroupMessage:probe-burst-quiet"
         )
+        plugin.engine.world.reply_style.merge_continuous_messages = True
         plugin.engine.world.reply_style.merge_wait_seconds = 1.0
         prompts: list[str] = []
 
@@ -1486,6 +1488,7 @@ class TestMainImport(unittest.TestCase):
         plugin, context, session = self._plugin_with_session(
             session="aiocqhttp:GroupMessage:probe-burst-late"
         )
+        plugin.engine.world.reply_style.merge_continuous_messages = True
         plugin.engine.world.reply_style.merge_wait_seconds = 0.05
         prompts: list[str] = []
         started = asyncio.Event()
@@ -1553,6 +1556,7 @@ class TestMainImport(unittest.TestCase):
             session=session, vision_provider_id="vision-provider"
         )
         plugin.engine.world.context.chat_image_inline = inline
+        plugin.engine.world.reply_style.merge_continuous_messages = True
         plugin.engine.world.reply_style.merge_wait_seconds = 0.05
         calls: list[dict] = []
 
@@ -1791,6 +1795,7 @@ class TestMainImport(unittest.TestCase):
             session="aiocqhttp:GroupMessage:probe-chat-images"
         )
         plugin.engine.world.context.chat_image_inline = "always"
+        plugin.engine.world.reply_style.merge_continuous_messages = True
         plugin.engine.world.reply_style.merge_wait_seconds = 0.05
         calls: list[dict] = []
 
@@ -1837,6 +1842,7 @@ class TestMainImport(unittest.TestCase):
         plugin, context, session = self._plugin_with_session(
             session="aiocqhttp:GroupMessage:probe-trigger-images"
         )
+        plugin.engine.world.reply_style.merge_continuous_messages = True
         plugin.engine.world.reply_style.merge_wait_seconds = 0.05
         calls: list[dict] = []
 
@@ -1887,6 +1893,7 @@ class TestMainImport(unittest.TestCase):
             session="aiocqhttp:GroupMessage:probe-chat-images-off"
         )
         plugin.engine.world.context.chat_image_inline = "never"
+        plugin.engine.world.reply_style.merge_continuous_messages = True
         plugin.engine.world.reply_style.merge_wait_seconds = 0.05
         calls: list[dict] = []
 
@@ -1928,6 +1935,7 @@ class TestMainImport(unittest.TestCase):
             session="aiocqhttp:GroupMessage:probe-forward",
             vision_provider_id="vision-provider",
         )
+        plugin.engine.world.reply_style.merge_continuous_messages = True
         plugin.engine.world.reply_style.merge_wait_seconds = 0.05
         prompts: list[str] = []
 
@@ -1973,6 +1981,7 @@ class TestMainImport(unittest.TestCase):
             session="aiocqhttp:GroupMessage:probe-forward-cache",
             vision_provider_id="vision-provider",
         )
+        plugin.engine.world.reply_style.merge_continuous_messages = True
         plugin.engine.world.reply_style.merge_wait_seconds = 0.05
         summary_calls: list[dict] = []
 
@@ -2014,6 +2023,7 @@ class TestMainImport(unittest.TestCase):
             vision_provider_id="vision-provider",
         )
         plugin.engine.world.vision.forward_summary = False
+        plugin.engine.world.reply_style.merge_continuous_messages = True
         plugin.engine.world.reply_style.merge_wait_seconds = 0.05
         prompts: list[str] = []
 
@@ -2044,6 +2054,7 @@ class TestMainImport(unittest.TestCase):
         plugin, context, session = self._plugin_with_session(
             session="aiocqhttp:GroupMessage:probe-forward-no-vision"
         )
+        plugin.engine.world.reply_style.merge_continuous_messages = True
         plugin.engine.world.reply_style.merge_wait_seconds = 0.05
         prompts: list[str] = []
 

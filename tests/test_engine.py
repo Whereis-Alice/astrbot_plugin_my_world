@@ -2245,6 +2245,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_two_messages_in_a_row_get_one_reply(self):
         """同一个会话连发两句：先等安静期，听完了再一起回一次。"""
 
+        self.engine.world.reply_style.merge_continuous_messages = True
         self.engine.world.reply_style.merge_wait_seconds = 0.2
         await self.engine.handle_incoming(self.ctx(text="第一句：在吗"))
         second = self.engine.register_incoming(
@@ -2264,6 +2265,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         """别的会话来的消息不并进这一条：跨会话并成一条会在群里答私聊的话。"""
 
         self.add_group(sessions=[SESSION, PRIVATE_SESSION])
+        self.engine.world.reply_style.merge_continuous_messages = True
         self.engine.world.reply_style.merge_wait_seconds = 0.2
         await self.engine.handle_incoming(self.ctx(text="群里这句"))
         record = self.engine.register_incoming(PRIVATE_SESSION, "私聊那句")

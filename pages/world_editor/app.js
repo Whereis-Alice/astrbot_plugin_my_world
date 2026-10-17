@@ -14559,7 +14559,7 @@ function openProfileRecordsManager() {
   let rows = [];
   openCustomDialog({
     title: "高级画像记录管理",
-    hint: "这里是底层记录视图，只用于排查跨会话重复和批量清理。日常请从左侧联系人进入。",
+    hint: "这里只显示当前所选会话的底层记录，用于排查异常和批量清理；其它会话不会显示或受影响。",
     confirmText: "关闭",
     hideCancel: true,
     wide: true,
@@ -14632,6 +14632,7 @@ function openProfileRecordsManager() {
       };
       const load = async () => {
         const data = await apiGet("profile/weaver/library", {
+          session: $("contacts-session") ? $("contacts-session").value : "",
           q: search.value.trim(),
           locked_only: locked.checked ? 1 : 0,
           page_size: 200,
@@ -14900,7 +14901,7 @@ function contactRecordsSection(data) {
     el(
       "p",
       "hint-line",
-      "联系人只有一个；下面这些是她在不同会话里保存的画像记录。字段和锁会统一显示，合并后只保留一条。",
+      "这里只显示当前会话作用域内的画像记录；其它群聊或私聊的记录不会并进来，也不会在这里删除。",
     ),
   );
   if (!records.length) {
@@ -14919,7 +14920,7 @@ function contactRecordsSection(data) {
         "",
         record.session_id
           ? sessionShortName(record.session_id)
-          : "跨会话共享记录",
+          : "当前共享记录",
       ),
     );
     main.appendChild(
@@ -15074,12 +15075,9 @@ function renderContactDetail(data) {
   const displayName =
     identity.display_name || person.call_me || person.name || data.user_id;
   const scopedRecords = num(identity.record_count);
-  const totalRecords = num(identity.total_record_count, scopedRecords);
   $("contacts-title").textContent = displayName;
   $("contacts-subtitle").textContent =
-    `QQ ${data.user_id} · ${scopedRecords} 条当前记录` +
-    (totalRecords > scopedRecords ? `（共 ${totalRecords} 条）` : "") +
-    " · " +
+    `QQ ${data.user_id} · 当前会话 ${scopedRecords} 条画像记录 · ` +
     `${identity.call_him ? `你私下叫她「${identity.call_him}」` : person.level?.name || "陌生人"}`;
   $("contacts-avatar").textContent = String(displayName).trim().slice(0, 1) || "?";
   const affinityBadge = $("contacts-detail-affinity");
@@ -17528,6 +17526,20 @@ function renderSettings() {
       },
       {
         hint: "她的话或图片的第一条带引用段。仅在 QQ / OneBot 这类平台生效，其他平台自动跳过。",
+      },
+    ),
+  );
+  style._fields.appendChild(
+    checkboxField(
+      "自行合并同一个人的连续消息",
+      world.reply_style.merge_continuous_messages === true,
+      (value) => {
+        world.reply_style.merge_continuous_messages = value;
+        markDirty();
+        renderSettings();
+      },
+      {
+        hint: "关闭后每条消息独立回复，适合已有消息防抖插件的环境；开启时整批正文都会交给模型。",
       },
     ),
   );

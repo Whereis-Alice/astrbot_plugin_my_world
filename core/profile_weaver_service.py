@@ -379,6 +379,7 @@ class ProfileWeaverService:
         self.prompt_enabled = True
         self.auto_extract_tools: Any = None
         self.legacy_source_dir = ""
+        self.scope_recovery_archive = ""
         self.data_dir = Path(plugin.store.data_dir) / "profile_weaver"
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.legacy_source_dir = self.migrate_from_legacy(data_root)
@@ -416,6 +417,7 @@ class ProfileWeaverService:
             ),
         )
         self._sync_latest_legacy_profiles()
+        self._recover_collapsed_legacy_scopes()
         self._normalize_profile_keys()
 
     @staticmethod
@@ -468,7 +470,7 @@ class ProfileWeaverService:
 
     @property
     def session_based(self) -> bool:
-        return _cfg_bool(self.config.get("weaver_session_based"), False)
+        return _cfg_bool(self.config.get("weaver_session_based"), True)
 
     @property
     def allow_llm_custom_fields(self) -> bool:
@@ -632,6 +634,61 @@ class ProfileWeaverService:
                 f"[my_world] 已按当前画像作用域整理 {len(normalized)} 条记录"
             )
 
+    def _recover_collapsed_legacy_scopes(self) -> None:
+        """Repair global records created by the old 4.6 migration from isolated session keys."""
+
+        if not self.session_based or not self.legacy_source_dir:
+            return
+        marker = self.data_dir / ".session_scope_recovered_v470"
+        if marker.exists():
+            return
+        source = Path(self.legacy_source_dir) / "profiles.json"
+        if not source.is_file():
+            return
+        try:
+            raw = json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(raw, dict):
+            return
+        session_users: set[str] = set()
+        for key, payload in raw.items():
+            if not isinstance(payload, dict):
+                continue
+            session_id, user_id = self.store.split_profile_key(str(key), payload)
+            if session_id and user_id:
+                session_users.add(str(user_id))
+        removable = {
+            key: record
+            for key, record in self.store.profiles.items()
+            if isinstance(record, dict)
+            and str(
+                record.get("subject_user_id")
+                or self.store._extract_user_id_from_key(key)
+                or ""
+            )
+            in session_users
+            and not self.store.split_profile_key(key, record)[0]
+        }
+        if not removable:
+            marker.write_text("no collapsed records", encoding="utf-8")
+            return
+        self.store.create_backup("pre-session-scope-recovery-v470")
+        archive = self.data_dir / "session_scope_recovery_v470.json"
+        archive.write_text(
+            json.dumps(removable, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        for key in removable:
+            self.store.profiles.pop(key, None)
+        self.store._save_profiles()
+        marker.write_text(str(archive), encoding="utf-8")
+        self.scope_recovery_archive = str(archive)
+        self.plugin.logger.warning(
+            "[my_world] 检测到旧版跨会话合并数据，已恢复会话隔离；"
+            f"被移出的旧合并记录保存在 {archive}"
+        )
+
     def profile_key(self, session_id: str, user_id: str) -> str:
         return self.store.profile_key(
             user_id,
@@ -669,7 +726,7 @@ class ProfileWeaverService:
                 continue
             if str(record.get("subject_user_id") or "") != str(user_id or ""):
                 continue
-            source_session = str(record.get("session_id") or "")
+            source_session, _source_user = self.store.split_profile_key(key, record)
             if (
                 self.session_based
                 and not include_all
@@ -710,7 +767,11 @@ class ProfileWeaverService:
         ]
         details = [item for item in details if item]
         if len(details) <= 1:
-            return preferred
+            return {
+                **preferred,
+                "record_count": 1 if details else 0,
+                "record_keys": [preferred_key] if details else [],
+            }
 
         fields_by_name: dict[str, dict[str, Any]] = {}
         for detail in details:
@@ -841,10 +902,20 @@ class ProfileWeaverService:
             }
         return people
 
-    def records_for_user(self, user_id: str) -> list[dict[str, Any]]:
+    def records_for_user(
+        self,
+        user_id: str,
+        *,
+        session_id: str = "",
+        include_all: bool = False,
+    ) -> list[dict[str, Any]]:
         return [
             self.store.get_profile_detail(str(item.get("key") or ""))
-            for item in self.record_summaries_for_user(user_id)
+            for item in self.record_summaries_for_user(
+                user_id,
+                session_id=session_id,
+                include_all=include_all,
+            )
             if str(item.get("key") or "") in self.store.profiles
         ]
 
@@ -913,11 +984,27 @@ class ProfileWeaverService:
         return messages
 
     def delete_contact_records(
-        self, user_id: str, actor: AuditActor
+        self,
+        user_id: str,
+        actor: AuditActor,
+        *,
+        session_id: str = "",
+        include_all: bool = False,
     ) -> tuple[int, list[str]]:
         removed = 0
         failures: list[str] = []
-        for summary in self.record_summaries_for_user(user_id):
+        summaries = self.record_summaries_for_user(
+            user_id,
+            session_id=session_id,
+            include_all=include_all,
+        )
+        if self.session_based and not include_all and session_id:
+            summaries = [
+                item
+                for item in summaries
+                if str(item.get("session_id") or "") == str(session_id)
+            ]
+        for summary in summaries:
             key = str(summary.get("key") or "")
             if not key:
                 continue
@@ -1447,6 +1534,7 @@ class ProfileWeaverService:
             "data_dir": str(self.data_dir),
             "legacy_source_dir": self.legacy_source_dir,
             "legacy_imported": bool(self.legacy_source_dir),
+            "scope_recovery_archive": self.scope_recovery_archive,
         }
 
     def stats(self) -> dict[str, Any]:

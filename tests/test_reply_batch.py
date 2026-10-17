@@ -111,6 +111,7 @@ class ReplyBatchTest(unittest.IsolatedAsyncioTestCase):
             "step_gap_seconds": 60,
         }
         # 安静期在测试里没有意义（真的会睡 5 秒），窗口判定用 MERGE_WINDOW_SECONDS
+        raw["reply_style"]["merge_continuous_messages"] = True
         raw["reply_style"]["merge_wait_seconds"] = 0
         self.store.save_world(raw)
 
@@ -148,6 +149,7 @@ class ReplyBatchTest(unittest.IsolatedAsyncioTestCase):
 
         raw = self.store.raw_world()
         raw["reply_style"]["interrupt_pending"] = interrupt
+        raw["reply_style"]["merge_continuous_messages"] = True
         raw["reply_style"]["merge_wait_seconds"] = 0
         self.store.save_world(raw)
         self.engine.reload_config()
