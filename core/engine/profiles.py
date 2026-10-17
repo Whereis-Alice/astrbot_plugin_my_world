@@ -150,12 +150,33 @@ class ProfilesMixin:
         # 两边都写等于同一句话读两遍，所以它在注入时这里跳过"搬来的"那些事实
         # （本插件自己整理出来的事实照旧全给）。它关掉或者没装时不跳。
         link = bool(getattr(self.world.profile, "weaver_link", True))
-        return self.prompts.profile_block(
-            person,
-            others,
-            limit_others=int(self.world.profile.digest_limit),
-            skip_weaver_facts=link and bool(getattr(self, "weaver_injecting", False)),
-        )
+        weaver = getattr(self, "profile_weaver_service", None)
+        weaver_owns_profile = bool(weaver is not None and weaver.enabled)
+        blocks = [
+            self.prompts.profile_block(
+                person,
+                others,
+                limit_others=int(self.world.profile.digest_limit),
+                skip_weaver_facts=(
+                    (link and bool(getattr(self, "weaver_injecting", False)))
+                    or weaver_owns_profile
+                ),
+            )
+        ]
+        if (
+            weaver is not None
+            and weaver_owns_profile
+            and not bool(getattr(self, "weaver_injecting", False))
+            and user_id
+        ):
+            blocks.append(
+                weaver.prompt_block(
+                    session_id,
+                    user_id,
+                    str(getattr(ctx, "user_name", "") or ""),
+                )
+            )
+        return "\n\n".join(block for block in blocks if str(block or "").strip())
 
     def _apply_grudge_coldness(
         self, state: WorldState, user_id: str, person: dict[str, Any]
@@ -296,6 +317,10 @@ class ProfilesMixin:
     async def maybe_sync_profile_weaver(self, data_root: str) -> str:
         """每隔几小时自动同步一次心迹画像（它一直在记新东西）。"""
 
+        if getattr(self, "profile_weaver_service", None) is not None:
+            # 原插件的画像存储与字段级历史已由通讯录内核直接接管，
+            # 不再把同一批字段重复搬成这里的事实。
+            return ""
         profile = getattr(self.world, "profile", None)
         if profile is None or not bool(getattr(profile, "enabled", True)):
             return ""

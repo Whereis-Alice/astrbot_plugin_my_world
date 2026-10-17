@@ -13,6 +13,7 @@ from typing import Any
 
 from astrbot.api.web import error_response, json_response, request
 from pydantic import ValidationError
+from quart import Response
 
 from ..adapters.llm import AstrBotLLM
 from ..core.config_store import HISTORY_KEEP
@@ -32,6 +33,7 @@ from ..core.models import (
     normalize_edge_keys,
     normalize_legacy_keys,
 )
+from ..core.profile_weaver_store import AuditActor
 from ..core.prompt import prompt_section_index
 from ..core.timeline import build_timeline
 from ..core.tool_import import build_drafts as build_tool_action_drafts
@@ -56,6 +58,20 @@ def _generation_timeout_seconds(config: Any) -> float:
     if minutes <= 0:
         return 0.0
     return max(60.0, min(1800.0, minutes * 60.0))
+
+
+def _query_int(name: str, default: int = 0) -> int:
+    """Quart MultiDict and the lightweight test dict both need to work."""
+
+    query = request.query
+    try:
+        raw = query.get(name, default, type=int)
+    except TypeError:
+        raw = query.get(name, default)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
 
 
 class WebApiMixin:
@@ -277,12 +293,546 @@ class WebApiMixin:
             ["POST"],
             "把心迹画像的数据搬进本插件的通讯录",
         )
+        register(f"/{p}/profile/weaver/meta", self.api_profile_weaver_meta, ["GET"], "通讯录画像：能力与字段")
+        register(
+            f"/{p}/profile/weaver/library",
+            self.api_profile_weaver_library,
+            ["GET"],
+            "通讯录画像：画像库",
+        )
+        register(
+            f"/{p}/profile/weaver/person",
+            self.api_profile_weaver_person,
+            ["GET"],
+            "通讯录画像：完整字段",
+        )
+        register(
+            f"/{p}/profile/weaver/key",
+            self.api_profile_weaver_key,
+            ["GET"],
+            "通讯录画像：按记录 key 查看完整字段",
+        )
+        register(
+            f"/{p}/profile/weaver/field",
+            self.api_profile_weaver_field,
+            ["POST"],
+            "通讯录画像：字段写改删与锁定",
+        )
+        register(
+            f"/{p}/profile/weaver/history",
+            self.api_profile_weaver_history,
+            ["GET"],
+            "通讯录画像：字段历史",
+        )
+        register(
+            f"/{p}/profile/weaver/stats",
+            self.api_profile_weaver_stats,
+            ["GET"],
+            "通讯录画像：统计",
+        )
+        register(
+            f"/{p}/profile/weaver/audit",
+            self.api_profile_weaver_audit,
+            ["GET"],
+            "通讯录画像：审计",
+        )
+        register(
+            f"/{p}/profile/weaver/audit-csv",
+            self.api_profile_weaver_audit_csv,
+            ["GET"],
+            "通讯录画像：导出审计 CSV",
+        )
+        register(
+            f"/{p}/profile/weaver/export",
+            self.api_profile_weaver_export,
+            ["GET"],
+            "通讯录画像：导出",
+        )
+        register(
+            f"/{p}/profile/weaver/import-bundle",
+            self.api_profile_weaver_import_bundle,
+            ["POST"],
+            "通讯录画像：导入 bundle",
+        )
+        register(
+            f"/{p}/profile/weaver/backup",
+            self.api_profile_weaver_backup,
+            ["GET", "POST"],
+            "通讯录画像：备份管理",
+        )
+        register(
+            f"/{p}/profile/weaver/backup-download",
+            self.api_profile_weaver_backup_download,
+            ["GET"],
+            "通讯录画像：下载备份",
+        )
+        register(
+            f"/{p}/profile/weaver/merge",
+            self.api_profile_weaver_merge,
+            ["POST"],
+            "通讯录画像：合并重复画像",
+        )
+        register(
+            f"/{p}/profile/weaver/delete",
+            self.api_profile_weaver_delete,
+            ["POST"],
+            "通讯录画像：删除一条或多条画像",
+        )
         register(f"/{p}/extensions", self.api_extensions, ["GET", "POST"], "扩展包：设置与数据")
 
     # ---------------- 通讯录（用户画像）----------------
 
     def _profile_scope(self, value: Any) -> str:
         return self._scope(value)
+
+    def _weaver_service(self):
+        return getattr(self.engine, "profile_weaver_service", None)
+
+    @staticmethod
+    def _weaver_actor() -> AuditActor:
+        return AuditActor(
+            actor_type="webui",
+            actor_id="dashboard",
+            actor_name="通讯录",
+        )
+
+    def _weaver_write_guard(self, service) -> Any:
+        if service is None:
+            return error_response("通讯录画像内核未就绪")
+        if not service.webui_allow_edit:
+            return error_response("通讯录画像当前是只读模式")
+        return None
+
+    async def api_profile_weaver_meta(self):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        service = self._weaver_service()
+        if service is None:
+            return json_response({"enabled": False, "message": "通讯录画像内核未就绪"})
+        return json_response(service.meta())
+
+    async def api_profile_weaver_library(self):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        service = self._weaver_service()
+        if service is None:
+            return error_response("通讯录画像内核未就绪")
+        session_id = self._profile_scope(request.query.get("session", ""))
+        result = service.store.list_profiles(
+            query=str(request.query.get("q", "") or ""),
+            chat_type=str(request.query.get("chat_type", "all") or "all"),
+            platform=str(request.query.get("platform", "all") or "all"),
+            session_id=session_id if service.session_based else "",
+            field=str(request.query.get("field", "") or ""),
+            sort=str(request.query.get("sort", "updated_desc") or "updated_desc"),
+            page=_query_int("page", 1) or 1,
+            page_size=_query_int("page_size", 40) or 40,
+            locked_only=str(request.query.get("locked_only", "")).lower()
+            in {"1", "true", "on"},
+        )
+        result["platforms"] = service.store.list_platforms()
+        return json_response(result)
+
+    async def api_profile_weaver_person(self):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        service = self._weaver_service()
+        if service is None:
+            return error_response("通讯录画像内核未就绪")
+        session_id = self._profile_scope(request.query.get("session", ""))
+        user_id = str(request.query.get("user_id", "") or "")
+        key = str(request.query.get("key", "") or "").strip()
+        if key:
+            detail = service.detail_by_key(key)
+            if not detail:
+                return error_response("画像不存在")
+            return json_response(
+                {
+                    "session": detail.get("session_id") or session_id,
+                    "user_id": detail.get("user_id") or user_id,
+                    "profile": detail,
+                    "meta": service.meta(),
+                }
+            )
+        if not session_id or not user_id:
+            return error_response("缺少 session 或 user_id")
+        detail = service.detail_for(session_id, user_id)
+        return json_response(
+            {
+                "session": session_id,
+                "user_id": user_id,
+                "profile": detail,
+                "meta": service.meta(),
+            }
+        )
+
+    async def api_profile_weaver_key(self):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        service = self._weaver_service()
+        if service is None:
+            return error_response("通讯录画像内核未就绪")
+        key = str(request.query.get("key", "") or "").strip()
+        if not key:
+            return error_response("缺少 key")
+        detail = service.detail_by_key(key)
+        if not detail:
+            return error_response("画像不存在")
+        return json_response({"key": key, "profile": detail, "meta": service.meta()})
+
+    async def api_profile_weaver_field(self):
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload)
+        if guard is not None:
+            return guard
+        service = self._weaver_service()
+        write_guard = self._weaver_write_guard(service)
+        if write_guard is not None:
+            return write_guard
+        record_key = str(payload.get("key") or "").strip()
+        if record_key:
+            detail = service.detail_by_key(record_key)
+            session_id = str(detail.get("session_id") or "")
+            user_id = str(detail.get("user_id") or "")
+        else:
+            session_id = self._profile_scope(payload.get("session"))
+            user_id = str(payload.get("user_id") or "")
+        field_name = str(payload.get("field") or "").strip()
+        action = str(payload.get("action") or "upsert")
+        if (not record_key and not session_id) or not user_id or not field_name:
+            return error_response("缺少 session、user_id 或 field")
+        actor = self._weaver_actor()
+        detail = (
+            service.detail_by_key(record_key)
+            if record_key
+            else service.detail_for(session_id, user_id)
+        )
+        subject_name = str(
+            (detail or {}).get("subject_name")
+            or (detail or {}).get("display_name")
+            or user_id
+        )
+        session_key = service.profile_key(session_id, user_id)
+        if action == "upsert":
+            result = service.store.upsert_field(
+                user_id=user_id,
+                subject_name=subject_name,
+                field_name=field_name,
+                value=str(payload.get("value") or ""),
+                session_id=session_id if service.session_based else None,
+                actor=actor,
+                source_kind="webui_edit",
+                evidence="通讯录手动编辑",
+                allow_custom_field=service.allow_user_custom_fields,
+                field_description=str(payload.get("description") or "")
+                or "通讯录中创建的自定义字段",
+            )
+        elif action == "delete":
+            result = service.store.delete_field(
+                user_id=user_id,
+                session_id=session_id if service.session_based else None,
+                field_selector=field_name,
+                actor=actor,
+                source_kind="webui_delete",
+                evidence="通讯录手动删除",
+            )
+        elif action in {"lock", "unlock"}:
+            result = service.store.set_field_lock(
+                user_id=user_id,
+                subject_name=subject_name,
+                session_id=session_id if service.session_based else None,
+                field_name=field_name,
+                locked=action == "lock",
+                actor=actor,
+            )
+        else:
+            return error_response("不认识的画像字段操作")
+        if not result.ok:
+            return error_response(result.message)
+        refreshed = (
+            service.detail_by_key(record_key)
+            if record_key
+            else service.store.get_profile_detail(session_key)
+        )
+        return json_response(
+            {
+                "ok": True,
+                "message": result.message,
+                "profile": refreshed,
+            }
+        )
+
+    async def api_profile_weaver_history(self):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        service = self._weaver_service()
+        if service is None:
+            return error_response("通讯录画像内核未就绪")
+        key = str(request.query.get("key", "") or "").strip()
+        detail = service.detail_by_key(key) if key else {}
+        session_id = (
+            str(detail.get("session_id") or "")
+            if key
+            else self._profile_scope(request.query.get("session", ""))
+        )
+        user_id = (
+            str(detail.get("user_id") or "")
+            if key
+            else str(request.query.get("user_id", "") or "")
+        )
+        field_name = str(request.query.get("field", "") or "").strip()
+        if not user_id or not field_name:
+            return error_response("缺少 user_id 或 field")
+        items = service.field_history(
+            user_id=user_id,
+            session_id=session_id if service.session_based else None,
+            field_name=field_name,
+            limit=min(100, max(1, _query_int("limit", 20) or 20)),
+            include_rotated=True,
+        )
+        return json_response({"field": field_name, "items": items, "total": len(items)})
+
+    async def api_profile_weaver_stats(self):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        service = self._weaver_service()
+        if service is None:
+            return error_response("通讯录画像内核未就绪")
+        stats = service.stats()
+        audit_page = service.audit(limit=1, offset=0, include_rotated=True)
+        stats["audit_count"] = int(audit_page.get("total") or 0)
+        custom_counts = stats.get("custom_field_counts") or {}
+        stats["custom_fields"] = [
+            {"name": name, "count": int(count)}
+            for name, count in sorted(
+                custom_counts.items(),
+                key=lambda item: (-int(item[1]), str(item[0])),
+            )
+        ]
+        coverage = [
+            {
+                "name": name,
+                "count": int((stats.get("field_counts") or {}).get(name, 0)),
+                "ratio": round(
+                    int((stats.get("field_counts") or {}).get(name, 0))
+                    / max(1, int(stats.get("profile_count") or 0))
+                    * 100,
+                    1,
+                ),
+            }
+            for name in service.store.builtin_field_map
+        ]
+        coverage.sort(key=lambda item: (-item["count"], item["name"]))
+        return json_response({"stats": stats, "coverage": coverage})
+
+    async def api_profile_weaver_audit(self):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        service = self._weaver_service()
+        if service is None:
+            return error_response("通讯录画像内核未就绪")
+        session_id = self._profile_scope(request.query.get("session", ""))
+        result = service.audit(
+            user_id=str(request.query.get("user_id", "") or ""),
+            session_id=session_id if service.session_based else None,
+            action=str(request.query.get("action", "") or ""),
+            actor_type=str(request.query.get("actor_type", "") or ""),
+            query=str(request.query.get("q", "") or ""),
+            limit=min(500, max(1, _query_int("limit", 100) or 100)),
+            offset=max(0, _query_int("offset", 0)),
+            include_rotated=str(
+                request.query.get("include_rotated", "true")
+            ).lower()
+            in {"1", "true", "on", "yes"},
+        )
+        return json_response(result)
+
+    async def api_profile_weaver_audit_csv(self):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        service = self._weaver_service()
+        if service is None:
+            return error_response("通讯录画像内核未就绪")
+        session_id = self._profile_scope(request.query.get("session", ""))
+        text = service.store.export_audit_csv(
+            user_id=str(request.query.get("user_id", "") or ""),
+            session_id=session_id if service.session_based else None,
+            action=str(request.query.get("action", "") or ""),
+            actor_type=str(request.query.get("actor_type", "") or ""),
+            query=str(request.query.get("q", "") or ""),
+            limit=min(
+                50000,
+                max(1, _query_int("limit", 5000) or 5000),
+            ),
+            include_rotated=True,
+        )
+        return Response(
+            "\ufeff" + text,
+            status=200,
+            mimetype="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": 'attachment; filename="my-world-profile-audit.csv"'
+            },
+        )
+
+    async def api_profile_weaver_export(self):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        service = self._weaver_service()
+        if service is None:
+            return error_response("通讯录画像内核未就绪")
+        raw_keys = str(request.query.get("keys", "") or "").strip()
+        keys = [item.strip() for item in raw_keys.split(",") if item.strip()]
+        payload = service.export_bundle(
+            keys=keys or None,
+            include_audit=str(request.query.get("include_audit", "")).lower()
+            in {"1", "true", "on"},
+            mask_user_ids=(
+                str(request.query.get("mask", "")).lower() in {"1", "true", "on"}
+                if "mask" in request.query
+                else service.export_mask_user_ids
+            ),
+        )
+        return json_response(payload)
+
+    async def api_profile_weaver_import_bundle(self):
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload)
+        if guard is not None:
+            return guard
+        service = self._weaver_service()
+        write_guard = self._weaver_write_guard(service)
+        if write_guard is not None:
+            return write_guard
+        bundle = payload.get("payload")
+        if not isinstance(bundle, dict):
+            return error_response("导入内容必须是画像 bundle JSON")
+        result = service.import_bundle(
+            bundle,
+            mode=str(payload.get("mode") or "merge"),
+        )
+        if not result.get("ok"):
+            return error_response(str(result.get("message") or "导入失败"))
+        return json_response(result)
+
+    async def api_profile_weaver_backup(self):
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload if payload else request.query)
+        if guard is not None:
+            return guard
+        service = self._weaver_service()
+        if service is None:
+            return error_response("通讯录画像内核未就绪")
+        method = str(getattr(request, "method", "") or "GET").upper()
+        if method == "GET":
+            return json_response({"items": service.backups()})
+        write_guard = self._weaver_write_guard(service)
+        if write_guard is not None:
+            return write_guard
+        action = str(payload.get("action") or "create")
+        actor = self._weaver_actor()
+        if action == "create":
+            path = service.store.create_backup(str(payload.get("tag") or "manual"))
+            if path is None:
+                return error_response("备份失败，请检查数据目录权限")
+            return json_response(
+                {"ok": True, "message": f"已创建备份 {path.name}", "items": service.backups()}
+            )
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            return error_response("缺少备份文件名")
+        if action == "restore":
+            result = service.store.restore_backup(name, actor)
+        elif action == "delete":
+            result = service.store.delete_backup(name, actor)
+        else:
+            return error_response("不认识的备份操作")
+        return json_response(
+            {
+                "ok": result.ok,
+                "message": result.message,
+                "items": service.backups(),
+            }
+        )
+
+    async def api_profile_weaver_backup_download(self):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        service = self._weaver_service()
+        if service is None:
+            return error_response("通讯录画像内核未就绪")
+        name = str(request.query.get("name", "") or "").strip()
+        ok, text, safe_name = service.store.read_backup_text(name)
+        if not ok:
+            return error_response(text)
+        return Response(
+            text,
+            status=200,
+            mimetype="application/json; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="{safe_name}"'
+            },
+        )
+
+    async def api_profile_weaver_merge(self):
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload)
+        if guard is not None:
+            return guard
+        service = self._weaver_service()
+        write_guard = self._weaver_write_guard(service)
+        if write_guard is not None:
+            return write_guard
+        result = service.store.merge_profile_records(
+            source_key=str(payload.get("source") or ""),
+            target_key=str(payload.get("target") or ""),
+            actor=self._weaver_actor(),
+            drop_source=bool(payload.get("drop_source", True)),
+        )
+        return json_response({"ok": result.ok, "message": result.message})
+
+    async def api_profile_weaver_delete(self):
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload)
+        if guard is not None:
+            return guard
+        service = self._weaver_service()
+        write_guard = self._weaver_write_guard(service)
+        if write_guard is not None:
+            return write_guard
+        raw_keys = payload.get("keys")
+        if not isinstance(raw_keys, list):
+            raw_keys = [payload.get("key")]
+        keys = [str(item or "").strip() for item in raw_keys if str(item or "").strip()]
+        if not keys:
+            return error_response("缺少要删除的画像 key")
+        removed = 0
+        failed: list[str] = []
+        for key in keys:
+            result = service.store.delete_profile_by_key(key, self._weaver_actor())
+            if result.ok:
+                removed += 1
+            else:
+                failed.append(f"{key}: {result.message}")
+        return json_response(
+            {
+                "ok": not failed,
+                "removed": removed,
+                "failed": failed,
+                "message": f"已删除 {removed} 条画像"
+                + (f"，{len(failed)} 条失败" if failed else ""),
+            }
+        )
 
     async def _profile_person_payload(self, session_id: str, user_id: str) -> dict[str, Any]:
         """一个人的完整画像：字段 + 事实 + 关系（含历史与"他自称"）+ 好感日志。"""
@@ -291,10 +841,83 @@ class WebApiMixin:
         payload: dict[str, Any] = {"session": session_id, "user_id": user_id}
         if store is None:
             return payload
+        weaver_service = self._weaver_service()
+        weaver_detail = (
+            weaver_service.detail_for(session_id, user_id)
+            if weaver_service is not None
+            else {}
+        )
+        if store.profile(session_id, user_id) is None and weaver_detail:
+            created = store.touch(
+                session_id,
+                user_id,
+                str(
+                    weaver_detail.get("display_name")
+                    or weaver_detail.get("subject_name")
+                    or user_id
+                ),
+                count_message=False,
+            )
+            if created is not None:
+                payload["created_from_weaver"] = True
         payload["person"] = self.engine.person_payload(session_id, user_id)
+        if payload["person"] is None and weaver_detail:
+            payload["person"] = {
+                "user_id": user_id,
+                "name": weaver_detail.get("display_name")
+                or weaver_detail.get("subject_name")
+                or user_id,
+                "affinity": 0.0,
+                "affinities": [],
+                "claims": [],
+                "past": [],
+                "facts": [],
+                "bonds": [],
+                "digest": "",
+                "note": "",
+                "message_count": 0,
+                "days_known": 0,
+                "level": {"name": "仅有画像", "index": 0, "deny": [], "prompt": ""},
+            }
+        payload["weaver"] = weaver_detail
         payload["facts"] = store.facts(session_id, user_id, statuses=["active", "candidate", "past"])
-        # 备注：本插件这边还没写过时，借「心迹画像」搬过来的那条备注来填（只补空，不覆盖）
+        # 称呼与备注：关系画像没填时，用通讯录详细画像里的同名字段补齐。
         person = payload.get("person")
+        if isinstance(person, dict):
+            weaver_fields = {
+                str(item.get("name") or ""): item
+                for item in weaver_detail.get("fields") or []
+                if isinstance(item, dict)
+            }
+            nickname = next(
+                (
+                    weaver_fields[name]
+                    for name in ("昵称", "称呼", "网名", "名字", "别名")
+                    if name in weaver_fields
+                ),
+                None,
+            )
+            if nickname and not str(person.get("call_him") or "").strip():
+                person["call_him"] = str(nickname.get("value") or "").strip()
+                person["call_him_from"] = "详细画像"
+            if not str(person.get("call_me") or "").strip():
+                subject = str(
+                    weaver_detail.get("display_name")
+                    or weaver_detail.get("subject_name")
+                    or ""
+                ).strip()
+                if subject:
+                    person["call_me"] = subject
+                    person["call_me_from"] = "详细画像"
+            if not str(person.get("note") or "").strip():
+                weaver_notes = [
+                    str(item).strip()
+                    for item in weaver_detail.get("notes") or []
+                    if str(item).strip()
+                ]
+                if weaver_notes:
+                    person["note"] = "；".join(weaver_notes)[:200]
+                    person["note_from"] = "详细画像"
         if isinstance(person, dict) and not str(person.get("note") or "").strip():
             notes = [
                 str(item.get("text") or "").strip()
@@ -386,11 +1009,19 @@ class WebApiMixin:
         if store is None:
             return json_response({"people": [], "enabled": False})
         people: list[dict[str, Any]] = []
+        weaver_service = self._weaver_service()
+        weaver_people = (
+            weaver_service.people_for_session(session_id)
+            if weaver_service is not None
+            else {}
+        )
+        seen_users: set[str] = set()
         for row in store.list_people(session_id, limit=200):
             user_id = str(row.get("user_id") or "")
             view = store.view(session_id, user_id)
             if view is None:
                 continue
+            seen_users.add(user_id)
             people.append(
                 {
                     "user_id": user_id,
@@ -411,6 +1042,29 @@ class WebApiMixin:
                             if str(item)
                         ]
                     ),
+                    "weaver": weaver_people.get(user_id) or {},
+                }
+            )
+        for user_id, summary in weaver_people.items():
+            if not user_id or user_id in seen_users:
+                continue
+            people.append(
+                {
+                    "user_id": user_id,
+                    "name": summary.get("display_name")
+                    or summary.get("subject_name")
+                    or user_id,
+                    "qq_name": summary.get("subject_name") or "",
+                    "affinity": 0.0,
+                    "level": "仅有画像",
+                    "bonds": [],
+                    "claims": [],
+                    "digest": summary.get("preview") or "",
+                    "message_count": 0,
+                    "last_seen_at": 0.0,
+                    "first_seen_at": 0.0,
+                    "days": 0,
+                    "weaver": summary,
                 }
             )
         return json_response(
@@ -421,6 +1075,10 @@ class WebApiMixin:
                     self.engine.world.profile.consolidate_enabled
                 ),
                 "digest_limit": int(self.engine.world.profile.digest_limit),
+                "weaver_enabled": bool(weaver_service and weaver_service.enabled),
+                "weaver_session_based": bool(
+                    weaver_service and weaver_service.session_based
+                ),
             }
         )
 
@@ -642,6 +1300,11 @@ class WebApiMixin:
         removed = store.db.delete_user_profile(
             group_id=store.group_key(session_id), user_id=user_id
         )
+        service = self._weaver_service()
+        if service is not None and service.enabled:
+            key = service.profile_key(session_id, user_id)
+            if key in service.store.profiles:
+                service.store.delete_profile_by_key(key, self._weaver_actor())
         return json_response({"ok": True, "removed": removed})
 
     async def api_profile_forget_all(self):
@@ -671,6 +1334,14 @@ class WebApiMixin:
                 store.db.delete_user_profile(group_id=group_id, user_id=user_id) or 0
             )
             forgotten += 1
+        service = self._weaver_service()
+        if service is not None and service.enabled:
+            for key in list(service.store.profiles):
+                record = service.store.profiles.get(key) or {}
+                source_session, _ = service.store.split_profile_key(key, record)
+                if service.session_based and source_session != session_id:
+                    continue
+                service.store.delete_profile_by_key(key, self._weaver_actor())
         # 她"今天还能主动找几个人"的额度也跟着清，免得留下没人认领的计数
         store.drop_daily_people(group_id)
         return json_response({"ok": True, "people": forgotten, "removed": removed})

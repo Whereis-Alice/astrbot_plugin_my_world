@@ -150,7 +150,20 @@ AstrBot 的管线轮不到跑：准备调模型前 → `on_waiting_llm_request`�
 | [worldtree_lore](https://github.com/Whereis-Alice/astrbot_plugin_worldtree_lore) | `on_llm_request` / `on_waiting_llm_request` | 它写进 `system_prompt` 或 `extra_user_content_parts` 的设定会一起进她的提示词；它通过 `selected_provider` 临时指定的模型，在接管这一轮同样生效（它自己的工具也能导入成动作） |
 | [helper_tools](https://github.com/Whereis-Alice/astrbot_plugin_helper_tools) | `on_llm_request`（priority 22 起） | **环境感知**（时间 / 节假日 / 农历 / 节气 / 平台 / 群名 / 当前发言者群内资料 / Bot 自己的群身份）写进 `extra_user_content_parts`，接管时整段带进「其他插件提供的上下文」；引用媒体标注、戳一戳上下文走同一条路。老版本 AstrBot 上没有 `extra_user_content_parts` 时，这些信息会被拼在 `req.prompt` 后面——本插件按空行边界把它摘出来单独带，不会让群友"被说"节假日。它注册的 LLM 工具也能一键导入成动作；在它面板上停用的模块不会出现在可导入列表里，误调时会明确提示"被停用" |
 | [uapipro_toolbox](https://github.com/lingyun14beta/astrbot_plugin_uapipro_toolbox) | `on_llm_tool_respond`（工具结果） | 它提供的 `uapi_weather` 等天气工具被调到时，**那一次的结果会被本插件记成世界天气**：写进下一轮提示词、显示在地图横幅上；后台静默刷新找不到绑定的工具时，也会自动认这类天气工具来用。它注册的其它工具照旧由 AstrBot 原生 Agent 调用，和本插件互不干扰 |
-| [profile_weaver](https://github.com/Whereis-Alice/astrbot_plugin_profile_weaver) | 只读它的 `profiles.json` | 通讯录页的「从心迹画像搬过来」把它的字段变成本插件的事实（人、爱好、忌口、备注…），走的是本插件的事实去重逻辑，重复搬不会攒重复项、冲突的留新的；对方插件的数据一个字节都不改，它继续跑也没关系 |
+| [profile_weaver](https://github.com/Whereis-Alice/astrbot_plugin_profile_weaver) | 数据格式与完整画像能力原生融合 | 首次启动自动继承 `profiles.json`、审计和备份；字段锁、历史、审计 CSV、导入导出、备份与画像库都并入通讯录。原插件三个画像工具由本插件重新注册，确认迁移后可停用旧插件 |
+
+### 从心迹画像迁移
+
+本插件启动时会检查同一层 `plugin_data` 下的 `astrbot_plugin_profile_weaver`：
+
+1. 第一次迁移会复制 `profiles.json`、审计文件与 `backups/`；之后每次启动仍会按字段更新时间
+   增量合并旧插件新增的记录，避免迁移前最后几条丢失。
+2. 旧 key 会按当前的“跨会话共享 / 按会话隔离”设置整理。默认跨会话共享时，
+   同一用户分散在不同群里的旧 key 会收敛成一份，字段锁按并集保留。
+3. 通讯录 → 画像库可以直接查看全部迁移记录；人物页的称呼和备注会优先读取详细画像里的
+   “昵称”和“备注”，不必在两套 UI 里重复填。
+4. 确认数据完整后，在 AstrBot 插件管理里停用 `astrbot_plugin_profile_weaver`。
+   不要继续让两个插件同时写不同目录。
 
 另外两个可以按需关掉的干扰点：
 

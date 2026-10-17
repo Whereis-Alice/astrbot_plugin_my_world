@@ -566,40 +566,144 @@
                 <button id="contacts-clear" class="ghost danger" title="把她在这个会话组里认识的人全部忘掉（画像、事实、关系、好感记录）">
                   清空通讯录
                 </button>
-                <button
-                  id="contacts-weaver-import"
-                  class="ghost"
-                  title="把「心迹画像」插件已经记下的人搬进这份通讯录：只读它的数据，字段变成这里的事实；重复导入不会攒重复项"
-                >
-                  从心迹画像搬过来
-                </button>
               </div>
             </div>
             <div class="page-head-right">
               <span class="muted" id="contacts-note"></span>
             </div>
           </div>
-          <div class="contacts-layout">
-            <div class="card contacts-list-card">
-              <h2>好友</h2>
-              <p class="hint-line" id="contacts-filter-note">
-                按最近说过话排序；她认识的人越多，这一列越长。
-              </p>
-              <input id="contacts-search" placeholder="搜昵称 / QQ / 备注" />
-              <div id="contacts-list" class="list" data-keep-text></div>
-              <div class="card-footer">
-                <h3>她能说话的地方</h3>
-                <div id="contacts-places" class="list" data-keep-text></div>
-                <button id="contacts-goto-sessions" class="ghost">去会话页管理</button>
+          <div class="contacts-subtabs" role="tablist" aria-label="通讯录视图">
+            <button type="button" class="on" data-contacts-view="people">人物</button>
+            <button type="button" data-contacts-view="library">画像库</button>
+            <button type="button" data-contacts-view="overview">总览</button>
+            <button type="button" data-contacts-view="audit">审计</button>
+            <button type="button" data-contacts-view="data">数据与备份</button>
+          </div>
+
+          <div id="contacts-view-people" class="contacts-view">
+            <div class="contacts-layout">
+              <div class="card contacts-list-card">
+                <div class="contacts-card-head">
+                  <div>
+                    <h2>通讯录</h2>
+                    <p class="hint-line" id="contacts-filter-note">
+                      关系、好感与详细画像合并显示；搜索会同时匹配称呼、QQ、字段和备注。
+                    </p>
+                  </div>
+                  <span id="contacts-count" class="contacts-count">0 人</span>
+                </div>
+                <input id="contacts-search" placeholder="搜昵称 / QQ / 字段 / 备注" />
+                <div id="contacts-list" class="list" data-keep-text></div>
+                <div class="card-footer">
+                  <h3>她能说话的地方</h3>
+                  <div id="contacts-places" class="list" data-keep-text></div>
+                  <button id="contacts-goto-sessions" class="ghost">去会话页管理</button>
+                </div>
+              </div>
+              <div class="card contacts-detail-card">
+                <div class="contacts-card-head">
+                  <div>
+                    <h2 id="contacts-title">选一个人</h2>
+                    <p class="hint-line">
+                      关系、好感和字段画像会一起进入她的提示词；字段锁与变更历史可逐项管理。
+                    </p>
+                  </div>
+                  <span id="contacts-detail-completeness" class="contacts-count hidden"></span>
+                </div>
+                <div id="contacts-detail" class="contacts-detail" data-keep-text></div>
               </div>
             </div>
-            <div class="card contacts-detail-card">
-              <h2 id="contacts-title">选一个人</h2>
-              <p class="hint-line">
-                画像会写进她每一轮的提示词（怎么称呼、什么关系、好感多少、现在能做什么）。
-              </p>
-              <div id="contacts-detail" class="contacts-detail" data-keep-text></div>
+          </div>
+
+          <div id="contacts-view-library" class="contacts-view hidden">
+            <div class="card contacts-library-card">
+              <div class="contacts-library-head">
+                <div>
+                  <h2>画像库</h2>
+                  <p class="hint-line">
+                    这里列出所有详细画像记录，可按会话、平台、字段锁筛选，并合并跨会话的重复记录。
+                  </p>
+                </div>
+                <span id="contacts-library-count" class="contacts-count">0 条</span>
+              </div>
+              <div class="contacts-library-toolbar">
+                <label class="field grow">
+                  <span>搜索</span>
+                  <input id="contacts-library-search" placeholder="姓名 / QQ / 字段内容" />
+                </label>
+                <label class="field">
+                  <span>会话类型</span>
+                  <select id="contacts-library-chat-type">
+                    <option value="all">全部</option>
+                    <option value="group">群聊</option>
+                    <option value="private">私聊</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>平台</span>
+                  <select id="contacts-library-platform">
+                    <option value="all">全部</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>排序</span>
+                  <select id="contacts-library-sort">
+                    <option value="updated_desc">最近更新</option>
+                    <option value="name_asc">姓名</option>
+                    <option value="completeness_desc">完整度</option>
+                    <option value="locked_desc">字段锁</option>
+                    <option value="fields_desc">字段数</option>
+                  </select>
+                </label>
+                <label class="inline contacts-library-locked">
+                  <input id="contacts-library-locked" type="checkbox" />
+                  <span>只看有锁字段</span>
+                </label>
+              </div>
+              <div class="contacts-library-bulk">
+                <label class="inline">
+                  <input id="contacts-library-select-all" type="checkbox" />
+                  <span>全选本页</span>
+                </label>
+                <span id="contacts-library-selected" class="muted">未选择</span>
+                <button id="contacts-library-export" class="ghost tiny" type="button">导出选中</button>
+                <button id="contacts-library-delete" class="ghost tiny danger" type="button">删除选中</button>
+              </div>
+              <div id="contacts-library-list" class="contacts-library-list" data-keep-text></div>
+              <div class="contacts-library-pager">
+                <button id="contacts-library-prev" class="ghost tiny" type="button">上一页</button>
+                <span id="contacts-library-page" class="muted">第 1 / 1 页</span>
+                <button id="contacts-library-next" class="ghost tiny" type="button">下一页</button>
+              </div>
             </div>
+          </div>
+
+          <div id="contacts-view-overview" class="contacts-view hidden">
+            <div id="contacts-overview" class="contacts-overview" data-keep-text></div>
+          </div>
+
+          <div id="contacts-view-audit" class="contacts-view hidden">
+            <div class="card contacts-audit-card">
+              <div class="contacts-audit-toolbar">
+                <label class="field grow">
+                  <span>搜索审计</span>
+                  <input id="contacts-audit-search" placeholder="姓名 / QQ / 字段 / 原话" />
+                </label>
+                <label class="field">
+                  <span>操作</span>
+                  <select id="contacts-audit-action">
+                    <option value="">全部操作</option>
+                  </select>
+                </label>
+                <button id="contacts-audit-refresh" class="ghost">刷新</button>
+                <button id="contacts-audit-export" class="ghost">导出 CSV</button>
+              </div>
+              <div id="contacts-audit-list" class="contacts-audit-list" data-keep-text></div>
+            </div>
+          </div>
+
+          <div id="contacts-view-data" class="contacts-view hidden">
+            <div id="contacts-data" class="contacts-data" data-keep-text></div>
           </div>
         </section>
 

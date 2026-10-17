@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from tests.test_web_routes import load_plugin_module
+from core.profile_weaver_store import AuditActor
 
 
 class ScopeApiTests(unittest.IsolatedAsyncioTestCase):
@@ -114,3 +115,125 @@ class ScopeApiTests(unittest.IsolatedAsyncioTestCase):
         person = (result.get("data") or {}).get("person") or {}
         self.assertEqual(person.get("note"), "我自己的备注")
         self.assertNotIn("note_from", person)
+
+    async def test_detailed_profile_merges_contact_name_and_note(self):
+        service = self.plugin.profile_weaver_service
+        result = service.store.upsert_field(
+            user_id="42",
+            subject_name="阿岚",
+            field_name="昵称",
+            value="阿岚",
+            session_id=None,
+            actor=AuditActor("webui", "test", "测试"),
+            source_kind="manual_edit",
+            evidence="叫我阿岚",
+            allow_custom_field=True,
+        )
+        self.assertTrue(result.ok)
+        service.store.upsert_field(
+            user_id="42",
+            subject_name="阿岚",
+            field_name="备注",
+            value="最近在准备考试",
+            session_id=None,
+            actor=AuditActor("webui", "test", "测试"),
+            source_kind="manual_edit",
+            evidence="最近在准备考试",
+            allow_custom_field=True,
+        )
+        self.plugin.engine.profiles.touch(self.session, "42", "阿岚")
+        result = await self.call(
+            "profile/person", method="POST", session=self.session, user_id="42"
+        )
+        person = (result.get("data") or {}).get("person") or {}
+        self.assertEqual(person.get("call_me"), "阿岚")
+        self.assertEqual(person.get("call_him"), "阿岚")
+        self.assertEqual(person.get("note"), "最近在准备考试")
+        self.assertEqual(person.get("note_from"), "详细画像")
+
+    async def test_profile_library_key_edit_and_delete_roundtrip(self):
+        service = self.plugin.profile_weaver_service
+        service.store.upsert_field(
+            user_id="42",
+            subject_name="阿岚",
+            field_name="爱好",
+            value="摄影",
+            session_id=None,
+            actor=AuditActor("webui", "test", "测试"),
+            source_kind="manual_edit",
+            evidence="我喜欢摄影",
+            allow_custom_field=True,
+        )
+        key = service.profile_key(self.session, "42")
+        library = await self.call("profile/weaver/library", q="阿岚")
+        self.assertEqual(library["status_code"], 200)
+        self.assertEqual(library["data"]["items"][0]["key"], key)
+
+        detail = await self.call("profile/weaver/key", key=key)
+        self.assertEqual(detail["status_code"], 200)
+        self.assertEqual(detail["data"]["profile"]["display_name"], "阿岚")
+
+        edited = await self.call(
+            "profile/weaver/field",
+            method="POST",
+            key=key,
+            action="upsert",
+            field="爱好",
+            value="摄影、爬山",
+        )
+        self.assertEqual(edited["status_code"], 200, edited)
+        values = {
+            item["name"]: item["value"]
+            for item in edited["data"]["profile"]["fields"]
+        }
+        self.assertEqual(values["爱好"], "摄影、爬山")
+
+        readonly_key = service.detail_by_key(key)
+        self.assertTrue(readonly_key)
+        removed = await self.call(
+            "profile/weaver/delete", method="POST", keys=[key]
+        )
+        self.assertEqual(removed["status_code"], 200)
+        self.assertFalse(service.detail_by_key(key))
+
+    async def test_profile_webui_read_only_blocks_field_writes(self):
+        service = self.plugin.profile_weaver_service
+        service.store.upsert_field(
+            user_id="42",
+            subject_name="阿岚",
+            field_name="爱好",
+            value="摄影",
+            session_id=None,
+            actor=AuditActor("webui", "test", "测试"),
+            source_kind="manual_edit",
+            evidence="我喜欢摄影",
+            allow_custom_field=True,
+        )
+        key = service.profile_key(self.session, "42")
+        self.plugin.config["weaver_webui_allow_edit"] = False
+        result = await self.call(
+            "profile/weaver/field",
+            method="POST",
+            key=key,
+            action="upsert",
+            field="爱好",
+            value="摄影、爬山",
+        )
+        self.assertEqual(result["status_code"], 400)
+        self.assertIn("只读", result.get("message", ""))
+
+    async def test_profile_chat_command_roundtrip(self):
+        event = types.SimpleNamespace(
+            unified_msg_origin=self.session,
+            message_str="/mw profile set 爱好 摄影",
+            get_sender_id=lambda: "42",
+            get_sender_name=lambda: "阿岚",
+            is_admin=lambda: False,
+            is_private_chat=lambda: True,
+            get_messages=lambda: [],
+        )
+        saved = await self.plugin._cmd_profile(event, ["set", "爱好", "摄影"])
+        self.assertIn("已写入", saved)
+        shown = await self.plugin._cmd_profile(event, ["show"])
+        self.assertIn("爱好", shown)
+        self.assertIn("摄影", shown)

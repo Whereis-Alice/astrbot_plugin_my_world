@@ -639,6 +639,92 @@ class GenerationBrowserTests(unittest.TestCase):
         toggle.click()
         expect(self.page.locator(".map-zoom")).to_be_visible()
 
+    def test_region_double_click_enters_the_zone_map(self):
+        """双击区域要直接进区域地图，不能被拖拽逻辑的重绘吞掉。"""
+
+        self.page.locator('button[data-tab="map"]').click()
+        zone = self.page.locator("#canvas-nodes .node[data-kind='zone']").first
+        expect(zone).to_be_visible()
+        zone.dblclick()
+        expect(self.page.locator("#map-crumbs")).to_contain_text("/")
+        expect(self.page.locator("#map-back")).to_be_visible()
+        expect(self.page.locator("#canvas-nodes .node[data-kind='node']").first).to_be_visible()
+
+        edge = self.page.locator(".edge-line").first
+        if edge.count():
+            edge.scroll_into_view_if_needed()
+            direction = edge.locator(".edge-direction").bounding_box()
+            target = edge.locator(".edge-target").bounding_box()
+            remove = edge.locator(".edge-remove").bounding_box()
+            self.assertLess(direction["height"], 28)
+            self.assertGreater(target["width"], 80)
+            self.assertGreaterEqual(remove["x"], target["x"] + target["width"] - 1)
+        self.host.screenshot(path=str(self.shots / "zone-edge-editor.png"))
+        self.assertEqual(self.errors, [])
+
+    def test_world_generator_remembers_the_last_extra_prompt(self):
+        self.open_generator("map", "map-generate-all")
+        prompt = self.page.locator("#dialog-body textarea")
+        prompt.fill("保留这段额外提示词")
+        self.page.locator("#dialog-cancel").click()
+        self.open_generator("map", "map-generate-all")
+        expect(self.page.locator("#dialog-body textarea")).to_have_value(
+            "保留这段额外提示词"
+        )
+        self.page.locator("#dialog-cancel").click()
+
+    def test_contacts_merge_relationship_and_profile_views(self):
+        self.page.locator('button[data-tab="contacts"]').click()
+        expect(self.page.locator(".contact-row")).to_have_count(1)
+        expect(self.page.locator(".contact-row")).to_contain_text("小鲸鱼")
+        self.page.locator(".contact-row").click()
+        expect(self.page.locator(".contact-weaver-section")).to_be_visible()
+        expect(self.page.locator(".weaver-field-row")).to_have_count(2)
+        expect(self.page.locator(".contact-weaver-section")).to_contain_text("字段锁")
+
+        self.page.locator('[data-contacts-view="library"]').click()
+        expect(self.page.locator(".contacts-library-row")).to_have_count(1)
+        expect(self.page.locator(".contacts-library-row")).to_contain_text("小鲸鱼")
+        expect(self.page.locator(".contacts-library-row")).to_contain_text("热茶")
+        self.host.screenshot(path=str(self.shots / "contacts-library.png"))
+        self.page.locator(".contacts-library-row").click()
+        expect(self.page.locator("#dialog")).to_be_visible()
+        expect(self.page.locator("#dialog-body")).to_contain_text("喜欢的话题")
+        expect(self.page.locator("#dialog-body")).to_contain_text("以后叫我小鲸鱼")
+        self.host.screenshot(path=str(self.shots / "contacts-library-detail.png"))
+        self.page.locator("#dialog-ok").click()
+        expect(self.page.locator("#dialog")).to_be_hidden()
+
+        self.page.locator('[data-contacts-view="overview"]').click()
+        expect(self.page.locator(".contacts-metric")).to_have_count(6)
+        expect(self.page.locator("#contacts-overview")).to_contain_text("字段覆盖率")
+        self.host.screenshot(path=str(self.shots / "contacts-overview.png"))
+
+        self.page.locator('[data-contacts-view="audit"]').click()
+        expect(self.page.locator(".contacts-audit-row")).to_have_count(1)
+        expect(self.page.locator(".contacts-audit-row")).to_contain_text("喜欢的话题")
+
+        self.page.locator('[data-contacts-view="data"]').click()
+        expect(self.page.locator(".contacts-backup-row")).to_have_count(1)
+        self.assertEqual(self.errors, [])
+
+    def test_contacts_library_fits_mobile(self):
+        self.host.set_viewport_size({"width": 390, "height": 844})
+        self.page.locator('button[data-tab="contacts"]').click()
+        self.page.locator('[data-contacts-view="library"]').click()
+        expect(self.page.locator(".contacts-library-row")).to_be_visible()
+        self.assertLessEqual(
+            self.page.evaluate("document.documentElement.scrollWidth"),
+            self.page.evaluate("document.documentElement.clientWidth") + 1,
+        )
+        self.page.locator(".contacts-library-row").click()
+        expect(self.page.locator("#dialog")).to_be_visible()
+        card = self.page.locator("#dialog-card").bounding_box()
+        self.assertGreaterEqual(card["x"], 0)
+        self.assertLessEqual(card["x"] + card["width"], 391)
+        self.host.screenshot(path=str(self.shots / "contacts-library-mobile.png"))
+        self.assertEqual(self.errors, [])
+
     def test_world_action_generator_lives_in_the_action_library(self):
         self.open_generator("actions", "action-generate-world")
         inputs = self.page.locator('#dialog-body input[type="number"]')

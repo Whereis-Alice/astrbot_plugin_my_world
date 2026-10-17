@@ -242,6 +242,141 @@ BRIDGE_JS = r"""
     "prompt": { text: "", sections: [] },
     "persona-brief": {},
     "history": { items: [] },
+    "profile/people": {
+      people: [{
+        user_id: "10001", name: "小鲸鱼", qq_name: "小鲸鱼",
+        affinity: 72, level: "亲近", bonds: ["朋友"], claims: [],
+        digest: "爱喝热茶、常熬夜，最近在准备考试", message_count: 128,
+        last_seen_at: 1760000000, first_seen_at: 1750000000, days: 32,
+        weaver: {
+          display_name: "小鲸鱼", subject_name: "小鲸鱼",
+          completeness: 68.5, locked_count: 1,
+          preview: [
+            { name: "爱好", value: "热茶、猫" },
+            { name: "喜欢的话题", value: "安静的房间" },
+          ],
+        },
+      }],
+      enabled: true, consolidate_enabled: true, digest_limit: 5,
+      weaver_enabled: true, weaver_session_based: false,
+    },
+    "profile/person": {
+      session: "aiocqhttp:GroupMessage:1001", user_id: "10001",
+      person: {
+        user_id: "10001", name: "小鲸鱼", qq_name: "小鲸鱼", affinity: 72,
+        affinities: ["朋友"], claims: [], past: [],
+        facts: [{ kind: "喜好", text: "喜欢热茶", evidence: "我平时爱喝热茶" }],
+        digest: "爱喝热茶、常熬夜", note: "晚上容易忘记休息",
+        message_count: 128, days_known: 32, cards: {},
+        level: { name: "亲近", index: 3, prompt: "", deny: [] },
+      },
+      facts: [{ id: 1, kind: "喜好", text: "喜欢热茶", status: "active", pinned: true }],
+      bonds: [{ id: 1, type: "朋友", status: "current", since_text: "2026-01-02" }],
+      affinity_logs: [],
+      bonds_config: [{ name: "朋友", slot: "friend", cap: 4, unique: false, negative: false }],
+      levels_config: [{ name: "亲近", min_affinity: 60, max_affinity: 79, deny: [], prompt: "" }],
+      grudge: null, own_topics: [], miss: { value: 0.2, waiting: false },
+      weaver: {
+        key: "_10001", user_id: "10001", subject_name: "小鲸鱼",
+        display_name: "小鲸鱼", completeness: 68.5, locked_count: 1,
+        updated_at: "2026-10-12 20:11:00",
+        fields: [
+          { name: "昵称", value: "小鲸鱼", is_custom: false, locked: true,
+            updated_at: "2026-10-12 20:10:00", evidence: "以后叫我小鲸鱼" },
+          { name: "喜欢的话题", value: "猫、热茶、安静的房间", is_custom: false,
+            locked: false, updated_at: "2026-10-12 20:11:00",
+            evidence: "我平时喜欢聊猫和热茶" },
+        ],
+        notes: ["最近在准备考试"],
+        available_fields: [
+          { name: "昵称", filled: true },
+          { name: "喜欢的话题", filled: true },
+          { name: "生日", filled: false },
+        ],
+      },
+    },
+    "profile/weaver/meta": {
+      enabled: true, session_based: false, webui_allow_edit: true,
+      field_lock_scope: "llm_only", field_lock_scope_label: "仅拦截模型",
+      data_dir: "（测试数据目录）",
+      legacy_imported: true, legacy_source_dir: "astrbot_plugin_profile_weaver",
+      audit_actions: ["upsert_field", "lock_field", "delete_field"],
+      actor_types: [{ id: "webui", label: "通讯录" }],
+      builtin_fields: [{ name: "昵称", description: "用户希望如何被称呼" }],
+    },
+    "profile/weaver/stats": {
+      stats: {
+        profile_count: 18, user_count: 16, avg_completeness: 62.4,
+        locked_field_count: 7, audit_count: 143, backup_count: 3,
+      },
+      coverage: [
+        { name: "昵称", count: 18, ratio: 100 },
+        { name: "爱好", count: 12, ratio: 66.7 },
+        { name: "喜欢的话题", count: 9, ratio: 50 },
+      ],
+      custom_fields: [{ name: "最喜欢的国漫", count: 4 }],
+    },
+    "profile/weaver/library": {
+      total: 1, page: 1, page_size: 40, page_count: 1,
+      platforms: ["aiocqhttp"],
+      items: [{
+        key: "_10001", user_id: "10001", session_id: "",
+        subject_name: "小鲸鱼", display_name: "小鲸鱼",
+        platform: "aiocqhttp", chat_type: "group",
+        field_count: 2, custom_field_count: 0, note_count: 1,
+        locked_count: 1, locked_fields: ["昵称"], completeness: 68.5,
+        created_at: "2026-10-01 12:00:00", updated_at: "2026-10-12 20:11:00",
+        preview: [
+          { name: "昵称", value: "小鲸鱼" },
+          { name: "喜欢的话题", value: "猫、热茶、安静的房间" },
+        ],
+      }],
+    },
+    "profile/weaver/key": {
+      key: "_10001",
+      profile: {
+        key: "_10001", user_id: "10001", session_id: "",
+        subject_name: "小鲸鱼", display_name: "小鲸鱼",
+        platform: "aiocqhttp", chat_type: "group",
+        completeness: 68.5, locked_count: 1,
+        field_lock_scope_label: "仅拦截模型",
+        created_at: "2026-10-01 12:00:00", updated_at: "2026-10-12 20:11:00",
+        fields: [
+          { name: "昵称", value: "小鲸鱼", is_custom: false, locked: true,
+            updated_at: "2026-10-12 20:10:00", actor_name: "小鲸鱼",
+            source_kind: "manual_edit", evidence: "以后叫我小鲸鱼" },
+          { name: "喜欢的话题", value: "猫、热茶、安静的房间", is_custom: false,
+            locked: false, updated_at: "2026-10-12 20:11:00",
+            actor_name: "心迹画像", source_kind: "self_preference",
+            evidence: "我平时喜欢聊猫和热茶" },
+        ],
+        notes: ["最近在准备考试"],
+        available_fields: [
+          { name: "昵称", filled: true, locked: true },
+          { name: "喜欢的话题", filled: true, locked: false },
+          { name: "生日", filled: false, locked: false },
+        ],
+      },
+    },
+    "profile/weaver/audit": {
+      total: 1,
+      items: [{
+        at: "2026-10-12 20:11:00", subject_user_id: "10001",
+        subject_name: "小鲸鱼", field_name: "喜欢的话题",
+        action: "upsert_field", action_label: "写入字段",
+        old_value: "猫", new_value: "猫、热茶、安静的房间",
+        actor_type: "LLM 工具", actor_name: "心迹画像",
+        evidence: "我平时喜欢聊猫和热茶",
+      }],
+    },
+    "profile/weaver/backup": {
+      items: [{ name: "profiles-manual-20261012.json", size: 8192, modified_at: "2026-10-12 20:30:00" }],
+    },
+    "profile/weaver/history": {
+      total: 1,
+      items: [{ at: "2026-10-12 20:11:00", action: "upsert_field",
+        old_value: "猫", new_value: "猫、热茶", evidence: "我平时喜欢聊猫和热茶" }],
+    },
   };
   window.AstrBotPluginPage = {
     ready: async () => ({
@@ -350,15 +485,6 @@ def main() -> None:
             page.screenshot(path=str(out_dir / "actions-manage.png"))
             print("wrote", out_dir / "actions-manage.png")
 
-            frame.locator("#action-import").click()
-            frame.locator("#import-modal").wait_for(state="visible", timeout=15000)
-            frame.locator("#import-newonly").click()
-            page.wait_for_timeout(400)
-            frame.locator("#import-modal .modal-card").screenshot(
-                path=str(out_dir / "actions-import.png")
-            )
-            print("wrote", out_dir / "actions-import.png")
-            frame.locator("#import-close").click()
             rename = frame.get_by_role("button", name="重命名分组：官方工具", exact=True)
             rename.click()
             frame.locator('[data-dialog-key="name"]').fill("常用查询")

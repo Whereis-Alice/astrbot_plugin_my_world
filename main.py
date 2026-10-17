@@ -36,6 +36,11 @@ from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.message_components import Image, Plain, Reply
 from astrbot.api.star import Context, Star, register
 
+try:
+    from astrbot.api import ToolSet
+except ImportError:  # pragma: no cover - 测试桩 / 更老宿主
+    ToolSet = None  # type: ignore[assignment]
+
 try:  # AstrBot 4.24.2+：附加内容块走这条正规通道
     from astrbot.core.agent.message import TextPart
 except Exception:  # pragma: no cover - 老版本没有这个类
@@ -101,6 +106,7 @@ from .core.messages import (
 from .core.models import pronoun_for
 from .core.nickname import compute_nickname
 from .core.plugin_compat import profile_weaver_active
+from .core.profile_weaver_service import ProfileWeaverService
 from .core.prompt import clip_line, prompt_section_index, readable_caption
 from .core.request_context import (
     _append_extra_text,
@@ -116,6 +122,11 @@ from .adapters.commands import AstrBotCommands
 from .adapters.llm import AstrBotLLM
 from .adapters.messenger import AstrBotMessenger
 from .adapters.persona import AstrBotPersona
+from .adapters.profile_weaver_tools import (
+    ProfileWeaverForgetTool,
+    ProfileWeaverRememberTool,
+    ProfileWeaverViewTool,
+)
 from .adapters.tools import AstrBotTools, _clip_brief, _tool_result_text
 from .adapters.vision import AstrBotVision, _images_head
 from .web.api import WebApiMixin
@@ -383,6 +394,40 @@ class MyWorldPlugin(WebApiMixin, Star):
         if self.migrate_from_original:
             migrate_from_original(data_dir, plugin_dir, self.logger)
         self.store = ConfigStore(data_dir)
+        self.profile_weaver_service = ProfileWeaverService(
+            self, str(self.store.data_dir.parent)
+        )
+        self._legacy_weaver_active = profile_weaver_active(self.context)
+        self.profile_weaver_service.prompt_enabled = not self._legacy_weaver_active
+        self._weaver_tools_registered = False
+        extract_tools = [
+            ProfileWeaverRememberTool(plugin=self.profile_weaver_service),
+            ProfileWeaverForgetTool(plugin=self.profile_weaver_service),
+        ]
+        self.profile_weaver_service.auto_extract_tools = (
+            ToolSet(tools=extract_tools)
+            if ToolSet is not None
+            else extract_tools
+        )
+        if (
+            self.profile_weaver_service.llm_tools_enabled
+            and not self._legacy_weaver_active
+        ):
+            try:
+                self.context.add_llm_tools(
+                    ProfileWeaverViewTool(
+                        plugin=self.profile_weaver_service,
+                    ),
+                    ProfileWeaverRememberTool(
+                        plugin=self.profile_weaver_service,
+                    ),
+                    ProfileWeaverForgetTool(
+                        plugin=self.profile_weaver_service,
+                    ),
+                )
+                self._weaver_tools_registered = True
+            except Exception as exc:
+                self.logger.warning(f"[my_world] 画像工具注册失败：{exc}")
         # 扩展挂载点：独立插件（如果装了）会通过 `star_cls.extension_host` 找到它
         self.extension_host = ExtensionHost(self)
         created = self.store.ensure_files()
@@ -436,6 +481,7 @@ class MyWorldPlugin(WebApiMixin, Star):
             # 扩展挂载点：扩展包（独立插件）拿到这个实例后自己 register
             extensions=self.extension_host,
         )
+        self.engine.profile_weaver_service = self.profile_weaver_service
         # 别的插件的数据目录在同一个 plugin_data 下（心迹画像的同步要用）
         self.engine.external_data_root = str(self.store.data_dir.parent)
         # 调试回显实时发：工具/指令调用在发生的那一下就走这条通道，
@@ -586,6 +632,16 @@ class MyWorldPlugin(WebApiMixin, Star):
             except (asyncio.CancelledError, Exception):
                 pass
         self._reflection_tasks.clear()
+        if self._weaver_tools_registered:
+            for name in (
+                "profileweaver_view_profile",
+                "profileweaver_remember_field",
+                "profileweaver_forget_field",
+            ):
+                try:
+                    self.context.unregister_llm_tool(name)
+                except Exception:
+                    pass
         try:
             await self.db.close()
         except Exception:
@@ -1725,6 +1781,16 @@ class MyWorldPlugin(WebApiMixin, Star):
         这里**不改内容、不改结果**：正文由原生管线发送，工具循环也早就跑完了。
         """
 
+        service = getattr(self, "profile_weaver_service", None)
+        if (
+            service is not None
+            and not bool(getattr(event, "_profileweaver_llm_tool_used", False))
+            and not bool(getattr(event, "_profileweaver_auto_extract_running", False))
+        ):
+            try:
+                await service.maybe_extract(event, response)
+            except Exception as exc:
+                self.logger.debug(f"[my_world] 自动画像提取失败：{exc}")
         turn = event.get_extra(MW_TURN_EXTRA, None)
         if not isinstance(turn, dict):
             return
@@ -2468,6 +2534,10 @@ class MyWorldPlugin(WebApiMixin, Star):
             yield event.plain_result("\n".join(lines))
             return
 
+        if action in ("profile", "画像", "通讯录"):
+            yield event.plain_result(await self._cmd_profile(event, rest))
+            return
+
         if action in ("forget", "忘记"):
             session_id = event.unified_msg_origin
             user_id = event.get_sender_id()
@@ -2605,6 +2675,201 @@ class MyWorldPlugin(WebApiMixin, Star):
             return
 
         yield event.plain_result(f"未知指令：{action}\n\n{_help_text(self._pronoun())}")
+
+    async def _cmd_profile(self, event: AstrMessageEvent, rest: list[str]) -> str:
+        service = getattr(self, "profile_weaver_service", None)
+        if service is None or not service.enabled:
+            return "通讯录画像内核当前未启用，请先在插件配置中打开。"
+        sub = (rest[0] if rest else "show").casefold()
+        args = rest[1:]
+        session_id = event.unified_msg_origin
+        user_id = str(event.get_sender_id())
+        actor = service.actor(event, "user_command")
+        catalog = service.command_catalog()
+
+        def help_text() -> str:
+            lines = ["通讯录画像指令："]
+            lines.extend(
+                f"· /mw profile {item['command']} —— {item['desc']}"
+                for item in catalog["user"]
+            )
+            if self._can_admin(event):
+                lines.append("管理员：")
+                lines.extend(
+                    f"· /mw profile {item['command']} —— {item['desc']}"
+                    for item in catalog["admin"]
+                )
+            lines.extend(
+                [
+                    "",
+                    f"作用域：{'按会话隔离' if service.session_based else '跨会话共享'}",
+                    f"字段锁：{service.store.field_lock_scope_label()}",
+                    "WebUI：插件面板 → 我的世界编辑器 → 通讯录",
+                ]
+            )
+            return "\n".join(lines)
+
+        admin = self._can_admin(event)
+        if sub in ("help", "帮助", "?"):
+            return help_text()
+        if sub in ("fields", "字段"):
+            return service.field_catalog_text(user_id, session_id)
+        if sub in ("stats", "统计"):
+            if not admin:
+                return "只有管理员可以查看全站画像统计。"
+            return service.stats_text()
+        if sub in ("user", "查询"):
+            if not admin:
+                return "只有管理员可以查询别人的画像。"
+            if not args:
+                return "用法：/mw profile user <用户|@某人>"
+            target = service.resolve_target_user_id(event, " ".join(args))
+            return service.profile_status_text(
+                target,
+                session_id,
+                subject_label=f"用户 {target} ",
+            )
+        if sub in ("show", "me", "我的", "查看"):
+            denied = service.group_privacy_denied(event)
+            if denied:
+                return denied
+            return service.profile_status_text(user_id, session_id)
+        if sub in ("set", "设置", "写入"):
+            if len(args) < 2:
+                return "用法：/mw profile set <字段> <值>"
+            result = service.store.upsert_field(
+                user_id=user_id,
+                subject_name=str(event.get_sender_name()),
+                field_name=args[0],
+                value=" ".join(args[1:]),
+                session_id=session_id if service.session_based else None,
+                actor=actor,
+                source_kind="manual_edit",
+                evidence=str(event.message_str or ""),
+                allow_custom_field=service.allow_user_custom_fields,
+                field_description="用户通过通讯录指令创建的自定义字段",
+            )
+            return ("✅ " if result.ok else "❌ ") + result.message
+        if sub in ("delete", "删除", "忘掉"):
+            if not args:
+                return "用法：/mw profile delete <字段|备注:序号>"
+            result = service.store.delete_field(
+                user_id=user_id,
+                session_id=session_id if service.session_based else None,
+                field_selector=" ".join(args),
+                actor=actor,
+                source_kind="manual_delete",
+                evidence=str(event.message_str or ""),
+            )
+            return ("✅ " if result.ok else "❌ ") + result.message
+        if sub in ("lock", "锁定", "unlock", "解锁"):
+            if not args:
+                return f"用法：/mw profile {sub} <字段>"
+            return service.set_field_lock(
+                user_id=user_id,
+                session_id=session_id,
+                field_name=" ".join(args),
+                locked=sub in ("lock", "锁定"),
+                actor=actor,
+                subject_name=str(event.get_sender_name()),
+            )
+        if sub in ("history", "历史"):
+            denied = service.group_privacy_denied(event)
+            if denied:
+                return denied
+            if not args:
+                return "用法：/mw profile history <字段> [条数]"
+            limit = 10
+            if len(args) > 1 and args[-1].isdigit():
+                limit = max(1, min(int(args[-1]), 30))
+                args = args[:-1]
+            return service.field_history_text(
+                user_id=user_id,
+                session_id=session_id,
+                field_name=" ".join(args),
+                limit=limit,
+            )
+        if sub in ("clear", "清空"):
+            result = service.store.clear_profile(
+                user_id=user_id,
+                session_id=session_id if service.session_based else None,
+                actor=actor,
+            )
+            return ("✅ " if result.ok else "❌ ") + result.message
+        if sub in ("audit", "审计"):
+            if not admin:
+                return "只有管理员可以查看画像审计。"
+            target = ""
+            limit = 10
+            audit_args = list(args)
+            if audit_args and audit_args[-1].isdigit():
+                limit = max(1, min(int(audit_args.pop()), 50))
+            if audit_args:
+                target = service.resolve_target_user_id(event, " ".join(audit_args))
+            page = service.audit(
+                user_id=target,
+                session_id=session_id if service.session_based else None,
+                limit=limit,
+                offset=0,
+                include_rotated=True,
+            )
+            rows = page.get("items") or []
+            if not rows:
+                return "没有找到画像审计记录。"
+            lines = [f"最近 {len(rows)} 条画像审计："]
+            for item in rows:
+                lines.append(
+                    f"- [{item.get('at')}] {item.get('action') or '变更'} · "
+                    f"{item.get('field_name') or '整条画像'} · "
+                    f"{item.get('subject_name') or item.get('subject_user_id') or '-'}"
+                )
+                lines.append(
+                    f"  {item.get('old_value') or '（空）'} → "
+                    f"{item.get('new_value') or '（空）'}"
+                )
+            return "\n".join(lines)
+        if sub in ("backup", "备份"):
+            if not admin:
+                return "只有管理员可以备份画像。"
+            path = service.store.create_backup((args[0] if args else "manual")[:40])
+            return (
+                f"✅ 已创建备份：{path.name}"
+                if path is not None
+                else "❌ 备份失败，请检查数据目录写入权限。"
+            )
+        if sub in ("backups", "备份列表"):
+            if not admin:
+                return "只有管理员可以查看画像备份。"
+            rows = service.backups()
+            if not rows:
+                return "暂无画像备份。"
+            lines = [f"共 {len(rows)} 份画像备份："]
+            for item in rows[:20]:
+                size = float(item.get("size") or 0)
+                lines.append(
+                    f"- {item.get('name')}（{size / 1024:.1f} KB，"
+                    f"{item.get('modified_at') or '未知'}）"
+                )
+            return "\n".join(lines)
+        if sub in ("restore", "恢复"):
+            if not admin:
+                return "只有管理员可以恢复画像备份。"
+            if not args:
+                return "用法：/mw profile restore <备份文件名>"
+            result = service.store.restore_backup(" ".join(args), actor)
+            return ("✅ " if result.ok else "❌ ") + result.message
+        if sub in ("merge", "合并"):
+            if not admin:
+                return "只有管理员可以合并画像。"
+            if len(args) < 2:
+                return "用法：/mw profile merge <源key> <目标key>"
+            result = service.store.merge_profile_records(
+                source_key=args[0],
+                target_key=args[1],
+                actor=actor,
+            )
+            return ("✅ " if result.ok else "❌ ") + result.message
+        return f"未知画像指令：{sub}\n\n{help_text()}"
 
     async def _cmd_event(self, event: AstrMessageEvent, rest: list[str]) -> str:
         """`/mw event [要发生的事]`：用户直接给她安排一件事。"""
@@ -3037,6 +3302,7 @@ def _help_text(pronoun: str = "她") -> str:
         f"· /mw status            {pronoun}现在在哪、在做什么、心情如何\n"
         f"· /mw recall <话题>     让{pronoun}回忆某个话题\n"
         f"· /mw memory            看看{pronoun}记得你什么\n"
+        "· /mw profile           查看 / 管理自己的通讯录详细画像\n"
         f"· /mw forget me [话题]  让{pronoun}忘记关于你的记忆\n"
         f"· /mw event <一句话>   给她安排一件会发生的事（看她怎么处理）\n"
         f"· /mw event list       看最近的事件线索\n"

@@ -21,7 +21,12 @@ INDEX_HTML = PAGES / "index.html"
 STYLE_CSS = PAGES / "style.css"
 
 # 这些元素由脚本在运行时插入，index.html 里查不到是正常的。
-RUNTIME_IDS = {"dialog-error", "persona-brief-text"}
+RUNTIME_IDS = {
+    "dialog-error",
+    "persona-brief-text",
+    "weaver-custom-field",
+    "weaver-custom-value",
+}
 
 # 悬停提示的写法要求：一句话说清这个配置干什么、取值与默认值；
 # 不超过 60 字；不出现"改动过程"的口吻（那是给维护者看的，不是给用户看的）。
@@ -303,6 +308,21 @@ class FrontendSyntaxTest(unittest.TestCase):
         self.assertIn('textPixelWidth(" ⟷ ")', source)
         self.assertNotIn("leftText} → ${rightText}", source)
         self.assertNotIn('textPixelWidth(" → ")', source)
+
+    def test_contacts_library_is_a_first_class_view(self) -> None:
+        """通讯录画像库要能搜索、批量选择、合并与导出，不是只换一层皮。"""
+
+        source = APP_JS.read_text("utf-8")
+        html = INDEX_HTML.read_text("utf-8")
+        self.assertIn('data-contacts-view="library"', html)
+        self.assertIn('id="contacts-library-list"', html)
+        self.assertIn("function loadContactsLibrary(", source)
+        self.assertIn("function renderContactsLibrary(", source)
+        self.assertIn("function contactsLibraryAction(", source)
+        self.assertIn("profile/weaver/merge", source)
+        self.assertIn("profile/weaver/delete", source)
+        self.assertIn("function weaverPreviewText(", source)
+        self.assertNotIn('String((item.weaver || {}).preview || "")', source)
 
     def test_thought_history_is_detailed_and_paginated(self) -> None:
         html = INDEX_HTML.read_text("utf-8")

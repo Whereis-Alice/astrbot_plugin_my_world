@@ -12,6 +12,17 @@
 世界地图、动作系统、日程、数值与情绪、记忆与通讯录、事件机制、网页编辑器这些核心设计
 都来自原作者。
 
+通讯录详细画像中的字段存储、字段锁、审计、历史、导入导出与备份内核，来自同一作者的
+`astrbot_plugin_profile_weaver`（心迹画像，MIT License）：
+
+- 项目：`astrbot_plugin_profile_weaver`
+- 作者：**Whereis-Alice**
+- 仓库：https://github.com/Whereis-Alice/astrbot_plugin_profile_weaver
+- 本仓库融合基线：上游 **v3.1.0**
+
+融合代码保留了原数据格式与审计语义，以便首次启动时直接继承旧插件数据。
+原始 MIT 许可全文见 `THIRD_PARTY_LICENSES/profile_weaver.txt`。
+
 ## 中间版本
 
 在改名成 **我的世界 MW** 之前，同一个仓库有一段时间叫 `astrbot_plugin_her_world`（她的世界 HW），
@@ -29,8 +40,8 @@
 
 ## 联动插件
 
-下列插件由 [Whereis-Alice](https://github.com/Whereis-Alice) 维护；本插件只做**兼容适配**，
-不会复制、修改或接管它们的内部逻辑：
+下列插件由 [Whereis-Alice](https://github.com/Whereis-Alice) 维护；除已明确融合的
+`profile_weaver` 外，本插件只做**兼容适配**，不会复制、修改或接管它们的内部逻辑：
 
 - https://github.com/Whereis-Alice/astrbot_plugin_motion_vision
 - https://github.com/Whereis-Alice/astrbot_plugin_outputpro_split
