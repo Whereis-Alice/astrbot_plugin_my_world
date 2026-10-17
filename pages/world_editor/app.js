@@ -68,6 +68,8 @@ const ui = {
   eventThreadsExpanded: false,
   // 分块生成区域时的进行中草稿：中途失败后可以接着上一块继续，不用从头再来
   zoneChunkBuild: null,
+  // 右下角天气 / 缩放工具是否收起
+  mapToolsCollapsed: false,
   // 「从工具导入」弹窗的临时状态
   importState: null,
   presets: [],
@@ -3240,6 +3242,7 @@ async function startApp() {
   bindTabs();
   bindButtons();
   applySidebarRail();
+  applyMapToolsCollapsed(mapToolsCollapsedPref());
   syncTopbarHeight();
   // 顶栏换了内容（会话列表、编辑范围、按钮文案）就可能换行，高度跟着变；
   // 盯着它量，地图舞台永远按真实高度算，不会留一条缝或者被压掉一截。
@@ -3492,6 +3495,33 @@ function bindTabs() {
 }
 
 /** 「更多筛选」：把次要筛选条件收起来，默认只留会话 + 关键词。 */
+
+/** 右下角天气 + 缩放工具有没有收起（记住上次的选择）。 */
+function mapToolsCollapsedPref() {
+  try {
+    return window.localStorage.getItem("mw-map-tools-collapsed") === "1";
+  } catch (error) {
+    return false;
+  }
+}
+
+function applyMapToolsCollapsed(collapsed) {
+  ui.mapToolsCollapsed = Boolean(collapsed);
+  const box = $("map-bottom-tools");
+  if (box) box.classList.toggle("collapsed", ui.mapToolsCollapsed);
+  const button = $("map-tools-toggle");
+  if (button) {
+    button.textContent = ui.mapToolsCollapsed ? "▴" : "▾";
+    button.title = ui.mapToolsCollapsed ? "展开天气与缩放工具" : "收起天气与缩放工具";
+  }
+  try {
+    window.localStorage.setItem(
+      "mw-map-tools-collapsed", ui.mapToolsCollapsed ? "1" : "0",
+    );
+  } catch (error) {
+    /* 隐私模式写不进缓存，本次仍然生效 */
+  }
+}
 
 /** 把当前的缩放与平移真正写到画布上（节点、连线和标签一起动）。 */
 function applyMapView() {
@@ -4098,6 +4128,11 @@ function bindButtons() {
   bindMapCanvas();
   if ($("map-zoom-in")) {
     $("map-zoom-in").addEventListener("click", () => mapZoomBy(1.2));
+  }
+  if ($("map-tools-toggle")) {
+    $("map-tools-toggle").addEventListener("click", () =>
+      applyMapToolsCollapsed(!ui.mapToolsCollapsed),
+    );
   }
   if ($("map-zoom-out")) {
     $("map-zoom-out").addEventListener("click", () => mapZoomBy(1 / 1.2));
@@ -7289,9 +7324,19 @@ function textPixelWidth(text, size = 9.5) {
   return width;
 }
 
+/** 稳定的小哈希：同一条线每次渲染弯向一致，不会一刷新就换边。 */
+function stableHash(text) {
+  let hash = 0;
+  const body = String(text || "");
+  for (let index = 0; index < body.length; index += 1) {
+    hash = (hash * 31 + body.charCodeAt(index)) >>> 0;
+  }
+  return hash;
+}
+
 function labelRect(point, leftText, rightText, above) {
-  // 路线名字写成一行「入口 → 入口」：线多的时候比两行叠着好认，也不会挤成一块。
-  const width = textPixelWidth(`${leftText} → ${rightText}`) + 14;
+  // 路线名字写成一行「入口 ⟷ 入口」：线多的时候比两行叠着好认，也不会挤成一块。
+  const width = textPixelWidth(`${leftText} ⟷ ${rightText}`) + 14;
   const height = 15;
   const rad = (point.angle * Math.PI) / 180;
   const cos = Math.abs(Math.cos(rad));
@@ -7607,15 +7652,14 @@ function renderWorldMap() {
     const length = Math.max(1, Math.hypot(dx, dy));
     const nx = -dy / length;
     const ny = dx / length;
-    // 同一对区域的第 2、3 条线弯出去，避免完全重叠；单线保持直线。
+    // 每条线都带一点弯：纯直线看着像坐标轴，不像"路"；同一对区域的多条线再逐层外扩。
+    const bendSeed = stableHash(key);
     const bend = index === 0
-      ? 0
-      : (index % 2 === 1 ? 1 : -1) * (20 + 14 * Math.floor((index - 1) / 2));
+      ? (bendSeed % 2 === 0 ? 1 : -1) * (14 + (bendSeed % 16))
+      : (index % 2 === 1 ? 1 : -1) * (24 + 14 * Math.floor((index - 1) / 2));
     const cx = (x1 + x2) / 2 + nx * bend;
     const cy = (y1 + y2) / 2 + ny * bend;
-    const d = index === 0
-      ? `M ${x1} ${y1} L ${x2} ${y2}`
-      : `M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`;
+    const d = `M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`;
     const edgeKey = `${key}#${index}`;
     const above = index % 2 === 0;
 
@@ -7643,7 +7687,7 @@ function renderWorldMap() {
 
     const fromText = nodeLabel(edge.from_node);
     const toText = nodeLabel(edge.to_node);
-    const point = edgeAnchorPoint(x1, y1, x2, y2, cx, cy, index !== 0, 0);
+    const point = edgeAnchorPoint(x1, y1, x2, y2, cx, cy, true, 0);
     const rect = labelRect(point, fromText, toText, above);
     const pairFits = labelMode === "all"
       || (labelMode !== "ticks"
@@ -7658,21 +7702,21 @@ function renderWorldMap() {
     pair.dataset.from = edge.from_zone;
     pair.dataset.to = edge.to_zone;
     pair.dataset.pairVisible = pairFits ? "1" : "0";
-    placeEdgeLabel(pair, x1, y1, x2, y2, cx, cy, index !== 0, 0);
+    placeEdgeLabel(pair, x1, y1, x2, y2, cx, cy, true, 0);
     const fromNode = nodeById[edge.from_node];
     const toNode = nodeById[edge.to_node];
     const fromColor = (fromNode && fromNode.color) || from.color || "";
     const toColor = (toNode && toNode.color) || to.color || "";
     const lineOffset = above ? "-9" : "9";
-    // 一行「入口 → 入口」：三段各自上色，所以要自己算好每一段的起点
+    // 一行「入口 ⟷ 入口」：三段各自上色，所以要自己算好每一段的起点
     // （每个 tspan 都带 x 的话，text-anchor 会各自居中，三段就叠在一起了）。
     const fromWidth = textPixelWidth(fromText);
-    const arrowWidth = textPixelWidth(" → ");
+    const arrowWidth = textPixelWidth(" ⟷ ");
     const totalWidth = fromWidth + arrowWidth + textPixelWidth(toText);
     let cursor = point.x - totalWidth / 2;
     const spells = [
       { text: fromText, fill: fromColor, width: fromWidth, dy: lineOffset },
-      { text: " → ", fill: "", width: arrowWidth, dy: "0" },
+      { text: " ⟷ ", fill: "", width: arrowWidth, dy: "0" },
       { text: toText, fill: toColor, width: textPixelWidth(toText), dy: "0" },
     ];
     spells.forEach((spell) => {
@@ -7863,7 +7907,16 @@ function renderZoneMap() {
     const y1 = fromPoint.y;
     const x2 = toPoint.x;
     const y2 = toPoint.y;
-    const d = `M ${x1} ${y1} L ${x2} ${y2}`;
+    // 房间里的路线也带一点弯：横平竖直的直线连着，看起来像电路板不像路
+    const length = Math.max(1, Math.hypot(x2 - x1, y2 - y1));
+    const bendSeed = stableHash(edge.id || `${edge.from}-${edge.to}`);
+    const bend = (bendSeed % 2 === 0 ? 1 : -1)
+      * Math.min(28, Math.max(6, length * 0.06 + (bendSeed % 6)));
+    const nx = -(y2 - y1) / length;
+    const ny = (x2 - x1) / length;
+    const cx = (x1 + x2) / 2 + nx * bend;
+    const cy = (y1 + y2) / 2 + ny * bend;
+    const d = `M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`;
     const edgeKey = `${edge.id || `${edge.from}-${edge.to}`}#${index}`;
     const hit = document.createElementNS(MAP_NS, "path");
     hit.setAttribute("d", d);
@@ -7884,7 +7937,7 @@ function renderZoneMap() {
     title.textContent =
       `${nodeLabel(edge.from)} ⟷ ${nodeLabel(edge.to)}（${num(edge.ticks, 1)} tick）`;
     path.appendChild(title);
-    const point = edgeAnchorPoint(x1, y1, x2, y2, 0, 0, false, 10);
+    const point = edgeAnchorPoint(x1, y1, x2, y2, cx, cy, true, 10);
     labelLayer.appendChild(
       makeTickChip(point, `${num(edge.ticks, 1)}t`, edgeKey, edge.from, edge.to, false),
     );
@@ -8033,13 +8086,24 @@ function startDrag(event, node) {
   // 画布是缩放过的：屏幕上的位移要除以缩放，才能得到内容坐标系里的位移。
   ui.mapHoverNode = node.id;
 
+  // 拖动时每帧只重画一次地图：mousemove 触发频率远高于屏幕刷新，
+  // 每次都重建整棵 SVG / 节点 DOM 会明显卡顿。
+  let pendingFrame = false;
+  const scheduleMapRender = () => {
+    if (pendingFrame) return;
+    pendingFrame = true;
+    window.requestAnimationFrame(() => {
+      pendingFrame = false;
+      renderMap();
+    });
+  };
+
   function onMove(moveEvent) {
     const dx = (moveEvent.clientX - startX) / scale;
     const dy = (moveEvent.clientY - startY) / scale;
     node.x = Math.max(0, Math.round(originX + dx));
     node.y = Math.max(0, Math.round(originY + dy));
-    renderMap();
-    renderNodeForm();
+    scheduleMapRender();
   }
 
   function onUp() {
@@ -8048,6 +8112,9 @@ function startDrag(event, node) {
     document.body.classList.remove("dragging-map-node");
     if (ui.mapHoverNode === node.id) ui.mapHoverNode = "";
     applyMapFocus();
+    // 拖动过程中不重画属性面板；松手时再同步一次坐标输入框
+    renderMap();
+    renderNodeForm();
   }
 
   document.body.classList.add("dragging-map-node");
@@ -9100,6 +9167,13 @@ async function generateZonesInChunks({
       );
     }
     draft.zones.push(zone);
+    // 后端每块都会重排整张图：已有区域的位置也一起更新，免得几个区域叠在同一个点
+    Object.entries(chunk.positions || {}).forEach(([zoneId, point]) => {
+      const target = draft.zones.find((item) => String(item.id) === String(zoneId));
+      if (!target || !Array.isArray(point)) return;
+      target.x = Math.round(num(point[0]));
+      target.y = Math.round(num(point[1]));
+    });
     draft.nodes.push(...(chunk.nodes || []));
     draft.edges.push(...(chunk.edges || []));
     // 跨区连线按"两端地点"去重：模型给的 + 后端自动补的可能是同一条
@@ -9244,17 +9318,18 @@ function openWorldMapDraftDialog(result) {
 
 async function commitGeneratedWorldMap(zones, nodes, edges, zoneEdges, newActions = []) {
   const newNodeIds = new Set(nodes.map((node) => node.id));
-  let orphanedActions = 0;
-  (ui.config.world.actions || []).forEach((action) => {
-    if (action.scope !== "node" || !(action.allowed_nodes || []).length) return;
+  // 整张地图都换了：绑在旧地点上的专属动作留着也没地方能触发，直接一起换掉。
+  // 分组是按动作派生的，动作清空之后空分组自然消失。
+  let removedActions = 0;
+  ui.config.world.actions = (ui.config.world.actions || []).filter((action) => {
+    if (action.scope !== "node" || !(action.allowed_nodes || []).length) return true;
     const kept = (action.allowed_nodes || []).filter((id) => newNodeIds.has(id));
     if (!kept.length) {
-      action.scope = "global";
-      action.allowed_nodes = [];
-      orphanedActions += 1;
-      return;
+      removedActions += 1;
+      return false;
     }
     action.allowed_nodes = kept;
+    return true;
   });
   let droppedWalks = 0;
   ((ui.config.schedules && ui.config.schedules.schedules) || []).forEach((schedule) => {
@@ -9288,7 +9363,7 @@ async function commitGeneratedWorldMap(zones, nodes, edges, zoneEdges, newAction
   centerMapView();
   const notes = [`已替换为 ${zones.length} 个区域、${nodes.length} 个地点、${zoneEdges.length} 条跨区路线`];
   if (addedActions.length) notes.push(`顺带加入 ${addedActions.length} 个地点专属动作`);
-  if (orphanedActions) notes.push(`${orphanedActions} 个原本限定旧地点的动作已改为全局`);
+  if (removedActions) notes.push(`${removedActions} 个绑定旧地点的专属动作已一并清掉`);
   if (droppedWalks) notes.push(`日程里有 ${droppedWalks} 个旧地点步骤已移除`);
   toast(notes.join("；"));
   return true;
@@ -14513,7 +14588,31 @@ function renderThoughts(data) {
     if (row.node_name) head.appendChild(el("span", "thought-node", row.node_name));
     if (row.source) head.appendChild(el("span", "thought-source", row.source));
     item.appendChild(head);
-    item.appendChild(el("div", "thought-text", String(row.content || "")));
+    // 当时的状态快照：和以前控制台那一块一样详细
+    const detail = row.detail || {};
+    const detailRows = [
+      ["env", "在哪"],
+      ["state", "状态"],
+      ["mood", "心情"],
+      ["who", "在和谁说话"],
+    ].filter(([key]) => String(detail[key] || "").trim());
+    if (detailRows.length) {
+      const meta = el("div", "thought-reasoning");
+      detailRows.forEach(([key, label]) => {
+        const line = el("div", "reasoning-row");
+        line.appendChild(el("span", "reasoning-label", label));
+        line.appendChild(el("span", "reasoning-text", String(detail[key])));
+        meta.appendChild(line);
+      });
+      item.appendChild(meta);
+    }
+    const thoughtText = el("div", "thought-text");
+    thoughtText.appendChild(el("span", "thought-label", "心里想的："));
+    thoughtText.appendChild(document.createTextNode(String(row.content || "")));
+    item.appendChild(thoughtText);
+    if (String(detail.intent || "").trim()) {
+      item.appendChild(el("div", "thought-intent", `打算怎么办：${detail.intent}`));
+    }
     // 回了谁、回了哪条、她回了什么：光有一句心里话看不出这一轮的来龙去脉
     if (row.target || row.quote || row.reply) {
       const context = el("div", "thought-context");

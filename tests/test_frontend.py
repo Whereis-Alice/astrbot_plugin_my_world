@@ -295,6 +295,15 @@ class FrontendSyntaxTest(unittest.TestCase):
             len(re.findall(r"stateLabelOf\(", source)), 3, "状态名要统一走 stateLabelOf"
         )
 
+    def test_route_labels_use_the_long_arrow(self) -> None:
+        """路线标签写成「入口 ⟷ 入口」；之前渲染时误用了 →。"""
+
+        source = APP_JS.read_text("utf-8")
+        self.assertIn("leftText} ⟷ ${rightText}", source)
+        self.assertIn('textPixelWidth(" ⟷ ")', source)
+        self.assertNotIn("leftText} → ${rightText}", source)
+        self.assertNotIn('textPixelWidth(" → ")', source)
+
     def test_extension_debug_types_reach_the_log_page(self) -> None:
         """扩展注册的事件类型：编辑器要从 /defaults 读进来，并入日志页的类型表。"""
 

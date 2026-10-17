@@ -70,6 +70,7 @@ from core.pathfinding import find_path, path_ticks, travel_cost  # noqa: E402
 from core.planner import create_plan  # noqa: E402
 from core.prompt import PromptBuilder  # noqa: E402
 from core.state import (  # noqa: E402
+    EVENT_THREAD_KEEP,
     FORWARD_SUMMARY_MARK,
     WorldState,
     group_chat_items,
@@ -402,6 +403,20 @@ class TestWeather(unittest.TestCase):
         )
         self.assertEqual(record.line(), "武汉｜26℃")
         self.assertEqual(record.at, 123.0)
+
+
+class TestEventThreadRetention(unittest.TestCase):
+    """她经历过的事：不能只留 6 条，否则编辑器里看起来像记录丢了。"""
+
+    def test_clamp_keeps_more_than_six_threads(self):
+        state = WorldState(session_id="test:GroupMessage:1")
+        state.event_threads = [
+            {"id": f"t{index}", "title": f"第 {index} 件", "status": "closed"}
+            for index in range(12)
+        ]
+        state.clamp()
+        self.assertEqual(len(state.event_threads), 12)
+        self.assertGreaterEqual(EVENT_THREAD_KEEP, 12)
 
 
 class TestWeatherParsing(unittest.TestCase):

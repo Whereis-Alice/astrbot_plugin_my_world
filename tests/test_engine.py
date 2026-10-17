@@ -10541,17 +10541,24 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
 
         await self.set_state(node_id="study")
         async with self.engine.session_state(SESSION) as state:
-            state.add_thought(
+            self.engine._remember_inner_thought(
+                state,
                 "这话听着耳熟",
                 source="聊完一轮",
                 target="小鲸鱼",
                 quote="今天风挺大",
                 reply="是啊，出门记得带外套",
+                intent="顺着聊两句",
             )
         row = (await self.engine.thoughts_payload(SESSION))["thoughts"][0]
         self.assertEqual(row["target"], "小鲸鱼")
         self.assertEqual(row["quote"], "今天风挺大")
         self.assertEqual(row["reply"], "是啊，出门记得带外套")
+        # 当时的状态快照：在哪 / 状态 / 心情 / 和谁说话 / 打算怎么办
+        self.assertEqual(row["detail"]["who"], "小鲸鱼")
+        self.assertEqual(row["detail"]["intent"], "顺着聊两句")
+        self.assertTrue(row["detail"]["env"])
+        self.assertTrue(row["detail"]["state"])
         # 自主决策留下的那种没有对话上下文，字段留空而不是编一个
         async with self.engine.session_state(SESSION) as state:
             state.add_thought("今天想早点睡", source="自主决定")

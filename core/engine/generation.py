@@ -738,6 +738,12 @@ class GenerationMixin:
         )
         x, y = positions.get(zone_id, (260.0, 260.0))
         zone["x"], zone["y"] = x, y
+        # 每次把**整张图**的位置一起返回：只挪新区域的话，上一块算出来的坐标
+        # 和新一块不在同一套画框里，几个区域会叠在同一个角上（见 #1）。
+        all_positions = {
+            str(item): [float(point[0]), float(point[1])]
+            for item, point in positions.items()
+        }
         edges = [
             {
                 "id": f"e_{src}_{dst}",
@@ -766,6 +772,7 @@ class GenerationMixin:
             "edges": edges,
             "zone_edges": connections,
             "actions": actions,
+            "positions": all_positions,
             "problems": problems,
             "raw": _clip_text(reply, 1200),
         }

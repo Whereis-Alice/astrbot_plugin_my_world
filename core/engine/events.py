@@ -47,6 +47,7 @@ from ..models import NodeDef
 from ..mood import roll_day_mood
 from ..speech_policy import speech_origin
 from ..state import (
+    EVENT_THREAD_KEEP,
     STATE_NAPPING,
     STATE_SLEEPING,
     STATE_WALKING,
@@ -788,7 +789,10 @@ class EventsMixin:
             package.place = place_key
             package.place_name = place_name
             thread = new_thread(package, now=self._event_time(), scope=SCOPE_SESSION)
-            state.event_threads = [*list(state.event_threads or []), thread][-6:]
+            state.event_threads = [
+                *list(state.event_threads or []),
+                thread,
+            ][-EVENT_THREAD_KEEP:]
             # 记下"这件事是什么时候开始的"：下一件要等 min_gap_minutes
             state.last_event_started_at = self._event_time()
         else:

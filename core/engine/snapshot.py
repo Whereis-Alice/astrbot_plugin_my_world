@@ -449,6 +449,7 @@ class SnapshotMixin:
                     "target": str(item.get("target") or ""),
                     "quote": str(item.get("quote") or ""),
                     "reply": str(item.get("reply") or ""),
+                    "detail": dict(item.get("detail") or {}),
                 }
             )
         rows.reverse()

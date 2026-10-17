@@ -30,6 +30,10 @@ STATE_THINKING = "thinking"
 _CHAT_DEDUPE_SECONDS = 60.0
 
 _CHAT_DEDUPE_ANNOTATED_SECONDS = 600.0
+
+# 她经历过的事最多留多少条：以前是 6 条，编辑器翻两页就只剩最近的几件事，
+# 看起来像"记录丢了"。留 60 条既够翻，单份状态的体积也不会失控。
+EVENT_THREAD_KEEP = 60
 """带了注释的那一份可以放得宽一点：它一定是"同一条消息的另一份记录"，
 而两个钩子之间偶尔会被排队拖到几十秒以上（连发合并、管线忙）。
 """
@@ -1106,7 +1110,7 @@ class WorldState:
         else:
             self.event_threads = [
                 item for item in self.event_threads if isinstance(item, dict)
-            ][-6:]
+            ][-EVENT_THREAD_KEEP:]
         if not isinstance(self.event_recent_titles, list):
             self.event_recent_titles = []
         else:
@@ -1251,6 +1255,7 @@ class WorldState:
         target: str = "",
         quote: str = "",
         reply: str = "",
+        detail: dict[str, Any] | None = None,
     ) -> None:
         """留下她的一句心里话。
 
@@ -1259,8 +1264,16 @@ class WorldState:
 
         ``target`` / ``quote`` / ``reply`` 是这一轮的对话上下文（跟谁、对方说了什么、
         她回了什么）：编辑器那一页要能看出"这句心里话是回谁、回哪条"。
+
+        ``detail`` 是当时的状态快照（在哪 / 状态 / 心情 / 和谁说话 / 打算怎么办）：
+        编辑器「内心活动」一页照着它渲染，和以前控制台那一块一样详细。
         """
 
+        detail_payload = {
+            str(key): " ".join(str(value or "").split())[:120]
+            for key, value in (detail or {}).items()
+            if str(value or "").strip()
+        }
         self.thoughts.append(
             {
                 "content": content,
@@ -1273,6 +1286,7 @@ class WorldState:
                 "target": " ".join(str(target or "").split())[:40],
                 "quote": " ".join(str(quote or "").split())[:120],
                 "reply": " ".join(str(reply or "").split())[:200],
+                "detail": detail_payload,
             }
         )
         if len(self.thoughts) > keep:

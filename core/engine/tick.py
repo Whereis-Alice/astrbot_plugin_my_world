@@ -731,6 +731,7 @@ class TickMixin:
         target: str = "",
         quote: str = "",
         reply: str = "",
+        intent: str = "",
     ) -> None:
         """把这一轮她心里冒出来的那一句留下来（编辑器「内心活动」那一栏）。
 
@@ -750,8 +751,20 @@ class TickMixin:
         ]
         if clean in recent:
             return
+        detail = {
+            "env": self._node_name(state.node_id),
+            "state": str(state.state or ""),
+            "mood": str(state.mood or ""),
+            "who": str(target or ""),
+            "intent": str(intent or ""),
+        }
         state.add_thought(
-            clean, source=source, target=target, quote=quote, reply=reply
+            clean,
+            source=source,
+            target=target,
+            quote=quote,
+            reply=reply,
+            detail=detail,
         )
 
     def _remember_action(

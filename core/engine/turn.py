@@ -125,6 +125,7 @@ class TurnMixin:
                 target=str(user_name or user_id or ""),
                 quote=str(user_text or ""),
                 reply=str(reply_text or ""),
+                intent=str((parsed.reasoning or {}).get("intent") or ""),
             )
             applied_affinity = 0.0
             if ctx.user_id:

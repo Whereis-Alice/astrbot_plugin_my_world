@@ -712,6 +712,56 @@ class EngineGeneratorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("老城区", prompt)
         self.assertIn("第 2/2 块", prompt)
 
+    async def test_zone_chunks_layout_the_whole_map_without_overlapping(self):
+        """每块都返回整张图的位置：区域不能叠在同一个角上。"""
+
+        seed_zones = [
+            {"id": "first_place", "name": "第一处", "is_home": True},
+            {"id": "second_place", "name": "第二处", "is_home": False},
+            {"id": "third_place", "name": "第三处", "is_home": False},
+        ]
+        draft = {"zones": [], "nodes": [], "zone_edges": []}
+        for index, zone in enumerate(seed_zones):
+            node_id = f"{zone['id']}_door"
+            connection = ""
+            if draft["zones"]:
+                parent = draft["zones"][-1]["id"]
+                connection = (
+                    f', "connections": [{{"from_zone": "{zone["id"]}",'
+                    f' "from_node": "{node_id}", "to_zone": "{parent}",'
+                    f' "to_node": "{parent}_door", "ticks": 2}}]'
+                )
+            self.creator.replies = [
+                '{"zones": [{"id": "%s", "name": "%s", "note": "", "nodes": ['
+                '{"id": "%s", "name": "门口", "prompt": "能出门"}]}]%s}'
+                % (zone["id"], zone["name"], node_id, connection)
+            ]
+            result = await self.engine.generate_zone_chunk(
+                index, len(seed_zones), 1, existing=draft
+            )
+            draft["zones"].append(result["zone"])
+            draft["nodes"].extend(result["nodes"])
+            draft["zone_edges"].extend(result["zone_edges"])
+            # 后端返回的是整张图的位置，前端照它更新已有区域
+            for zone_id, point in result["positions"].items():
+                target = next(
+                    (item for item in draft["zones"] if item["id"] == zone_id), None
+                )
+                if target is not None:
+                    target["x"], target["y"] = point
+
+        self.assertEqual(len(draft["zones"]), 3)
+        for left in range(len(draft["zones"])):
+            for right in range(left + 1, len(draft["zones"])):
+                a, b = draft["zones"][left], draft["zones"][right]
+                dx = abs(float(a["x"]) - float(b["x"]))
+                dy = abs(float(a["y"]) - float(b["y"]))
+                # 地图卡片是 128 × 64：不能同时落在同一条横竖带里
+                self.assertTrue(
+                    dx >= 128 or dy >= 64,
+                    f"{a['id']} 与 {b['id']} 叠在一起：dx={dx:.1f} dy={dy:.1f}",
+                )
+
     async def test_actions_are_skipped_when_the_count_is_zero(self):
         """「每个地点生成几个动作」填 0 就不该多花那次调用。"""
 

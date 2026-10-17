@@ -155,7 +155,12 @@ class AutonomyMixin:
             state.note_reasoning({"intent": str(plan.get("reason"))}, source="plan")
         # 自主决策时她心里那一句也留下：以前只有 think 动作才写，
         # 模型不主动想，「内心活动」那一栏就长期只有一行旧内容。
-        self._remember_inner_thought(state, str(plan.get("inner") or ""), source="自主决定")
+        self._remember_inner_thought(
+            state,
+            str(plan.get("inner") or ""),
+            source="自主决定",
+            intent=str(plan.get("reason") or ""),
+        )
         state.add_event(
             "plan", {"reason": plan.get("reason"), "source": plan.get("source")}
         )

@@ -2792,6 +2792,8 @@ button.pill:hover:not(.on) {
 }
 
 .event-history-row {
+  /* 它是 modal-body（flex 列）里的卡片：不 shrink，否则内容会被压扁截断 */
+  flex: 0 0 auto;
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   overflow: hidden;
@@ -7553,9 +7555,11 @@ label.inline > input[type="checkbox"]:checked + span {
   left: 12px;
   bottom: 162px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  max-width: 340px;
+  gap: 6px 8px;
+  /* 字段多的时候换行，别被 340px 截掉（右下角天气显示不全就是这里） */
+  max-width: min(560px, calc(100vw - 48px));
   margin: 0;
   padding: 7px 10px;
   border: 1px solid color-mix(in srgb, var(--line-strong) 70%, transparent);
@@ -7567,13 +7571,19 @@ label.inline > input[type="checkbox"]:checked + span {
 }
 
 .map-weather .weather-main {
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  max-width: none;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
 }
 
 .map-weather .weather-line {
-  max-width: 180px;
+  max-width: min(46vw, 360px);
+}
+
+.map-weather .weather-age {
+  flex-wrap: wrap;
+  row-gap: 3px;
 }
 
 .map-weather button {
@@ -7753,6 +7763,15 @@ label.inline > input[type="checkbox"]:checked + span {
   overflow-wrap: anywhere;
 }
 
+.thought-label {
+  color: var(--muted);
+}
+
+.thought-intent {
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
 /* 这一轮是回谁、对方说了什么、她回了什么 */
 .thought-context {
   display: flex;
@@ -7917,6 +7936,33 @@ label.inline > input[type="checkbox"]:checked + span {
   left: auto;
   right: auto;
   bottom: auto;
+}
+
+/* 收起后只留一个小圆钮：地图上的天气 / 缩放不再挡节点 */
+.map-tools-toggle {
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 70%, transparent);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.map-tools-toggle:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+
+.map-bottom-tools.collapsed {
+  gap: 0;
+}
+
+.map-bottom-tools.collapsed .map-weather,
+.map-bottom-tools.collapsed .map-zoom {
+  display: none;
 }
 
 /* 底部控件改成横向一条，天气贴在它上面 */

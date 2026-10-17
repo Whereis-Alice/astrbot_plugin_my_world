@@ -322,6 +322,18 @@ class GenerationBrowserTests(unittest.TestCase):
         )
         self.assertEqual(self.errors, [])
 
+    def test_map_tools_can_collapse(self):
+        """右下角的天气 + 缩放工具可以收起，给地图让位。"""
+
+        self.page.locator('button[data-tab="map"]').click()
+        toggle = self.page.locator("#map-tools-toggle")
+        expect(toggle).to_be_visible()
+        toggle.click()
+        expect(self.page.locator("#map-bottom-tools")).to_have_class(re.compile("collapsed"))
+        expect(self.page.locator(".map-zoom")).to_be_hidden()
+        toggle.click()
+        expect(self.page.locator(".map-zoom")).to_be_visible()
+
     def test_world_action_generator_lives_in_the_action_library(self):
         self.open_generator("actions", "action-generate-world")
         inputs = self.page.locator('#dialog-body input[type="number"]')
@@ -560,9 +572,9 @@ class GenerationBrowserTests(unittest.TestCase):
         expect(self.page.locator("#canvas-nodes .node")).to_have_count(5)
         first_label = self.page.locator("#canvas-labels text.edge-ticks").first
         self.assertIn("rotate(", first_label.get_attribute("transform") or "")
-        # 路线名字是一行「入口 → 入口」：三段同基线，中间那一段是箭头。
+        # 路线名字是一行「入口 ⟷ 入口」：三段同基线，中间那一段是双向箭头。
         self.assertEqual(first_label.locator("tspan").count(), 3)
         # SVG 里的 tspan 不是 HTMLElement，读文本要用 text_content
-        self.assertEqual(first_label.locator("tspan").nth(1).text_content(), " → ")
+        self.assertEqual(first_label.locator("tspan").nth(1).text_content(), " ⟷ ")
         self.host.screenshot(path=str(self.shots / "ring-layout.png"))
         self.assertEqual(self.errors, [])
