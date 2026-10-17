@@ -736,16 +736,118 @@ def spring_layout_zones(
     }
 
 
-def link_plan(node_ids: list[str], *, anchor: str = "") -> list[tuple[str, str]]:
-    """新地点的自动连线（方案 A）：第一个连到区域内最近的既有地点，之后依次串成链。"""
+def link_plan(
+    node_ids: list[str],
+    *,
+    anchor: str = "",
+    positions: dict[str, tuple[float, float]] | None = None,
+) -> list[tuple[str, str]]:
+    """给地点排一套有主路、也有近路和环路的路网。
 
-    if not node_ids:
+    只有 id 时按生成顺序铺主链并补一条回环；有坐标时按实际距离做最小连通
+    树，再补少量最近的非重复近路。这样路线不再是一根从第一个地点串到最后
+    一个地点的单线，也不会为了“复杂”去连很远的地方。
+    """
+
+    ids = list(dict.fromkeys(str(item) for item in node_ids if str(item)))
+    if not ids:
         return []
+    if len(ids) == 1:
+        return [(anchor, ids[0])] if anchor and anchor != ids[0] else []
+
     pairs: list[tuple[str, str]] = []
+    used: set[frozenset[str]] = set()
+    degree = {node_id: 0 for node_id in ids}
+
+    def add(left: str, right: str) -> bool:
+        if not left or not right or left == right:
+            return False
+        key = frozenset((left, right))
+        if key in used:
+            return False
+        used.add(key)
+        pairs.append((left, right))
+        if left in degree:
+            degree[left] += 1
+        if right in degree:
+            degree[right] += 1
+        return True
+
+    points = {
+        str(key): (float(value[0]), float(value[1]))
+        for key, value in (positions or {}).items()
+        if isinstance(value, (list, tuple)) and len(value) >= 2
+    }
+    complete_geometry = all(node_id in points for node_id in ids)
+
     if anchor:
-        pairs.append((anchor, node_ids[0]))
-    for index in range(len(node_ids) - 1):
-        pairs.append((node_ids[index], node_ids[index + 1]))
+        first = ids[0]
+        if complete_geometry:
+            first = min(
+                ids,
+                key=lambda node_id: (
+                    (points[node_id][0] - points.get(anchor, points[node_id])[0]) ** 2
+                    + (points[node_id][1] - points.get(anchor, points[node_id])[1]) ** 2
+                ),
+            )
+        add(anchor, first)
+
+    if complete_geometry:
+        connected = {ids[0]}
+        remaining = set(ids[1:])
+        while remaining:
+            _distance, left, right = min(
+                (
+                    (
+                        (points[a][0] - points[b][0]) ** 2
+                        + (points[a][1] - points[b][1]) ** 2,
+                        a,
+                        b,
+                    )
+                    for a in connected
+                    for b in remaining
+                ),
+                key=lambda item: (item[0], item[1], item[2]),
+            )
+            add(left, right)
+            connected.add(right)
+            remaining.remove(right)
+    else:
+        for index in range(len(ids) - 1):
+            add(ids[index], ids[index + 1])
+
+    if len(ids) >= 3:
+        extra_target = max(1, round((len(ids) - 1) * 0.45))
+        if complete_geometry:
+            candidates = sorted(
+                (
+                    (
+                        (points[left][0] - points[right][0]) ** 2
+                        + (points[left][1] - points[right][1]) ** 2,
+                        left,
+                        right,
+                    )
+                    for index, left in enumerate(ids)
+                    for right in ids[index + 1 :]
+                ),
+                key=lambda item: (item[0], item[1], item[2]),
+            )
+        else:
+            candidates = [(0.0, ids[-1], ids[0])] + [
+                (0.0, ids[index], ids[index + 2])
+                for index in range(0, len(ids) - 2, 3)
+            ]
+        extra = 0
+        for _distance, left, right in candidates:
+            if extra >= extra_target:
+                break
+            if degree.get(left, 0) >= 4 or degree.get(right, 0) >= 4:
+                continue
+            if add(left, right):
+                extra += 1
+        # 候选集很小或度数已满时，至少把首尾接起来形成一条可绕行的环路。
+        if extra == 0:
+            add(ids[-1], ids[0])
     return pairs
 
 
@@ -818,11 +920,13 @@ def connect_zone_graph(
     nodes_by_zone: dict[str, list[dict[str, Any]]],
     *,
     existing_edges: list[dict[str, Any]] | None = None,
+    preferred_zone: str = "",
 ) -> list[dict[str, Any]]:
     """补全跨区连线，返回**新增**的连线，保证所有有地点的区域连成一片。
 
     已有连线会被当成图的边参与连通性判断；缺的那几刀按"离已经连上的片区最近的
-    区域"补，拓扑稳定，也不会给同一对区域叠重复线。
+    区域"补，再补少量近路形成环路。``preferred_zone`` 用于分块生成：补线时优先
+    让刚生成的新区域接上第二个邻居，而不是只留一条入口。
     """
 
     by_id = {
@@ -847,6 +951,8 @@ def connect_zone_graph(
         if root_left != root_right:
             parent[root_right] = root_left
 
+    used_pairs: set[frozenset[str]] = set()
+    degree = {zone_id: 0 for zone_id in usable}
     for edge in existing_edges or []:
         if not isinstance(edge, dict):
             continue
@@ -854,10 +960,47 @@ def connect_zone_graph(
         right = str(edge.get("to_zone") or "").strip()
         if left in parent and right in parent:
             union(left, right)
+            used_pairs.add(frozenset((left, right)))
+            if left != right:
+                degree[left] += 1
+                degree[right] += 1
 
     root = usable[0]
     added: list[dict[str, Any]] = []
     used_edge_ids: set[str] = set()
+
+    def add_connection(source: str, target: str, distance: float) -> bool:
+        pair = frozenset((source, target))
+        if source == target or pair in used_pairs:
+            return False
+        src_node = _anchor_node(nodes_by_zone.get(source, []))
+        dst_node = _anchor_node(nodes_by_zone.get(target, []))
+        if not src_node or not dst_node:
+            return False
+        ticks = max(1, int(round(distance / 150.0)))
+        edge_id = f"z_{src_node['id']}_{dst_node['id']}"
+        if edge_id in used_edge_ids:
+            index = 2
+            while f"{edge_id}_{index}" in used_edge_ids:
+                index += 1
+            edge_id = f"{edge_id}_{index}"
+        used_edge_ids.add(edge_id)
+        used_pairs.add(pair)
+        degree[source] += 1
+        degree[target] += 1
+        added.append(
+            {
+                "id": edge_id,
+                "from_zone": source,
+                "from_node": str(src_node["id"]),
+                "to_zone": target,
+                "to_node": str(dst_node["id"]),
+                "ticks": ticks,
+                "bidirectional": True,
+            }
+        )
+        return True
+
     while True:
         main = [zone_id for zone_id in usable if find(zone_id) == find(root)]
         missing = [zone_id for zone_id in usable if find(zone_id) != find(root)]
@@ -880,30 +1023,40 @@ def connect_zone_graph(
         if best is None:
             break
         distance, zone_id, target = best
-        src_node = _anchor_node(nodes_by_zone.get(zone_id, []))
-        dst_node = _anchor_node(nodes_by_zone.get(target, []))
-        if not src_node or not dst_node:
+        if not add_connection(zone_id, target, distance):
             break
-        ticks = max(1, int(round(distance / 150.0)))
-        edge_id = f"z_{src_node['id']}_{dst_node['id']}"
-        if edge_id in used_edge_ids:
-            index = 2
-            while f"{edge_id}_{index}" in used_edge_ids:
-                index += 1
-            edge_id = f"{edge_id}_{index}"
-        used_edge_ids.add(edge_id)
-        added.append(
-            {
-                "id": edge_id,
-                "from_zone": zone_id,
-                "from_node": str(src_node["id"]),
-                "to_zone": target,
-                "to_node": str(dst_node["id"]),
-                "ticks": ticks,
-                "bidirectional": True,
-            }
-        )
         union(zone_id, target)
+
+    # 连通树只保证“到得了”，但会看起来像一条主干。再补少量最短的非重复
+    # 路线，形成近路与环路；避开度数已经很高的枢纽，免得补成放射状。
+    if len(usable) >= 3:
+        extra_target = max(1, round((len(usable) - 1) * 0.45))
+        focus = str(preferred_zone or "")
+        candidates = sorted(
+            (
+                (
+                    _zone_distance(by_id[left], by_id[right]),
+                    left,
+                    right,
+                )
+                for index, left in enumerate(usable)
+                for right in usable[index + 1 :]
+            ),
+            key=lambda item: (
+                0 if focus and focus in (item[1], item[2]) else 1,
+                item[0],
+                item[1],
+                item[2],
+            ),
+        )
+        extra = 0
+        for distance, left, right in candidates:
+            if extra >= extra_target:
+                break
+            if degree.get(left, 0) >= 4 or degree.get(right, 0) >= 4:
+                continue
+            if add_connection(left, right, distance):
+                extra += 1
     return added
 
 

@@ -10530,6 +10530,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["source"], "聊完一轮")
         self.assertEqual(row["node_id"], "study")
         self.assertTrue(row["node_name"])
+        self.assertTrue(row["detail"]["state"])
+        self.assertTrue(row["detail"]["mood"])
         # at 是真实时间戳（世界时钟那串计数器不适合给人看年月日）
         self.assertGreater(row["at"], 1_600_000_000)
 
@@ -11739,6 +11741,9 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(item["detail"]["time"], "12:00")
         self.assertIn("说话", item["detail"]["actions"])
         self.assertFalse(item["detail"]["manual"])
+        self.assertTrue(item["detail"]["run_id"])
+        self.assertTrue(item["detail"]["steps"])
+        self.assertTrue(all("text" in step for step in item["detail"]["steps"]))
 
     async def test_manual_run_is_logged_as_manual(self):
         self.add_schedule(
@@ -11752,6 +11757,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(item, events)
         assert item is not None
         self.assertTrue(item["detail"]["manual"])
+        self.assertTrue(item["detail"]["steps"])
 
     async def test_schedule_start_can_be_echoed_to_the_group(self):
         """勾了「日程开始执行」这一档，就会把这一行发到群里。"""

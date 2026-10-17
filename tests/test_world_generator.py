@@ -302,11 +302,13 @@ class WorldMapParserTests(unittest.TestCase):
                 {"from_zone": "home", "to_zone": "town"},
             ],
         )
-        self.assertEqual(len(added), 1)
-        self.assertEqual(
-            {added[0]["from_zone"], added[0]["to_zone"]},
-            {"town", "beach"},
-        )
+        self.assertEqual(len(added), 2)
+        pairs = {
+            frozenset((edge["from_zone"], edge["to_zone"]))
+            for edge in added
+        }
+        self.assertIn(frozenset(("town", "beach")), pairs)
+        self.assertIn(frozenset(("home", "beach")), pairs)
         self.assertTrue(added[0]["from_node"])
         self.assertTrue(added[0]["to_node"])
 
@@ -320,11 +322,16 @@ class WorldMapParserTests(unittest.TestCase):
             for index in range(5)
         }
         added = connect_zone_graph(zones, nodes_by_zone)
-        self.assertEqual(len(added), 4)
+        self.assertEqual(len(added), 6)
+        pairs = {
+            frozenset((edge["from_zone"], edge["to_zone"]))
+            for edge in added
+        }
+        self.assertEqual(len(pairs), len(added))
         for edge in added:
             left = int(edge["from_zone"][1:])
             right = int(edge["to_zone"][1:])
-            self.assertIn(abs(left - right), (1, 4))
+            self.assertIn(abs(left - right), (1, 2, 4))
 
     def test_zone_links_prefer_portal_nodes(self):
         """自动连线优先选入口 / 门口，不要拿厨房去连公园长椅。"""
@@ -507,12 +514,38 @@ class GeneratorPromptTests(unittest.TestCase):
         )
         self.assertIn("整张重建", system)
         self.assertIn("连通", system)
+        self.assertIn("环路", system)
+        self.assertIn("2 个左右", system)
         self.assertIn("门户", system)
         self.assertIn("厨房 ↔ 公园长椅", system)
         self.assertIn("海边小镇", prompt)
         self.assertIn("小明", prompt)
         self.assertIn("爱丽丝的梦游仙境", prompt)
         self.assertIn('"connections"', system)
+
+    def test_zone_chunk_prompt_asks_for_more_than_one_route_when_possible(self):
+        _system, prompt = self.builder.build_zone_chunk_prompt(
+            persona_text="她住在一座会下雨的小城。",
+            index=3,
+            total=4,
+            nodes_per_zone=3,
+            existing_zones=[
+                {
+                    "id": "home",
+                    "name": "家中",
+                    "nodes": [{"id": "home_gate", "name": "公寓玄关"}],
+                },
+                {
+                    "id": "street",
+                    "name": "老街",
+                    "nodes": [{"id": "street_corner", "name": "街口"}],
+                },
+            ],
+            existing_zone_edges=[{"from_zone": "home", "to_zone": "street"}],
+        )
+        self.assertIn("1~2 条 connections", prompt)
+        self.assertIn("不同区域", prompt)
+        self.assertIn("近路和环路", prompt)
 
     def test_autonomous_scene_hides_legacy_tools_until_migration_is_enabled(self):
         world, _warnings = parse_world(default_world())
@@ -831,7 +864,7 @@ class EngineGeneratorTests(unittest.IsolatedAsyncioTestCase):
         # 同一个区域里的地点已经自动摆开，不会全叠在 (60, 60)。
         self.assertGreater(len({(node["x"], node["y"]) for node in result["nodes"]}), 1)
 
-    async def test_generate_zones_adds_starter_nodes_and_a_zone_link(self):
+    async def test_generate_zones_adds_starter_nodes_and_multiple_zone_links(self):
         self.creator.replies = [
             '{"zones": [{"id": "old_library", "name": "旧图书馆", "note": "她小时候常来"}]}'
         ]
@@ -841,11 +874,17 @@ class EngineGeneratorTests(unittest.IsolatedAsyncioTestCase):
         node = result["nodes"][0]
         self.assertEqual(node["zone_id"], zone["id"])
         self.assertTrue(node["id"].startswith("old_library"))
-        # 默认世界里已经有区域和地点，新区域应该接到其中一个已有区域。
-        self.assertEqual(len(result["zone_edges"]), 1)
-        edge = result["zone_edges"][0]
-        self.assertIn(zone["id"], (edge["from_zone"], edge["to_zone"]))
-        self.assertTrue(edge["from_node"] and edge["to_node"])
+        # 默认世界里已经有区域和地点；新区域至少接两个邻居，避免又串回单线。
+        self.assertGreaterEqual(len(result["zone_edges"]), 2)
+        self.assertTrue(
+            all(
+                zone["id"] in (edge["from_zone"], edge["to_zone"])
+                for edge in result["zone_edges"]
+            )
+        )
+        self.assertTrue(
+            all(edge["from_node"] and edge["to_node"] for edge in result["zone_edges"])
+        )
 
     async def test_generate_world_map_returns_a_connected_replacement(self):
         self.creator.replies = [

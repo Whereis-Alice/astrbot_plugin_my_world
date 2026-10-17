@@ -603,7 +603,11 @@ class ActionsRunMixin:
                 for text in messages:
                     outcome.add_speech(text, speaker)
         elif definition.id == "think" and action.content:
-            state.add_thought(action.content)
+            self._remember_inner_thought(
+                state,
+                action.content,
+                source="她想事情",
+            )
             self.memory.remember(
                 session_id=state.session_id,
                 persona_id="",

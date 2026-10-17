@@ -445,7 +445,16 @@ class GenerationMixin:
         edges: list[dict[str, Any]] = []
         for zone in zones:
             inside = nodes_by_zone.get(str(zone["id"]), [])
-            pairs = link_plan([str(node["id"]) for node in inside])
+            pairs = link_plan(
+                [str(node["id"]) for node in inside],
+                positions={
+                    str(node["id"]): (
+                        float(node.get("x") or 0),
+                        float(node.get("y") or 0),
+                    )
+                    for node in inside
+                },
+            )
             edges.extend(
                 {
                     "id": f"e_{src}_{dst}",
@@ -713,6 +722,7 @@ class GenerationMixin:
                     {"from_zone": item["from_zone"], "to_zone": item["to_zone"]}
                     for item in connections
                 ],
+                preferred_zone=zone_id,
             )
             if zone_id in (edge.get("from_zone"), edge.get("to_zone"))
         ]
@@ -752,7 +762,16 @@ class GenerationMixin:
                 "ticks": 1,
                 "bidirectional": True,
             }
-            for src, dst in link_plan([str(node["id"]) for node in inside])
+            for src, dst in link_plan(
+                [str(node["id"]) for node in inside],
+                positions={
+                    str(node["id"]): (
+                        float(node.get("x") or 0),
+                        float(node.get("y") or 0),
+                    )
+                    for node in inside
+                },
+            )
         ]
         actions: list[dict[str, Any]] = []
         if inside and _wants_node_actions(actions_per_node):

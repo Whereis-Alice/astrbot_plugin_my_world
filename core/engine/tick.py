@@ -774,7 +774,7 @@ class TickMixin:
         if definition.id == "think":
             content = str(action.get("content", "") or "")
             if content:
-                state.add_thought(content, source="她想事情")
+                self._remember_inner_thought(state, content, source="她想事情")
                 self.memory.remember(
                     session_id=state.session_id,
                     persona_id=str(action.get("persona_id", "")),

@@ -269,14 +269,31 @@ class TestLayoutAndLinks(unittest.TestCase):
         self.assertTrue(all(x >= 280 for x, _y in positions), positions)
         self.assertEqual(len(set(positions)), 3)
 
-    def test_first_node_links_to_the_anchor_then_chains(self):
+    def test_first_node_links_to_the_anchor_then_builds_a_loop(self):
         self.assertEqual(
             link_plan(["a", "b", "c"], anchor="base"),
-            [("base", "a"), ("a", "b"), ("b", "c")],
+            [("base", "a"), ("a", "b"), ("b", "c"), ("c", "a")],
         )
 
     def test_without_anchor_only_the_chain_remains(self):
         self.assertEqual(link_plan(["a", "b"]), [("a", "b")])
+
+    def test_geometry_adds_shortcuts_without_duplicating_pairs(self):
+        pairs = link_plan(
+            ["a", "b", "c", "d"],
+            positions={
+                "a": (0, 0),
+                "b": (100, 0),
+                "c": (100, 100),
+                "d": (0, 100),
+            },
+        )
+        self.assertGreaterEqual(len(pairs), 4)
+        self.assertEqual(
+            len({frozenset(pair) for pair in pairs}),
+            len(pairs),
+        )
+        self.assertIn(frozenset(("a", "d")), {frozenset(pair) for pair in pairs})
 
 
 if __name__ == "__main__":

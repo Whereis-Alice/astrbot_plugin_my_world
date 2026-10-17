@@ -1251,7 +1251,7 @@ class WorldState:
         content: str,
         node_id: str = "",
         source: str = "",
-        keep: int = 120,
+        keep: int = 300,
         target: str = "",
         quote: str = "",
         reply: str = "",
@@ -1259,7 +1259,7 @@ class WorldState:
     ) -> None:
         """留下她的一句心里话。
 
-        ``keep`` 给得比较宽（120 条）：这些是编辑器「内心活动」那一页的内容，
+        ``keep`` 给得比较宽（300 条）：这些是编辑器「内心活动」那一页的内容，
         只留最近二十条的话，翻着翻着就没了；提示词那边只会取最后三条，不影响预算。
 
         ``target`` / ``quote`` / ``reply`` 是这一轮的对话上下文（跟谁、对方说了什么、
@@ -1269,9 +1269,14 @@ class WorldState:
         编辑器「内心活动」一页照着它渲染，和以前控制台那一块一样详细。
         """
 
+        base_detail = {
+            "state": str(self.state or ""),
+            "mood": str(self.mood or ""),
+            **dict(detail or {}),
+        }
         detail_payload = {
-            str(key): " ".join(str(value or "").split())[:120]
-            for key, value in (detail or {}).items()
+            str(key): " ".join(str(value or "").split())[:200]
+            for key, value in base_detail.items()
             if str(value or "").strip()
         }
         self.thoughts.append(
@@ -1283,9 +1288,9 @@ class WorldState:
                 # ``at`` 是真实时间（「内心活动」那一页要按人看的年月日排）。
                 "world_time": float(self.world_time or 0.0),
                 "at": time.time(),
-                "target": " ".join(str(target or "").split())[:40],
-                "quote": " ".join(str(quote or "").split())[:120],
-                "reply": " ".join(str(reply or "").split())[:200],
+                "target": " ".join(str(target or "").split())[:60],
+                "quote": " ".join(str(quote or "").split())[:300],
+                "reply": " ".join(str(reply or "").split())[:500],
                 "detail": detail_payload,
             }
         )

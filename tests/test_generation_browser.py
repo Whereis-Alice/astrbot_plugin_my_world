@@ -125,6 +125,187 @@ class GenerationBrowserTests(unittest.TestCase):
         self.page.locator(f'button[data-tab="{tab}"]').click()
         self.page.locator(f"#{button}").click()
 
+    def test_thought_and_schedule_history_keep_full_details(self):
+        thoughts = [
+            {
+                "content": f"第 {index + 1} 次心里话",
+                "at": 1_760_000_000 + index,
+                "world_time": index,
+                "node_name": "露台茶会角",
+                "source": "聊完一轮",
+                "target": "小鲸鱼",
+                "quote": "今天风有点凉",
+                "reply": "那我给你带件外套",
+                "detail": {
+                    "env": "露台茶会角，微风",
+                    "state": "idle",
+                    "mood": "满足",
+                    "who": "小鲸鱼",
+                    "intent": "顺着聊两句",
+                },
+            }
+            for index in range(45)
+        ]
+        schedule_logs = {
+            "events": [
+                {
+                    "id": 901,
+                    "created_at": 1_760_000_100,
+                    "world_time": 44,
+                    "event_type": "schedule",
+                    "detail": {
+                        "run_id": "evening:901:44",
+                        "id": "evening",
+                        "time": "20:30",
+                        "actions": "走到书房 → 上网",
+                        "manual": False,
+                        "smart": True,
+                        "once": False,
+                        "note": "看看今天有什么新闻",
+                        "notes": ["日程 evening 已触发"],
+                        "steps": [
+                            {
+                                "event_type": "move",
+                                "world_time": 43,
+                                "text": "从卧室走到书房",
+                            },
+                            {
+                                "event_type": "tool_result",
+                                "world_time": 44,
+                                "text": "「网页检索」返回：今天有三条科技新闻",
+                            },
+                        ],
+                    },
+                }
+            ],
+            "types": ["schedule"],
+            "has_more": False,
+        }
+        self.context.add_init_script(
+            script=(
+                "(() => {"
+                " const original = window.AstrBotPluginPage.apiGet;"
+                f" const thoughts = {json.dumps({'session': 's', 'thoughts': thoughts}, ensure_ascii=False)};"
+                f" const logs = {json.dumps(schedule_logs, ensure_ascii=False)};"
+                " window.AstrBotPluginPage.apiGet = (endpoint, params) => {"
+                "   if (endpoint === 'thoughts') return Promise.resolve(thoughts);"
+                "   if (endpoint === 'logs') return Promise.resolve(logs);"
+                "   return original(endpoint, params);"
+                " };"
+                "})();"
+            )
+        )
+        self.host.reload()
+        self.page = self.host.frame(name="editor")
+        expect(self.page.locator("#app")).to_be_visible()
+        self.page.evaluate(
+            """() => {
+              for (const id of ["thought-session", "schedule-session"]) {
+                const select = document.getElementById(id);
+                select.innerHTML = '<option value="s">测试会话</option>';
+                select.value = "s";
+              }
+            }"""
+        )
+
+        self.page.locator('button[data-tab="thoughts"]').click()
+        expect(self.page.locator("#thoughts-reasoning")).to_have_count(0)
+        expect(self.page.locator(".thought-row")).to_have_count(40)
+        expect(self.page.locator(".thought-row").first).to_contain_text("空闲")
+        expect(self.page.locator(".thought-row").first).to_contain_text("小鲸鱼")
+        expect(self.page.locator(".thought-row").first).to_contain_text("今天风有点凉")
+        self.page.locator(".thought-more").click()
+        expect(self.page.locator(".thought-row")).to_have_count(45)
+        self.host.screenshot(path=str(self.shots / "thoughts-detailed.png"))
+
+        self.page.locator('button[data-tab="schedules"]').click()
+        expect(self.page.locator(".schedule-run-row")).to_have_count(1)
+        self.page.locator(".schedule-run-head").click()
+        expect(self.page.locator(".schedule-run-step")).to_have_count(2)
+        expect(self.page.locator(".schedule-run-row")).to_contain_text("今天有三条科技新闻")
+        self.host.screenshot(path=str(self.shots / "schedule-run-details.png"))
+        self.assertEqual(self.errors, [])
+
+    def test_event_history_expands_past_the_old_height_cap(self):
+        now = 1_760_000_000
+        steps = [
+            {
+                "index": index + 1,
+                "at": now + index,
+                "desc": f"第 {index + 1} 幕：她做了一个选择",
+                "ability": "观察",
+                "ability_delta": {"观察": 0.1},
+                "result": f"第 {index + 1} 幕的结果仍然完整显示。",
+            }
+            for index in range(80)
+        ]
+        events = {
+            "abilities": {},
+            "ability_day": "",
+            "ability_spent_today": {},
+            "enabled": True,
+            "now": now,
+            "world_time": 44,
+            "pending_help": {},
+            "active_id": "",
+            "threads": [
+                {
+                    "id": "long-thread",
+                    "title": "很长的一条线索",
+                    "hook": "这件事有很多幕。",
+                    "status": "closed",
+                    "tier": "daily",
+                    "tier_label": "日常",
+                    "place_name": "书房",
+                    "step_count": len(steps),
+                    "opened_at": now - 1000,
+                    "updated_at": now,
+                    "closed_at": now,
+                    "line": "她把这件事记了下来。",
+                    "pending_followup": "",
+                    "next_step_at": 0,
+                    "steps": steps,
+                    "can_advance": False,
+                    "can_close": False,
+                }
+            ],
+            "open_count": 0,
+            "recent_titles": [],
+        }
+        self.context.add_init_script(
+            script=(
+                "(() => {"
+                " const original = window.AstrBotPluginPage.apiGet;"
+                f" const events = {json.dumps(events, ensure_ascii=False)};"
+                " window.AstrBotPluginPage.apiGet = (endpoint, params) =>"
+                "   endpoint === 'events' ? Promise.resolve(events) : original(endpoint, params);"
+                "})();"
+            )
+        )
+        self.host.reload()
+        self.page = self.host.frame(name="editor")
+        expect(self.page.locator("#app")).to_be_visible()
+        self.page.evaluate(
+            """() => {
+              const select = document.getElementById("status-session");
+              select.innerHTML = '<option value="s">测试会话</option>';
+              select.value = "s";
+            }"""
+        )
+        self.page.locator('button[data-tab="events"]').click()
+        expect(self.page.locator("#event-history")).to_be_enabled()
+        self.page.locator("#event-history").click()
+        expect(self.page.locator(".event-history-row")).to_have_count(1)
+        # 折叠时先不建时间线，避免几十条线索一起拖慢弹窗。
+        expect(self.page.locator(".event-step")).to_have_count(0)
+        self.page.locator(".event-history-head").click()
+        expect(self.page.locator(".event-step")).to_have_count(80)
+        panel = self.page.locator(".event-history-row.open .event-history-panel")
+        self.assertEqual(panel.evaluate("node => getComputedStyle(node).maxHeight"), "none")
+        expect(self.page.locator(".event-step").last).to_contain_text("第 80 幕")
+        self.host.screenshot(path=str(self.shots / "event-history-full.png"))
+        self.assertEqual(self.errors, [])
+
     def test_success_preserves_each_preview_and_prevents_duplicate_requests(self):
         for tab, button, key, draft, title in (
             ("map", "zone-generate", "zones", {"id": "garden", "name": "花园", "note": "休息"}, "生成的新区域"),

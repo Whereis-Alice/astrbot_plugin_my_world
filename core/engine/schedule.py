@@ -14,6 +14,7 @@ from ..models import (
 from ..pathfinding import nearest_node
 from ..prompt import period_of
 from ..state import WorldState
+from ..timeline import render_event
 from .models import TickOutcome
 from .util import _clip_text
 
@@ -128,6 +129,89 @@ class ScheduleMixin:
                 (definition.name or definition.id) if definition else action_id
             )
         return [label for label in labels if label]
+
+    async def _schedule_run_steps(
+        self, state: WorldState, marker: int
+    ) -> list[dict[str, Any]]:
+        """把这一轮日程实际产生的日志收成结构化过程，供编辑器展开查看。"""
+
+        try:
+            rows = await self.db.call(
+                "query_events", session_id=state.session_id, limit=500
+            )
+        except Exception:
+            return []
+        fresh = sorted(
+            (
+                item
+                for item in rows
+                if int(item.get("id") or 0) > int(marker)
+                and str(item.get("event_type") or "") != "schedule"
+            ),
+            key=lambda item: int(item.get("id") or 0),
+        )
+        steps: list[dict[str, Any]] = []
+        for item in fresh[-200:]:
+            try:
+                text = render_event(
+                    item,
+                    self.world,
+                    ext_render=self.extensions.debug_event_text,
+                )
+            except Exception:
+                text = ""
+            if not text:
+                continue
+            steps.append(
+                {
+                    "id": int(item.get("id") or 0),
+                    "event_type": str(item.get("event_type") or ""),
+                    "text": text,
+                    "world_time": int(item.get("world_time") or 0),
+                    "created_at": float(item.get("created_at") or 0.0),
+                }
+            )
+        return steps
+
+    async def _log_schedule_run(
+        self,
+        state: WorldState,
+        schedule: Any,
+        *,
+        slot: str,
+        chain: list[Any],
+        marker: int,
+        manual: bool,
+        smart_note: str,
+        notes: list[str] | None = None,
+    ) -> None:
+        """写一条既保留摘要、又包含完整执行过程的日程记录。"""
+
+        steps = await self._schedule_run_steps(state, marker)
+        await self._log_event(
+            state,
+            "schedule",
+            {
+                "run_id": (
+                    f"{schedule.id}:{int(self._now() * 1000)}:"
+                    f"{int(state.world_time or 0)}"
+                ),
+                "id": schedule.id,
+                "time": slot,
+                "actions": " → ".join(self._chain_labels(chain)),
+                "manual": bool(manual),
+                "smart": bool(schedule.smart),
+                "once": bool(getattr(schedule, "once", False)),
+                "note": str(getattr(schedule, "note", "") or ""),
+                "intents": smart_note,
+                "notes": [
+                    _clip_text(note, 240)
+                    for note in (notes or [])
+                    if str(note or "").strip()
+                ][:30],
+                "steps": steps,
+            },
+        )
 
     def fallback_intent(self, definition: ActionDef, step: Any = None) -> str:
         """日程里的工具 / 指令步骤没写意图时的兜底说明。
@@ -586,22 +670,6 @@ class ScheduleMixin:
                         chain, smart_note = await self._smart_chain(state, schedule)
                     if schedule.auto_travel:
                         chain = self.expand_chain_for_travel(state, chain)
-                    # 「日程开始执行」要能进日志与调试输出：不然只能看到它的动作，
-                    # 不知道这一串是谁安排的。
-                    await self._log_event(
-                        state,
-                        "schedule",
-                        {
-                            "id": schedule.id,
-                            "time": slot,
-                            "actions": " → ".join(self._chain_labels(chain)),
-                            "manual": False,
-                            "smart": bool(schedule.smart),
-                            "once": bool(schedule.once),
-                            "note": str(schedule.note or ""),
-                            "intents": smart_note,
-                        },
-                    )
                     # 「这条日程是干什么的」+ 完整动作链，一并带进这一轮的上下文：
                     # 她说话时才有背景（不然只知道自己"正在做某个动作"，
                     # 不知道为什么做、后面还要做什么）。
@@ -624,6 +692,18 @@ class ScheduleMixin:
                     state.add_event(
                         "schedule",
                         {"id": schedule.id, "note": str(schedule.note or "")},
+                    )
+                    # 执行结束后再落一条汇总：里面带这一轮实际走过的步骤，
+                    # 编辑器不用靠时间窗口猜哪些日志属于这条日程。
+                    await self._log_schedule_run(
+                        state,
+                        schedule,
+                        slot=slot,
+                        chain=chain,
+                        marker=echo_marker,
+                        manual=False,
+                        smart_note=smart_note,
+                        notes=outcome.notes,
                     )
                     await self._echo_events_since(state, outcome, echo_marker)
                     outcomes.append(outcome)
@@ -715,17 +795,15 @@ class ScheduleMixin:
                 "schedule",
                 {"id": schedule.id, "manual": True, "note": str(schedule.note or "")},
             )
-            await self._log_event(
+            await self._log_schedule_run(
                 state,
-                "schedule",
-                {
-                    "id": schedule.id,
-                    "time": schedule.time,
-                    "actions": " → ".join(self._chain_labels(chain)),
-                    "manual": True,
-                    "smart": bool(schedule.smart),
-                    "intents": smart_note,
-                },
+                schedule,
+                slot=schedule.time,
+                chain=chain,
+                marker=echo_marker,
+                manual=True,
+                smart_note=smart_note,
+                notes=outcome.notes,
             )
             await self._echo_events_since(state, outcome, echo_marker)
             running = str((state.current_action or {}).get("desc") or "")

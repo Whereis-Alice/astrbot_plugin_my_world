@@ -418,7 +418,7 @@ class SnapshotMixin:
             ],
         }
 
-    async def thoughts_payload(self, session_id: str, limit: int = 120) -> dict[str, Any]:
+    async def thoughts_payload(self, session_id: str, limit: int = 300) -> dict[str, Any]:
         """「内心活动」那一页要的数据：她自己留下的心里话，越新越靠前。"""
 
         if not session_id:

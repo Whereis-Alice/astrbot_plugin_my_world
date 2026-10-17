@@ -325,7 +325,7 @@ class InterruptMixin:
     async def generate_nodes_for_zone(
         self, zone_id: str, count: Any = 0, extra_prompt: str = ""
     ) -> dict[str, Any]:
-        """给区域批量生成地点草稿：自动摆位 + 按方案 A 自动连线（同样不落库）。
+        """给区域批量生成地点草稿：自动摆位 + 补主路、近路与环路（同样不落库）。
 
         ``extra_prompt`` 是用户在弹窗里补的一句要求（例如"多来几个户外的地方"）。
         """
@@ -356,7 +356,7 @@ class InterruptMixin:
         for node, (x, y) in zip(nodes, positions):
             node["zone_id"] = zone_id
             node["x"], node["y"] = x, y
-        # 方案 A：第一个新地点连到区域内最近的既有地点，之后依次串成链
+        # 新地点先接进最近的门户，再按坐标补主路、近路与环路。
         anchor = ""
         if inside and positions:
             anchor = min(
@@ -364,7 +364,24 @@ class InterruptMixin:
                 key=lambda node: (float(node.x) - positions[0][0]) ** 2
                 + (float(node.y) - positions[0][1]) ** 2,
             ).id
-        pairs = link_plan([node["id"] for node in nodes], anchor=anchor)
+        geometry = {
+            str(node.id): (float(node.x), float(node.y))
+            for node in inside
+        }
+        geometry.update(
+            {
+                str(node["id"]): (
+                    float(node.get("x") or 0),
+                    float(node.get("y") or 0),
+                )
+                for node in nodes
+            }
+        )
+        pairs = link_plan(
+            [node["id"] for node in nodes],
+            anchor=anchor,
+            positions=geometry,
+        )
         edges = [
             {
                 "id": f"e_{src}_{dst}",

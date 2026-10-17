@@ -53,6 +53,11 @@ const ui = {
   valuesEdit: false,
   valueDraft: {},
   selectedSchedule: "",
+  // 日程执行记录：展开过哪几轮
+  scheduleHistoryOpen: new Set(),
+  // 内心活动一次先画一页，旧记录按需继续展开，避免一进页面就卡住
+  thoughtRows: [],
+  thoughtRenderLimit: 40,
   selectedGroup: "",
   // 动作库左侧菜单选中的那一组（""=全部；"group:名字" / "ext:扩展名"）
   actionGroup: "",
@@ -556,16 +561,6 @@ const WEEKDAYS = [
   { key: "fri", label: "周五" },
   { key: "sat", label: "周六" },
   { key: "sun", label: "周日" },
-];
-
-/** 推理草稿的五个字段（和 core/prompt.py 里的 reasoning 协议一致）。 */
-const REASONING_LABELS = [
-  ["env", "在哪"],
-  ["state", "状态"],
-  ["mood", "心情"],
-  ["who", "在和谁说话"],
-  ["inner", "心里想的"],
-  ["intent", "打算怎么办"],
 ];
 
 const STATES = [
@@ -6679,54 +6674,73 @@ function renderEventModal(force = false) {
       ),
     );
     head.addEventListener("click", () => {
-      if (opened.has(thread.id)) opened.delete(thread.id);
-      else opened.add(thread.id);
+      const nextOpen = !opened.has(thread.id);
+      if (nextOpen) opened.add(thread.id);
+      else opened.delete(thread.id);
       ui.eventModalOpenRows = opened;
-      card.classList.toggle("open", opened.has(thread.id));
-      if (opened.has(thread.id) && head.scrollIntoView) {
+      card.classList.toggle("open", nextOpen);
+      const inner = card.querySelector(".event-history-inner");
+      if (nextOpen && inner && inner.dataset.ready !== "1") {
+        fillEventHistoryPanel(inner, thread, now);
+      }
+      if (nextOpen && head.scrollIntoView) {
         // 展开后把它滚进可见区域：内容多的时候不至于"展开了一屏外的东西"
-        head.scrollIntoView({ block: "nearest" });
+        requestAnimationFrame(() => head.scrollIntoView({ block: "nearest" }));
       }
     });
     card.appendChild(head);
 
     const wrap = el("div", "event-history-panel");
     const inner = el("div", "event-history-inner");
-    if (thread.hook) inner.appendChild(el("p", "event-hook", thread.hook));
-    inner.appendChild(eventTimeline(thread.steps));
-    if (thread.line) inner.appendChild(el("p", "event-history-line", `她自己的账：${thread.line}`));
-    if (thread.pending_followup) {
-      inner.appendChild(
-        el(
-          "p",
-          "event-history-note muted",
-          `还没完的是「${thread.pending_followup}」· 下一幕 ${eventWaitText(thread.next_step_at, now)}后`,
-        ),
-      );
-    }
-    if (thread.status === "closed") {
-      inner.appendChild(
-        el("p", "event-history-note muted", `完结于 ${eventClockText(thread.closed_at || thread.updated_at)}`),
-      );
-    }
-    const actions = el("div", "event-history-actions");
-    if (thread.can_advance) {
-      const advance = el("button", "ghost small", "立即推进一幕");
-      advance.type = "button";
-      advance.addEventListener("click", () => eventAction("advance_event", thread.id));
-      actions.appendChild(advance);
-    }
-    if (thread.can_close) {
-      const close = el("button", "danger small", "立刻完结");
-      close.type = "button";
-      close.addEventListener("click", () => closeEventThread(thread));
-      actions.appendChild(close);
-    }
-    if (actions.childNodes.length) inner.appendChild(actions);
+    // 60 条线索时不为折叠卡片预建全部时间线；首次点开才填内容，页面会轻很多。
+    if (opened.has(thread.id)) fillEventHistoryPanel(inner, thread, now);
     wrap.appendChild(inner);
     card.appendChild(wrap);
     body.appendChild(card);
   });
+}
+
+function fillEventHistoryPanel(inner, thread, now) {
+  if (!inner || inner.dataset.ready === "1") return;
+  inner.innerHTML = "";
+  if (thread.hook) inner.appendChild(el("p", "event-hook", thread.hook));
+  inner.appendChild(eventTimeline(thread.steps));
+  if (thread.line) {
+    inner.appendChild(el("p", "event-history-line", `她自己的账：${thread.line}`));
+  }
+  if (thread.pending_followup) {
+    inner.appendChild(
+      el(
+        "p",
+        "event-history-note muted",
+        `还没完的是「${thread.pending_followup}」· 下一幕 ${eventWaitText(thread.next_step_at, now)}后`,
+      ),
+    );
+  }
+  if (thread.status === "closed") {
+    inner.appendChild(
+      el(
+        "p",
+        "event-history-note muted",
+        `完结于 ${eventClockText(thread.closed_at || thread.updated_at)}`,
+      ),
+    );
+  }
+  const actions = el("div", "event-history-actions");
+  if (thread.can_advance) {
+    const advance = el("button", "ghost small", "立即推进一幕");
+    advance.type = "button";
+    advance.addEventListener("click", () => eventAction("advance_event", thread.id));
+    actions.appendChild(advance);
+  }
+  if (thread.can_close) {
+    const close = el("button", "danger small", "立刻完结");
+    close.type = "button";
+    close.addEventListener("click", () => closeEventThread(thread));
+    actions.appendChild(close);
+  }
+  if (actions.childNodes.length) inner.appendChild(actions);
+  inner.dataset.ready = "1";
 }
 
 async function closeEventThread(thread) {
@@ -7291,9 +7305,9 @@ function mixColors(left, right) {
   return `rgb(${a.map((value, index) => Math.round((value + b[index]) / 2)).join(",")})`;
 }
 
-function edgeAnchorPoint(x1, y1, x2, y2, curveX, curveY, curved, offset = 0) {
-  const baseX = curved ? 0.25 * x1 + 0.5 * curveX + 0.25 * x2 : (x1 + x2) / 2;
-  const baseY = curved ? 0.25 * y1 + 0.5 * curveY + 0.25 * y2 : (y1 + y2) / 2;
+function edgeAnchorPoint(x1, y1, x2, y2, offset = 0) {
+  const baseX = (x1 + x2) / 2;
+  const baseY = (y1 + y2) / 2;
   let angle = (Math.atan2(y2 - y1, x2 - x1) * 180) / Math.PI;
   if (angle > 90) angle -= 180;
   else if (angle < -90) angle += 180;
@@ -7322,16 +7336,6 @@ function textPixelWidth(text, size = 9.5) {
       : size * 0.58;
   }
   return width;
-}
-
-/** 稳定的小哈希：同一条线每次渲染弯向一致，不会一刷新就换边。 */
-function stableHash(text) {
-  let hash = 0;
-  const body = String(text || "");
-  for (let index = 0; index < body.length; index += 1) {
-    hash = (hash * 31 + body.charCodeAt(index)) >>> 0;
-  }
-  return hash;
 }
 
 function labelRect(point, leftText, rightText, above) {
@@ -7560,10 +7564,10 @@ async function refreshWeatherNow() {
 /** 世界地图：只画区域节点和区域之间的连线。 */
 /**
  * 把连线标签顺着线的方向摆到线的上侧。
- * 朝左的线会把文字翻正，避免倒着读；curved 时按贝塞尔中点找位置。
+ * 朝左的线会把文字翻正，避免倒着读。
  */
-function placeEdgeLabel(label, x1, y1, x2, y2, curveX, curveY, curved, offset = 9) {
-  const point = edgeAnchorPoint(x1, y1, x2, y2, curveX, curveY, curved, offset);
+function placeEdgeLabel(label, x1, y1, x2, y2, offset = 9) {
+  const point = edgeAnchorPoint(x1, y1, x2, y2, offset);
   label.setAttribute("x", point.x);
   label.setAttribute("y", point.y);
   label.setAttribute("text-anchor", "middle");
@@ -7647,19 +7651,8 @@ function renderWorldMap() {
     const y1 = fromPoint.y;
     const x2 = toPoint.x;
     const y2 = toPoint.y;
-    const dx = x2 - x1;
-    const dy = y2 - y1;
-    const length = Math.max(1, Math.hypot(dx, dy));
-    const nx = -dy / length;
-    const ny = dx / length;
-    // 每条线都带一点弯：纯直线看着像坐标轴，不像"路"；同一对区域的多条线再逐层外扩。
-    const bendSeed = stableHash(key);
-    const bend = index === 0
-      ? (bendSeed % 2 === 0 ? 1 : -1) * (14 + (bendSeed % 16))
-      : (index % 2 === 1 ? 1 : -1) * (24 + 14 * Math.floor((index - 1) / 2));
-    const cx = (x1 + x2) / 2 + nx * bend;
-    const cy = (y1 + y2) / 2 + ny * bend;
-    const d = `M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`;
+    // 路线用直线表达拓扑；看点放在"连了多少种路"，不靠弯曲制造复杂度。
+    const d = `M ${x1} ${y1} L ${x2} ${y2}`;
     const edgeKey = `${key}#${index}`;
     const above = index % 2 === 0;
 
@@ -7687,7 +7680,7 @@ function renderWorldMap() {
 
     const fromText = nodeLabel(edge.from_node);
     const toText = nodeLabel(edge.to_node);
-    const point = edgeAnchorPoint(x1, y1, x2, y2, cx, cy, true, 0);
+    const point = edgeAnchorPoint(x1, y1, x2, y2, 0);
     const rect = labelRect(point, fromText, toText, above);
     const pairFits = labelMode === "all"
       || (labelMode !== "ticks"
@@ -7702,7 +7695,7 @@ function renderWorldMap() {
     pair.dataset.from = edge.from_zone;
     pair.dataset.to = edge.to_zone;
     pair.dataset.pairVisible = pairFits ? "1" : "0";
-    placeEdgeLabel(pair, x1, y1, x2, y2, cx, cy, true, 0);
+    placeEdgeLabel(pair, x1, y1, x2, y2, 0);
     const fromNode = nodeById[edge.from_node];
     const toNode = nodeById[edge.to_node];
     const fromColor = (fromNode && fromNode.color) || from.color || "";
@@ -7731,7 +7724,7 @@ function renderWorldMap() {
     pair.setAttribute("text-anchor", "start");
     labelLayer.appendChild(pair);
 
-    const tickPoint = edgeAnchorPoint(x1, y1, x2, y2, cx, cy, index !== 0, above ? 10 : -10);
+    const tickPoint = edgeAnchorPoint(x1, y1, x2, y2, above ? 10 : -10);
     const tickText = `${num(edge.ticks, 1)}t`;
     const tickW = textPixelWidth(tickText, 9) + 12;
     const tickRect = {
@@ -7907,16 +7900,8 @@ function renderZoneMap() {
     const y1 = fromPoint.y;
     const x2 = toPoint.x;
     const y2 = toPoint.y;
-    // 房间里的路线也带一点弯：横平竖直的直线连着，看起来像电路板不像路
-    const length = Math.max(1, Math.hypot(x2 - x1, y2 - y1));
-    const bendSeed = stableHash(edge.id || `${edge.from}-${edge.to}`);
-    const bend = (bendSeed % 2 === 0 ? 1 : -1)
-      * Math.min(28, Math.max(6, length * 0.06 + (bendSeed % 6)));
-    const nx = -(y2 - y1) / length;
-    const ny = (x2 - x1) / length;
-    const cx = (x1 + x2) / 2 + nx * bend;
-    const cy = (y1 + y2) / 2 + ny * bend;
-    const d = `M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`;
+    // 房间路线同样保持直线，路网是否丰富由拓扑决定。
+    const d = `M ${x1} ${y1} L ${x2} ${y2}`;
     const edgeKey = `${edge.id || `${edge.from}-${edge.to}`}#${index}`;
     const hit = document.createElementNS(MAP_NS, "path");
     hit.setAttribute("d", d);
@@ -7937,7 +7922,7 @@ function renderZoneMap() {
     title.textContent =
       `${nodeLabel(edge.from)} ⟷ ${nodeLabel(edge.to)}（${num(edge.ticks, 1)} tick）`;
     path.appendChild(title);
-    const point = edgeAnchorPoint(x1, y1, x2, y2, cx, cy, true, 10);
+    const point = edgeAnchorPoint(x1, y1, x2, y2, 10);
     labelLayer.appendChild(
       makeTickChip(point, `${num(edge.ticks, 1)}t`, edgeKey, edge.from, edge.to, false),
     );
@@ -12927,12 +12912,116 @@ function renderScheduleHistory(data) {
     return;
   }
   rows.forEach((row) => {
-    const line = el("div", "history-row");
-    line.appendChild(el("span", "history-tick", `t=${row.world_time}`));
-    const text = el("span", "history-text", String(row.text || row.event_type || ""));
-    line.appendChild(text);
-    box.appendChild(line);
+    const detail = row.detail || {};
+    const key = String(detail.run_id || row.id || `${row.world_time}-${detail.id || ""}`);
+    const open = ui.scheduleHistoryOpen.has(key);
+    const card = el("div", `schedule-run-row${open ? " open" : ""}`);
+    const head = el("button", "schedule-run-head");
+    head.type = "button";
+    head.appendChild(el("span", "event-chevron", "▸"));
+    head.appendChild(el("span", "schedule-run-title", detail.id || "日程"));
+    if (detail.manual) head.appendChild(el("span", "schedule-run-badge manual", "手动"));
+    if (!detail.manual) head.appendChild(el("span", "schedule-run-badge auto", "到点"));
+    if (detail.smart) head.appendChild(el("span", "schedule-run-badge", "智能补全"));
+    if (detail.once) head.appendChild(el("span", "schedule-run-badge", "一次性"));
+    const steps = Array.isArray(detail.steps) ? detail.steps : [];
+    const processMeta = steps.length
+      ? `${steps.length} 个过程`
+      : detail.run_id
+        ? "0 个过程"
+        : "旧记录（仅摘要）";
+    const meta = [
+      row.created_at ? formatStamp(row.created_at) : "",
+      detail.time || "",
+      processMeta,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    head.appendChild(el("span", "schedule-run-meta muted", meta));
+    card.appendChild(head);
+
+    const chain = String(detail.actions || "").trim();
+    if (chain) card.appendChild(el("p", "schedule-run-chain muted", `动作链：${chain}`));
+
+    const panel = el("div", "schedule-run-panel");
+    const inner = el("div", "schedule-run-inner");
+    if (open) fillScheduleRunPanel(inner, detail, steps);
+    panel.appendChild(inner);
+    card.appendChild(panel);
+    head.addEventListener("click", () => {
+      const nextOpen = !card.classList.contains("open");
+      card.classList.toggle("open", nextOpen);
+      if (nextOpen) {
+        ui.scheduleHistoryOpen.add(key);
+        fillScheduleRunPanel(inner, detail, steps);
+      } else {
+        ui.scheduleHistoryOpen.delete(key);
+      }
+    });
+    box.appendChild(card);
   });
+}
+
+function fillScheduleRunPanel(inner, detail, steps) {
+  if (!inner || inner.dataset.ready === "1") return;
+  inner.innerHTML = "";
+  if (String(detail.note || "").trim()) {
+    inner.appendChild(el("p", "schedule-run-note", `这次想做的事：${detail.note}`));
+  }
+  inner.appendChild(scheduleRunTimeline(steps));
+  const notes = Array.isArray(detail.notes) ? detail.notes : [];
+  if (notes.length) {
+    const noteBox = el("div", "schedule-run-notes");
+    noteBox.appendChild(el("span", "schedule-run-notes-title", "执行备注"));
+    notes.forEach((note) => noteBox.appendChild(el("p", "", String(note))));
+    inner.appendChild(noteBox);
+  }
+  inner.dataset.ready = "1";
+}
+
+function scheduleRunTimeline(steps) {
+  if (!(steps || []).length) {
+    return el(
+      "p",
+      "muted schedule-run-empty",
+      "这条记录来自旧版本，只保存了动作链摘要；从本版开始会保存每一步的完整过程。",
+    );
+  }
+  const labels = {
+    action_start: "开始动作",
+    action: "动作",
+    action_complete: "完成动作",
+    move: "移动",
+    skip: "跳过",
+    tool_call: "调用工具",
+    tool_result: "工具结果",
+    plan: "后续安排",
+    say: "说话",
+    share: "分享",
+    schedule: "日程",
+  };
+  const timeline = el("ol", "schedule-run-timeline");
+  steps.forEach((step, index) => {
+    const row = el("li", "schedule-run-step");
+    row.appendChild(el("span", "event-step-index", String(index + 1)));
+    const body = el("div", "schedule-run-step-body");
+    const head = el("div", "schedule-run-step-head");
+    head.appendChild(
+      el(
+        "span",
+        "schedule-run-step-type",
+        labels[step.event_type] || step.event_type || "过程",
+      ),
+    );
+    if (step.world_time != null) {
+      head.appendChild(el("span", "schedule-run-step-time muted", `t=${step.world_time}`));
+    }
+    body.appendChild(head);
+    body.appendChild(el("p", "schedule-run-step-text", step.text || "（没有可读结果）"));
+    row.appendChild(body);
+    timeline.appendChild(row);
+  });
+  return timeline;
 }
 
 /** 「立即执行」：现在就跑一遍这条日程的动作链。 */
@@ -14521,98 +14610,86 @@ async function loadThoughts() {
   if (!list) return;
   const session = $("thought-session") ? $("thought-session").value : "";
   list.innerHTML = "";
-  renderThoughtsReasoning(null);
+  ui.thoughtRows = [];
+  ui.thoughtRenderLimit = 40;
   if (!session) {
     list.appendChild(el("p", "muted", "还没有白名单会话。"));
     return;
   }
   list.appendChild(el("p", "muted", "读取中…"));
   try {
-    // 推理草稿和心里话读的是同一份状态：一起拿，页面不会一半先到一半后到
-    const [data, state] = await Promise.all([
-      apiGet("thoughts", { session, limit: 120 }),
-      apiGet("state", { session }).catch(() => null),
-    ]);
-    renderThoughtsReasoning(state);
-    renderThoughts(data);
+    renderThoughts(await apiGet("thoughts", { session, limit: 300 }));
   } catch (error) {
     list.innerHTML = "";
     list.appendChild(el("p", "muted", error.message || "读取失败"));
   }
 }
 
-/** 最近一次推理草稿：她动手前对处境 / 心情 / 对象的确认（原控制台那一块）。 */
-function renderThoughtsReasoning(state) {
-  const box = $("thoughts-reasoning");
-  if (!box) return;
-  const note = $("thoughts-reasoning-note");
-  box.innerHTML = "";
-  const reasoning = (state && state.last_reasoning) || {};
-  const rows = REASONING_LABELS.filter(([key]) => reasoning[key]);
-  if (note) {
-    note.textContent = reasoning._source
-      ? `来自 ${reasoning._source === "plan" ? "自主决策" : "回复"}`
-      : "";
-  }
-  if (!rows.length) {
-    box.appendChild(el("p", "muted", "（她还没动过大模型，或者这次没写草稿）"));
-    return;
-  }
-  rows.forEach(([key, label]) => {
-    const row = el("div", "reasoning-row");
-    row.appendChild(el("span", "reasoning-label", label));
-    row.appendChild(el("span", "reasoning-text", String(reasoning[key])));
-    box.appendChild(row);
-  });
-}
-
 function renderThoughts(data) {
   const list = $("thoughts-list");
   if (!list) return;
+  ui.thoughtRows = (data && data.thoughts) || [];
+  ui.thoughtRenderLimit = 40;
+  renderThoughtsPage();
+}
+
+function renderThoughtsPage() {
+  const list = $("thoughts-list");
+  if (!list) return;
   list.innerHTML = "";
-  const rows = (data && data.thoughts) || [];
+  const rows = ui.thoughtRows || [];
   const note = $("thoughts-note");
-  if (note) note.textContent = rows.length ? `最近 ${rows.length} 条` : "";
   if (!rows.length) {
+    if (note) note.textContent = "";
     list.appendChild(
       el("p", "muted", "还没有记录：等她说完一轮话，或者自己做一次决定，这里就会有。"),
     );
     return;
   }
-  rows.forEach((row) => {
+  const limit = Math.min(rows.length, Math.max(40, Number(ui.thoughtRenderLimit) || 40));
+  if (note) note.textContent = `共 ${rows.length} 条 · 当前显示 ${limit} 条`;
+  rows.slice(0, limit).forEach((row, index) => {
     const item = el("div", "thought-row");
+    item.dataset.thoughtIndex = String(index);
     const head = el("div", "thought-head");
     head.appendChild(
       el("span", "thought-time", row.at ? formatStamp(row.at) : "（更早的记录）"),
     );
     if (row.node_name) head.appendChild(el("span", "thought-node", row.node_name));
     if (row.source) head.appendChild(el("span", "thought-source", row.source));
-    item.appendChild(head);
-    // 当时的状态快照：和以前控制台那一块一样详细
     const detail = row.detail || {};
-    const detailRows = [
-      ["env", "在哪"],
-      ["state", "状态"],
-      ["mood", "心情"],
-      ["who", "在和谁说话"],
-    ].filter(([key]) => String(detail[key] || "").trim());
-    if (detailRows.length) {
-      const meta = el("div", "thought-reasoning");
-      detailRows.forEach(([key, label]) => {
-        const line = el("div", "reasoning-row");
-        line.appendChild(el("span", "reasoning-label", label));
-        line.appendChild(el("span", "reasoning-text", String(detail[key])));
-        meta.appendChild(line);
-      });
-      item.appendChild(meta);
-    }
+    const hasSnapshot = ["env", "state", "mood", "who", "intent"].some((key) =>
+      String(detail[key] || "").trim(),
+    );
+    if (!hasSnapshot) head.appendChild(el("span", "thought-legacy", "旧记录"));
+    item.appendChild(head);
+
+    // 每条都按同一份详细快照展示；旧记录确实没有的字段会明确写出来。
+    const stateText = stateLabelOf(detail.state || "", {}) || "未记录";
+    const meta = el("div", "thought-detail-grid");
+    [
+      ["在哪", detail.env || row.node_name || "未记录"],
+      ["状态", stateText],
+      ["心情", detail.mood || "未记录"],
+      ["在和谁说话", detail.who || row.target || "没有特定对象"],
+    ].forEach(([label, value]) => {
+      const cell = el("div", "thought-detail-item");
+      cell.appendChild(el("span", "thought-detail-label", label));
+      cell.appendChild(el("span", "thought-detail-value", String(value)));
+      meta.appendChild(cell);
+    });
+    item.appendChild(meta);
+
     const thoughtText = el("div", "thought-text");
     thoughtText.appendChild(el("span", "thought-label", "心里想的："));
-    thoughtText.appendChild(document.createTextNode(String(row.content || "")));
+    thoughtText.appendChild(
+      document.createTextNode(String(row.content || detail.inner || "未记录")),
+    );
     item.appendChild(thoughtText);
-    if (String(detail.intent || "").trim()) {
-      item.appendChild(el("div", "thought-intent", `打算怎么办：${detail.intent}`));
-    }
+    item.appendChild(
+      el("div", "thought-intent", `打算怎么办：${detail.intent || "没有留下明确打算"}`),
+    );
+
     // 回了谁、回了哪条、她回了什么：光有一句心里话看不出这一轮的来龙去脉
     if (row.target || row.quote || row.reply) {
       const context = el("div", "thought-context");
@@ -14629,6 +14706,29 @@ function renderThoughts(data) {
     }
     list.appendChild(item);
   });
+  const remaining = rows.length - limit;
+  if (remaining > 0) {
+    const more = el(
+      "button",
+      "ghost thought-more",
+      `显示更早的 ${Math.min(40, remaining)} 条（还有 ${remaining} 条）`,
+    );
+    more.type = "button";
+    more.addEventListener("click", () => {
+      const previousLimit = limit;
+      ui.thoughtRenderLimit = limit + 40;
+      renderThoughtsPage();
+      requestAnimationFrame(() => {
+        const firstNew = list.querySelector(
+          `[data-thought-index="${previousLimit}"]`,
+        );
+        if (firstNew && firstNew.scrollIntoView) {
+          firstNew.scrollIntoView({ block: "center" });
+        }
+      });
+    });
+    list.appendChild(more);
+  }
 }
 
 async function clearThoughts() {

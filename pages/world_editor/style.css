@@ -2810,6 +2810,7 @@ button.pill:hover:not(.on) {
 .event-history-head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   width: 100%;
   height: auto;
@@ -2837,8 +2838,10 @@ button.pill:hover:not(.on) {
 }
 
 .event-history-title {
+  min-width: 0;
   font-size: 12.5px;
   font-weight: 650;
+  overflow-wrap: anywhere;
 }
 
 .event-history-meta {
@@ -2848,7 +2851,7 @@ button.pill:hover:not(.on) {
   font-variant-numeric: tabular-nums;
 }
 
-/* 折叠：高度由 JS 量好，这里只做过渡 */
+/* 折叠时不占空间；展开后不设高度上限，幕数再多也不会被裁掉。 */
 .event-history-panel {
   overflow: hidden;
   max-height: 0;
@@ -2856,7 +2859,8 @@ button.pill:hover:not(.on) {
 }
 
 .event-history-row.open .event-history-panel {
-  max-height: 2400px;
+  max-height: none;
+  overflow: visible;
 }
 
 .event-history-inner {
@@ -3118,6 +3122,192 @@ body.dragging-map-node {
 .history-text {
   color: var(--text);
   overflow-wrap: anywhere;
+}
+
+/* ---- 日程执行记录：摘要一行，展开看实际执行过程 ---- */
+
+.schedule-run-row {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+}
+
+.schedule-run-row:hover,
+.schedule-run-row.open {
+  border-color: var(--line-strong);
+}
+
+.schedule-run-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  width: 100%;
+  height: auto;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.schedule-run-head:hover:not(:disabled) {
+  background: var(--bg-inset);
+}
+
+.schedule-run-row.open .event-chevron {
+  transform: rotate(90deg);
+  color: var(--accent);
+}
+
+.schedule-run-title {
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.schedule-run-badge {
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--bg-soft);
+  color: var(--muted);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.schedule-run-badge.auto {
+  border-color: var(--accent-ring);
+  color: var(--accent-ink);
+}
+
+.schedule-run-badge.manual {
+  border-color: color-mix(in srgb, var(--warn) 35%, var(--line));
+  color: var(--warn-text);
+}
+
+.schedule-run-meta {
+  margin-left: auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.schedule-run-chain {
+  margin: -2px 38px 9px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.schedule-run-panel {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height var(--dur-3) var(--ease);
+}
+
+.schedule-run-row.open .schedule-run-panel {
+  max-height: none;
+  overflow: visible;
+}
+
+.schedule-run-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 0 12px 12px 38px;
+}
+
+.schedule-run-note,
+.schedule-run-step-text,
+.schedule-run-notes p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.schedule-run-note {
+  padding: 8px 10px;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  background: var(--bg-inset);
+}
+
+.schedule-run-timeline {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin: 0;
+  padding: 0;
+}
+
+.schedule-run-step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 9px;
+}
+
+.schedule-run-step:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: 9px;
+  top: 22px;
+  bottom: -9px;
+  width: 1px;
+  background: var(--line);
+}
+
+.schedule-run-step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.schedule-run-step-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.schedule-run-step-type {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.schedule-run-step-time {
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.schedule-run-empty {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r-sm);
+  font-size: 11.5px;
+}
+
+.schedule-run-notes {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+}
+
+.schedule-run-notes-title {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .tick-list {
@@ -7727,11 +7917,17 @@ label.inline > input[type="checkbox"]:checked + span {
 .thought-row {
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  padding: 12px 14px;
+  gap: 9px;
+  padding: 13px 15px;
   border: 1px solid var(--line);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-md);
   background: var(--bg-inset);
+  transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+}
+
+.thought-row:hover {
+  border-color: var(--line-strong);
+  background: var(--bg-soft);
 }
 
 .thought-head {
@@ -7756,11 +7952,48 @@ label.inline > input[type="checkbox"]:checked + span {
   color: var(--accent-ink);
 }
 
+.thought-legacy {
+  padding: 1px 8px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r-pill);
+  color: var(--muted);
+}
+
+.thought-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px 18px;
+}
+
+.thought-detail-item {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.thought-detail-label {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.thought-detail-value {
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
 .thought-text {
   color: var(--text);
   font-size: 13px;
   line-height: 1.7;
   overflow-wrap: anywhere;
+  padding: 9px 11px;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  background: var(--bg-soft);
 }
 
 .thought-label {
@@ -7770,6 +8003,8 @@ label.inline > input[type="checkbox"]:checked + span {
 .thought-intent {
   font-size: 12.5px;
   color: var(--text-2);
+  line-height: 1.65;
+  overflow-wrap: anywhere;
 }
 
 /* 这一轮是回谁、对方说了什么、她回了什么 */
@@ -7801,29 +8036,16 @@ label.inline > input[type="checkbox"]:checked + span {
   color: var(--text);
 }
 
-/* 最近一次推理草稿：一行一项，标签窄列对齐，值随内容换行 */
-.thought-reasoning {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+.thought-more {
+  align-self: center;
+  min-width: 220px;
+  margin-top: 4px;
 }
 
-.reasoning-row {
-  display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
-  gap: 10px;
-  align-items: start;
-  font-size: 13px;
-  line-height: 1.7;
-}
-
-.reasoning-label {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.reasoning-text {
-  overflow-wrap: anywhere;
+@media (max-width: 760px) {
+  .thought-detail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 

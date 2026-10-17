@@ -304,6 +304,37 @@ class FrontendSyntaxTest(unittest.TestCase):
         self.assertNotIn("leftText} → ${rightText}", source)
         self.assertNotIn('textPixelWidth(" → ")', source)
 
+    def test_thought_history_is_detailed_and_paginated(self) -> None:
+        html = INDEX_HTML.read_text("utf-8")
+        source = APP_JS.read_text("utf-8")
+        self.assertNotIn("最近一次推理草稿", html)
+        self.assertNotIn("thoughts-reasoning", html)
+        self.assertIn("stateLabelOf(detail.state", source)
+        self.assertIn("thought-detail-grid", source)
+        self.assertIn("function renderThoughtsPage(", source)
+        self.assertIn("thought-more", source)
+
+    def test_event_history_renders_lazily_without_a_height_cap(self) -> None:
+        source = APP_JS.read_text("utf-8")
+        css = STYLE_CSS.read_text("utf-8")
+        self.assertIn("function fillEventHistoryPanel(", source)
+        self.assertIn('inner.dataset.ready !== "1"', source)
+        self.assertIn("max-height: none;", css)
+        self.assertNotIn("max-height: 2400px;", css)
+
+    def test_schedule_history_can_show_the_actual_run_steps(self) -> None:
+        source = APP_JS.read_text("utf-8")
+        self.assertIn("function fillScheduleRunPanel(", source)
+        self.assertIn("function scheduleRunTimeline(", source)
+        self.assertIn('Array.isArray(detail.steps) ? detail.steps : []', source)
+        self.assertIn("schedule-run-step", source)
+
+    def test_map_edges_stay_straight(self) -> None:
+        source = APP_JS.read_text("utf-8")
+        self.assertIn("const d = `M ${x1} ${y1} L ${x2} ${y2}`;", source)
+        self.assertNotIn("bendSeed", source)
+        self.assertNotIn("function stableHash(", source)
+
     def test_extension_debug_types_reach_the_log_page(self) -> None:
         """扩展注册的事件类型：编辑器要从 /defaults 读进来，并入日志页的类型表。"""
 
