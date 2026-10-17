@@ -345,6 +345,8 @@ class FrontendSyntaxTest(unittest.TestCase):
         end = source.index("\nfunction nodeGeneratorBox(", start)
         body = source[start:end]
         self.assertIn("pruneNodeScopedActions(retainedNodeIds)", body)
+        self.assertIn("draftZoneEdges", body)
+        self.assertIn("接回", body)
         self.assertIn("专属动作已一并清掉", body)
         self.assertNotIn("原本限定旧地点的动作已改为全局", body)
 

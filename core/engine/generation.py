@@ -299,6 +299,7 @@ class GenerationMixin:
             }
             for zone in zones
         ]
+        new_zone_ids = {str(zone["id"]) for zone in zones}
         added_edges = connect_zone_graph(
             all_zone_dicts,
             nodes_by_zone,
@@ -306,8 +307,8 @@ class GenerationMixin:
                 {"from_zone": edge.from_zone, "to_zone": edge.to_zone}
                 for edge in (getattr(self.world, "zone_edges", None) or [])
             ],
+            preferred_zones=new_zone_ids,
         )
-        new_zone_ids = {str(zone["id"]) for zone in zones}
         zone_edges = [
             edge
             for edge in added_edges
@@ -540,6 +541,7 @@ class GenerationMixin:
                 "zone": str(zone_id or ""),
                 "nodes": [],
                 "edges": [],
+                "zone_edges": [],
                 "actions": [],
                 "remove_nodes": [],
                 "problems": ["找不到这个区域"],
@@ -547,6 +549,9 @@ class GenerationMixin:
         drafted = await self.generate_nodes_for_zone(zone_id, count, extra_prompt)
         nodes = list(drafted.get("nodes") or [])
         problems = list(drafted.get("problems") or [])
+        remove_nodes = (
+            [node.id for node in self.world.nodes_in_zone(zone_id)] if replace else []
+        )
         actions: list[dict[str, Any]] = []
         if nodes and _wants_node_actions(actions_per_node):
             made = await self._draft_actions_for_nodes(
@@ -558,14 +563,83 @@ class GenerationMixin:
             )
             actions = made["actions"]
             problems.extend(made["problems"])
-        remove_nodes = (
-            [node.id for node in self.world.nodes_in_zone(zone_id)] if replace else []
-        )
+        edges = list(drafted.get("edges") or [])
+        zone_edges: list[dict[str, Any]] = []
+        if replace and nodes:
+            node_positions = {
+                str(node["id"]): (
+                    float(node.get("x") or 0),
+                    float(node.get("y") or 0),
+                )
+                for node in nodes
+            }
+            edges = [
+                {
+                    "id": f"e_{source}_{target}",
+                    "from": source,
+                    "to": target,
+                    "ticks": 1,
+                    "bidirectional": True,
+                }
+                for source, target in link_plan(
+                    [str(node["id"]) for node in nodes],
+                    positions=node_positions,
+                )
+            ]
+            nodes_by_zone = {
+                item.id: [
+                    {
+                        "id": node.id,
+                        "name": node.name or node.id,
+                        "prompt": node.prompt,
+                        "x": float(node.x),
+                        "y": float(node.y),
+                    }
+                    for node in self.world.nodes_in_zone(item.id)
+                ]
+                for item in self.world.zones
+            }
+            nodes_by_zone[zone_id] = [
+                {
+                    "id": str(node["id"]),
+                    "name": str(node.get("name") or node["id"]),
+                    "prompt": str(node.get("prompt") or ""),
+                    "x": float(node.get("x") or 0),
+                    "y": float(node.get("y") or 0),
+                }
+                for node in nodes
+            ]
+            retained_zone_edges = [
+                {
+                    "from_zone": edge.from_zone,
+                    "to_zone": edge.to_zone,
+                }
+                for edge in self.world.zone_edges
+                if zone_id not in (edge.from_zone, edge.to_zone)
+            ]
+            zone_edges = [
+                edge
+                for edge in connect_zone_graph(
+                    [
+                        {
+                            "id": item.id,
+                            "x": float(item.x),
+                            "y": float(item.y),
+                        }
+                        for item in self.world.zones
+                    ],
+                    nodes_by_zone,
+                    existing_edges=retained_zone_edges,
+                    preferred_zone=zone_id,
+                )
+                if zone_id in (edge["from_zone"], edge["to_zone"])
+            ]
         return {
             "zone": str(zone_id),
             "zone_name": zone.name or zone.id,
             "nodes": nodes,
-            "edges": list(drafted.get("edges") or []),
+            "edges": edges,
+            "zone_edges": zone_edges,
             "actions": actions,
             "remove_nodes": remove_nodes,
             "problems": problems,

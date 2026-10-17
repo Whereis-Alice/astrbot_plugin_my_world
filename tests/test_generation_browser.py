@@ -543,9 +543,14 @@ class GenerationBrowserTests(unittest.TestCase):
                   && (action.allowed_nodes || []).includes(nodeId)
                   && (action.allowed_nodes || []).some((id) => id !== nodeId),
               );
+              const outsideNode = config.world.nodes.find(
+                (item) => item.zone_id !== node.zone_id,
+              );
               return {
                 zoneId: node.zone_id,
                 nodeId,
+                outsideZoneId: outsideNode.zone_id,
+                outsideNodeId: outsideNode.id,
                 exclusiveActionId: exclusive.id,
                 sharedActionId: shared ? shared.id : "",
               };
@@ -562,7 +567,7 @@ class GenerationBrowserTests(unittest.TestCase):
         call = self.page.evaluate("generationCalls").pop()
         self.assertTrue(call["data"]["replace"])
         self.page.evaluate(
-            """({zoneId, removeNode}) => finishGeneration({
+            """({zoneId, removeNode, outsideZoneId, outsideNodeId}) => finishGeneration({
                 zone: zoneId,
                 nodes: [{
                   id: "replacement_spot",
@@ -573,11 +578,25 @@ class GenerationBrowserTests(unittest.TestCase):
                   y: 30,
                 }],
                 edges: [],
+                zone_edges: [{
+                  id: "auto_zone_link",
+                  from_zone: zoneId,
+                  from_node: "replacement_spot",
+                  to_zone: outsideZoneId,
+                  to_node: outsideNodeId,
+                  ticks: 2,
+                  bidirectional: true,
+                }],
                 actions: [],
                 remove_nodes: [removeNode],
                 problems: [],
             })""",
-            {"zoneId": fixture["zoneId"], "removeNode": fixture["nodeId"]},
+            {
+                "zoneId": fixture["zoneId"],
+                "removeNode": fixture["nodeId"],
+                "outsideZoneId": fixture["outsideZoneId"],
+                "outsideNodeId": fixture["outsideNodeId"],
+            },
         )
         expect(self.page.locator("#dialog-title")).to_contain_text("重做")
         expect(self.page.locator("#dialog-hint")).to_contain_text("专属动作")
@@ -590,6 +609,15 @@ class GenerationBrowserTests(unittest.TestCase):
         self.assertNotIn(fixture["nodeId"], {
             item["id"] for item in config["world"]["nodes"]
         })
+        self.assertTrue(
+            [
+                edge
+                for edge in config["world"]["zone_edges"]
+                if edge["id"].startswith("auto_zone_link")
+                and edge["from_node"] == "replacement_spot"
+                and edge["to_node"] == fixture["outsideNodeId"]
+            ]
+        )
         if fixture["sharedActionId"]:
             shared = next(
                 item

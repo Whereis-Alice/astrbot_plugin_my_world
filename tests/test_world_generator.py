@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import random
 import sys
 import tempfile
 import unittest
@@ -301,6 +302,7 @@ class WorldMapParserTests(unittest.TestCase):
             existing_edges=[
                 {"from_zone": "home", "to_zone": "town"},
             ],
+            rng=random.Random(1),
         )
         self.assertEqual(len(added), 2)
         pairs = {
@@ -321,8 +323,8 @@ class WorldMapParserTests(unittest.TestCase):
             f"z{index}": [{"id": f"n{index}", "x": 0, "y": 0}]
             for index in range(5)
         }
-        added = connect_zone_graph(zones, nodes_by_zone)
-        self.assertEqual(len(added), 6)
+        added = connect_zone_graph(zones, nodes_by_zone, rng=random.Random(2))
+        self.assertEqual(len(added), 5)
         pairs = {
             frozenset((edge["from_zone"], edge["to_zone"]))
             for edge in added
@@ -332,6 +334,36 @@ class WorldMapParserTests(unittest.TestCase):
             left = int(edge["from_zone"][1:])
             right = int(edge["to_zone"][1:])
             self.assertIn(abs(left - right), (1, 2, 4))
+
+    def test_zone_network_varies_between_rebuilds(self):
+        """同一圈区域换几次重建：路线方案不应该每次都是同一颗规则五角星。"""
+
+        zones = [
+            {"id": f"z{index}", "x": x, "y": y}
+            for index, (x, y) in enumerate(auto_layout_ring(5))
+        ]
+        nodes_by_zone = {
+            f"z{index}": [{"id": f"gate_{index}", "name": f"入口{index}"}]
+            for index in range(5)
+        }
+        layouts = set()
+        for seed in range(8):
+            added = connect_zone_graph(
+                zones,
+                nodes_by_zone,
+                rng=random.Random(seed),
+            )
+            layouts.add(
+                tuple(
+                    sorted(
+                        tuple(
+                            sorted((edge["from_zone"], edge["to_zone"]))
+                        )
+                        for edge in added
+                    )
+                )
+            )
+        self.assertGreater(len(layouts), 1, layouts)
 
     def test_zone_links_prefer_portal_nodes(self):
         """自动连线优先选入口 / 门口，不要拿厨房去连公园长椅。"""
@@ -350,7 +382,7 @@ class WorldMapParserTests(unittest.TestCase):
                 {"id": "park_gate", "name": "公园大门", "x": 0, "y": 200},
             ],
         }
-        added = connect_zone_graph(zones, nodes_by_zone)
+        added = connect_zone_graph(zones, nodes_by_zone, rng=random.Random(3))
         self.assertEqual(len(added), 1)
         self.assertEqual(
             {added[0]["from_node"], added[0]["to_node"]},
@@ -832,6 +864,20 @@ class EngineGeneratorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["id"] for item in result["actions"]], ["new_spot_sit"])
         # replace=True：原来的地点列出来，交给编辑器确认后再删
         self.assertEqual(sorted(result["remove_nodes"]), sorted(before))
+        # 旧门户全会被删掉，所以新地点必须自动接回相邻区域，不能生成一片孤岛。
+        self.assertTrue(result["zone_edges"])
+        self.assertTrue(
+            all(
+                zone_id in (edge["from_zone"], edge["to_zone"])
+                for edge in result["zone_edges"]
+            )
+        )
+        self.assertTrue(
+            all(
+                "brand_new_spot" in (edge["from_node"], edge["to_node"])
+                for edge in result["zone_edges"]
+            )
+        )
         # 额外提示词确实进了提示词里
         self.assertIn("多来点安静的角落", self.creator.calls[-1]["prompt"])
 

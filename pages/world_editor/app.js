@@ -8327,13 +8327,14 @@ function openZoneRegenerateDialog(zone, result) {
   const drafts = result.nodes || [];
   const draftActions = result.actions || [];
   const removeNodes = result.remove_nodes || [];
+  const draftZoneEdges = result.zone_edges || [];
   const problems = result.problems || [];
   openCustomDialog({
     title: `重做「${zone.name || zone.id}」：${drafts.length} 个新地点`,
     hint: removeNodes.length
       ? `确认后会清掉这个区域现有的 ${removeNodes.length} 个地点和连边，`
         + "删除只绑定这些地点的专属动作，再写入这 "
-        + `${drafts.length} 个新地点；全局及共享动作保留。`
+        + `${drafts.length} 个新地点并自动接回相邻区域；全局及共享动作保留。`
       : "确认后把这批新地点加进这个区域，原有的地点留着。",
     confirmText: "写入这个区域",
     build: (body) => {
@@ -8356,14 +8357,21 @@ function openZoneRegenerateDialog(zone, result) {
         return false;
       }
       return commitZoneRegenerate(
-        zone, picked, result.edges || [], draftActions, removeNodes,
+        zone, picked, result.edges || [], draftActions, removeNodes, draftZoneEdges,
       );
     },
   });
 }
 
 /** 把「重做这个区域」的结果写进配置：清旧地点 → 写新地点 → 接边 → 并入动作。 */
-async function commitZoneRegenerate(zone, picked, newEdges, draftActions, removeNodes) {
+async function commitZoneRegenerate(
+  zone,
+  picked,
+  newEdges,
+  draftActions,
+  removeNodes,
+  draftZoneEdges,
+) {
   const removed = new Set(removeNodes || []);
   // 1) 清掉旧地点：先摘节点，再把挂在它们身上的边一起扔掉
   ui.config.world.nodes = nodes().filter((node) => !removed.has(node.id));
@@ -8406,6 +8414,31 @@ async function commitZoneRegenerate(zone, picked, newEdges, draftActions, remove
         id: `${edge.id || "e"}_${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`,
       }),
     );
+  // 新地点接回相邻区域：替换掉旧门户后，如果原跨区路线跟着失效，这里补新的门户路线。
+  (draftZoneEdges || [])
+    .filter(
+      (edge) =>
+        usedNodes.has(remap(edge.from_node))
+        && usedNodes.has(remap(edge.to_node)),
+    )
+    .forEach((edge) => {
+      const fromNode = remap(edge.from_node);
+      const toNode = remap(edge.to_node);
+      const pair = [fromNode, toNode].sort().join("|");
+      if (
+        zoneEdges().some(
+          (item) => [item.from_node, item.to_node].sort().join("|") === pair,
+        )
+      ) {
+        return;
+      }
+      zoneEdges().push({
+        ...edge,
+        from_node: fromNode,
+        to_node: toNode,
+        id: `${edge.id || "z"}_${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`,
+      });
+    });
   // 3) 随地点生成的动作：只留落点真进去的，并把重命名过的地点 id 映射过去
   const keptActions = (draftActions || [])
     .filter((item) => {
@@ -8424,6 +8457,7 @@ async function commitZoneRegenerate(zone, picked, newEdges, draftActions, remove
   await saveAll();
   const notes = [`已写入 ${picked.length} 个地点`];
   if (removed.size) notes.push(`清掉 ${removed.size} 个旧地点`);
+  if ((draftZoneEdges || []).length) notes.push(`接回 ${draftZoneEdges.length} 条跨区路线`);
   if (addedActions.length) notes.push(`顺带加入 ${addedActions.length} 个动作`);
   if (removedActions) notes.push(`${removedActions} 个绑定旧地点的专属动作已一并清掉`);
   toast(notes.join("；"));

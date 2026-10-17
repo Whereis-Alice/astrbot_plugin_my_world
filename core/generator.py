@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+import random
 import re
 from typing import Any
 
@@ -864,6 +865,31 @@ def _zone_distance(left: dict[str, Any], right: dict[str, Any]) -> float:
     return ((lx - rx) ** 2 + (ly - ry) ** 2) ** 0.5
 
 
+def _segment_crosses(
+    first: tuple[tuple[float, float], tuple[float, float]],
+    second: tuple[tuple[float, float], tuple[float, float]],
+) -> bool:
+    """两条路是否在中途相交；共用端点的路不算交叉。"""
+
+    (ax, ay), (bx, by) = first
+    (cx, cy), (dx, dy) = second
+    if {(ax, ay), (bx, by)} & {(cx, cy), (dx, dy)}:
+        return False
+
+    def orient(
+        p: tuple[float, float],
+        q: tuple[float, float],
+        r: tuple[float, float],
+    ) -> float:
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+
+    ab_c = orient((ax, ay), (bx, by), (cx, cy))
+    ab_d = orient((ax, ay), (bx, by), (dx, dy))
+    cd_a = orient((cx, cy), (dx, dy), (ax, ay))
+    cd_b = orient((cx, cy), (dx, dy), (bx, by))
+    return ab_c * ab_d < 0 and cd_a * cd_b < 0
+
+
 PORTAL_HINTS = (
     "入口", "门口", "大门", "门前", "玄关", "门厅", "出口", "站台", "车站",
     "月台", "码头", "渡口", "港口", "桥头", "路口", "街口", "广场", "大厅",
@@ -921,12 +947,16 @@ def connect_zone_graph(
     *,
     existing_edges: list[dict[str, Any]] | None = None,
     preferred_zone: str = "",
+    preferred_zones: set[str] | None = None,
+    rng: random.Random | None = None,
 ) -> list[dict[str, Any]]:
     """补全跨区连线，返回**新增**的连线，保证所有有地点的区域连成一片。
 
     已有连线会被当成图的边参与连通性判断；缺的那几刀按"离已经连上的片区最近的
-    区域"补，再补少量近路形成环路。``preferred_zone`` 用于分块生成：补线时优先
-    让刚生成的新区域接上第二个邻居，而不是只留一条入口。
+    区域"补，再补少量近路形成环路。距离接近的候选会带轻微随机抖动，避免每次
+    都把同一圈区域连成规则的五角星；会交叉的冗余路线优先跳过。
+    ``preferred_zone`` / ``preferred_zones`` 用于批量生成新区域：补线时优先让
+    刚生成的新区域接上第二个邻居。
     """
 
     by_id = {
@@ -938,6 +968,7 @@ def connect_zone_graph(
     if len(usable) < 2:
         return []
 
+    chooser = rng or random.SystemRandom()
     parent = {zone_id: zone_id for zone_id in usable}
 
     def find(zone_id: str) -> str:
@@ -953,6 +984,9 @@ def connect_zone_graph(
 
     used_pairs: set[frozenset[str]] = set()
     degree = {zone_id: 0 for zone_id in usable}
+    segments: list[
+        tuple[tuple[float, float], tuple[float, float]]
+    ] = []
     for edge in existing_edges or []:
         if not isinstance(edge, dict):
             continue
@@ -964,10 +998,34 @@ def connect_zone_graph(
             if left != right:
                 degree[left] += 1
                 degree[right] += 1
+                segments.append((_zone_xy(by_id[left]), _zone_xy(by_id[right])))
 
-    root = usable[0]
+    # 从哪个区域开始铺路也随机：同一张图换一次重建，主干朝向和留下的缺口会不同。
+    root = chooser.choice(usable)
     added: list[dict[str, Any]] = []
     used_edge_ids: set[str] = set()
+
+    def crossing_count(source: str, target: str) -> int:
+        segment = (_zone_xy(by_id[source]), _zone_xy(by_id[target]))
+        return sum(_segment_crosses(segment, other) for other in segments)
+
+    def route_score(
+        source: str,
+        target: str,
+        distance: float,
+        crossings: int,
+    ) -> float:
+        jitter = chooser.uniform(0.84, 1.16)
+        endpoint_degree = degree.get(source, 0) + degree.get(target, 0)
+        load = max(0, endpoint_degree - 3)
+        leaf_factor = 0.65 if endpoint_degree == 2 else 1
+        return (
+            distance
+            * jitter
+            * (1 + crossings * 1.25)
+            * (1 + load * 0.08)
+            * leaf_factor
+        )
 
     def add_connection(source: str, target: str, distance: float) -> bool:
         pair = frozenset((source, target))
@@ -988,6 +1046,7 @@ def connect_zone_graph(
         used_pairs.add(pair)
         degree[source] += 1
         degree[target] += 1
+        segments.append((_zone_xy(by_id[source]), _zone_xy(by_id[target])))
         added.append(
             {
                 "id": edge_id,
@@ -1006,23 +1065,40 @@ def connect_zone_graph(
         missing = [zone_id for zone_id in usable if find(zone_id) != find(root)]
         if not missing:
             break
-        # 每次只接入「离已连通区域最近的那个区域」，接完立刻重算。
-        # 一次把整批都接到同一个 root 上会得到放射状的线，交叉得很难看。
-        best: tuple[float, str, str] | None = None
+        # 每次只接一刀，接完立刻重算；候选距离带轻微抖动，并惩罚交叉与高负载枢纽，
+        # 所以同是五块区域，每次重建也能长出不同而仍然顺路的网络。
+        candidates: list[tuple[float, float, str, str, int]] = []
         for zone_id in missing:
-            candidates = [item for item in main if nodes_by_zone.get(item)]
-            if not candidates:
-                continue
-            target = min(
-                candidates,
-                key=lambda item: _zone_distance(by_id[zone_id], by_id[item]),
+            targets = sorted(
+                (
+                    (_zone_distance(by_id[zone_id], by_id[target]), target)
+                    for target in main
+                    if nodes_by_zone.get(target)
+                ),
+                key=lambda item: (item[0], item[1]),
             )
-            distance = _zone_distance(by_id[zone_id], by_id[target])
-            if best is None or distance < best[0]:
-                best = (distance, zone_id, target)
-        if best is None:
+            if not targets:
+                continue
+            nearest = targets[0][0]
+            for distance, target in targets:
+                if distance > nearest * 1.25:
+                    break
+                crossings = crossing_count(zone_id, target)
+                candidates.append(
+                    (
+                        route_score(zone_id, target, distance, crossings),
+                        distance,
+                        zone_id,
+                        target,
+                        crossings,
+                    )
+                )
+        if not candidates:
             break
-        distance, zone_id, target = best
+        _score, distance, zone_id, target, _crossings = min(
+            candidates,
+            key=lambda item: (item[0], item[1], item[2], item[3]),
+        )
         if not add_connection(zone_id, target, distance):
             break
         union(zone_id, target)
@@ -1030,30 +1106,74 @@ def connect_zone_graph(
     # 连通树只保证“到得了”，但会看起来像一条主干。再补少量最短的非重复
     # 路线，形成近路与环路；避开度数已经很高的枢纽，免得补成放射状。
     if len(usable) >= 3:
-        extra_target = max(1, round((len(usable) - 1) * 0.45))
-        focus = str(preferred_zone or "")
-        candidates = sorted(
-            (
-                (
-                    _zone_distance(by_id[left], by_id[right]),
-                    left,
-                    right,
+        extra_target = max(1, round((len(usable) - 1) * 0.35))
+        focus_ids = {
+            str(item)
+            for item in ({preferred_zone} | set(preferred_zones or set()))
+            if str(item)
+        }
+        # 没有指定必须接哪里时，小地图偶尔保留一棵自然的树，不强行把每个环都封死；
+        # 这样连续重建同一圈区域时，路线不会永远收敛到同一个正多边形成品。
+        if extra_target == 1 and not focus_ids and chooser.random() < 0.3:
+            extra_target = 0
+        candidates: list[
+            tuple[int, float, float, str, str, int]
+        ] = []
+        for index, left in enumerate(usable):
+            for right in usable[index + 1 :]:
+                if frozenset((left, right)) in used_pairs:
+                    continue
+                distance = _zone_distance(by_id[left], by_id[right])
+                crossings = crossing_count(left, right)
+                candidates.append(
+                    (
+                        0
+                        if focus_ids & {left, right}
+                        else 1,
+                        route_score(left, right, distance, crossings),
+                        distance,
+                        left,
+                        right,
+                        crossings,
+                    )
                 )
-                for index, left in enumerate(usable)
-                for right in usable[index + 1 :]
-            ),
+        candidates.sort(
             key=lambda item: (
-                0 if focus and focus in (item[1], item[2]) else 1,
                 item[0],
                 item[1],
                 item[2],
+                item[3],
+                item[4],
             ),
         )
         extra = 0
-        for distance, left, right in candidates:
-            if extra >= extra_target:
-                break
+        focused = [item for item in candidates if item[0] == 0]
+        pool = focused or candidates
+        allow_crossing = bool(focused)
+        viable = [
+            item
+            for item in pool
+            if degree.get(item[3], 0) < 4 and degree.get(item[4], 0) < 4
+        ]
+        if viable:
+            shortest = min(item[2] for item in viable)
+            pool = [
+                item
+                for item in viable
+                if item[2] <= shortest * 1.75
+            ]
+        else:
+            pool = []
+        while extra < extra_target and pool:
+            # 优先补最短的“叶端闭环/近路”；连通树本身已经随机，不会因为这里总取第一
+            # 又退回固定拓扑。需要多条冗余时才在前两条里换着选。
+            width = min(len(pool), max(1, extra_target))
+            picked = pool.pop(chooser.randrange(width))
+            _focus, _score, distance, left, right, _crossings = picked
             if degree.get(left, 0) >= 4 or degree.get(right, 0) >= 4:
+                continue
+            # 连通树已经保证到得了；冗余路线再交叉就容易长成规则星形，宁可不补。
+            if crossing_count(left, right) and not allow_crossing:
                 continue
             if add_connection(left, right, distance):
                 extra += 1
