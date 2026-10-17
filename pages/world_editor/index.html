@@ -549,7 +549,7 @@
         <!-- 会话 -->
         <!-- 通讯录：她认识的人（画像 + 关系 + 好感度） -->
         <section id="tab-contacts" class="tab">
-          <div class="page-head">
+          <div id="contacts-toolbar" class="page-head contacts-toolbar">
             <div class="page-head-left">
               <label class="field">
                 <span>会话</span>
@@ -572,24 +572,32 @@
               <span class="muted" id="contacts-note"></span>
             </div>
           </div>
-          <div class="contacts-subtabs" role="tablist" aria-label="通讯录视图">
-            <button type="button" class="on" data-contacts-view="contacts">通讯录</button>
-            <button type="button" data-contacts-view="overview">总览</button>
-            <button type="button" data-contacts-view="audit">审计</button>
-            <button type="button" data-contacts-view="data">数据与备份</button>
+          <div id="contacts-views-bar" class="contacts-views-bar">
+            <div class="contacts-subtabs" role="tablist" aria-label="通讯录视图">
+              <button type="button" class="on" data-contacts-view="contacts">通讯录</button>
+              <button type="button" data-contacts-view="overview">总览</button>
+              <button type="button" data-contacts-view="audit">审计</button>
+              <button type="button" data-contacts-view="data">数据与备份</button>
+            </div>
+            <div class="contacts-views-meta">
+              <span id="contacts-toolbar-summary" class="contacts-toolbar-summary"></span>
+              <button
+                id="contacts-toolbar-toggle"
+                class="ghost contacts-toolbar-toggle"
+                type="button"
+                aria-expanded="true"
+                title="收起 / 展开通讯录工具栏"
+              >▴</button>
+            </div>
           </div>
 
           <div id="contacts-view-contacts" class="contacts-view">
-            <div class="contacts-unified">
+            <div id="contacts-unified" class="contacts-unified">
               <aside class="contacts-directory">
                 <div class="contacts-directory-head">
                   <div>
-                    <h2>联系人</h2>
-                    <p class="hint-line" id="contacts-filter-note">
-                      一个联系人一份统一画像，关系、称呼、备注与字段历史都在同一处。
-                    </p>
+                    <h2>联系人 <span id="contacts-count" class="contacts-count">0 人</span></h2>
                   </div>
-                  <span id="contacts-count" class="contacts-count">0 人</span>
                 </div>
                 <label class="contacts-search-box">
                   <span aria-hidden="true">⌕</span>
@@ -631,10 +639,9 @@
                   </div>
                 </header>
                 <nav id="contacts-detail-tabs" class="contacts-detail-tabs hidden" aria-label="联系人详情">
-                  <button type="button" class="on" data-contact-detail-tab="overview">概况</button>
-                  <button type="button" data-contact-detail-tab="profile">画像字段</button>
-                  <button type="button" data-contact-detail-tab="relation">关系与事实</button>
-                  <button type="button" data-contact-detail-tab="records">画像记录</button>
+                  <button type="button" class="on" data-contact-detail-tab="profile">资料</button>
+                  <button type="button" data-contact-detail-tab="relation">关系</button>
+                  <button type="button" data-contact-detail-tab="activity">活动与记录</button>
                 </nav>
                 <div id="contacts-detail" class="contacts-detail unified" data-keep-text></div>
               </section>

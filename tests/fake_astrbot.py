@@ -98,17 +98,83 @@ class _Filter:
 
         return wrapper
 
+    @staticmethod
+    def _command_decorator(command_name, alias=None, **_kwargs):
+        def wrapper(func):
+            class _CommandFilter:
+                def get_complete_command_names(self):
+                    return [str(command_name), *sorted(alias or set())]
+
+            row = types.SimpleNamespace(
+                handler=func,
+                handler_name=func.__name__,
+                handler_full_name=f"{func.__module__}_{func.__name__}",
+                handler_module_path=func.__module__,
+                event_filters=[_CommandFilter()],
+            )
+            # 别的测试文件会替换 astrbot.core.star.star_handler 桩模块，
+            # 所以命令先记进本模块这份稳定注册表，再顺手同步一份给当前桩。
+            STAR_HANDLERS.append(row)
+            handler_module = sys.modules.get("astrbot.core.star.star_handler")
+            registry = getattr(handler_module, "star_handlers_registry", None)
+            if registry is not None and registry is not STAR_HANDLERS:
+                registry.append(row)
+            return func
+
+        return wrapper
+
     on_llm_request = _decorator
     on_llm_response = _decorator
     on_using_llm_tool = _decorator
     on_llm_tool_respond = _decorator
     after_message_sent = _decorator
     event_message_type = _decorator
-    command = _decorator
+    command = _command_decorator
     command_group = _decorator
     permission_type = _decorator
     regex = _decorator
     llm_tool = _decorator
+
+
+class _Registry:
+    def __init__(self) -> None:
+        self.rows: list[Any] = []
+
+    def __iter__(self):
+        return iter(self.rows)
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def append(self, row: Any) -> None:
+        self.rows.append(row)
+
+    def remove(self, row: Any) -> None:
+        self.rows.remove(row)
+
+    def get_handlers_by_event_type(self, _event_type: Any) -> list[Any]:
+        return list(self.rows)
+
+    def get_handlers_by_module_name(self, module_name: str) -> list[Any]:
+        return [
+            row
+            for row in self.rows
+            if str(getattr(row, "handler_module_path", "")) == str(module_name)
+        ]
+
+    def get_handler_by_full_name(self, full_name: str) -> Any:
+        return next(
+            (
+                row
+                for row in self.rows
+                if str(getattr(row, "handler_full_name", "")) == str(full_name)
+            ),
+            None,
+        )
+
+
+# `filter.command(...)` 注册进来的处理器；跨测试文件稳定，不受 sys.modules 替换影响。
+STAR_HANDLERS = _Registry()
 
 
 class _RequestProxy:
@@ -182,6 +248,14 @@ def install() -> None:
     event.AstrMessageEvent = _AstrMessageEvent
     event.MessageChain = _MessageChain
     event.filter = _Filter
+    # 真实 AstrBot 由装饰器写入这个注册表；测试至少要把注册结果暴露出来。
+    handler_module = types.ModuleType("astrbot.core.star.star_handler")
+    star_package = types.ModuleType("astrbot.core.star")
+    star_package.__path__ = []  # 让 `astrbot.core.star.star_handler` 能作为子模块导入
+    handler_module.EventType = types.SimpleNamespace(AdapterMessageEvent="adapter")
+    handler_module.star_handlers_registry = STAR_HANDLERS
+    star_package.star_handler = handler_module
+    core_module.star = star_package
 
     components.Plain = lambda text: {"type": "plain", "text": text}
     components.At = lambda qq: {"type": "at", "qq": qq}
@@ -260,3 +334,5 @@ def install() -> None:
     sys.modules["astrbot.api.message_components"] = components
     sys.modules["astrbot.api.star"] = star
     sys.modules["astrbot.api.web"] = web
+    sys.modules["astrbot.core.star"] = star_package
+    sys.modules["astrbot.core.star.star_handler"] = handler_module

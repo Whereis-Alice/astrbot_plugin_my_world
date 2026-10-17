@@ -343,3 +343,36 @@ class ScopeApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(replies)
         self.assertIn("爱好", replies[0])
         self.assertIn("摄影", replies[0])
+
+    def test_original_profile_commands_are_visible_to_astrbot_registry(self):
+        import fake_astrbot
+
+        # 别的测试会替换 astrbot.core.star.star_handler 桩模块，所以读这份稳定注册表。
+        registry = fake_astrbot.STAR_HANDLERS
+        module_path = self.module.__name__
+        handlers = registry.get_handlers_by_event_type("adapter")
+        commands: set[str] = set()
+        for handler in handlers:
+            if handler.handler_module_path != module_path:
+                continue
+            for event_filter in handler.event_filters:
+                names = getattr(event_filter, "get_complete_command_names", None)
+                if callable(names):
+                    commands.update(str(name) for name in names())
+        for command in (
+            "我的画像",
+            "设置画像",
+            "删除画像",
+            "锁定画像",
+            "解锁画像",
+            "画像历史",
+            "清空画像",
+            "画像帮助",
+            "查询画像",
+            "画像统计",
+            "画像备份",
+            "画像备份列表",
+            "画像恢复备份",
+            "合并画像",
+        ):
+            self.assertIn(command, commands)

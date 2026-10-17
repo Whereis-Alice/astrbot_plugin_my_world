@@ -141,16 +141,18 @@ class ProfileWeaverImportTests(unittest.TestCase):
         self.assertEqual(result["people"], 0)
         self.assertEqual(result["added"], 0)
 
-    def test_import_fills_call_him_but_never_overwrites_it(self):
-        """它的「昵称」当称呼补进来；这边已经写过的称呼不动。"""
+    def test_import_fills_call_me_but_never_overwrites_it(self):
+        """它的「昵称」是用户希望被怎么叫，应补到 call_me；已有称呼不动。"""
 
         items = profile_weaver.iter_import_items(sample_profiles())
         self.store.import_external(SESSION, items, now=1000.0)
-        self.assertEqual(self.store.view(SESSION, "2692047521").call_him, "阿岚")
+        view = self.store.view(SESSION, "2692047521")
+        self.assertEqual(view.call_me, "阿岚")
+        self.assertEqual(view.call_him, "")
 
-        self.store.set_call_names(SESSION, "2692047521", call_him="岚岚")
+        self.store.set_call_names(SESSION, "2692047521", call_me="岚岚")
         self.store.import_external(SESSION, items, now=1100.0)
-        self.assertEqual(self.store.view(SESSION, "2692047521").call_him, "岚岚")
+        self.assertEqual(self.store.view(SESSION, "2692047521").call_me, "岚岚")
 
     def test_import_respects_the_profile_switch(self):
         world, _warnings = parse_world(default_world())

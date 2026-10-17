@@ -89,7 +89,8 @@ const ui = {
   contactUser: "",
   contactDetail: null,
   contactsView: "contacts",
-  contactDetailTab: "overview",
+  contactDetailTab: "profile",
+  contactsToolbarCollapsed: false,
   contactsFilter: "all",
   contactsSort: "recent",
   contactsMeta: {},
@@ -3842,6 +3843,7 @@ function showTab(name, button) {
   }
   if (name === "presets") loadPresets();
   renderConfigScope();
+  requestAnimationFrame(syncContactsWorkbenchHeight);
 }
 
 function bindButtons() {
@@ -4016,6 +4018,11 @@ function bindButtons() {
     $("contacts-session").addEventListener("change", () => {
       ui.contactUser = "";
       setContactsView(ui.contactsView);
+    });
+  }
+  if ($("contacts-toolbar-toggle")) {
+    $("contacts-toolbar-toggle").addEventListener("click", () => {
+      applyContactsToolbarCollapsed(!ui.contactsToolbarCollapsed);
     });
   }
   document.querySelectorAll("[data-contacts-view]").forEach((button) => {
@@ -4248,6 +4255,7 @@ function bindButtons() {
   setMapSide(window.innerWidth >= 1100);
   window.addEventListener("resize", () => {
     syncTopbarHeight();
+    syncContactsWorkbenchHeight();
     const mapTab = $("tab-map");
     if (!mapTab || !mapTab.classList.contains("active")) return;
     if (!ui.mapViewReady) fitMapToCanvas({ silent: true });
@@ -14808,9 +14816,6 @@ function renderContactsList() {
         `${num(item.message_count)} 句 · ${formatStamp(item.last_seen_at)}`,
     );
     body.appendChild(meta);
-    if (item.digest) {
-      body.appendChild(el("div", "contact-row-digest", item.digest));
-    }
     const weaver = item.weaver || {};
     if (weaver.completeness != null) {
       const completeness = el("div", "contact-row-weaver");
@@ -14823,10 +14828,6 @@ function renderContactsList() {
         );
       }
       body.appendChild(completeness);
-      const preview = weaverPreviewText(weaver);
-      if (preview) {
-        body.appendChild(el("div", "contact-row-weaver-preview muted", preview));
-      }
     }
     row.appendChild(body);
     box.appendChild(row);
@@ -14871,8 +14872,8 @@ async function loadContactDetail(userId) {
 }
 
 function setContactDetailTab(tab) {
-  const allowed = ["overview", "profile", "relation", "records"];
-  ui.contactDetailTab = allowed.includes(tab) ? tab : "overview";
+  const allowed = ["profile", "relation", "activity"];
+  ui.contactDetailTab = allowed.includes(tab) ? tab : "profile";
   document.querySelectorAll("[data-contact-detail-tab]").forEach((button) => {
     button.classList.toggle(
       "on",
@@ -14884,13 +14885,42 @@ function setContactDetailTab(tab) {
   });
 }
 
+/** 联系人工作台占满剩余视口高度；手机或窄屏仍退回文档流。 */
+function syncContactsWorkbenchHeight() {
+  const tab = $("tab-contacts");
+  const box = $("contacts-unified");
+  if (!tab || !box || !tab.classList.contains("active")) return;
+  if (window.innerWidth <= 1000) {
+    box.style.removeProperty("--contacts-workbench-h");
+    return;
+  }
+  const top = box.getBoundingClientRect().top;
+  const height = Math.max(420, window.innerHeight - top - 18);
+  box.style.setProperty("--contacts-workbench-h", `${Math.floor(height)}px`);
+}
+
+function applyContactsToolbarCollapsed(collapsed) {
+  ui.contactsToolbarCollapsed = Boolean(collapsed);
+  const tab = $("tab-contacts");
+  if (tab) tab.classList.toggle("toolbar-collapsed", ui.contactsToolbarCollapsed);
+  const button = $("contacts-toolbar-toggle");
+  if (button) {
+    button.textContent = ui.contactsToolbarCollapsed ? "▾" : "▴";
+    button.setAttribute("aria-expanded", String(!ui.contactsToolbarCollapsed));
+    button.title = ui.contactsToolbarCollapsed
+      ? "展开通讯录工具栏"
+      : "收起通讯录工具栏";
+  }
+  requestAnimationFrame(syncContactsWorkbenchHeight);
+}
+
 function contactRecordsSection(data) {
   const card = el("div", "contact-section contact-records-section");
-  card.dataset.contactPanel = "records";
+  card.dataset.contactPanel = "activity";
   const records = data.weaver_records || [];
   const canEdit = !ui.contactsMeta || ui.contactsMeta.webui_allow_edit !== false;
   const head = el("div", "section-head");
-  head.appendChild(el("h3", "", `画像记录（${records.length}）`));
+  head.appendChild(el("h3", "", `画像来源（${records.length}）`));
   if (canEdit && records.length > 1) {
     const merge = el("button", "primary tiny", "合并到当前会话记录");
     merge.dataset.act = "records-merge";
@@ -15049,7 +15079,7 @@ function contactWeaverSection(data) {
 
   if ((detail.notes || []).length) {
     const notes = el("div", "weaver-notes");
-    notes.appendChild(el("h4", "", "备注"));
+    notes.appendChild(el("h4", "", "画像备注（会带给模型）"));
     detail.notes.forEach((note, index) => {
       const row = el("div", "weaver-note-row");
       row.appendChild(el("span", "", `${index + 1}. ${note}`));
@@ -15074,62 +15104,60 @@ function renderContactDetail(data) {
   ui.contactUser = data.user_id;
   const displayName =
     identity.display_name || person.call_me || person.name || data.user_id;
-  const scopedRecords = num(identity.record_count);
   $("contacts-title").textContent = displayName;
   $("contacts-subtitle").textContent =
-    `QQ ${data.user_id} · 当前会话 ${scopedRecords} 条画像记录 · ` +
+    `QQ ${data.user_id} · ` +
     `${identity.call_him ? `你私下叫她「${identity.call_him}」` : person.level?.name || "陌生人"}`;
+  $("contacts-toolbar-summary").textContent =
+    `${displayName} · ${person.level?.name || "陌生人"} · 好感 ${Math.round(num(person.affinity))}`;
   $("contacts-avatar").textContent = String(displayName).trim().slice(0, 1) || "?";
   const affinityBadge = $("contacts-detail-affinity");
   if (affinityBadge) {
     affinityBadge.classList.remove("hidden");
     affinityBadge.textContent =
-      `好感 ${Math.round(num(person.affinity))} · ${person.level?.name || "陌生人"}`;
+      `${person.level?.name || "陌生人"} · 好感 ${Math.round(num(person.affinity))}` +
+      ` · 聊过 ${num(person.message_count)} 句 · ${formatStamp(person.last_seen_at)}`;
   }
   $("contacts-detail-tabs")?.classList.remove("hidden");
   box.innerHTML = "";
   renderContactsList();
 
-  // 零、她对他已知的概况：认识多久、聊过多少、群名片、关系上限
-  const metaCard = el("div", "contact-section");
-  metaCard.dataset.contactPanel = "overview";
-  const metaBits = [];
-  if (person.days_known) metaBits.push(`认识 ${person.days_known} 天`);
-  if (person.message_count) metaBits.push(`聊过 ${person.message_count} 句`);
-  if (person.qq_name) metaBits.push(`昵称「${person.qq_name}」`);
-  const cards = Object.entries(person.cards || {});
-  cards.forEach(([sessionId, card]) => {
-    if (card) metaBits.push(`在 ${sessionId.split(":").slice(-1)[0]} 叫「${card}」`);
-  });
-  const caps = (data.bonds_config || [])
-    .filter((item) => (person.affinities || []).includes(item.name))
-    .map((item) => Number(item.cap) || 0);
-  const capIndex = caps.length ? Math.max(...caps) : null;
-  const levels = (data.levels_config || [])
-    .map((item) => item.name)
-    .filter(Boolean);
-  if (capIndex !== null && levels.length) {
-    const capName = levels[Math.max(0, Math.min(capIndex, levels.length - 1))] || "";
-    metaBits.push(`关系上限：${capName}级`);
-  }
-  metaCard.appendChild(
-    el("h3", "", `概况${person.digest ? `｜${person.digest}` : ""}`),
-  );
-  metaCard.appendChild(
-    el("p", "hint-line", metaBits.join("；") || "才刚认识，还没聊过几句。"),
-  );
-  metaCard.appendChild(
-    el(
-      "p",
-      "hint-line",
-      "好感度：说话时每轮由她自己判断（有每轮与每天上限），他露个面也会长一点（混脸熟），" +
-        "长期不理则每天慢慢回落。",
-    ),
-  );
-  box.appendChild(metaCard);
   const profileSection = contactWeaverSection(data);
   profileSection.dataset.contactPanel = "profile";
   box.appendChild(profileSection);
+  const identitySection = el("div", "contact-section contact-identity-section");
+  identitySection.dataset.contactPanel = "profile";
+  const identityHead = el("div", "section-head");
+  identityHead.appendChild(el("h3", "", "称呼与备注"));
+  const identitySave = el("button", "primary tiny", "保存");
+  identitySave.dataset.act = "fields-save";
+  identityHead.appendChild(identitySave);
+  identitySection.appendChild(identityHead);
+  const callMe = el("input");
+  callMe.placeholder = "他希望你怎么称呼他（例如：阿岚）";
+  callMe.value = person.call_me || "";
+  callMe.dataset.act = "field-call-me";
+  const callHim = el("input");
+  callHim.placeholder = "你私下怎么称呼他（例如：小笨蛋）";
+  callHim.value = person.call_him || "";
+  callHim.dataset.act = "field-call-him";
+  const note = el("input");
+  note.placeholder = "备注（只给你看，不进模型）";
+  note.value = person.note || "";
+  note.dataset.act = "field-note";
+  const digest = el("input");
+  digest.placeholder = "缩略版画像（给别人看的那一行）";
+  digest.value = person.digest || "";
+  digest.dataset.act = "field-digest";
+  [callMe, callHim, note, digest].forEach((node) => identitySection.appendChild(node));
+  identitySection.appendChild(
+    el(
+      "p",
+      "hint-line contact-identity-help",
+      "称呼一是他的要求，称呼二是你私下给他起的昵称；备注只给主人看，缩略版画像用于群聊背景。",
+    ),
+  );
+  box.appendChild(identitySection);
 
   // 一、关系：这一页只放摘要（一长条关系表会把整页顶下去），要改点「管理关系…」进弹窗
   const bondCard = el("div", "contact-section");
@@ -15247,30 +15275,7 @@ function renderContactDetail(data) {
   grudgeCard.appendChild(grudgeRow);
   box.appendChild(grudgeCard);
 
-  // 三、称呼与备注
-  const fieldCard = el("div", "contact-section");
-  fieldCard.dataset.contactPanel = "overview";
-  fieldCard.appendChild(el("h3", "", "称呼与备注"));
-  const callMe = el("input");
-  callMe.placeholder = "他让你怎么称呼自己";
-  callMe.value = person.call_me || "";
-  callMe.dataset.act = "field-call-me";
-  const callHim = el("input");
-  callHim.placeholder = "你怎么称呼他";
-  callHim.value = person.call_him || "";
-  callHim.dataset.act = "field-call-him";
-  const note = el("input");
-  note.placeholder = "备注（只给你看，不进模型）";
-  note.value = person.note || "";
-  note.dataset.act = "field-note";
-  if (person.note_from) {
-    note.title = `备注来自${person.note_from}（这边还没写过）；改动会写回本插件。`;
-  }
-  const digest = el("input");
-  digest.placeholder = "缩略版画像（给别人看的那一行）";
-  digest.value = person.digest || "";
-  digest.dataset.act = "field-digest";
-  [callMe, callHim, note, digest].forEach((node) => fieldCard.appendChild(node));
+  // 三、称呼与备注的维护入口（输入框在资料页顶部的统一身份卡片里）
   const managedActions = el("div", "contact-managed-actions");
   const nicknameHistory = el("button", "ghost tiny", "昵称变更历史");
   nicknameHistory.dataset.act = "weaver-history";
@@ -15280,28 +15285,12 @@ function renderContactDetail(data) {
   noteHistory.dataset.act = "weaver-history";
   noteHistory.dataset.field = "备注";
   managedActions.appendChild(noteHistory);
-  fieldCard.appendChild(managedActions);
-  if (person.call_me_from) {
-    fieldCard.appendChild(
-      el("p", "muted", `称呼先用了${person.call_me_from}里的昵称；保存后以这里为准。`),
-    );
-  } else if (person.call_him_from) {
-    fieldCard.appendChild(
-      el("p", "muted", `她怎么称呼他先用了${person.call_him_from}里的昵称；保存后以这里为准。`),
-    );
-  }
-  if (person.note_from) {
-    fieldCard.appendChild(el("p", "muted", `备注先用了${person.note_from}里记的内容；保存后以这边为准。`));
-  }
-  const saveFields = el("button", "primary tiny", "保存这些字段");
-  saveFields.dataset.act = "fields-save";
-  fieldCard.appendChild(saveFields);
-  box.appendChild(fieldCard);
+  identitySection.appendChild(managedActions);
 
   // 四、事实列表
   const factCard = el("div", "contact-section");
-  factCard.dataset.contactPanel = "relation";
-  factCard.appendChild(el("h3", "", "关于他（事实）"));
+  factCard.dataset.contactPanel = "activity";
+  factCard.appendChild(el("h3", "", "她经历过的事"));
   const factRows = el("div", "list");
   // 攒多了会很长：置顶的永远在，其余默认只显示最近几条，想看全部再展开
   const allFacts = data.facts || [];
@@ -15373,7 +15362,7 @@ function renderContactDetail(data) {
   factCard.appendChild(forget);
   box.appendChild(factCard);
   box.appendChild(contactRecordsSection(data));
-  setContactDetailTab(ui.contactDetailTab || "overview");
+  setContactDetailTab(ui.contactDetailTab || "profile");
 }
 
 /** 预览整理的结果：提示词、模型原话、解析出来的 JSON 都摆出来。 */

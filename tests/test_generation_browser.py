@@ -676,8 +676,21 @@ class GenerationBrowserTests(unittest.TestCase):
     def test_contacts_merge_relationship_and_profile_views(self):
         self.page.locator('button[data-tab="contacts"]').click()
         expect(self.page.locator(".contacts-unified")).to_be_visible()
+        # 左侧目录：只留姓名 / QQ / 等级 / 统计 / 画像完整度，摘要不再堆进来
+        expect(self.page.locator(".contacts-toolbar")).to_be_visible()
+        expect(self.page.locator(".contacts-directory-list")).to_have_css(
+            "overflow-y", "auto"
+        )
+        expect(self.page.locator("#contacts-detail")).to_have_css("overflow-y", "auto")
         expect(self.page.locator(".contact-row")).to_have_count(1)
         expect(self.page.locator(".contact-row")).to_contain_text("小鲸鱼")
+        expect(self.page.locator(".contact-row-digest")).to_have_count(0)
+        expect(self.page.locator(".contact-row-weaver-preview")).to_have_count(0)
+        self.page.locator("#contacts-toolbar-toggle").click()
+        expect(self.page.locator("#contacts-toolbar")).to_be_hidden()
+        self.host.screenshot(path=str(self.shots / "contacts-toolbar-collapsed.png"))
+        self.page.locator("#contacts-toolbar-toggle").click()
+        expect(self.page.locator("#contacts-toolbar")).to_be_visible()
         self.page.locator(".contact-row").click()
         expect(self.page.locator("#contacts-title")).to_have_text("小鲸鱼")
         expect(self.page.locator("#contacts-subtitle")).to_contain_text("你私下叫她")
@@ -687,12 +700,16 @@ class GenerationBrowserTests(unittest.TestCase):
         expect(self.page.locator(".contact-weaver-section")).to_be_visible()
         expect(self.page.locator(".weaver-field-row")).to_have_count(1)
         expect(self.page.locator(".contact-weaver-section")).to_contain_text("喜欢的话题")
+        expect(self.page.locator("#contacts-detail")).to_contain_text("称呼与备注")
+        self.host.screenshot(path=str(self.shots / "contacts-unified-profile.png"))
 
         self.page.locator('[data-contact-detail-tab="relation"]').click()
-        expect(self.page.locator("#contacts-detail")).to_contain_text("关于他（事实）")
-        expect(self.page.locator("#contacts-detail")).to_contain_text("喜欢热茶")
+        expect(self.page.locator("#contacts-detail")).to_contain_text("关系")
+        expect(self.page.locator("#contacts-detail")).to_contain_text("好感度")
 
-        self.page.locator('[data-contact-detail-tab="records"]').click()
+        self.page.locator('[data-contact-detail-tab="activity"]').click()
+        expect(self.page.locator("#contacts-detail")).to_contain_text("她经历过的事")
+        expect(self.page.locator("#contacts-detail")).to_contain_text("喜欢热茶")
         expect(self.page.locator(".contact-records-section")).to_be_visible()
         expect(self.page.locator(".contact-record-row")).to_have_count(1)
         self.host.screenshot(path=str(self.shots / "contacts-unified-detail.png"))
