@@ -8208,7 +8208,176 @@ function zoneGeneratorBox(zone) {
   row3.appendChild(el("span", "muted", "个动作"));
   row3.appendChild(runActions);
   wrapper.appendChild(row3);
+
+  // 一次配齐：地点 + 地点专属动作 + 额外提示词（可选替换现有地点）
+  const row4 = el("div", "row-item");
+  const regenerate = el("button", "ghost", "重做这个区域…");
+  regenerate.type = "button";
+  regenerate.title = "重新起草这个区域的地点，可顺带生成地点专属动作、可选替换现有地点";
+  regenerate.addEventListener("click", () => regenerateZoneDialog(zone));
+  row4.appendChild(regenerate);
+  row4.appendChild(
+    el("span", "muted", "地点数、每个地点的动作数、额外提示词一次填完；替换是可选的"),
+  );
+  wrapper.appendChild(row4);
   return wrapper;
+}
+
+/** 「重做这个区域」：地点 + 可选的地点专属动作，一次草稿、一次确认。 */
+function regenerateZoneDialog(zone) {
+  const inside = nodesInZone(zone.id);
+  askGenerateCount({
+    title: `重做区域：${zone.name || zone.id}`,
+    hint: `给这个区域重新起草一批地点。现在这个区域有 ${inside.length} 个地点；`
+      + "选「替换」的话，确认时会把它们连边一起清掉（挂在这些地点上的动作会改成全局）。",
+    defaultValue: Math.max(1, Math.min(6, inside.length || 3)),
+    min: 1,
+    max: 8,
+    second: {
+      label: "每个地点生成几个动作（0 = 不生成）",
+      defaultValue: 0,
+      min: 0,
+      max: 6,
+    },
+    choice: {
+      label: "怎么处理现有的地点",
+      defaultValue: "append",
+      options: [
+        { value: "append", text: "追加：老的留着，新的加进来" },
+        { value: "replace", text: "替换：确认时清掉这个区域现有的地点" },
+      ],
+    },
+    extra: {
+      label: "额外提示词（可选）",
+      placeholder: "例如：多一点安静、适合发呆的角落",
+    },
+    onRun: async (count, actionsPerNode, extraPrompt, choiceValue) => {
+      const result = await apiPost("generate/zone", {
+        zone: zone.id,
+        count,
+        actions_per_node: actionsPerNode || 0,
+        extra_prompt: extraPrompt,
+        replace: choiceValue === "replace",
+      });
+      const drafts = result.nodes || [];
+      if (!drafts.length) {
+        throw new Error((result.problems || []).join("；") || "没有生成出可用的地点，请重试");
+      }
+      return () => openZoneRegenerateDialog(zone, result);
+    },
+  });
+}
+
+function openZoneRegenerateDialog(zone, result) {
+  const drafts = result.nodes || [];
+  const draftActions = result.actions || [];
+  const removeNodes = result.remove_nodes || [];
+  const problems = result.problems || [];
+  openCustomDialog({
+    title: `重做「${zone.name || zone.id}」：${drafts.length} 个新地点`,
+    hint: removeNodes.length
+      ? `确认后会把这个区域现有的 ${removeNodes.length} 个地点连边一起清掉，再写入这 ${drafts.length} 个新地点。`
+      : "确认后把这批新地点加进这个区域，原有的地点留着。",
+    confirmText: "写入这个区域",
+    build: (body) => {
+      buildNodeDraftList(body, drafts);
+      if (draftActions.length) {
+        body.appendChild(
+          el("p", "muted", `随地点一起生成了 ${draftActions.length} 个地点专属动作，确认时一并加入动作库。`),
+        );
+      }
+      if (problems.length) {
+        body.appendChild(el("p", "muted", "生成提醒：" + problems.join("；")));
+      }
+    },
+    onSubmit: async () => {
+      const picked = drafts.filter((item) => item._pick !== false);
+      if (!picked.length) {
+        toast("至少要留一个地点");
+        return false;
+      }
+      return commitZoneRegenerate(
+        zone, picked, result.edges || [], draftActions, removeNodes,
+      );
+    },
+  });
+}
+
+/** 把「重做这个区域」的结果写进配置：清旧地点 → 写新地点 → 接边 → 并入动作。 */
+async function commitZoneRegenerate(zone, picked, newEdges, draftActions, removeNodes) {
+  const removed = new Set(removeNodes || []);
+  // 1) 清掉旧地点：先摘节点，再把挂在它们身上的边一起扔掉
+  ui.config.world.nodes = nodes().filter((node) => !removed.has(node.id));
+  ui.config.world.edges = edges().filter(
+    (edge) => !removed.has(edge.from) && !removed.has(edge.to),
+  );
+  ui.config.world.zone_edges = zoneEdges().filter(
+    (edge) => !removed.has(edge.from_node) && !removed.has(edge.to_node),
+  );
+  // 2) 写进新地点（id 撞了就往后排）
+  const usedNodes = new Set(nodes().map((item) => item.id));
+  const idMap = {};
+  picked.forEach((draft) => {
+    const payload = { ...draft };
+    delete payload._pick;
+    if (usedNodes.has(payload.id)) {
+      const base = payload.id;
+      let id = `${base}_2`;
+      let index = 3;
+      while (usedNodes.has(id)) id = `${base}_${index++}`;
+      idMap[base] = id;
+      payload.id = id;
+    }
+    usedNodes.add(payload.id);
+    nodes().push(payload);
+  });
+  const remap = (id) => idMap[id] || id;
+  const addedNodeIds = new Set(picked.map((item) => remap(item.id)));
+  (newEdges || [])
+    .filter((edge) => addedNodeIds.has(remap(edge.from)) && addedNodeIds.has(remap(edge.to)))
+    .forEach((edge) =>
+      edges().push({
+        ...edge,
+        from: remap(edge.from),
+        to: remap(edge.to),
+        id: `${edge.id || "e"}_${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`,
+      }),
+    );
+  // 3) 随地点生成的动作：只留落点真进去的，并把重命名过的地点 id 映射过去
+  const keptActions = (draftActions || [])
+    .filter((item) => {
+      const owners = (item.allowed_nodes || []).map((id) => remap(id));
+      return owners.length > 0 && owners.every((id) => addedNodeIds.has(id));
+    })
+    .map((item) => ({
+      ...item,
+      allowed_nodes: (item.allowed_nodes || []).map((id) => remap(id)),
+      ...(item.node_id ? { node_id: remap(item.node_id) } : {}),
+    }));
+  const addedActions = pushActionDrafts(keptActions);
+  // 4) 被删掉的地点：限定它们的动作改成全局（和「一键重建」同一套处理）
+  let orphaned = 0;
+  (ui.config.world.actions || []).forEach((action) => {
+    if (action.scope !== "node" || !(action.allowed_nodes || []).length) return;
+    const kept = (action.allowed_nodes || []).filter((id) => !removed.has(id));
+    if (!kept.length) {
+      action.scope = "global";
+      action.allowed_nodes = [];
+      orphaned += 1;
+      return;
+    }
+    action.allowed_nodes = kept;
+  });
+  markDirty();
+  renderMap();
+  renderNodeForm();
+  await saveAll();
+  const notes = [`已写入 ${picked.length} 个地点`];
+  if (removed.size) notes.push(`清掉 ${removed.size} 个旧地点`);
+  if (addedActions.length) notes.push(`顺带加入 ${addedActions.length} 个动作`);
+  if (orphaned) notes.push(`${orphaned} 个原本限定旧地点的动作已改为全局`);
+  toast(notes.join("；"));
+  return true;
 }
 
 /** 地点自己的生成入口：按这个地点的样子生成几个动作。 */
@@ -8474,14 +8643,11 @@ function buildActionDraftList(body, drafts, problems) {
   renderDraftRows();
 }
 
-async function commitGeneratedActions(drafts) {
-  const picked = drafts.filter((item) => item._pick !== false);
-  if (!picked.length) {
-    toast("一个都没勾");
-    return false;
-  }
+/** 把生成好的动作草稿并进动作库（**不保存**）：调用方自己 markDirty + saveAll。 */
+function pushActionDrafts(drafts) {
+  const picked = (drafts || []).filter((item) => item && item._pick !== false);
   const used = new Set(actions().map((item) => item.id));
-  let added = 0;
+  const added = [];
   picked.forEach((draft) => {
     const payload = { ...draft };
     delete payload._pick;
@@ -8494,13 +8660,22 @@ async function commitGeneratedActions(drafts) {
     used.add(payload.id);
     payload.created_at = payload.created_at || Date.now();
     actions().push(payload);
-    added += 1;
+    added.push(payload);
   });
+  return added;
+}
+
+async function commitGeneratedActions(drafts) {
+  const added = pushActionDrafts(drafts);
+  if (!added.length) {
+    toast("一个都没勾");
+    return false;
+  }
   markDirty();
   renderActionGrid();
   // 生成结果确认即保存：不然用户以为没添加成功，还要再找一次右上角的「保存」
   await saveAll();
-  toast(`已加入 ${added} 个动作并保存`);
+  toast(`已加入 ${added.length} 个动作并保存`);
   return true;
 }
 
@@ -8513,10 +8688,11 @@ async function commitGeneratedActions(drafts) {
  * 生成会读她的人设与已有世界，结果永远先当草稿，用户改完确认才落库。
  */
 function askGenerateCount({
-  title, hint, defaultValue, min = 1, max, second, extra, choice, onRun,
+  title, hint, defaultValue, min = 1, max, second, third, extra, choice, onRun,
 }) {
   let value = String(defaultValue);
   let secondValue = second ? String(second.defaultValue) : "";
+  let thirdValue = third ? String(third.defaultValue ?? 0) : "";
   let extraValue = extra ? String(extra.defaultValue || "") : "";
   const choiceOptions = (choice && choice.options) || [];
   let choiceValue = choice
@@ -8525,6 +8701,7 @@ function askGenerateCount({
   let status;
   let input;
   let secondInput;
+  let thirdInput;
   let extraInput;
   let choiceInput;
   openCustomDialog({
@@ -8557,6 +8734,21 @@ function askGenerateCount({
         });
         secondField.appendChild(secondInput);
         body.appendChild(secondField);
+      }
+      if (third) {
+        const thirdField = el("label", "field");
+        thirdField.appendChild(el("span", "", third.label));
+        thirdInput = document.createElement("input");
+        thirdInput.type = "number";
+        thirdInput.min = String(third.min ?? 0);
+        thirdInput.max = String(third.max ?? 6);
+        thirdInput.value = thirdValue;
+        thirdInput.addEventListener("input", () => {
+          thirdValue = thirdInput.value;
+        });
+        thirdField.appendChild(thirdInput);
+        if (third.hint) thirdField.appendChild(el("span", "muted", third.hint));
+        body.appendChild(thirdField);
       }
       if (extra) {
         const extraField = el("label", "field");
@@ -8607,10 +8799,19 @@ function askGenerateCount({
           throw new Error(`${second.label}请填写 ${secondMin} 到 ${secondMax} 之间的整数`);
         }
       }
+      let thirdCount = null;
+      if (third) {
+        thirdCount = Number(thirdValue || 0);
+        const thirdMax = third.max ?? 6;
+        if (!Number.isInteger(thirdCount) || thirdCount < 0 || thirdCount > thirdMax) {
+          throw new Error(`${third.label}请填写 0 到 ${thirdMax} 之间的整数`);
+        }
+      }
       const current = dialogState;
       const started = Date.now();
       input.disabled = true;
       if (secondInput) secondInput.disabled = true;
+      if (thirdInput) thirdInput.disabled = true;
       if (extraInput) extraInput.disabled = true;
       if (choiceInput) choiceInput.disabled = true;
       const update = () => {
@@ -8622,7 +8823,7 @@ function askGenerateCount({
       let timer;
       try {
         const preview = await Promise.race([
-          onRun(count, secondCount, extraValue.trim(), choiceValue),
+          onRun(count, secondCount, extraValue.trim(), choiceValue, thirdCount),
           new Promise((_, reject) => {
             timer = window.setTimeout(
               () => reject(new Error("等待生成结果超时，请检查 AstrBot 连接和内容生成模型后重试")),
@@ -8637,6 +8838,7 @@ function askGenerateCount({
         window.clearTimeout(timer);
         input.disabled = false;
         if (secondInput) secondInput.disabled = false;
+        if (thirdInput) thirdInput.disabled = false;
         if (extraInput) extraInput.disabled = false;
         if (choiceInput) choiceInput.disabled = false;
         status.textContent = "";
@@ -8653,16 +8855,24 @@ function generateZoneDrafts() {
     defaultValue: 2,
     max: 4,
     second: { label: "每个区域生成几个地点（含入口）", defaultValue: 2, min: 1, max: 8 },
+    third: {
+      label: "每个地点生成几个动作（0 = 不生成）",
+      defaultValue: 2,
+      min: 0,
+      max: 6,
+      hint: "填了会再花一次内容生成调用，给每个新地点配几条「地点专属动作」。",
+    },
     extra: {
       label: "额外提示词（可选）",
       placeholder: "例如：爱丽丝的梦游仙境；偏童话、奇幻一点",
     },
-    onRun: async (count, nodesPerZone, extraPrompt) => {
+    onRun: async (count, nodesPerZone, extraPrompt, _choice, actionsPerNode) => {
       const result = await apiPost("generate/zones", {
         count,
         nodes_per_zone: nodesPerZone,
         extra_prompt: extraPrompt,
         aspect: mapViewportAspect(),
+        actions_per_node: actionsPerNode || 0,
       });
       const drafts = result.zones || [];
       if (!drafts.length) {
@@ -8675,6 +8885,7 @@ function generateZoneDrafts() {
           result.nodes || [],
           result.zone_edges || [],
           result.positions || {},
+          result.actions || [],
         );
     },
   });
@@ -8686,6 +8897,7 @@ function openZoneDraftDialog(
   draftNodes = [],
   draftZoneEdges = [],
   draftPositions = {},
+  draftActions = [],
 ) {
   drafts.forEach((draft) => {
     draft._pick = true;
@@ -8788,6 +9000,24 @@ function openZoneDraftDialog(
             id: `${edge.id || "z"}_${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`,
           });
         });
+      // 随区域一起生成的地点专属动作：只留落点真被加进来的那些，
+      // 并把被重命名过的地点 id 一起映射过去（不然动作会挂到不存在的点上）
+      const addedNodeIds = new Set(
+        draftNodes
+          .filter((node) => addedZoneIds.has(node.zone_id))
+          .map((node) => remap(node.id)),
+      );
+      const keptActions = draftActions
+        .filter((item) => {
+          const owners = (item.allowed_nodes || []).map((id) => remap(id));
+          return owners.length > 0 && owners.every((id) => addedNodeIds.has(id));
+        })
+        .map((item) => ({
+          ...item,
+          allowed_nodes: (item.allowed_nodes || []).map((id) => remap(id)),
+          ...(item.node_id ? { node_id: remap(item.node_id) } : {}),
+        }));
+      const addedActions = pushActionDrafts(keptActions);
       // 后端把整张地图（含既有区域）按当前窗口形状重算过一次位置：
       // 新区域落在该去的邻居旁边，老区域不会被推得到处乱跑。
       Object.entries(draftPositions).forEach(([zoneId, point]) => {
@@ -8799,6 +9029,9 @@ function openZoneDraftDialog(
       await saveAll();
       renderMap();
       loadOverview();
+      if (addedActions.length) {
+        toast(`顺带加入 ${addedActions.length} 个地点专属动作`);
+      }
     },
   });
 }
@@ -8815,16 +9048,24 @@ function generateWorldMapDrafts() {
     min: 2,
     max: 6,
     second: { label: "每个区域生成几个地点（含入口）", defaultValue: 3, min: 1, max: 8 },
+    third: {
+      label: "每个地点生成几个动作（0 = 不生成）",
+      defaultValue: 2,
+      min: 0,
+      max: 6,
+      hint: "顺带给每个新地点配几条「地点专属动作」；会再花一次内容生成调用。",
+    },
     extra: {
       label: "额外提示词（可选）",
       placeholder: "例如：爱丽丝的梦游仙境；偏童话、奇幻一点",
     },
-    onRun: async (count, nodesPerZone, extraPrompt) => {
+    onRun: async (count, nodesPerZone, extraPrompt, _choice, actionsPerNode) => {
       const result = await apiPost("generate/world-map", {
         count,
         nodes_per_zone: nodesPerZone,
         extra_prompt: extraPrompt,
         aspect: mapViewportAspect(),
+        actions_per_node: actionsPerNode || 0,
       });
       const zones = result.zones || [];
       if (!zones.length) {
@@ -8909,12 +9150,14 @@ function openWorldMapDraftDialog(result) {
       if (zones.length > 1 && !keptZoneEdges.length) {
         toast("区域之间还没有路，请重新生成一次，或先确认后手动补线");
       }
-      return commitGeneratedWorldMap(zones, nodes, keptEdges, keptZoneEdges);
+      return commitGeneratedWorldMap(
+        zones, nodes, keptEdges, keptZoneEdges, result.actions || [],
+      );
     },
   });
 }
 
-async function commitGeneratedWorldMap(zones, nodes, edges, zoneEdges) {
+async function commitGeneratedWorldMap(zones, nodes, edges, zoneEdges, newActions = []) {
   const newNodeIds = new Set(nodes.map((node) => node.id));
   let orphanedActions = 0;
   (ui.config.world.actions || []).forEach((action) => {
@@ -8947,6 +9190,8 @@ async function commitGeneratedWorldMap(zones, nodes, edges, zoneEdges) {
   ui.config.world.nodes = nodes;
   ui.config.world.edges = edges;
   ui.config.world.zone_edges = zoneEdges;
+  // 这张地图顺带生成的地点专属动作：地点就是刚写进去的这些，直接并进动作库
+  const addedActions = pushActionDrafts(newActions);
   ui.selectedZone = zones[0] ? zones[0].id : "";
   ui.selectedNode = nodes[0] ? nodes[0].id : "";
   ui.mapLevel = "world";
@@ -8957,6 +9202,7 @@ async function commitGeneratedWorldMap(zones, nodes, edges, zoneEdges) {
   renderMap();
   centerMapView();
   const notes = [`已替换为 ${zones.length} 个区域、${nodes.length} 个地点、${zoneEdges.length} 条跨区路线`];
+  if (addedActions.length) notes.push(`顺带加入 ${addedActions.length} 个地点专属动作`);
   if (orphanedActions) notes.push(`${orphanedActions} 个原本限定旧地点的动作已改为全局`);
   if (droppedWalks) notes.push(`日程里有 ${droppedWalks} 个旧地点步骤已移除`);
   toast(notes.join("；"));
@@ -9303,42 +9549,47 @@ function buildNodeDraftList(body, drafts) {
     draft._pick = draft._pick !== false;
   });
   const list = el("div", "draft-list");
-  drafts.forEach((draft, index) => {
-    const row = el("div", "draft-row");
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.checked = true;
-    box.addEventListener("change", () => (draft._pick = box.checked));
-    row.appendChild(box);
-
-    const nameInput = document.createElement("input");
-    nameInput.className = "grow";
-    nameInput.value = draft.name || draft.id;
-    nameInput.title = "地点名称";
-    nameInput.addEventListener("input", () => (draft.name = nameInput.value));
-    row.appendChild(nameInput);
-
-    const remove = el("button", "icon-btn danger", "🗑");
-    remove.type = "button";
-    remove.title = "不要这个";
-    remove.addEventListener("click", () => {
-      drafts.splice(index, 1);
-      renderNodeDraftRows();
-    });
-    row.appendChild(remove);
-
-    const desc = document.createElement("input");
-    desc.className = "grow";
-    desc.value = draft.prompt || "";
-    desc.title = "这里是什么样（会进提示词）";
-    desc.addEventListener("input", () => (draft.prompt = desc.value));
-    row.appendChild(desc);
-
-    row.appendChild(el("div", "draft-desc", draft.id));
-    list.appendChild(row);
-  });
   body.appendChild(list);
-  if (!drafts.length) list.appendChild(el("p", "muted", "都删掉了。"));
+  // 就地重画：以前这里调的是一个**不存在**的函数，点「🗑」直接报错
+  const render = () => {
+    list.innerHTML = "";
+    drafts.forEach((draft, index) => {
+      const row = el("div", "draft-row");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = draft._pick !== false;
+      box.addEventListener("change", () => (draft._pick = box.checked));
+      row.appendChild(box);
+
+      const nameInput = document.createElement("input");
+      nameInput.className = "grow";
+      nameInput.value = draft.name || draft.id;
+      nameInput.title = "地点名称";
+      nameInput.addEventListener("input", () => (draft.name = nameInput.value));
+      row.appendChild(nameInput);
+
+      const remove = el("button", "icon-btn danger", "🗑");
+      remove.type = "button";
+      remove.title = "不要这个";
+      remove.addEventListener("click", () => {
+        drafts.splice(index, 1);
+        render();
+      });
+      row.appendChild(remove);
+
+      const desc = document.createElement("input");
+      desc.className = "grow";
+      desc.value = draft.prompt || "";
+      desc.title = "这里是什么样（会进提示词）";
+      desc.addEventListener("input", () => (draft.prompt = desc.value));
+      row.appendChild(desc);
+
+      row.appendChild(el("div", "draft-desc", draft.id));
+      list.appendChild(row);
+    });
+    if (!drafts.length) list.appendChild(el("p", "muted", "都删掉了。"));
+  };
+  render();
 }
 
 async function commitGeneratedNodes(drafts, newEdges) {
@@ -11224,6 +11475,12 @@ function visibleActions() {
     } else if (picked.startsWith("group:")) {
       // 原版那一半按分组筛；扩展带来的动作归它自己的那一组
       if (owner || groupOfAction(action) !== picked.slice(6)) return false;
+    } else if (picked.startsWith("node:")) {
+      // 按地点看：只留限定在这个地点的动作（一个动作可以挂在多个地点上）
+      const nodeId = picked.slice(5);
+      if (owner || String(action.scope || "") !== "node") return false;
+      const owners = (action.allowed_nodes || []).map((id) => String(id || ""));
+      if (!owners.includes(nodeId)) return false;
     }
     // 条件筛选：动作上百个以后，靠搜索很难找「哪些还是旧版工具动作」
     const legacy = Boolean(action.legacy) || String(action.kind || "").startsWith("legacy");
@@ -11245,7 +11502,7 @@ function visibleActions() {
   });
 }
 
-/** 左侧分组菜单：上半是原版动作，下半是各扩展带来的动作（没装扩展就没有下半截）。 */
+/** 左侧分组菜单：原版动作 → 按地点 → 各扩展带来的动作（没装扩展就没有最后一段）。 */
 function renderActionMenu() {
   const box = $("action-menu");
   if (!box) return;
@@ -11272,6 +11529,27 @@ function renderActionMenu() {
       row.appendChild(rename);
       box.appendChild(row);
     });
+
+  // 按地点分组：动作库"长在哪儿"一眼能看出来（地点专属动作是生成地图时配的）
+  const byNode = new Map();
+  originals.forEach((action) => {
+    if (String(action.scope || "") !== "node") return;
+    (action.allowed_nodes || []).forEach((nodeId) => {
+      const key = String(nodeId || "");
+      if (!key) return;
+      byNode.set(key, (byNode.get(key) || 0) + 1);
+    });
+  });
+  if (byNode.size) {
+    box.appendChild(el("div", "menu-title", "按地点"));
+    Array.from(byNode.keys())
+      .sort((left, right) => nodeLabel(left).localeCompare(nodeLabel(right), "zh"))
+      .forEach((nodeId) => {
+        box.appendChild(
+          actionMenuItem(`node:${nodeId}`, nodeLabel(nodeId), byNode.get(nodeId)),
+        );
+      });
+  }
 
   const extensions = (ui.config && ui.config.extension_actions) || [];
   const extItems = extensions
@@ -11350,6 +11628,15 @@ function sortedActions(list) {
   } else if (mode === "status") {
     rows.sort(
       (a, b) => Number(a.enabled === false) - Number(b.enabled === false) || byName(a, b),
+    );
+  } else if (mode === "place") {
+    // 按地点排序：同一处能做的事排在一起，没限定地点的排最后
+    const placeOf = (action) =>
+      String(action.scope || "") === "node" && (action.allowed_nodes || []).length
+        ? nodeLabel(String(action.allowed_nodes[0]))
+        : "（不限地点）";
+    rows.sort(
+      (a, b) => placeOf(a).localeCompare(placeOf(b), "zh-Hans-CN") || byName(a, b),
     );
   } else {
     rows.sort((a, b) => num(b.created_at, 0) - num(a.created_at, 0));

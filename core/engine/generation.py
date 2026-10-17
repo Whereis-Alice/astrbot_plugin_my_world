@@ -38,6 +38,15 @@ from .models import (
 from .util import _clip_text
 
 
+def _wants_node_actions(value: Any) -> bool:
+    """「每个地点生成几个动作」：0 / 空 = 不生成（和 clamp_per_node 的最小值 1 区分开）。"""
+
+    try:
+        return int(value) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 class GenerationMixin:
     # ---------------- 世界生成：区域 / 日程 / 事件 ----------------
 
@@ -194,12 +203,15 @@ class GenerationMixin:
         nodes_per_zone: Any = 0,
         extra_prompt: str = "",
         aspect: Any = None,
+        actions_per_node: Any = 0,
     ) -> dict[str, Any]:
         """按她的人设与已有世界生成新区域草稿（不落库，先给用户改）。
 
         ``nodes_per_zone`` 控制每个新区域同时生成几个地点；默认 1 个落脚点。
         ``aspect`` 是编辑器画布的宽高比：整张图会按这个形状重新铺开，
         新区域顺着既有地图的轮廓长出去，而不是一律堆在右边。
+        ``actions_per_node`` > 0 时顺带给每个新地点起草几条**地点专属动作**
+        （会多花一次内容生成调用）。
         """
 
         wanted = clamp_zone_count(count)
@@ -248,6 +260,7 @@ class GenerationMixin:
             return {
                 "zones": [],
                 "nodes": [],
+                "actions": [],
                 "zone_edges": [],
                 "problems": problems,
                 "raw": _clip_text(reply, 1200),
@@ -323,9 +336,23 @@ class GenerationMixin:
             zone["x"], zone["y"] = positions.get(
                 str(zone["id"]), (float(zone["x"]), float(zone["y"]))
             )
+        actions: list[dict[str, Any]] = []
+        if _wants_node_actions(actions_per_node):
+            drafted = await self._draft_actions_for_nodes(
+                nodes=nodes,
+                zone_name="、".join(
+                    str(zone.get("name") or zone.get("id")) for zone in zones
+                ),
+                zone_note="这些是刚生成的新区域",
+                per_node=actions_per_node,
+                extra_prompt=extra_prompt,
+            )
+            actions = drafted["actions"]
+            problems.extend(drafted["problems"])
         return {
             "zones": zones,
             "nodes": nodes,
+            "actions": actions,
             "zone_edges": zone_edges,
             "positions": {
                 str(zone["id"]): [float(zone["x"]), float(zone["y"])]
@@ -341,12 +368,15 @@ class GenerationMixin:
         nodes_per_zone: Any = 0,
         extra_prompt: str = "",
         aspect: Any = None,
+        actions_per_node: Any = 0,
     ) -> dict[str, Any]:
         """按人设一键重建整张地图：区域、地点、区内路线与跨区路线一次配好。
 
         这是**草稿**：用户在编辑器里确认后才会替换当前地图。默认地图会被换掉，
         所以调用方必须把"会替换"讲清楚。
         ``aspect`` 是编辑器画布的宽高比，决定整张图铺开的形状。
+        ``actions_per_node`` > 0 时给每个新地点顺带起草几条地点专属动作，
+        让"重建地图"和"这个地方能做什么"一次配齐。
         """
 
         wanted = clamp_map_zone_count(count)
@@ -376,6 +406,7 @@ class GenerationMixin:
             return {
                 "zones": zones,
                 "nodes": nodes,
+                "actions": [],
                 "edges": [],
                 "zone_edges": [],
                 "problems": problems or ["没有生成出可用的地图"],
@@ -456,13 +487,80 @@ class GenerationMixin:
             zone_edges.append(edge)
         if not zone_edges and len(zones) > 1:
             problems.append("跨区路线没能自动补全，请进地图检查区域落脚点")
+        actions: list[dict[str, Any]] = []
+        if _wants_node_actions(actions_per_node):
+            drafted = await self._draft_actions_for_nodes(
+                nodes=nodes,
+                zone_name="、".join(
+                    str(zone.get("name") or zone.get("id")) for zone in zones
+                ),
+                zone_note="这是刚重建出来的整张地图",
+                per_node=actions_per_node,
+                extra_prompt=extra_prompt,
+            )
+            actions = drafted["actions"]
+            problems.extend(drafted["problems"])
         return {
             "zones": zones,
             "nodes": nodes,
+            "actions": actions,
             "edges": edges,
             "zone_edges": zone_edges,
             "problems": problems,
             "raw": _clip_text(reply, 1200),
+        }
+
+    async def generate_zone_draft(
+        self,
+        zone_id: str,
+        count: Any = 0,
+        extra_prompt: str = "",
+        actions_per_node: Any = 0,
+        replace: bool = False,
+    ) -> dict[str, Any]:
+        """重做**一个**区域：起草一批新地点，可选顺带起草地点专属动作。
+
+        默认只追加（这个区域原有的地点留着，用户想删再删）；``replace=True`` 时把
+        现有地点一并列进 ``remove_nodes``，编辑器确认时连边一起清掉并提醒改动作。
+        返回的一律是草稿，不落库。
+        """
+
+        zone = self.world.zone_map().get(str(zone_id or ""))
+        if zone is None:
+            return {
+                "zone": str(zone_id or ""),
+                "nodes": [],
+                "edges": [],
+                "actions": [],
+                "remove_nodes": [],
+                "problems": ["找不到这个区域"],
+            }
+        drafted = await self.generate_nodes_for_zone(zone_id, count, extra_prompt)
+        nodes = list(drafted.get("nodes") or [])
+        problems = list(drafted.get("problems") or [])
+        actions: list[dict[str, Any]] = []
+        if nodes and _wants_node_actions(actions_per_node):
+            made = await self._draft_actions_for_nodes(
+                nodes=nodes,
+                zone_name=zone.name or zone.id,
+                zone_note=zone.note,
+                per_node=actions_per_node,
+                extra_prompt=extra_prompt,
+            )
+            actions = made["actions"]
+            problems.extend(made["problems"])
+        remove_nodes = (
+            [node.id for node in self.world.nodes_in_zone(zone_id)] if replace else []
+        )
+        return {
+            "zone": str(zone_id),
+            "zone_name": zone.name or zone.id,
+            "nodes": nodes,
+            "edges": list(drafted.get("edges") or []),
+            "actions": actions,
+            "remove_nodes": remove_nodes,
+            "problems": problems,
+            "raw": drafted.get("raw", ""),
         }
 
     async def generate_schedules(

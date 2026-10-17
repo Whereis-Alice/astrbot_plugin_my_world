@@ -104,6 +104,12 @@ class WebApiMixin:
         )
         register(f"/{p}/generate/nodes", self.api_generate_nodes, ["POST"], "按区域生成地点")
         register(
+            f"/{p}/generate/zone",
+            self.api_generate_zone,
+            ["POST"],
+            "重做一个区域的草稿（地点 + 可选地点专属动作）",
+        )
+        register(
             f"/{p}/generate/zones",
             self.api_generate_zones,
             ["POST"],
@@ -1350,6 +1356,7 @@ class WebApiMixin:
             zone_id,
             payload.get("per_node"),
             node_ids=[node_id] if node_id else None,
+            extra_prompt=str(payload.get("extra_prompt") or ""),
         )
 
     async def api_generate_world_actions(self):
@@ -1374,7 +1381,29 @@ class WebApiMixin:
         if not zone_id:
             return error_response("缺少 zone 参数")
         return await self._generate_drafts_response(
-            self.engine.generate_nodes_for_zone, zone_id, payload.get("count")
+            self.engine.generate_nodes_for_zone,
+            zone_id,
+            payload.get("count"),
+            str(payload.get("extra_prompt") or ""),
+        )
+
+    async def api_generate_zone(self):
+        """重做一个区域：新地点草稿 + 可选的地点专属动作草稿（都不落库）。"""
+
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload)
+        if guard is not None:
+            return guard
+        zone_id = str(payload.get("zone", "") or "").strip()
+        if not zone_id:
+            return error_response("缺少 zone 参数")
+        return await self._generate_drafts_response(
+            self.engine.generate_zone_draft,
+            zone_id,
+            payload.get("count"),
+            str(payload.get("extra_prompt") or ""),
+            payload.get("actions_per_node"),
+            bool(payload.get("replace")),
         )
 
     async def api_purge_legacy_actions(self):
@@ -1402,6 +1431,7 @@ class WebApiMixin:
             payload.get("nodes_per_zone"),
             payload.get("extra_prompt"),
             payload.get("aspect"),
+            payload.get("actions_per_node"),
         )
 
     async def api_generate_world_map(self):
@@ -1417,6 +1447,7 @@ class WebApiMixin:
             payload.get("nodes_per_zone"),
             payload.get("extra_prompt"),
             payload.get("aspect"),
+            payload.get("actions_per_node"),
         )
 
     async def api_map_layout(self):

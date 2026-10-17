@@ -641,6 +641,65 @@ class EngineGeneratorTests(unittest.IsolatedAsyncioTestCase):
         )
         self.engine.reload_config()
 
+    async def test_world_map_can_draft_place_actions_in_one_go(self):
+        """一键重建可以顺带给每个新地点起草地点专属动作（多花一次内容生成调用）。"""
+
+        self.creator.replies = [
+            '{"zones": [{"id": "seaside_home", "name": "海边小屋", "note": "她住的地方",'
+            ' "is_home": true, "nodes": [{"id": "deck", "name": "露台", "prompt": "能看海"}]}]}',
+            '{"actions": [{"id": "deck_watch_sea", "node_id": "deck", "name": "看海",'
+            ' "description": "趴在栏杆上看海", "category": "continuous",'
+            ' "llm_level": "single", "visible": true, "duration_mode": "llm",'
+            ' "duration_min": 300, "duration_max": 900}]}',
+        ]
+        result = await self.engine.generate_world_map(2, 2, "", None, 2)
+
+        self.assertEqual([node["id"] for node in result["nodes"]], ["deck"])
+        self.assertEqual([item["id"] for item in result["actions"]], ["deck_watch_sea"])
+        # 生成的动作一律先绑到它自己的那个地点，用户在动作库里再改
+        self.assertEqual(result["actions"][0]["scope"], "node")
+        self.assertEqual(result["actions"][0]["allowed_nodes"], ["deck"])
+
+    async def test_actions_are_skipped_when_the_count_is_zero(self):
+        """「每个地点生成几个动作」填 0 就不该多花那次调用。"""
+
+        self.creator.replies = [
+            '{"zones": [{"id": "seaside_home", "name": "海边小屋", "is_home": true,'
+            ' "nodes": [{"id": "deck", "name": "露台", "prompt": "能看海"}]}]}'
+        ]
+        result = await self.engine.generate_world_map(2, 1, "", None, 0)
+
+        self.assertEqual(result["actions"], [])
+        self.assertEqual(len(self.creator.calls), 1)
+
+    async def test_generate_zone_draft_can_replace_one_zone(self):
+        """单个区域重做：给新地点 + 可选动作，replace 时列出要清掉的旧地点。"""
+
+        raw = self.store.raw_world()
+        zone_id = str((raw.get("zones") or [{}])[0].get("id") or "")
+        self.assertTrue(zone_id)
+        before = [
+            node["id"] for node in (raw.get("nodes") or []) if node.get("zone_id") == zone_id
+        ]
+        self.assertTrue(before)
+        self.creator.replies = [
+            '{"nodes": [{"id": "brand_new_spot", "name": "新角落", "prompt": "刚收拾出来"}]}',
+            '{"actions": [{"id": "new_spot_sit", "node_id": "brand_new_spot", "name": "坐一会儿",'
+            ' "description": "在这儿坐一会儿", "category": "instant", "llm_level": "single"}]}',
+        ]
+        result = await self.engine.generate_zone_draft(
+            zone_id, 1, "多来点安静的角落", 1, True
+        )
+
+        self.assertEqual(result["zone"], zone_id)
+        self.assertEqual([node["id"] for node in result["nodes"]], ["brand_new_spot"])
+        self.assertTrue(all(node["zone_id"] == zone_id for node in result["nodes"]))
+        self.assertEqual([item["id"] for item in result["actions"]], ["new_spot_sit"])
+        # replace=True：原来的地点列出来，交给编辑器确认后再删
+        self.assertEqual(sorted(result["remove_nodes"]), sorted(before))
+        # 额外提示词确实进了提示词里
+        self.assertIn("多来点安静的角落", self.creator.calls[-1]["prompt"])
+
     async def test_generate_zones_returns_drafts_with_auto_positions(self):
         self.creator.replies = [
             '{"zones": [{"id": "old_library", "name": "旧图书馆", "note": "她小时候常来", '

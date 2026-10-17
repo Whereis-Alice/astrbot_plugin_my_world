@@ -188,28 +188,79 @@ class GenerationBrowserTests(unittest.TestCase):
     def test_both_map_generators_can_choose_nodes_per_zone(self):
         self.open_generator()
         inputs = self.page.locator('#dialog-body input[type="number"]')
-        expect(inputs).to_have_count(2)
+        # 生成数量 / 每个区域的地点 / 每个地点的动作
+        expect(inputs).to_have_count(3)
         self.assertEqual(inputs.nth(1).get_attribute("max"), "8")
         inputs.nth(1).fill("4")
+        inputs.nth(2).fill("2")
         self.page.locator('#dialog-body textarea').fill("爱丽丝的梦游仙境")
         self.page.locator("#dialog-ok").click()
         zone_call = self.page.evaluate("generationCalls").pop()
         self.assertEqual(zone_call["endpoint"], "generate/zones")
         self.assertEqual(zone_call["data"]["count"], 2)
         self.assertEqual(zone_call["data"]["nodes_per_zone"], 4)
+        self.assertEqual(zone_call["data"]["actions_per_node"], 2)
         self.assertEqual(zone_call["data"]["extra_prompt"], "爱丽丝的梦游仙境")
         self.page.locator("#dialog-cancel").click()
 
         self.open_generator("map", "map-generate-all")
         inputs = self.page.locator('#dialog-body input[type="number"]')
-        expect(inputs).to_have_count(2)
+        expect(inputs).to_have_count(3)
         inputs.nth(0).fill("5")
         inputs.nth(1).fill("3")
+        inputs.nth(2).fill("0")
         self.page.locator("#dialog-ok").click()
         world_call = self.page.evaluate("generationCalls").pop()
         self.assertEqual(world_call["endpoint"], "generate/world-map")
         self.assertEqual(world_call["data"]["count"], 5)
         self.assertEqual(world_call["data"]["nodes_per_zone"], 3)
+        self.assertEqual(world_call["data"]["actions_per_node"], 0)
+
+    def test_zone_regenerate_carries_prompt_actions_and_replace(self):
+        """区域属性里的「重做这个区域…」：地点数 / 动作数 / 额外提示词 / 替换一起带上。"""
+
+        self.page.locator('button[data-tab="map"]').click()
+        self.page.get_by_role("button", name="重做这个区域").click()
+        inputs = self.page.locator('#dialog-body input[type="number"]')
+        # 地点数 + 每个地点的动作数（「替换 / 追加」是下拉框，「额外提示词」是 textarea）
+        expect(inputs).to_have_count(2)
+        inputs.nth(0).fill("2")
+        inputs.nth(1).fill("1")
+        self.page.locator("#dialog-body select").select_option("replace")
+        self.page.locator("#dialog-body textarea").fill("安静一点")
+        self.page.locator("#dialog-ok").click()
+
+        call = self.page.evaluate("generationCalls").pop()
+        self.assertEqual(call["endpoint"], "generate/zone")
+        self.assertEqual(call["data"]["count"], 2)
+        self.assertEqual(call["data"]["actions_per_node"], 1)
+        self.assertEqual(call["data"]["extra_prompt"], "安静一点")
+        self.assertTrue(call["data"]["replace"])
+
+        self.page.evaluate(
+            """(zoneId) => finishGeneration({
+                zone: zoneId,
+                nodes: [{id: 'quiet_spot', name: '安静角落', prompt: '没人打扰', x: 10, y: 10}],
+                edges: [],
+                actions: [{id: 'quiet_sit', name: '坐一会儿', scope: 'node',
+                           allowed_nodes: ['quiet_spot'], node_id: 'quiet_spot'}],
+                remove_nodes: [],
+                problems: [],
+            })""",
+            call["data"]["zone"],
+        )
+        expect(self.page.locator("#dialog-title")).to_contain_text("重做")
+        self.page.locator("#dialog-ok").click()
+        expect(self.page.locator("#dialog")).to_be_hidden()
+
+        config = self.page.evaluate("AstrBotPluginPage.apiGet('config')")
+        self.assertTrue(
+            [item for item in config["world"]["nodes"] if item["id"] == "quiet_spot"]
+        )
+        self.assertTrue(
+            [item for item in config["world"]["actions"] if item["id"] == "quiet_sit"]
+        )
+        self.assertEqual(self.errors, [])
 
     def test_world_action_generator_lives_in_the_action_library(self):
         self.open_generator("actions", "action-generate-world")

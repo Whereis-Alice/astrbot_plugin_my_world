@@ -53,12 +53,75 @@ class InterruptMixin:
         ids = self.enabled_session_ids()
         return ids[0] if ids else ""
 
+    async def _draft_actions_for_nodes(
+        self,
+        *,
+        nodes: list[dict[str, Any]],
+        zone_name: str,
+        zone_note: str = "",
+        per_node: Any = 0,
+        extra_prompt: str = "",
+        existing_ids: set[str] | None = None,
+    ) -> dict[str, Any]:
+        """给一批地点生成动作草稿（地点可以还没落库：地图 / 区域生成时用同一套）。
+
+        ``nodes`` 只要带 ``id`` / ``name`` / ``prompt`` 就行——草稿节点、配置里的
+        节点都能直接喂进来，所以"一键重建地图顺带生成动作"和"给已有区域补动作"
+        走的是同一条路。
+        """
+
+        picked = [
+            {
+                "id": str(item.get("id") or ""),
+                "name": str(item.get("name") or item.get("id") or ""),
+                "prompt": str(item.get("prompt") or ""),
+            }
+            for item in (nodes or [])
+            if str(item.get("id") or "").strip()
+        ]
+        if not picked:
+            return {"actions": [], "problems": []}
+        count = clamp_per_node(per_node)
+        session_id = self._generator_session_id()
+        system_prompt, prompt = self.prompts.build_action_generator_prompt(
+            persona_text=await self._persona_text(session_id),
+            zone_name=zone_name,
+            zone_note=zone_note,
+            nodes=picked,
+            existing_actions=[
+                action.name or action.id
+                for action in self.world.actions
+                if action.enabled
+            ],
+            tools=sorted(self.available_tools()),
+            per_node=count,
+            extra_prompt=extra_prompt,
+        )
+        reply = await self._ask_creator(session_id, system_prompt, prompt, raise_errors=True)
+        actions, problems = parse_generated_actions(
+            reply,
+            node_ids=[item["id"] for item in picked],
+            tool_names=set(self.available_tools()),
+            max_per_node=count,
+            existing_ids=(
+                existing_ids
+                if existing_ids is not None
+                else {action.id for action in self.world.actions}
+            ),
+        )
+        return {"actions": actions, "problems": problems, "raw": _clip_text(reply, 1200)}
+
     async def generate_actions_for_zone(
-        self, zone_id: str, per_node: Any = 0, node_ids: list[str] | None = None
+        self,
+        zone_id: str,
+        per_node: Any = 0,
+        node_ids: list[str] | None = None,
+        extra_prompt: str = "",
     ) -> dict[str, Any]:
         """按区域里的**每个地点**批量生成动作草稿（不落库，交给编辑器预览勾选）。
 
         只传了 ``node_ids`` 时就只为这几个地点生成（编辑器里"只给这个地点生成"）。
+        ``extra_prompt`` 是用户在弹窗里补的一句要求（例如"偏安静一点"）。
         """
 
         zone = self.world.zone_map().get(zone_id)
@@ -75,32 +138,20 @@ class InterruptMixin:
                 "actions": [],
                 "problems": ["这个区域里还没有可用地点"],
             }
-        count = clamp_per_node(per_node)
-        session_id = self._generator_session_id()
-        system_prompt, prompt = self.prompts.build_action_generator_prompt(
-            persona_text=await self._persona_text(session_id),
-            zone_name=zone.name or zone.id,
-            zone_note=zone.note,
+        return await self._draft_actions_for_nodes(
             nodes=[
-                {"id": node.id, "name": node.name, "prompt": node.prompt or node.atmosphere.describe()}
+                {
+                    "id": node.id,
+                    "name": node.name or node.id,
+                    "prompt": node.prompt or node.atmosphere.describe(),
+                }
                 for node in nodes
             ],
-            existing_actions=[
-                action.name or action.id
-                for action in self.world.actions
-                if action.enabled
-            ],
-            tools=sorted(self.available_tools()),
-            per_node=count,
+            zone_name=zone.name or zone.id,
+            zone_note=zone.note,
+            per_node=per_node,
+            extra_prompt=extra_prompt,
         )
-        reply = await self._ask_creator(session_id, system_prompt, prompt, raise_errors=True)
-        actions, problems = parse_generated_actions(
-            reply,
-            node_ids=[node.id for node in nodes],
-            tool_names=set(self.available_tools()),
-            existing_ids={action.id for action in self.world.actions},
-        )
-        return {"actions": actions, "problems": problems, "raw": _clip_text(reply, 1200)}
 
     async def generate_world_actions(self, count: Any = 0) -> dict[str, Any]:
         """按人设与**整张地图**生成一批虚拟动作草稿（动作库的全局生成入口）。
@@ -272,9 +323,12 @@ class InterruptMixin:
             action["scope"] = "node"
 
     async def generate_nodes_for_zone(
-        self, zone_id: str, count: Any = 0
+        self, zone_id: str, count: Any = 0, extra_prompt: str = ""
     ) -> dict[str, Any]:
-        """给区域批量生成地点草稿：自动摆位 + 按方案 A 自动连线（同样不落库）。"""
+        """给区域批量生成地点草稿：自动摆位 + 按方案 A 自动连线（同样不落库）。
+
+        ``extra_prompt`` 是用户在弹窗里补的一句要求（例如"多来几个户外的地方"）。
+        """
 
         zone = self.world.zone_map().get(zone_id)
         if zone is None:
@@ -288,6 +342,7 @@ class InterruptMixin:
             zone_note=zone.note,
             existing_nodes=[node.name or node.id for node in inside],
             count=wanted,
+            extra_prompt=extra_prompt,
         )
         reply = await self._ask_creator(session_id, system_prompt, prompt, raise_errors=True)
         nodes, problems = parse_generated_nodes(

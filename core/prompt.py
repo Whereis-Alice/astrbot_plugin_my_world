@@ -3347,6 +3347,7 @@ class PromptBuilder:
         existing_actions: list[str],
         tools: list[str],
         per_node: int,
+        extra_prompt: str = "",
     ) -> tuple[str, str]:
         """批量生成动作的提示词（返回 system, user）。
 
@@ -3375,6 +3376,14 @@ class PromptBuilder:
             f"# 区域里的地点（每个地点都要照顾到）\n" + "\n".join(node_lines) + "\n\n"
             f"# 已经有的动作（不要重复这些名字和意图）\n{know}\n\n"
             f"# {tool_line}\n\n"
+            + (
+                "# 额外要求（用户补充，优先满足，但不能违背人设与安全）\n"
+                + str(extra_prompt).strip()[:600]
+                + "\n\n"
+                if str(extra_prompt or "").strip()
+                else ""
+            )
+            +
             f"# 要求\n"
             f"1. 每个地点写 {per_node} 个动作，一共 {per_node * max(1, len(nodes))} 个左右；\n"
             "2. 动作要「在她所在的地方真的做得出来」，做完以后有值得在群里讲一句的见闻"
@@ -3654,6 +3663,7 @@ class PromptBuilder:
         zone_note: str,
         existing_nodes: list[str],
         count: int,
+        extra_prompt: str = "",
     ) -> tuple[str, str]:
         """批量生成地点的提示词（返回 system, user）。"""
 
@@ -3664,6 +3674,14 @@ class PromptBuilder:
             f"# 这个区域已有的地点（不要重复）\n"
             + ("、".join(existing_nodes) if existing_nodes else "（还没有地点）")
             + "\n\n"
+            + (
+                "# 额外要求（用户补充，优先满足，但不能违背人设与安全）\n"
+                + str(extra_prompt).strip()[:600]
+                + "\n\n"
+                if str(extra_prompt or "").strip()
+                else ""
+            )
+            +
             f"# 要求\n"
             f"1. 写 {count} 个新地点，彼此有明显区别，适合日常小动作（发呆、看风景、做事）；\n"
             "2. 每个地点给一句「这里是什么样」的描述（会进提示词，影响她的行为）；\n"
