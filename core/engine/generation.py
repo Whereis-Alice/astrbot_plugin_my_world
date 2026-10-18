@@ -1217,8 +1217,11 @@ class GenerationMixin:
                 # 标了「不可打断」的动作（例如睡觉）不做一半就扔，但剩下的安排照样放弃
                 blocked = str(action.get("type") or "")
         state.current_plan = None
+        cancelled_sleep = self._cancel_pending_sleep(state, reason="待睡安排已取消，稍后重新评估")
 
         parts = []
+        if cancelled_sleep:
+            parts.append("取消了待入睡安排")
         if stopped:
             definition = self.world.action_map().get(stopped)
             label = (definition.name or definition.id) if definition else stopped
@@ -1260,7 +1263,7 @@ class GenerationMixin:
             return False
         async with self.session_state(session_id) as state:
             action = state.current_action
-            asleep = self._is_asleep(state)
+            asleep = self._is_asleep(state) or state.state == STATE_DROWSY
             if asleep:
                 self._wake_up_state(
                     state, MessageContext(session_id=session_id, user_name="你", text="")
@@ -1284,11 +1287,14 @@ class GenerationMixin:
             return False
         async with self.session_state(session_id) as state:
             plan = state.current_plan
-            if not isinstance(plan, dict) or not plan.get("steps"):
+            had_plan = isinstance(plan, dict) and bool(plan.get("steps"))
+            cancelled_sleep = self._cancel_pending_sleep(state, reason="待睡安排已取消，稍后重新评估")
+            if not had_plan and not cancelled_sleep:
                 return False
             state.current_plan = None
             await self._log_event(
-                state, "cancel", {"mode": "queue", "plan": True, "note": "放弃了还没做的安排"}
+                state, "cancel", {"mode": "queue", "plan": had_plan,
+                    "note": "取消了待入睡安排，稍后重新评估" if cancelled_sleep else "放弃了还没做的安排"}
             )
             return True
 

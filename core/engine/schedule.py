@@ -806,7 +806,7 @@ class ScheduleMixin:
                 manual_brief.append("这条日程要做的事（按顺序）：" + " → ".join(manual_labels))
             if manual_brief:
                 state.event_digest = [*list(state.event_digest or []), *manual_brief][-6:]
-            await self._run_chain(state, chain, outcome, depth=0)
+            await self._run_chain(state, chain, outcome, depth=0, plan_source="manual")
             # 手动跑一次也算"上次执行"：编辑器里试跑之后，提示词里就能看到时间
             last_map = dict(getattr(state, "schedule_last_fired", None) or {})
             last_map[str(schedule.id)] = float(self._now())

@@ -162,6 +162,7 @@ class StateStoreMixin:
         key = self.state_key(session_id)
         async with self.lock(key):
             state = await self.load_state(key)
+            self._sync_sleep_rhythm_mode(state)
             # 留档超上限时要不要先把顶掉的几条攒起来（配置成"压成摘要"才需要）：
             # 挂成临时属性，note_chat 会读它——不写进存档。
             state.buffer_dropped_chat = self._buffer_dropped_chat()

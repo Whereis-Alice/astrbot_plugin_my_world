@@ -364,6 +364,8 @@ class SleepMixin:
         )
         state.drowsy_sleep_step = dict(payload or {})
         state.drowsy_sleep_step["speech_kind"] = outcome.speech_kind
+        plan = active_plan(state) or {}
+        state.drowsy_sleep_step["plan_source"] = "manual" if plan.get("manual") else str(plan.get("source") or "")
         state.drowsy_started_world_time = int(state.world_time or 0)
         state.drowsy_started_at = float(now)
         state.drowsy_day = self._today_key(now)

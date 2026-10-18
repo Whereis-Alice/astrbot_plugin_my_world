@@ -23,6 +23,65 @@ def _number(value: Any, default: float = 0.0) -> float:
 
 
 class SleepRhythmMixin:
+    def _cancel_pending_sleep(self, state: WorldState, *, reason: str, source: str = "cancel",
+            postpone: bool = True) -> bool:
+        """取消尚未开始的睡眠；保留真实睡眠、清醒负担和历史。"""
+
+        if state.is_sleeping or str((state.current_action or {}).get("type")) in {"sleep", "nap"}:
+            return False
+        rhythm = state.sleep_rhythm
+        if rhythm.get("decision") != "sleep" and not state.drowsy_sleep_step and state.state != STATE_DROWSY:
+            return False
+        state.drowsy_sleep_step = {}
+        state.drowsy_started_world_time = 0
+        state.drowsy_started_at = 0.0
+        if state.state == STATE_DROWSY:
+            state.state = STATE_IDLE
+        for key in ("retry_at", "event_notice_at", "duration_seconds"):
+            rhythm.pop(key, None)
+        minutes = self.world.sleep.evaluation_minutes
+        rhythm.update(decision="continue", source=source, reason=reason,
+            next_evaluation_at=self._now() + minutes * 60, planned_wake_at=0)
+        # 普通活动规划也不能立刻把刚取消的睡眠排回来；过劳保护仍有效。
+        if postpone:
+            grace = max(1, int(math.ceil(minutes * 60 / self.tick_seconds)))
+            state.no_sleep_until = max(state.no_sleep_until, state.world_time + grace)
+        return True
+
+    def _sync_sleep_rhythm_mode(self, state: WorldState) -> None:
+        """读取生活状态时协调新模式，避免旧的待睡步骤在下一拍继续。"""
+
+        rhythm = state.sleep_rhythm
+        mode = self.world.sleep.mode
+        previous = rhythm.get("mode")
+        plan = state.current_plan or {}
+        pending_source = state.drowsy_sleep_step.get("plan_source") or (
+            "manual" if plan.get("manual") else plan.get("source"))
+        autonomous_pending = rhythm.get("decision") == "sleep" or pending_source == "sleep_rhythm"
+        # 升级前没有 mode 标记：自主待睡决定可识别，其余只补上当前模式。
+        if previous is None:
+            previous = "autonomous" if autonomous_pending else mode
+        rhythm["mode"] = mode
+        if previous == mode:
+            return
+        sleeping = state.is_sleeping or str((state.current_action or {}).get("type")) in {"sleep", "nap"}
+        if sleeping:
+            return  # 本段已经开始的睡眠按原时长完成，不虚构一次醒来。
+        automatic = pending_source in {"sleep_rhythm", "forced", "schedule", "rule", "llm", "extreme"}
+        has_sleep = any(step.get("action") == "sleep" and step.get("status") != "done"
+            for step in plan.get("steps", []) if isinstance(step, dict))
+        pending_automatic = automatic and (has_sleep or bool(state.drowsy_sleep_step))
+        if pending_automatic:
+            state.current_plan = None
+            if state.current_action:
+                state.current_action["from_plan"] = False
+        if autonomous_pending or pending_automatic:
+            self._cancel_pending_sleep(state, reason="作息模式已切换，取消原来的待睡安排",
+                source="mode_change", postpone=False)
+        # 新模式可以重新判断；切回自主不会复用过时的模型结论。
+        rhythm.pop("retry_at", None)
+        rhythm["next_evaluation_at"] = 0
+
     def _rhythm_duration_bounds(self) -> tuple[float, float]:
         config = self.world.sleep
         low, high = sorted((float(config.min_hours), float(config.max_hours)))

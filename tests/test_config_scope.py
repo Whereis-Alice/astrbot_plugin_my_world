@@ -101,6 +101,22 @@ class ConfigScopeTests(unittest.IsolatedAsyncioTestCase):
         with self.engine.config_scope(B):
             self.assertEqual(self.engine.world.name, "main")
 
+    async def test_sleep_mode_change_applies_only_to_the_effective_scope(self):
+        for session in (A, B):
+            async with self.engine.session_state(session) as state:
+                state.state = "idle"
+                state.current_plan = create_plan(steps=[{"action":"sleep"}],
+                    world_time=state.world_time, source="sleep_rhythm")
+                state.sleep_rhythm = {"mode":"autonomous", "decision":"sleep", "duration_seconds":25200}
+        sleep = self.store.raw_world()["sleep"]
+        self.override(A, sleep={**sleep, "mode":"fixed"})
+        async with self.engine.session_state(A) as state:
+            self.assertIsNone(state.current_plan)
+            self.assertEqual(state.sleep_rhythm["decision"], "continue")
+        async with self.engine.session_state(B) as state:
+            self.assertEqual(state.current_plan["source"], "sleep_rhythm")
+            self.assertEqual(state.sleep_rhythm["decision"], "sleep")
+
     async def test_invalid_override_is_not_saved_and_global_pause_cannot_be_overridden(self):
         before = self.store.raw_sessions()
         for blocks in ([{}], ["unknown"]):

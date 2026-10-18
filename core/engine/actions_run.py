@@ -20,6 +20,7 @@ from ..pathfinding import (
     path_ticks,
 )
 from ..planner import (
+    active_plan,
     advance,
     create_plan,
 )
@@ -388,6 +389,9 @@ class ActionsRunMixin:
             # 睡前先进临睡期：不立刻躺下（见 _enter_drowsy）
             await self._enter_drowsy(state, node, outcome, definition, action, depth)
             return
+        if definition.id == "sleep" and str((active_plan(state) or {}).get("source")) != "forced":
+            # 晚安与临睡期是两个独立开关；直接入睡也保留睡前问候机会。
+            await self._maybe_say_goodnight(state, node, outcome)
         if definition.llm_level == "tool":
             if not await self._prepare_tool_action(state, definition, action, outcome):
                 return
@@ -934,6 +938,7 @@ class ActionsRunMixin:
         outcome: TickOutcome,
         *,
         depth: int,
+        plan_source: str = "schedule",
     ) -> None:
         """执行日程动作链：瞬时动作立即执行；持续动作启动后，剩余步骤转为计划。"""
 
@@ -1002,6 +1007,8 @@ class ActionsRunMixin:
                 await self._start_action(
                     state, self.node(state.node_id), outcome, definition, action, depth, True
                 )
+                if state.state == STATE_DROWSY and state.drowsy_sleep_step:
+                    state.drowsy_sleep_step["plan_source"] = plan_source
                 rest = chain[index + 1 :]
                 if rest and (
                     state.current_action is not None or state.state == STATE_DROWSY
@@ -1028,6 +1035,9 @@ class ActionsRunMixin:
                         reason="日程后续步骤",
                         source="schedule",
                     )
+                    if state.current_plan and plan_source == "manual":
+                        # 保留日程发言来源，单独标记手动试跑供模式交接识别。
+                        state.current_plan["manual"] = True
                 return
             await self._execute_actions(
                 state,

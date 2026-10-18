@@ -32,6 +32,286 @@ class SleepRhythmTests(unittest.IsolatedAsyncioTestCase):
             await self.engine._tick_sleep_rhythm(state, outcome)
         return outcome
 
+    async def prepare_pending_sleep(self, *, drowsy=False):
+        from core.planner import create_plan
+        await self.set_state(node_id="bedroom" if drowsy else "study",
+            state="drowsy" if drowsy else "idle", current_action=None,
+            current_plan=create_plan(steps=[{"action":"sleep", "duration":25200}],
+                world_time=10, source="sleep_rhythm"),
+            drowsy_sleep_step={"type":"sleep", "duration":25200} if drowsy else {},
+            sleep_rhythm={"mode":"autonomous", "decision":"sleep", "source":"llm",
+                "duration_seconds":25200, "awake_since":self.clock.now()-14*3600})
+
+    async def switch_sleep_mode(self, mode):
+        raw = self.store.raw_world()
+        raw["sleep"]["mode"] = mode
+        self.store.save_world(raw)
+        self.engine.reload_config()
+
+    async def test_clearing_a_pending_sleep_decision_without_a_plan_is_effective(self):
+        await self.prepare_pending_sleep()
+        await self.set_state(current_plan=None)
+        self.assertTrue(await self.engine.clear_plan(fixture.SESSION))
+        await self.assess()
+        state = await self.get_state()
+        self.assertIsNone(state.current_plan)
+        self.assertIsNone(state.current_action)
+        self.assertEqual(state.sleep_rhythm["decision"], "continue")
+        self.assertAlmostEqual(self.engine._rhythm_awake_hours(state), 14)
+        self.assertEqual(state.sleep_history, [])
+        self.assertEqual(len(self.llm.calls), 0)
+
+    async def test_clearing_the_bedtime_queue_allows_the_current_walk_to_finish(self):
+        await self.prepare_pending_sleep()
+        await self.set_state(current_action={"type":"walk_to", "target_node":"bedroom",
+            "elapsed_ticks":0, "duration_ticks":2, "interruptible":True})
+        self.assertTrue(await self.engine.clear_plan(fixture.SESSION))
+        for _ in range(2):
+            self.clock.advance(60)
+            await self.engine._tick_session(fixture.SESSION)
+        state = await self.get_state()
+        self.assertEqual(state.node_id, "bedroom")
+        self.assertNotEqual((state.current_action or {}).get("type"), "sleep")
+        self.assertNotEqual((state.current_plan or {}).get("source"), "sleep_rhythm")
+
+    async def test_clearing_a_drowsy_queue_cancels_its_detached_sleep_step(self):
+        await self.prepare_pending_sleep(drowsy=True)
+        self.assertTrue(await self.engine.clear_plan(fixture.SESSION))
+        self.clock.advance(360)
+        await self.engine._tick_session(fixture.SESSION)
+        state = await self.get_state()
+        self.assertEqual(state.drowsy_sleep_step, {})
+        self.assertEqual(state.state, "idle")
+        self.assertIsNone(state.current_action)
+        self.assertEqual(state.sleep_history, [])
+
+    async def test_model_cancellation_clears_drowsiness_and_pending_decisions(self):
+        for mode in ("queue", "now"):
+            with self.subTest(mode=mode):
+                await self.prepare_pending_sleep(drowsy=True)
+                async with self.engine.session_state(fixture.SESSION) as state:
+                    note = await self.engine.apply_cancel(state, mode, "先别睡",
+                        TickOutcome(session_id=fixture.SESSION))
+                    self.assertIn("入睡", note)
+                    self.assertEqual(state.drowsy_sleep_step, {})
+                    self.assertEqual(state.state, "idle")
+                await self.assess()
+                self.assertIsNone((await self.get_state()).current_action)
+
+    async def test_interrupt_button_can_cancel_drowsiness(self):
+        await self.prepare_pending_sleep(drowsy=True)
+        self.assertTrue(await self.engine.interrupt(fixture.SESSION, force=True))
+        state = await self.get_state()
+        self.assertEqual(state.state, "idle")
+        self.assertEqual(state.drowsy_sleep_step, {})
+        self.assertIsNone(state.current_plan)
+
+    async def test_cancellation_expires_and_does_not_reset_sleep_debt(self):
+        await self.prepare_pending_sleep()
+        await self.engine.clear_plan(fixture.SESSION)
+        self.clock.advance(3601)
+        await self.set_state(world_time=71)
+        self.llm.replies = ['{"decision":"sleep","hours":7,"reason":"重新评估还是困"}']
+        await self.assess()
+        self.assertEqual((await self.get_state()).current_action["type"], "walk_to")
+        self.assertEqual(len(self.llm.calls), 1)
+
+    async def test_cancelling_a_queue_keeps_an_already_started_sleep(self):
+        for cancel in ("clear", "queue"):
+            with self.subTest(cancel=cancel):
+                await self.prepare_pending_sleep()
+                await self.set_state(node_id="bedroom", state="sleeping",
+                    current_action={"type":"sleep", "elapsed_ticks":20, "duration_ticks":420},
+                    sleep_rhythm={"mode":"autonomous", "decision":"sleeping",
+                        "planned_wake_at":self.clock.now()+24000, "awake_since":self.clock.now()-14*3600})
+                before = await self.get_state()
+                if cancel == "clear":
+                    await self.engine.clear_plan(fixture.SESSION)
+                else:
+                    async with self.engine.session_state(fixture.SESSION) as state:
+                        await self.engine.apply_cancel(state, "queue", "放弃之后的安排", TickOutcome(fixture.SESSION))
+                state = await self.get_state()
+                self.assertEqual(state.current_action, before.current_action)
+                self.assertEqual(state.sleep_rhythm, before.sleep_rhythm)
+                self.assertEqual(state.sleep_history, [])
+
+    async def test_cancellation_does_not_disable_overwork_protection(self):
+        await self.prepare_pending_sleep()
+        await self.engine.clear_plan(fixture.SESSION)
+        async with self.engine.session_state(fixture.SESSION) as state:
+            state.sleep_rhythm["awake_since"] = self.clock.now()-21*3600
+        await self.assess()
+        state = await self.get_state()
+        self.assertEqual(state.sleep_rhythm["source"], "safety")
+        self.assertEqual(state.current_action["type"], "walk_to")
+
+    async def test_pending_decision_survives_engine_restart_without_being_cancelled(self):
+        await self.prepare_pending_sleep()
+        other = MyWorldEngine(store=self.store, db=self.db, llm=self.llm,
+            messenger=self.messenger, persona=self.persona, clock=self.clock,
+            tick_seconds=60, decider_interval=0)
+        async with other.session_state(fixture.SESSION) as state:
+            self.assertEqual(state.sleep_rhythm["decision"], "sleep")
+            self.assertEqual(state.current_plan["source"], "sleep_rhythm")
+
+    async def test_old_pending_decision_without_mode_is_cancelled_in_fixed_mode(self):
+        await self.prepare_pending_sleep()
+        async with self.engine.session_state(fixture.SESSION) as state:
+            state.sleep_rhythm.pop("mode", None)
+        await self.switch_sleep_mode("fixed")
+        async with self.engine.session_state(fixture.SESSION) as state:
+            self.assertEqual(state.sleep_rhythm["decision"], "continue")
+            self.assertIsNone(state.current_plan)
+
+    async def test_mode_switch_preserves_existing_wake_and_delay_protection(self):
+        await self.prepare_pending_sleep()
+        await self.set_state(no_sleep_until=300, sleep_delay_until=400)
+        await self.switch_sleep_mode("fixed")
+        async with self.engine.session_state(fixture.SESSION) as state:
+            self.assertEqual(state.no_sleep_until, 300)
+            self.assertEqual(state.sleep_delay_until, 400)
+
+    async def test_switching_to_fixed_discards_autonomous_queue_but_finishes_walk(self):
+        await self.prepare_pending_sleep()
+        await self.set_state(current_action={"type":"walk_to", "target_node":"bedroom",
+            "elapsed_ticks":0, "duration_ticks":2, "interruptible":True})
+        await self.switch_sleep_mode("fixed")
+        async with self.engine.session_state(fixture.SESSION) as state:
+            self.assertIsNone(state.current_plan)
+            self.assertEqual(state.current_action["type"], "walk_to")
+            self.assertNotEqual(state.sleep_rhythm["decision"], "sleep")
+        await self.switch_sleep_mode("autonomous")
+        self.llm.replies = ['{"decision":"continue","reason":"先整理一下"}']
+        await self.assess()
+        state = await self.get_state()
+        self.assertIsNone(state.current_plan)
+        self.assertEqual(state.sleep_rhythm["source"], "llm")
+
+    async def test_switching_to_fixed_cancels_autonomous_drowsiness(self):
+        await self.prepare_pending_sleep(drowsy=True)
+        await self.switch_sleep_mode("fixed")
+        async with self.engine.session_state(fixture.SESSION) as state:
+            self.assertEqual(state.state, "idle")
+            self.assertEqual(state.drowsy_sleep_step, {})
+            self.assertIsNone(state.current_plan)
+            self.assertEqual(state.sleep_history, [])
+
+    async def test_switching_to_autonomy_discards_an_unstarted_fixed_sleep_schedule(self):
+        from core.planner import create_plan
+        await self.set_state(sleep_rhythm={"mode":"fixed", "awake_since":self.clock.now()},
+            current_plan=create_plan(steps=[{"action":"walk_to", "target_node":"bedroom"},
+                {"action":"sleep"}], world_time=10, source="schedule"))
+        # 当前已为自主模式，模拟上次固定作息留下的状态即可。
+        async with self.engine.session_state(fixture.SESSION) as state:
+            self.assertIsNone(state.current_plan)
+            self.assertEqual(state.sleep_rhythm["mode"], "autonomous")
+
+    async def test_switching_to_autonomy_cancels_detached_fixed_schedule_sleep_step(self):
+        from core.planner import create_plan
+        plan = create_plan(steps=[{"action":"sleep"}, {"action":"read"}],
+            world_time=10, source="schedule")
+        plan["steps"][0]["status"] = "done"
+        plan["current_step"] = 1
+        await self.set_state(state="drowsy", node_id="bedroom", current_plan=plan,
+            drowsy_sleep_step={"type":"sleep", "duration":25200},
+            sleep_rhythm={"mode":"fixed", "awake_since":self.clock.now()})
+        async with self.engine.session_state(fixture.SESSION) as state:
+            self.assertIsNone(state.current_plan)
+            self.assertEqual(state.drowsy_sleep_step, {})
+            self.assertEqual(state.state, "idle")
+
+    async def test_switching_modes_preserves_actual_sleep_and_manual_queue(self):
+        from core.planner import create_plan
+        await self.set_state(node_id="bedroom")
+        self.llm.replies = ['{"decision":"sleep","hours":7,"reason":"休息"}']
+        await self.assess()
+        before = await self.get_state()
+        await self.switch_sleep_mode("fixed")
+        async with self.engine.session_state(fixture.SESSION) as state:
+            self.assertEqual(state.current_action, before.current_action)
+            self.assertEqual(state.sleep_rhythm["decision"], "sleeping")
+            self.assertEqual(state.sleep_history, [])
+        await self.set_state(state="idle", current_action=None,
+            current_plan=create_plan(steps=[{"action":"read"}], world_time=10, source="manual"),
+            sleep_rhythm={"mode":"fixed", "decision":"awake", "awake_since":self.clock.now()})
+        await self.switch_sleep_mode("autonomous")
+        async with self.engine.session_state(fixture.SESSION) as state:
+            self.assertEqual(state.current_plan["source"], "manual")
+
+    async def test_manual_schedule_trial_keeps_its_queue_across_a_mode_switch(self):
+        raw = self.store.raw_schedules()
+        raw["schedules"] = [{"id":"manual_test", "time":"22:00", "smart":False,
+            "action_chain":[{"type":"walk_to", "target_node":"bedroom"},
+                {"type":"sleep", "duration":25200}]}]
+        self.store.save_schedules(raw)
+        self.engine.reload_config()
+        await self.engine.run_schedule_now(fixture.SESSION, "manual_test")
+        self.assertTrue((await self.get_state()).current_plan["manual"])
+        await self.switch_sleep_mode("fixed")
+        async with self.engine.session_state(fixture.SESSION) as state:
+            self.assertTrue(state.current_plan["manual"])
+            self.assertEqual(state.current_plan["source"], "schedule")
+
+    async def test_drowsy_schedule_without_a_queue_has_a_source_for_mode_switches(self):
+        from core.models import ChainStep
+        for source in ("schedule", "manual"):
+            with self.subTest(source=source):
+                await self.switch_sleep_mode("fixed")
+                self.engine.world.sleep.drowsy = True
+                self.clock.set_struct(datetime(2026,10,19,23,30))
+                await self.set_state(node_id="bedroom", current_action=None, current_plan=None,
+                    state="idle", drowsy_day="", drowsy_sleep_step={},
+                    sleep_rhythm={"mode":"fixed", "awake_since":self.clock.now()})
+                async with self.engine.session_state(fixture.SESSION) as state:
+                    await self.engine._run_chain(state, [ChainStep(type="sleep", duration=25200)],
+                        TickOutcome(fixture.SESSION), depth=0, plan_source=source)
+                    self.assertEqual(state.state, "drowsy")
+                    self.assertIsNone(state.current_plan)
+                await self.switch_sleep_mode("autonomous")
+                async with self.engine.session_state(fixture.SESSION) as state:
+                    self.assertEqual(state.state, "idle" if source == "schedule" else "drowsy")
+                    self.assertEqual(bool(state.drowsy_sleep_step), source == "manual")
+
+    async def test_goodnight_still_runs_when_drowsiness_is_disabled(self):
+        self.engine.world.sleep.goodnight = True
+        await self.set_state(node_id="bedroom")
+        self.llm.replies = ['{"decision":"sleep","hours":7,"reason":"今天累了"}',
+            '{"plan":[{"action":"say","messages":["晚安，明天见"]}]}']
+        outcome = await self.assess()
+        self.assertIn("晚安，明天见", outcome.messages)
+        self.assertEqual((await self.get_state()).current_action["type"], "sleep")
+        self.assertEqual(len(self.llm.calls), 2)
+
+    async def test_overwork_sleep_does_not_wait_for_a_goodnight_model_call(self):
+        self.engine.world.sleep.goodnight = True
+        await self.set_state(node_id="bedroom",
+            sleep_rhythm={"awake_since":self.clock.now()-21*3600})
+        await self.assess()
+        self.assertEqual((await self.get_state()).current_action["type"], "sleep")
+        self.assertEqual(len(self.llm.calls), 0)
+
+    async def test_shared_life_cancellation_from_a_member_clears_the_same_pending_sleep(self):
+        fixture.EngineTestCase.add_group(self, sessions=[fixture.SESSION, fixture.OTHER_SESSION])
+        await self.prepare_pending_sleep(drowsy=True)
+        self.assertTrue(await self.engine.clear_plan(fixture.OTHER_SESSION))
+        state = await self.get_state()
+        shared = await self.engine.load_state(fixture.OTHER_SESSION, cold_start=False)
+        self.assertEqual(state.sleep_rhythm["decision"], "continue")
+        self.assertEqual(shared.sleep_rhythm, state.sleep_rhythm)
+        self.assertEqual(shared.drowsy_sleep_step, {})
+
+    async def test_drowsy_goodnight_is_not_repeated_when_sleep_actually_starts(self):
+        self.engine.world.sleep.goodnight = True
+        self.engine.world.sleep.drowsy = True
+        await self.set_state(node_id="bedroom")
+        self.llm.replies = ['{"decision":"sleep","hours":7,"reason":"累了"}',
+            '{"plan":[{"action":"say","messages":["先睡了"]}]}']
+        await self.assess()
+        self.clock.advance(360)
+        await self.engine._tick_session(fixture.SESSION)
+        self.assertEqual((await self.get_state()).current_action["type"], "sleep")
+        self.assertEqual(len(self.llm.calls), 2)
+
     async def test_arrival_for_sleep_does_not_plan_another_activity_during_drowsiness(self):
         self.engine.world.sleep.drowsy = True
         self.llm.replies = ['{"decision":"sleep","hours":7,"reason":"今天累了"}']
