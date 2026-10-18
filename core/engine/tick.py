@@ -104,6 +104,8 @@ class TickMixin:
             current = state.current_action or {}
             current_def = self.world.action_map().get(str(current.get("type") or ""))
             if current and current_def is not None and (not current_def.enabled or current_def.idle):
+                if current_def.id in {"sleep", "nap"}:
+                    self._finish_sleep_rhythm(state, current, interrupted=True)
                 state.current_action = None
                 state.state = STATE_IDLE
                 await self._log_event(
@@ -243,6 +245,9 @@ class TickMixin:
                         )
                     },
                 )
+
+            # 作息独立于群聊活跃度与发言冷却，同一个生活状态只评估一次。
+            await self._tick_sleep_rhythm(state, outcome)
 
             # 5) 极端保护
             tick = max(1, self.tick_seconds)
@@ -474,6 +479,7 @@ class TickMixin:
                 )
 
         if definition is not None and definition.id == "sleep":
+            self._finish_sleep_rhythm(state, action, interrupted=False)
             # 睡整觉结束：睡了多久、中途被吵醒过没有，决定她是清爽还是起床气
             self._apply_wake_quality(
                 state,
@@ -483,6 +489,8 @@ class TickMixin:
             state.sleep_started_at = 0
             # 睡醒给她一次机会说早安（发不发、发给谁由她自己定，一天一次）
             await self._maybe_say_goodmorning(state, node, outcome)
+        elif definition is not None and definition.id == "nap":
+            self._finish_sleep_rhythm(state, action, interrupted=False)
 
         # 行动完成 -> 记忆
         if definition is not None:

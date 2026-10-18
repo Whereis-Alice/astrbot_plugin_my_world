@@ -284,6 +284,7 @@ class Decider:
         sleepy = self.sleep_pressure_high(state)
         if (
             (exhausted or sleepy)
+            and (self.world.sleep.mode == "fixed" or (not self.is_night() and self.can_nap()))
             and state.world_time >= state.no_sleep_until
             and not state.sleep_delayed
             and (self.can_nap() or self.world.sleep_allowed_now(self.local_hour()))

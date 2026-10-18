@@ -25,6 +25,7 @@ const ui = {
   mapDetails: null,
   mapView: { scale: 1, x: 0, y: 0 },
   mapViewReady: false,
+  mapViewAuto: true,
   mapLabelMode: (() => {
     try {
       return window.localStorage.getItem("mw-map-label-mode") || "smart";
@@ -256,6 +257,7 @@ const ECHO_TYPE_CHOICES = [
     hint: "睡醒后她自己决定要不要说早安。",
     group: "sleep",
   },
+  { key: "sleep_rhythm", icon: "🛌", label: "自主作息", hint: "模型决定、规则兜底与过劳保护", group: "sleep" },
   {
     key: "nickname",
     icon: "🏷️",
@@ -3256,6 +3258,9 @@ async function startApp() {
   if (window.ResizeObserver) {
     const bar = document.querySelector(".topbar");
     if (bar) new ResizeObserver(() => syncTopbarHeight()).observe(bar);
+    const mapObserver = new ResizeObserver(scheduleMapViewport);
+    [$("map-stage"), document.querySelector(".map-topbar"), $("map-side"), $("map-bottom-tools")]
+      .filter(Boolean).forEach(node => mapObserver.observe(node));
   }
   renderHistoryWindows();
   watchPronoun();
@@ -3547,8 +3552,9 @@ function mapZoomBy(factor, clientX, clientY) {
   const canvas = $("canvas");
   if (!canvas) return;
   const rect = canvas.getBoundingClientRect();
-  const px = clientX == null ? rect.width / 2 : clientX - rect.left;
-  const py = clientY == null ? rect.height / 2 : clientY - rect.top;
+  const room = mapViewportRoom();
+  const px = clientX == null ? (room ? room.x + room.width / 2 : rect.width / 2) : clientX - rect.left;
+  const py = clientY == null ? (room ? room.y + room.height / 2 : rect.height / 2) : clientY - rect.top;
   const view = ui.mapView || (ui.mapView = { scale: 1, x: 0, y: 0 });
   const next = Math.max(MAP_MIN_SCALE, Math.min(MAP_MAX_SCALE, view.scale * factor));
   if (Math.abs(next - view.scale) < 0.001) return;
@@ -3556,7 +3562,47 @@ function mapZoomBy(factor, clientX, clientY) {
   view.y = py - (py - view.y) * (next / view.scale);
   view.scale = next;
   ui.mapViewReady = true;
+  ui.mapViewAuto = false;
   applyMapView();
+}
+
+/** 按当前顶栏、窗口与属性面板的真实边界取出可见地图空间。 */
+function mapViewportRoom() {
+  const canvas = $("canvas");
+  if (!canvas || !canvas.clientWidth || !canvas.clientHeight) return null;
+  const bounds = canvas.getBoundingClientRect();
+  let left = Math.max(bounds.left, 0) + 20;
+  let right = Math.min(bounds.right, window.innerWidth) - 20;
+  let top = Math.max(bounds.top, 0) + 20;
+  let bottom = Math.min(bounds.bottom, window.innerHeight) - 20;
+  const toolbar = document.querySelector(".map-topbar")?.getBoundingClientRect();
+  if (toolbar) top = Math.max(top, toolbar.bottom + 20);
+  const dock = $("map-bottom-tools")?.getBoundingClientRect();
+  if (dock) bottom = Math.min(bottom, dock.top - 16);
+  const side = $("map-side");
+  if (side && !side.classList.contains("collapsed")) {
+    // offset* 不受面板开合动画的 transform 影响。
+    const stage = $("map-stage").getBoundingClientRect();
+    const landscape = window.matchMedia("(min-width: 641px) and (max-height: 500px) and (orientation: landscape)").matches;
+    if (window.innerWidth > 1100 || landscape) right = Math.min(right, stage.left + side.offsetLeft - 20);
+    else bottom = Math.min(bottom, stage.top + side.offsetTop - 20);
+  }
+  return { x: left - bounds.left, y: top - bounds.top,
+    width: Math.max(1, right - left), height: Math.max(1, bottom - top) };
+}
+
+let mapViewportFrame = 0;
+function scheduleMapViewport() {
+  if (mapViewportFrame) return;
+  mapViewportFrame = window.requestAnimationFrame(() => {
+    mapViewportFrame = 0;
+    if (!$("tab-map")?.classList.contains("active")) return;
+    $("map-stage").style.setProperty("--map-dock-height", `${($("map-bottom-tools")?.offsetHeight || 0) + 16}px`);
+    const toolbar = document.querySelector(".map-topbar");
+    $("map-stage").style.setProperty("--map-toolbar-height", `${toolbar ? toolbar.offsetTop + toolbar.offsetHeight + 8 : 0}px`);
+    if (!ui.mapViewReady || ui.mapViewAuto) fitMapToCanvas({ silent: true });
+    else applyMapView();
+  });
 }
 
 /**
@@ -3565,17 +3611,9 @@ function mapZoomBy(factor, clientX, clientY) {
  * 形状一致，生成出来的地图天生就是铺满的，不用再靠放大裁切去凑。
  */
 function mapViewportAspect() {
-  const canvas = $("canvas");
-  if (!canvas) return 0;
-  const width = canvas.clientWidth || 0;
-  const height = canvas.clientHeight || 0;
-  if (width < 60 || height < 60) return 0;
-  const side = $("map-side");
-  const sideOpen = side && !side.classList.contains("collapsed");
-  const rightPad = sideOpen && width > 980 ? 380 : 28;
-  const roomW = Math.max(120, width - 28 - rightPad);
-  const roomH = Math.max(120, height - 78 - 36);
-  return Math.round((roomW / roomH) * 100) / 100;
+  const room = mapViewportRoom();
+  return room && room.width >= 60 && room.height >= 60
+    ? Math.round(room.width / room.height * 100) / 100 : 0;
 }
 
 /** 取景方式：适应（默认，整张图都在视野里）/ 填满（放大到铺满整块画布）。 */
@@ -3611,37 +3649,32 @@ function fitMapToCanvas({ silent = false, mode = "" } = {}) {
   }
   const xs = list.map((item) => num(item.x, 0));
   const ys = list.map((item) => num(item.y, 0));
-  const minX = Math.min(...xs);
-  const minY = Math.min(...ys);
-  const maxX = Math.max(...xs);
-  const maxY = Math.max(...ys);
+  const minX = Math.min(...xs) - 4;
+  const minY = Math.min(...ys) - 16;
+  const maxX = Math.max(...xs) + 4;
+  const maxY = Math.max(...ys) + 4;
   const contentW = Math.max(1, maxX - minX + MAP_NODE_W);
   const contentH = Math.max(1, maxY - minY + MAP_NODE_H);
-  const vw = canvas.clientWidth;
-  const vh = canvas.clientHeight;
-  const side = $("map-side");
-  const sideOpen = side && !side.classList.contains("collapsed");
-  const leftPad = 28;
-  const rightPad = sideOpen && vw > 980 ? 380 : 28;
-  const topPad = 78;
-  const bottomPad = 36;
-  const availW = Math.max(120, vw - leftPad - rightPad);
-  const availH = Math.max(120, vh - topPad - bottomPad);
+  const room = mapViewportRoom();
+  if (!room || room.width < 30 || room.height < 30) return;
+  const availW = room.width;
+  const availH = room.height;
   // 「适应」按短边算：整张图都在视野里；「填满」按长边算：放大到盖住整块画布。
-  // 两个都用同一套缩放上下限，切来切去不会越切越奇怪。
+  // 完整取景允许比手动缩放更小，密集地图在小窗口中也能放下。
   const cover = (mode || mapFillMode()) === "cover";
   const ratio = cover
     ? Math.max(availW / contentW, availH / contentH)
     : Math.min(availW / contentW, availH / contentH);
   // 「适应」在很空的图上不至于糊成一片；「填满」为了铺满可以放大得多一点，
   // 但也不至于把两三个节点撑满整块画布。
-  const scale = Math.max(MAP_MIN_SCALE, Math.min(cover ? 2.0 : 1.6, ratio));
+  const scale = Math.max(0.05, Math.min(cover ? 2.0 : 1.6, ratio));
   ui.mapView = {
     scale,
-    x: leftPad + (availW - contentW * scale) / 2 - minX * scale,
-    y: topPad + (availH - contentH * scale) / 2 - minY * scale,
+    x: room.x + (availW - contentW * scale) / 2 - minX * scale,
+    y: room.y + (availH - contentH * scale) / 2 - minY * scale,
   };
   ui.mapViewReady = true;
+  ui.mapViewAuto = true;
   applyMapView();
   if (!silent) toast(level === "zone" ? "地点已经放进视野" : "区域已经放进视野");
 }
@@ -3749,6 +3782,7 @@ function bindMapCanvas() {
       view.x = originX + (moveEvent.clientX - startX);
       view.y = originY + (moveEvent.clientY - startY);
       ui.mapViewReady = true;
+      ui.mapViewAuto = false;
       applyMapView();
     };
     const onUp = () => {
@@ -4246,6 +4280,7 @@ function bindButtons() {
     const stage = $("map-stage");
     if (stage) stage.classList.toggle("side-open", open);
     if ($("map-side-toggle")) $("map-side-toggle").classList.toggle("on", open);
+    scheduleMapViewport();
   };
   if ($("map-side-toggle")) {
     $("map-side-toggle").addEventListener("click", () =>
@@ -4264,8 +4299,7 @@ function bindButtons() {
     syncTopbarHeight();
     const mapTab = $("tab-map");
     if (!mapTab || !mapTab.classList.contains("active")) return;
-    if (!ui.mapViewReady) fitMapToCanvas({ silent: true });
-    else applyMapView();
+    scheduleMapViewport();
   });
   $("action-add").addEventListener("click", addAction);
   if ($("action-generate-world")) {
@@ -4934,6 +4968,22 @@ function renderValueRows(values, data) {
     row.appendChild(bar);
     row.appendChild(el("span", "value-num", pressure.toFixed(2)));
     box.appendChild(row);
+  }
+
+  if (data?.sleep?.mode === "autonomous") {
+    const rhythm = data.sleep.rhythm || {};
+    const details = el("details", "row-item sleep-rhythm-details");
+    details.open = Boolean(ui.sleepRhythmOpen);
+    details.addEventListener("toggle", () => {ui.sleepRhythmOpen=details.open;});
+    details.appendChild(el("summary", "", "自主作息 · " +
+      ({sleep: "准备休息", sleeping: "睡眠中", awake: "已醒来", continue: "继续活动"}[rhythm.decision] || "等待评估")));
+    if (rhythm.reason) details.appendChild(el("p", "muted", rhythm.reason));
+    const clockText = timestamp => new Date(timestamp * 1000).toLocaleString("zh-CN", {hour12: false});
+    if (rhythm.planned_wake_at) details.appendChild(el("p", "muted", `预计醒来：${clockText(rhythm.planned_wake_at)}`));
+    else if (rhythm.next_evaluation_at) details.appendChild(el("p", "muted", `下次评估最早：${clockText(rhythm.next_evaluation_at)}`));
+    (data.sleep.history || []).slice(-3).reverse().forEach(item => details.appendChild(el("p", "muted",
+      `${item.kind === "nap" ? "小睡" : "整觉"} ${num(item.hours, 0).toFixed(1)} 小时 · ${item.interrupted ? "被打断" : "自然醒"} · ${clockText(item.ended_at)}`)));
+    box.appendChild(details);
   }
 
   if (ui.valuesEdit) {
@@ -7572,6 +7622,7 @@ function renderMap() {
   ui.mapHoverNode = hovered ? hovered.dataset.id : "";
   applyMapFocus();
   refreshMapDetails();
+  scheduleMapViewport();
 }
 
 /** 会话筛选也包含同一共享生活组的其它会话。 */
@@ -8377,6 +8428,7 @@ function startDrag(event, node) {
     if (!moved && Math.hypot(dx, dy) < 4) return;
     if (!moved) {
       moved = true;
+      ui.mapViewAuto = false;
       event.preventDefault();
       document.body.classList.add("dragging-map-node");
       if (kind === "node") ui.selectedNode = node.id;
@@ -18659,10 +18711,25 @@ function renderSettings() {
   world.night = world.night || {};
   const nightSection = settingsSection(
     "作息与夜晚",
-    "夜晚时段决定「睡觉」这个动作什么时候可选，也决定熬夜的代价。",
-    "默认 23:00–07:00 算夜里。起止小时填成一样表示没有夜晚时段：睡觉不受时段限制，熬夜代价也不生效。",
+    "默认由她决定什么时候睡、睡多久；固定模式保留原来的睡眠日程。",
+    "自主模式根据清醒时长、睡眠记录、疲劳、人设与当天安排低频评估，不受固定夜晚起点限制。含睡整觉的自动日程会跳过，手动试跑仍可用。夜晚时段继续决定熬夜的代价。",
   );
   world.sleep = world.sleep || {};
+  nightSection._fields.appendChild(selectField("作息模式", world.sleep.mode || "autonomous",
+    [{key: "autonomous", label: "自主作息（推荐）"}, {key: "fixed", label: "固定作息"}],
+    value => {world.sleep.mode = value;},
+    {hint: "自主作息独立于群聊发言冷却；固定作息按日程、精力与夜晚范围执行。"}));
+  [
+    ["evaluation_minutes", "常规作息评估间隔（分钟）", 60, 15, 180, 15, "进入疲劳或晚间评估窗口后，默认间隔 60 分钟；模型可提早复查，最短 15 分钟。精神好时不询问，失败按状态兜底。"],
+    ["min_hours", "整觉最短时长（小时）", 6, 3, 12, 0.5, "模型在最短与最长之间决定，默认 6–10 小时；短时恢复使用小睡动作。"],
+    ["max_hours", "整觉最长时长（小时）", 10, 3, 14, 0.5, "影响自主模式的整觉时长，固定模式继续使用动作或日程的时长。"],
+    ["max_awake_hours", "连续清醒上限（小时）", 20, 16, 30, 0.5, "达到上限触发过劳保护，不会被反复要求陪聊无限推迟。"],
+  ].forEach(([key,label,fallback,min,max,step,hint]) => nightSection._fields.appendChild(inputField(
+    label, num(world.sleep[key],fallback), value => {world.sleep[key]=num(value,fallback);},
+    {type: "number", min: String(min), max: String(max), step: String(step), hint})));
+  nightSection._fields.appendChild(inputField("自主作息偏好", world.sleep.rhythm_prompt || "",
+    value => {world.sleep.rhythm_prompt=value;},
+    {hint: "例如喜欢早起、看完书再睡、累了一天会早些休息。作为偏好供模型考虑，无需指定每天同一个钟点。"}));
   nightSection._fields.appendChild(selectField("睡眠地点", world.sleep.node_id || "",
     [{key: "", label: "自动选择家中的卧室"}, ...nodeItems().map(node => ({key: node.id, label: node.name}))],
     value => {world.sleep.node_id = value;},
@@ -18702,7 +18769,7 @@ function renderSettings() {
       (value) => (world.night.sleep_only_at_night = value),
       {
         hint:
-          "开启后，非夜晚时段不向模型提供「睡觉」动作，模型写出也会被忽略。\n" +
+          "仅固定模式生效：开启后，非夜晚时段不提供「睡觉」动作，模型写出也会被忽略。\n" +
           "关闭后任何时段都可以睡整觉。",
       },
     ),

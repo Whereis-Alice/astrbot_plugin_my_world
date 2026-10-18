@@ -185,6 +185,12 @@ DEFAULT_WORLD: dict[str, Any] = {
     "tool_filter_enabled": True,
     # 睡觉时怎么回应、怎么把她叫起来
     "sleep": {
+        "mode": "autonomous",
+        "evaluation_minutes": 60,
+        "min_hours": 6,
+        "max_hours": 10,
+        "max_awake_hours": 20,
+        "rhythm_prompt": "",
         "reply_mode": "template",
         "reply_text": "zzz…（{bot}睡觉中，要叫她起来吗？）",
         "reply_cooldown_minutes": 5,

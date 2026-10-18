@@ -891,6 +891,7 @@ class GenerationMixin:
             }
             for action in self.world.actions
             if action.enabled and not bool(getattr(action, "legacy", False))
+            and not (action.id == "sleep" and self.world.sleep.mode == "autonomous")
         ]
         existing = []
         if self.schedules is not None:
@@ -899,6 +900,8 @@ class GenerationMixin:
                 for item in (self.schedules.schedules or [])
             ]
         life_lines = [f"当前时间：{self.local_now().strftime('%Y-%m-%d %H:%M')}"]
+        if self.world.sleep.mode == "autonomous":
+            life_lines.append("整觉时间由独立自主作息决定，日程只安排生活活动，不安排固定入睡；留出休息空间。")
         if session_id:
             state = await self.load_state(session_id, cold_start=False)
             life_lines.append(f"地点：{self.node_label(state.node_id)}；状态：{state.state}；精力：{state.energy:.2f}")
@@ -1206,6 +1209,8 @@ class GenerationMixin:
         if mode == "now" and action is not None:
             if action.get("interruptible", True):
                 stopped = str(action.get("type") or "")
+                if stopped in {"sleep", "nap"}:
+                    self._finish_sleep_rhythm(state, action, interrupted=True)
                 state.current_action = None
                 state.state = STATE_IDLE
             else:
@@ -1265,6 +1270,8 @@ class GenerationMixin:
                 return False
             if not force and not action.get("interruptible", True):
                 return False
+            if action.get("type") in {"sleep", "nap"}:
+                self._finish_sleep_rhythm(state, action, interrupted=True)
             state.add_event("interrupt", {"action": action.get("type")})
             state.current_action = None
             state.state = STATE_IDLE

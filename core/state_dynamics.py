@@ -621,6 +621,11 @@ class StateDynamics:
             fall = max(0.0, self._sleep_config(world, "pressure_sleep_fall_per_hour", 2.0))
             state.sleep_pressure = clamp_value(current - fall * minutes / 60.0, 0.0, 1.0)
             return
+        if world is not None and world.sleep.mode == "autonomous":
+            # 清醒积累不能在天亮时归零；约 20 小时到满值，聊天也不能抵掉清醒上限。
+            hours = max(16.0, float(world.sleep.max_awake_hours))
+            state.sleep_pressure = clamp_value(current + minutes / (hours * 60), 0.0, 1.0)
+            return
         hour = self._hour(now)
         night = True
         if world is not None:

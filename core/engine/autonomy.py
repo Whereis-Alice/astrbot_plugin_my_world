@@ -48,7 +48,9 @@ class AutonomyMixin:
                 return None
             if state.is_sleeping:
                 return None
-            if not self.engagement.can_speak(state):
+            if self.world.sleep.mode == "autonomous" and state.sleep_rhythm.get("decision") == "sleep":
+                await self._run_rhythm_sleep(state, outcome)
+            elif not self.engagement.can_speak(state):
                 outcome.notes.append("处于发言冷却期，继续安静生活")
                 await self._quiet_rule_plan(state, node, outcome)
             elif not self._within_hourly_limit(state):
@@ -286,6 +288,8 @@ class AutonomyMixin:
         _cell, say_limit, style_text = self.style_for(state, state.session_id)
         # 配额用尽的动作：计划里既不列出来，也不接受模型写它
         blocked_actions = self._hidden_actions(state)
+        if self.world.sleep.mode == "autonomous":
+            blocked_actions.add("sleep")
         system_prompt = self.prompts.build_autonomous_system_prompt(
             persona_text=persona_text,
             state=state,
@@ -330,9 +334,9 @@ class AutonomyMixin:
             '{"action":"stare","duration":600},{"action":"think","content":"..."}],'
             '"valid_until":1800,"inner":"此刻心里的一句话","reason":"为什么这样安排"}\n'
             "计划的长度由你决定：可以是几分钟的小事，也可以睡一整晚"
-            "（duration 是这一步持续多少秒，睡觉是 28800；valid_until 是这份计划大概管多少秒）。\n"
+            "（duration 是这一步持续多少秒；valid_until 是这份计划大概管多少秒）。\n"
             "结合上面的日期时间、你的状态和作息挑一件最合适的事："
-            "夜里或凌晨、或者实在撑不住了，才去睡整觉（28800 秒）；"
+            "自主模式的整觉由作息评估接管，不要在普通活动计划里重新安排；固定模式遵循已有作息。"
             "白天只是犯困就先小睡一会儿（10~60 分钟，睡多久你自己定），缓过来接着过，"
             "别在白天一睡八小时——那样醒来正好是半夜。\n"
             + self.prompts.AUTONOMOUS_MANNERS

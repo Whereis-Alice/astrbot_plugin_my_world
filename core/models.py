@@ -965,6 +965,7 @@ ECHO_EVENT_TYPES: dict[str, str] = {
     "drowsy": "😪",
     "goodnight": "🌙",
     "goodmorning": "☀️",
+    "sleep_rhythm": "🛌",
     "nickname": "🏷️",
     "cancel": "🛑",
     "vision": "🖼️",
@@ -1103,6 +1104,14 @@ class SleepQuality(Permissive):
 
 class SleepConfig(Permissive):
     """她睡觉时怎么回应消息、怎么把她叫起来。"""
+
+    mode: Literal["autonomous", "fixed"] = "autonomous"
+    evaluation_minutes: int = Field(default=60, ge=15, le=180)
+    min_hours: float = Field(default=6.0, ge=3, le=12)
+    max_hours: float = Field(default=10.0, ge=3, le=14)
+    max_awake_hours: float = Field(default=20.0, ge=16, le=30)
+    rhythm_prompt: str = ""
+    """自主作息的偏好；不要求每天在同一时刻入睡。"""
 
     node_id: str = ""
     """Preferred sleeping place; empty selects a bedroom in the home area."""
@@ -2411,6 +2420,8 @@ class WorldConfig(Permissive):
     def sleep_allowed_now(self, hour: int) -> bool:
         """这个小时能不能写「睡觉」这个动作。"""
 
+        if self.sleep.mode == "autonomous":
+            return True
         night = self.night
         if not bool(getattr(night, "sleep_only_at_night", True)):
             return True

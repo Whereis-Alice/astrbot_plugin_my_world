@@ -130,7 +130,14 @@ main:has(#tab-contacts.active) { padding: 8px 16px 16px; }
 .map-route-result { padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-soft); overflow-wrap: anywhere; }
 .map-route-result h3 { margin: 0 0 8px; }
 /* The map commands and view controls have separate rows; neither can cover the other. */
-.map-stage { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.map-stage { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+#app.map-focus .map-stage { height: calc(100dvh - var(--topbar-h, 46px)); min-height: 0; }
+.map-stage .map-bottom-tools { position: relative; inset: auto; grid-row: 3; grid-column: 1; justify-self: stretch; margin: 0 10px 8px; flex-direction: row; align-items: center; gap: 8px; min-width: 0; transition: none; }
+#map-stage.side-open .map-bottom-tools { right: auto; }
+.map-bottom-tools .map-weather { flex: 1; min-width: 0; max-width: none; max-height: 72px; overflow: auto; }
+.map-bottom-tools .map-zoom { flex: 0 0 auto; }
+.map-bottom-tools.collapsed { justify-self: end; }
+.map-tools-toggle { flex: 0 0 auto; }
 .map-topbar { position: relative; inset: auto; margin: 10px; display: grid; grid-row: 1; grid-column: 1; grid-template-columns: auto minmax(0, 1fr); gap: 7px 10px; overflow: visible; background: var(--panel); }
 .map-crumb { grid-row: 1; grid-column: 1; min-width: 0; }
 .map-crumb-text span { max-width: 220px; }
@@ -143,7 +150,10 @@ main:has(#tab-contacts.active) { padding: 8px 16px 16px; }
 .map-side { position: relative; grid-row: 2; grid-column: 1; inset: auto; justify-self: end; align-self: start; margin: 0 10px 10px 0; height: calc(100% - 10px); max-height: calc(100% - 10px); }
 @media (max-width: 1100px) {
   .map-topbar { overflow: visible; }
-  .map-side { position: absolute; grid-row: auto; left: 8px; right: 8px; bottom: 8px; top: auto; margin: 0; height: auto; max-height: 56dvh; }
+  .map-side { position: absolute; grid-row: auto; left: 8px; right: 8px; bottom: var(--map-dock-height, 64px); top: auto; margin: 0; height: auto; max-height: min(56dvh, calc(100% - var(--map-dock-height, 64px) - var(--map-toolbar-height, 150px) - 80px)); }
+}
+@media (min-width: 641px) and (max-height: 500px) and (orientation: landscape) {
+  .map-side { grid-area: auto; align-self: auto; justify-self: auto; left: auto; top: var(--map-toolbar-height, 150px); width: min(320px, 42vw); min-height: 0; height: calc(100% - var(--map-toolbar-height, 150px) - var(--map-dock-height, 64px)); max-height: calc(100% - var(--map-toolbar-height, 150px) - var(--map-dock-height, 64px)); }
 }
 @media (min-width: 761px) and (max-height: 780px) {
   .sidebar { gap: 9px; padding-top: 10px; padding-bottom: 10px; }
@@ -226,4 +236,7 @@ main:has(#tab-contacts.active) { padding: 8px 16px 16px; }
   .map-topbar .map-check span { display: inline; }
   .map-topbar .tool-btn { font-size: 11px; padding: 0 7px; }
   .map-topbar .tool-menu-body { left: 0; right: auto; max-width: min(280px, 75vw); }
+  .map-stage .map-bottom-tools { flex-wrap: wrap; margin: 0 8px 8px; gap: 5px; }
+  .map-bottom-tools .map-weather { flex: 1 0 100%; }
+  .map-bottom-tools .map-zoom { margin-left: auto; }
 }

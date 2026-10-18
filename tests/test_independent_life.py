@@ -146,6 +146,10 @@ class IndependentEngineTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_sleep_execution_checks_time_and_walks_to_a_custom_bedroom(self):
         from datetime import datetime
+        raw = self.store.raw_world()
+        raw['sleep']['mode'] = 'fixed'
+        self.store.save_world(raw)
+        self.engine.reload_config()
         self.clock.set_struct(datetime(2026, 10, 18, 17, 45))
         state = WorldState(SESSION, node_id="lobby", world_time=10)
         outcome = TickOutcome(SESSION)

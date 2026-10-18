@@ -119,6 +119,11 @@ def _render_body(
     if not isinstance(detail, dict):
         detail = {"value": detail}
 
+    if kind == "sleep_rhythm":
+        source = {"llm": "模型决定", "fallback": "规则兜底", "safety": "过劳保护"}.get(str(detail.get("source")), "自主作息")
+        duration = f"，计划睡 {detail.get('hours')} 小时" if detail.get("decision") == "sleep" else ""
+        return f"自主作息（{source}）：{detail.get('note') or ''}{duration}"
+
     if kind == "cold_start":
         return f"冷启动（{detail.get('mode', 'awakening')}），从「{node_name(detail.get('node', ''), world)}」开始"
 

@@ -273,6 +273,14 @@ class SleepMixin:
         """睡着被吵醒 / 起床气这几句临时说明（提示词用，过期自动失效）。"""
 
         notes: list[str] = []
+        if self.world.sleep.mode == "autonomous":
+            decision = state.sleep_rhythm.get("decision")
+            reason = str(state.sleep_rhythm.get("reason") or "")[:180] if (
+                decision in {"sleep", "sleeping", "continue"}
+                and not state.sleep_delayed and state.world_time >= state.no_sleep_until
+            ) else ""
+            notes.append("你按自己的疲劳、睡眠记录和安排决定作息，不因到固定钟点就必须睡。" +
+                         (f"最近的决定：{reason}。" if reason else ""))
         # 「等会儿再睡」的延迟窗口：他说了再待一会儿，她也答应了——
         # 这段时间别催他、别提睡觉；已经困了的话就是"半睡档"：软、慢、迷糊，但不睡过去。
         delayed = state.sleep_delayed
@@ -676,6 +684,15 @@ class SleepMixin:
         """把「被叫醒」落到状态上：停下动作、可选地清掉排队计划、给一段保护期。"""
 
         config = self.world.sleep
+        if state.current_action and str(state.current_action.get("type")) in {"sleep", "nap"}:
+            self._finish_sleep_rhythm(state, state.current_action, interrupted=True)
+        elif config.mode == "autonomous" and state.sleep_rhythm.get("decision") == "sleep":
+            # 临睡时还没有实际睡眠，取消待睡决定，但保留已有清醒负担。
+            state.sleep_rhythm.pop("retry_at", None)
+            state.sleep_rhythm.update(decision="continue", source="wake",
+                reason="临睡时被叫回清醒，稍后重新评估",
+                next_evaluation_at=self._now() + max(config.evaluation_minutes, config.wake_grace_minutes) * 60,
+                planned_wake_at=0)
         state.current_action = None
         state.state = STATE_IDLE
         state.mood_override_until = 0

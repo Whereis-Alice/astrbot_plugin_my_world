@@ -588,6 +588,26 @@ class ScheduleMixin:
                     if not self.schedule_in_scope(schedule, session_id):
                         # 这条日程是别的会话 / 别的组的事
                         continue
+                    if self.world.sleep.mode == "autonomous" and state.is_sleeping:
+                        claimed = await self.db.call("mark_schedule_fired", session_id=session_id,
+                            schedule_id=schedule.id, day_key=day_key, slot=slot)
+                        if claimed:
+                            await self._log_event(state, "skip", {
+                                "action": f"schedule:{schedule.id}",
+                                "note": "自主作息正在睡眠，自动日程让位；手动试跑仍可执行。",
+                            })
+                        continue
+                    if self.world.sleep.mode == "autonomous" and any(
+                        step.type == "sleep" for step in schedule.action_chain
+                    ):
+                        claimed = await self.db.call("mark_schedule_fired", session_id=session_id,
+                            schedule_id=schedule.id, day_key=day_key, slot=slot)
+                        if claimed:
+                            await self._log_event(state, "skip", {
+                                "action": f"schedule:{schedule.id}",
+                                "note": "自主作息接管入睡时间，自动跳过含睡整觉的固定日程；可切回固定模式。",
+                            })
+                        continue
                     # 勾了会话组 = 让她自己挑组里的哪一处说（见 resolve_schedule_target）
                     target = await self.resolve_schedule_target(state, schedule, session_id)
                     # 这一轮的允许落点：锁上以后动作模型的 send_to 越不过它

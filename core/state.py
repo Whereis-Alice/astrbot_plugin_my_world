@@ -692,6 +692,11 @@ class WorldState:
     不是替代品：熬夜、被打断、被留住都能在困意上体现出来。
     """
 
+    sleep_rhythm: dict[str, Any] = field(default_factory=dict)
+    """自主作息评估、清醒起点和待执行决定；随生活状态持久化。"""
+    sleep_history: list[dict[str, Any]] = field(default_factory=list)
+    """最近 7 段睡眠的实际时长、打断与恢复情况。"""
+
     last_outdoor_at: float = 0.0
     """上一次在外面（不在家那一片）是什么时候：久了她会想出去走走。"""
 
@@ -1009,6 +1014,11 @@ class WorldState:
         self.memory_flush_wanted = bool(self.memory_flush_wanted)
         self.wake_note_until = max(0, int(self.wake_note_until))
         self.sleep_started_at = max(0, int(self.sleep_started_at or 0))
+        if not isinstance(self.sleep_rhythm, dict):
+            self.sleep_rhythm = {}
+        if not isinstance(self.sleep_history, list):
+            self.sleep_history = []
+        self.sleep_history = [item for item in self.sleep_history if isinstance(item, dict)][-7:]
         if not isinstance(self.drowsy_sleep_step, dict):
             self.drowsy_sleep_step = {}
         self.drowsy_started_world_time = max(0, int(self.drowsy_started_world_time or 0))

@@ -111,6 +111,61 @@ class WorkbenchBrowserTests(unittest.TestCase):
           }));
         }"""))
 
+    def test_fit_uses_actual_toolbar_dock_and_side_panel_bounds(self):
+        self.install_dense_map()
+        for width,height in [(1440,900),(1024,640),(390,844),(844,390)]:
+            self.host.set_viewport_size({'width':width,'height':height})
+            for opened in [False,True]:
+                collapsed = 'collapsed' in self.page.locator('#map-side').get_attribute('class')
+                if collapsed == opened:
+                    self.page.locator('#map-side-toggle').click()
+                    self.page.locator('#map-side').evaluate('e=>Promise.all(e.getAnimations().map(a=>a.finished.catch(()=>{})))')
+                self.page.locator('#map-zoom-fit').click()
+                self.page.wait_for_function("() => [...document.querySelectorAll('.node')].length > 0")
+                result = self.page.evaluate("""() => {
+                  const overlap=(a,b)=>a.left<b.right&&a.right>b.left&&a.top<b.bottom&&a.bottom>b.top;
+                  const overlays=[document.querySelector('.map-topbar'),document.querySelector('.map-bottom-tools'),
+                    ...(!document.querySelector('#map-side').classList.contains('collapsed')?[document.querySelector('#map-side')]:[])];
+                  return [...document.querySelectorAll('.node')].flatMap(node=>{
+                    const r=node.getBoundingClientRect();
+                    return overlays.filter(panel=>overlap(r,panel.getBoundingClientRect())).map(panel=>[node.dataset.id,panel.className]);
+                  });
+                }""")
+                self.assertEqual(result, [], (width,height,opened,result))
+        self.assertEqual(self.errors, [])
+
+    def test_manual_map_zoom_survives_resize_and_node_refresh(self):
+        self.install_dense_map()
+        self.page.locator('#map-zoom-in').click()
+        before = self.page.locator('#canvas-world').get_attribute('style')
+        self.host.set_viewport_size({'width':1024,'height':640})
+        self.page.locator('#map-show-all').dispatch_event('change')
+        self.assertEqual(self.page.locator('#canvas-world').get_attribute('style'), before)
+        self.page.locator('#map-zoom-fit').click()
+        self.assertNotEqual(self.page.locator('#canvas-world').get_attribute('style'), before)
+        self.assertEqual(self.errors, [])
+
+    def test_autonomous_sleep_controls_and_status_details_survive_refresh(self):
+        snapshot = self.install_console()
+        snapshot['sleep'].update(mode='autonomous', rhythm={
+            'decision':'continue','reason':'看完这一章再睡','next_evaluation_at':1800000000},
+            history=[{'kind':'sleep','hours':7.5,'ended_at':1799900000,'interrupted':False}])
+        self.page.evaluate("""data=>{
+          numericState=data; document.getElementById('status-session').dispatchEvent(new Event('change'));
+        }""",snapshot)
+        details=self.page.locator('.sleep-rhythm-details')
+        expect(details).to_contain_text('自主作息')
+        details.locator('summary').click()
+        expect(details).to_contain_text('7.5 小时')
+        self.page.locator('#status-session').dispatch_event('change')
+        expect(details).to_have_attribute('open','')
+        self.page.locator('button[data-tab="settings"]').click()
+        self.page.locator('#settings-tabs').get_by_text('世界与事件',exact=True).click()
+        self.page.get_by_text('作息与夜晚',exact=True).click()
+        expect(self.page.get_by_text('作息模式',exact=True)).to_be_visible()
+        expect(self.page.get_by_text('自主作息偏好',exact=True)).to_be_visible()
+        self.assertEqual(self.errors, [])
+
     def test_many_exits_and_long_activities_do_not_cover_neighboring_places(self):
         self.install_dense_map()
         for width,height in [(1440,900),(390,844)]:

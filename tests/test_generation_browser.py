@@ -880,7 +880,10 @@ class GenerationBrowserTests(unittest.TestCase):
         self.assertGreater(stage["height"], 850)
         canvas = self.page.locator("#canvas").bounding_box()
         tools = self.page.locator("#map-bottom-tools").bounding_box()
-        self.assertGreater(tools["x"], canvas["x"] + canvas["width"] / 2)
+        zoom = self.page.locator(".map-zoom").bounding_box()
+        self.assertGreater(zoom["x"], canvas["x"] + canvas["width"] / 2)
+        self.assertGreaterEqual(tools["x"], stage["x"])
+        self.assertLessEqual(tools["x"] + tools["width"], stage["x"] + stage["width"])
         self.assertGreater(tools["y"], canvas["y"] + canvas["height"] / 2)
         self.assertEqual(self.errors, [])
 

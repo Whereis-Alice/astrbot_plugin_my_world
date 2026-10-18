@@ -2228,6 +2228,7 @@ class TestEngagement(unittest.TestCase):
 class TestDecider(unittest.TestCase):
     def setUp(self) -> None:
         self.world = make_world()
+        self.world.sleep.mode = "fixed"
         self.decider = Decider(self.world)
 
     def test_low_energy_in_the_daytime_takes_a_nap(self):
@@ -2333,6 +2334,7 @@ class TestDecider(unittest.TestCase):
         """夜晚时段可配：几点到几点算晚上由「作息与夜晚」决定。"""
 
         world = make_world()
+        world.sleep.mode = "fixed"
         self.assertTrue(world.is_night_time(23))
         self.assertTrue(world.is_night_time(3))
         self.assertFalse(world.is_night_time(12))
@@ -2342,6 +2344,7 @@ class TestDecider(unittest.TestCase):
         data = default_world()
         data["night"]["start_hour"] = 1
         data["night"]["end_hour"] = 4
+        data["sleep"]["mode"] = "fixed"
         narrow, _warnings = parse_world(data)
         self.assertFalse(narrow.is_night_time(23))
         self.assertTrue(narrow.is_night_time(2))

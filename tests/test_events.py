@@ -416,6 +416,8 @@ class EventEngineTest(unittest.IsolatedAsyncioTestCase):
             cold_start_node=self.node_id,
         )
         raw = self.store.raw_world()
+        # 事件闸门用固定睡眠日程；自主作息不会自动执行这些日程。
+        raw["sleep"]["mode"] = "fixed"
         raw["events"] = {
             "enabled": True,
             "micro_per_hour": 0.0,

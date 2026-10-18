@@ -108,6 +108,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         # 测试里显式配一个，等同于"真实用户已经配好"的状态；
         # 专门测"没配工具会被跳过"的用例会自己把它清掉。
         raw = self.store.raw_world()
+        # 本组验证既有日程/夜晚睡眠行为；自主作息由 test_sleep_rhythm 独立验证。
+        raw["sleep"]["mode"] = "fixed"
         for action in raw["actions"]:
             if action["id"] == "search_web":
                 action["tool_names"] = ["web_search"]

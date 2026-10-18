@@ -445,7 +445,10 @@ class ActionsRunMixin:
             # 日志里既看不到她原本在干什么，心情上也没有任何反应。
             if definition.during.state:
                 state.state = definition.during.state
+            if state.current_action and str(state.current_action.get("type")) in {"sleep", "nap"}:
+                self._finish_sleep_rhythm(state, state.current_action, interrupted=True)
             if definition.id in ("sleep", "nap"):
+                self._start_sleep_rhythm(state, definition.id, duration_ticks)
                 # 一段新的睡眠：多久、被吵醒过几次、噪音计数都从这里重新算
                 state.sleep_started_at = int(state.world_time or 0)
                 state.startled_count = 0
@@ -1140,7 +1143,10 @@ class ActionsRunMixin:
           「小睡三小时」这种话写在 intent 里、duration 忘了填是最常见的写法）。
         """
 
-        if definition.duration_mode == "llm":
+        if definition.id == "sleep" and self.world.sleep.mode == "autonomous":
+            low, high = self._rhythm_duration_bounds()
+            seconds = min(high, max(low, float(action.duration or definition.duration or 28800)))
+        elif definition.duration_mode == "llm":
             low = int(definition.duration_min or 60)
             high = int(definition.duration_max or max(low, int(definition.duration or low * 4)))
             if high < low:

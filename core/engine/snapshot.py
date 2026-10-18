@@ -226,6 +226,9 @@ class SnapshotMixin:
             "values": self.dynamics.values(state),
             # 困不困 / 答应了"等会儿再睡"到什么时候（面板与编辑器看这一段）
             "sleep": {
+                "mode": self.world.sleep.mode,
+                "rhythm": dict(state.sleep_rhythm),
+                "history": list(state.sleep_history),
                 "pressure": round(
                     max(0.0, min(1.0, float(state.sleep_pressure or 0.0))), 4
                 ),

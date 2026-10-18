@@ -105,6 +105,7 @@ from .event_flow import EventFlowMixin
 from .persona import PersonaMixin
 from .commands import CommandsMixin
 from .sleep import SleepMixin
+from .sleep_rhythm import SleepRhythmMixin
 from .dialogue_memory import DialogueMemoryMixin
 from .addressing import AddressingMixin
 from .reply import ReplyMixin
@@ -220,6 +221,7 @@ class MyWorldEngine(
     PersonaMixin,
     CommandsMixin,
     SleepMixin,
+    SleepRhythmMixin,
     DialogueMemoryMixin,
     AddressingMixin,
     ReplyMixin,
