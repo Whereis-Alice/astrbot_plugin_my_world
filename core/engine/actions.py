@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 from ..json_actions import (
     PlannedAction,
@@ -33,6 +34,69 @@ from .util import (
 
 
 class ActionsMixin:
+    def activity_view(self, state: WorldState) -> dict[str, Any]:
+        from ..life import activity_view
+
+        return activity_view(state, self.world)
+
+    def _apply_event_life(self, state: WorldState, tier: str, explicit: dict[str, Any]) -> None:
+        from ..life import event_relief
+
+        config = self.world.state_dynamics
+        if not config.independent_life_enabled or tier == "skip":
+            return
+        effects = event_relief(tier, explicit)
+        self.dynamics.apply_pulse(state, {key: value * config.life_relief_strength
+                                        for key, value in effects.items()}, now=self._now())
+
+    def _tick_idle_life(self, state: WorldState) -> None:
+        """Run a quiet background action; formal work always has priority."""
+        from ..life import idle_definition, safe_idle_action
+
+        if not self.world.idle_life.enabled or state.current_action or state.state != "idle":
+            state.idle_activity = {}
+            return
+        if idle_definition(state, self.world):
+            return
+        # Only a naturally completed idle action gets its configured completion effects.
+        previous = state.idle_activity or {}
+        old = self.world.action_map().get(str(previous.get("id") or ""))
+        if (old and safe_idle_action(old) and old.available_in(state.node_id) and previous.get("node_id") == state.node_id
+                and 0 < int(previous.get("until_tick") or 0) <= state.world_time):
+            self.dynamics.apply_effects(state, old.on_complete.effects, world=self.world, now=self._now())
+            minutes = max(0, int(previous.get("until_tick", 0)) - int(previous.get("start_tick", 0))) * self.tick_seconds / 60
+            self.dynamics.apply_effects(state, old.on_complete.effects_per_minute,
+                                       world=self.world, scale=minutes, now=self._now())
+        candidates = [action for action in self.world.actions if (
+            safe_idle_action(action) and action.available_in(state.node_id)
+            and self.action_quota_left(state, action) > 0
+            and self._check_preconditions(state, action)[0]
+        )]
+        fresh = [action for action in candidates if action.id != previous.get("id")]
+        state.idle_activity = {}
+        if not candidates:
+            return
+        definition = self.rng.choice(fresh or candidates)
+        self._count_action_use(state, definition)
+        config = self.world.idle_life
+        low = min(config.duration_min_minutes, config.duration_max_minutes)
+        high = max(config.duration_min_minutes, config.duration_max_minutes)
+        seconds = definition.duration if definition.duration_mode == "fixed" and definition.duration else self.rng.randint(low, high) * 60
+        seconds = max(low * 60, min(high * 60, seconds))
+        ticks = max(1, math.ceil(seconds / max(1, self.tick_seconds)))
+        state.idle_activity = {"id": definition.id, "node_id": state.node_id,
+                               "start_tick": state.world_time, "until_tick": state.world_time + ticks}
+
+    def _apply_life_completion(self, state: WorldState, definition: ActionDef | None,
+                               *, elapsed_minutes: float = 0) -> None:
+        from ..life import completion_relief
+
+        if definition is None or not self.world.state_dynamics.independent_life_enabled:
+            return
+        effects = completion_relief(definition, elapsed_minutes=elapsed_minutes)
+        self.dynamics.apply_pulse(state, {key: value * self.world.state_dynamics.life_relief_strength
+                                        for key, value in effects.items()}, now=self._now())
+
     # ================= 动作执行 =================
 
     def _available_action_ids(self, node_id: str) -> set[str]:
@@ -58,7 +122,7 @@ class ActionsMixin:
         """
 
         if str(getattr(action, "id", "")) != "sleep":
-            return True
+            return not bool(getattr(action, "idle", False))
         return self.world.sleep_allowed_now(self.local_now().hour)
 
     def _nearest_node_with_action(self, node_id: str, definition: ActionDef) -> str:

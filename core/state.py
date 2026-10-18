@@ -272,6 +272,8 @@ class WorldState:
     mood: str = "平静"
     energy: float = 0.6
     loneliness: float = 0.5
+    idle_activity: dict[str, Any] = field(default_factory=dict)
+    """当前静默闲置动作：按世界 tick 计时，不占用正式动作或计划。"""
     curiosity: float = 0.5
     affect: float = 0.3
     """心潮：情绪被激起的程度（0~1）。
@@ -288,7 +290,7 @@ class WorldState:
     """
 
     valence_offset: float = 0.0
-    """效价的短期偏移：真正带历史的那个量（-0.5 ~ 0.5，0 = 回到基线）。"""
+    """效价的短期偏移；事件限制 ±0.5，手动设值可用 ±1 覆盖完整范围。"""
 
     affect_synced_at: float = 0.0
     """上一次结算情绪两维的时间（现实时间戳）。
@@ -894,7 +896,7 @@ class WorldState:
             offset = float(self.valence_offset)
         except (TypeError, ValueError):
             offset = 0.0
-        self.valence_offset = max(-0.5, min(0.5, offset))
+        self.valence_offset = max(-1.0, min(1.0, offset))
         self.boredom = _clamp01(self.boredom, 0.3)
         self.desire = _clamp01(self.desire, 0.2)
         self.desire_slept = bool(self.desire_slept)

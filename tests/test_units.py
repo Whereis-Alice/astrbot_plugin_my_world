@@ -679,11 +679,11 @@ class TestStateDynamics(unittest.TestCase):
         self.assertLess(state.energy, 0.6)
         self.assertGreater(state.energy, 0.5)
 
-    def test_sleeping_recovers_energy_and_freezes_others(self):
+    def test_sleeping_recovers_energy_and_eases_loneliness(self):
         state = WorldState(session_id="s1", energy=0.2, loneliness=0.5, state="sleeping")
         self.dynamics.tick(state, node=self.node, elapsed_seconds=3600, world=self.world)
         self.assertGreater(state.energy, 0.2)
-        self.assertAlmostEqual(state.loneliness, 0.5, places=4)
+        self.assertAlmostEqual(state.loneliness, 0.4976, places=4)
 
     def test_values_are_clamped(self):
         state = WorldState(session_id="s1", energy=0.99, loneliness=0.99, state="sleeping")
@@ -2203,8 +2203,10 @@ class TestEngagement(unittest.TestCase):
         state.world_time = 61
         verdict = self.tracker.evaluate(state, tick_seconds=60)
         self.assertEqual(verdict.unanswered_count, 1)
+        self.tracker.on_bot_spoke(state)
         state.world_time = 121
         self.tracker.evaluate(state, tick_seconds=60)
+        self.tracker.on_bot_spoke(state)
         state.world_time = 181
         verdict = self.tracker.evaluate(state, tick_seconds=60)
         self.assertEqual(verdict.unanswered_count, 3)

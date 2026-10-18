@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import math
 from datetime import timedelta
 from typing import Any
 from ..generator import (
@@ -1149,21 +1150,30 @@ class GenerationMixin:
         )
         applied: dict[str, float] = {}
         async with self.session_state(session_id) as state:
+            # Settle the past before applying the user's new values.
+            self.dynamics._sync_emotions(state, now=self._now())
             for key, value in (values or {}).items():
                 if key not in allowed:
                     continue
                 try:
-                    number = max(0.0, min(1.0, float(value)))
+                    number = float(value)
                 except (TypeError, ValueError):
                     continue
-                if key == "valence":
-                    # 手改的是"她看到的心情"，所以落成基线 + 新偏移
-                    self.dynamics.apply_effects(state, {"valence": f"={number}"})
-                else:
+                if not math.isfinite(number):
+                    continue
+                number = max(0.0, min(1.0, number))
+                if key != "valence":
                     setattr(state, key, number)
                 applied[key] = round(number, 4)
             if applied:
+                state.affect_synced_at = self._now()
                 self.dynamics.refresh(state, now=self._now())
+                if "valence" in applied:
+                    # Needs change its baseline: set valence after all other fields.
+                    self.dynamics.apply_effects(state, {"valence": f"={applied['valence']}"}, now=self._now())
+                    applied["valence"] = round(state.valence, 4)
+                if state.loneliness < 0.7:
+                    state.high_loneliness_since = 0
                 state.mood = self.dynamics.derive_mood(state)
                 await self._log_event(state, "manual", {"values": applied})
         return applied

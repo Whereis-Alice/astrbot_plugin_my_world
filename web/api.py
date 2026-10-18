@@ -129,6 +129,7 @@ class WebApiMixin:
             "把 AstrBot 的工具批量导入成动作",
         )
         register(f"/{p}/generate/actions", self.api_generate_actions, ["POST"], "按区域生成动作")
+        register(f"/{p}/generate/idle-actions", self.api_generate_idle_actions, ["POST"], "按人设生成闲置动作")
         register(
             f"/{p}/generate/world-actions",
             self.api_generate_world_actions,
@@ -2503,6 +2504,13 @@ class WebApiMixin:
             payload.get("count"),
             payload.get("use_map", True),
         )
+
+    async def api_generate_idle_actions(self):
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload)
+        if guard is not None:
+            return guard
+        return await self._generate_drafts_response(self.engine.generate_idle_actions, payload.get("count", 8))
 
     async def api_deliver_event(self):
         """把编辑器里挑好的事件草稿投递给她（等价于 /mw event 一句话）。"""

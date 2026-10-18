@@ -17,6 +17,44 @@ from .util import _clip_text
 
 
 class InterruptMixin:
+    async def generate_idle_actions(self, count: Any = 8) -> dict[str, Any]:
+        """Persona-based quiet activities, drafted once and used without runtime LLM calls."""
+        wanted = clamp_world_action_count(count)
+        session_id = self._generator_session_id()
+        config = self.world.idle_life
+        persona = await self._persona_text(session_id)
+        existing = [action.name or action.id for action in self.world.actions if action.idle]
+        system = "为虚拟角色设计符合人设的通用闲置动作。只输出 JSON，不要解释。"
+        prompt = (
+            f"人设：\n{persona}\n已有闲置动作（不要重复）：{'、'.join(existing[:40])}\n"
+            f"补充要求：{config.generation_prompt}\n生成 {wanted} 个随时随地可以做的独处小事。"
+            "例如哼歌、伸展、整理思绪、观察周围；要符合她的个性、习惯和兴趣。"
+            "不需要特定物品或地点，不涉及他人、外部工具、发送消息、重要事件。"
+            "名称 2~12 字，description 一句话。life_role 选 rest/interest/explore/none。"
+            "不要设定新的身世或人物关系。无需配数值效果，生活类别已有缓解逻辑。"
+            '格式：{"actions":[{"id":"idle_humming","name":"轻轻哼歌",'
+            '"description":"随口哼一段熟悉的旋律","life_role":"interest",'
+            '"on_complete":{"effects":{}}}]}'
+        )
+        reply = await self._ask_creator(session_id, system, prompt, raise_errors=True)
+        actions, problems = parse_generated_actions(reply, node_ids=["anywhere"],
+            existing_ids={action.id for action in self.world.actions},
+            max_per_node=wanted, max_total=wanted, tool_names=set())
+        for action in actions:
+            role = action.get("life_role", "interest")
+            action.update(idle=True, category="continuous", llm_level="template", scope="global",
+                          allowed_nodes=[], target_type="none", group="闲置生活", visible=False,
+                          interruptible=True, duration=0, duration_mode="fixed", template="",
+                          tool_names=[], tool_name="", trigger_command="", intimacy=0,
+                          life_role=role if role in {"none", "rest", "interest", "explore"} else "interest")
+            action.pop("node_id", None)
+            action["on_complete"] = {"trigger": "none", "effects": {}, "effects_per_minute": {}}
+            # The life role drives needs; generated text cannot smuggle runtime commands/effects.
+            action["during"] = {}
+            action["preconditions"] = {}
+            action["params"] = {}
+        return {"actions": actions, "problems": problems, "raw": _clip_text(reply, 1200)}
+
     # ================= 打断 / 唤醒 =================
 
     async def _ask_creator(

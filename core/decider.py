@@ -625,7 +625,7 @@ class Decider:
         """这个动作现在真的跑得起来吗（存在、没停用、需要工具时至少配了一个）。"""
 
         action = self.world.action_map().get(str(action_id or "").strip())
-        if action is None or not action.enabled:
+        if action is None or not action.enabled or action.idle:
             return False
         if action.llm_level == "tool":
             return bool(action.tool_list())

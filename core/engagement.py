@@ -83,8 +83,9 @@ class EngagementTracker:
         if state.awaiting_reply:
             waited = state.world_time - state.last_engagement_time
             if waited >= window_ticks:
-                if waited < window_ticks * 2:
-                    state.unanswered_count += 1
+                state.unanswered_count += 1
+                # One unanswered message is one observation, not another rejection every hour.
+                state.awaiting_reply = False
                 state.last_engagement_time = state.world_time
 
         if not state.cooldown_until and state.unanswered_count >= config.unanswered_threshold:
@@ -110,8 +111,7 @@ class EngagementTracker:
             return ""
         return (
             f"你最近连续 {state.unanswered_count} 次主动说话都没人回应。"
-            "你有点犹豫，不太确定要不要再主动开口。"
-            "如果这次还是没人回应，你可能需要考虑安静一会儿。"
+            "群友可能在忙，这不代表拒绝你。先回到自己的日程或兴趣，等方便时再聊。"
         )
 
     def can_speak(self, state: WorldState) -> bool:

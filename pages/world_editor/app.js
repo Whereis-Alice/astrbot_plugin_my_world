@@ -3360,7 +3360,7 @@ function renderEverything() {
 
 const CONFIG_BLOCKS = { map: "地图", actions: "动作库", schedules: "日程", settings: "设置" };
 const MAP_CONFIG_KEYS = new Set(["zones", "zone_edges", "nodes", "edges"]);
-const ACTION_CONFIG_KEYS = new Set(["actions", "purged_actions"]);
+const ACTION_CONFIG_KEYS = new Set(["actions", "purged_actions", "idle_life"]);
 const GLOBAL_CONFIG_KEYS = new Set([
   "admin_ids",
   "proactive_chat_paused",
@@ -4144,6 +4144,9 @@ function bindButtons() {
 
   $("status-refresh").addEventListener("click", refreshStatus);
   $("status-session").addEventListener("change", () => {
+    ui.valuesEdit = false;
+    ui.valueDraft = {};
+    ui.valueSession = "";
     refreshStatus();
     // 换会话 = 可能换了人格：简易人设跟着刷新一遍
     if (typeof ui.loadPersonaBrief === "function") {
@@ -4151,7 +4154,9 @@ function bindButtons() {
     }
   });
   $("values-edit").addEventListener("click", () => {
-    ui.valuesEdit = !ui.valuesEdit;
+    if (ui.valuesEdit) return saveValueDraft();
+    ui.valuesEdit = true;
+    ui.valueSession = $("status-session").value;
     ui.valueDraft = {};
     renderValueRows(((ui.status || {}).values) || {}, ui.status || {});
   });
@@ -4250,7 +4255,11 @@ function bindButtons() {
     $("map-side-close").addEventListener("click", () => setMapSide(false));
   }
   setMapSide(window.innerWidth >= 1100);
+  let mapWasWide = window.innerWidth >= 1100;
   window.addEventListener("resize", () => {
+    const wide = window.innerWidth >= 1100;
+    if (mapWasWide && !wide) setMapSide(false);
+    mapWasWide = wide;
     syncTopbarHeight();
     const mapTab = $("tab-map");
     if (!mapTab || !mapTab.classList.contains("active")) return;
@@ -4264,6 +4273,8 @@ function bindButtons() {
   if ($("action-generate-generic")) {
     $("action-generate-generic").addEventListener("click", generateGenericActions);
   }
+  $("action-generate-idle")?.addEventListener("click", generateIdleActions);
+  $("action-idle-settings")?.addEventListener("click", editIdleLife);
   // 旧版「从工具导入」入口已经下线（工具调用交回 AstrBot 原生）；元素不在时不要绑。
   $("action-search").addEventListener("input", renderActionGrid);
   $("action-json").addEventListener("click", editActionsJson);
@@ -4873,9 +4884,8 @@ function renderValueRows(values, data) {
   const box = $("status-values");
   if (!box) return;
   box.innerHTML = "";
-  ui.valueDraft = {};
   ATTRS.forEach((attr) => {
-    const value = num(values[attr.key], 0.5);
+    const value = num(ui.valuesEdit && attr.key in ui.valueDraft ? ui.valueDraft[attr.key] : values[attr.key], 0.5);
     const row = el("div", "value-row");
     // 语义色调交给 CSS 上色：数值大号字、进度条发光都跟着它走
     row.classList.add(`tone-${valueToneClass(attr.key, value)}`);
@@ -4894,7 +4904,6 @@ function renderValueRows(values, data) {
         ui.valueDraft[attr.key] = next;
         readout.textContent = next.toFixed(2);
       });
-      ui.valueDraft[attr.key] = value;
       row.appendChild(slider);
       row.appendChild(readout);
     } else {
@@ -4931,26 +4940,12 @@ function renderValueRows(values, data) {
     const save = el("button", "ghost", "保存数值");
     save.type = "button";
     save.title = "把上面的数值写回她的状态（会记一条日志）";
-    save.addEventListener("click", async () => {
-      const sessionId = $("status-session").value;
-      if (!sessionId) return;
-      try {
-        await apiPost("state/action", {
-          session: sessionId,
-          action: "set_values",
-          values: ui.valueDraft,
-        });
-        ui.valuesEdit = false;
-        toast("数值已更新");
-        refreshStatus();
-      } catch (error) {
-        toast(error.message || "保存失败");
-      }
-    });
+    save.addEventListener("click", saveValueDraft);
     const cancel = el("button", "ghost", "取消");
     cancel.type = "button";
     cancel.addEventListener("click", () => {
       ui.valuesEdit = false;
+      ui.valueDraft = {};
       refreshStatus();
     });
     row.appendChild(save);
@@ -4959,12 +4954,38 @@ function renderValueRows(values, data) {
   }
 
   const button = $("values-edit");
-  if (button) button.textContent = ui.valuesEdit ? "完成" : "编辑数值";
+  if (button) button.textContent = ui.valuesEdit ? "保存数值" : "编辑数值";
   const hint = $("status-values-hint");
   if (hint) {
     hint.textContent = ui.valuesEdit
       ? "改完点「保存数值」写回状态。"
       : "可以点击右上角「编辑数值」进行修改。";
+  }
+}
+
+async function saveValueDraft() {
+  if (ui.valueSaving) return;
+  const sessionId = ui.valueSession;
+  if (!sessionId || sessionId !== $("status-session").value) return;
+  const values = { ...ui.valueDraft };
+  if (!Object.keys(values).length) {
+    ui.valuesEdit = false;
+    ui.valueDraft = {};
+    return refreshStatus();
+  }
+  ui.valueSaving = true;
+  ui.statusRequest = (ui.statusRequest || 0) + 1;
+  try {
+    const result = await apiPost("state/action", { session: sessionId, action: "set_values", values });
+    if (result.ok === false || !Object.keys(result.applied || {}).length) throw new Error(result.note || "未保存任何数值");
+    ui.valuesEdit = false;
+    ui.valueDraft = {};
+    toast("数值已保存；之后仍会随生活自然变化");
+    await refreshStatus();
+  } catch (error) {
+    toast(error.message || "保存失败，草稿已保留");
+  } finally {
+    ui.valueSaving = false;
   }
 }
 
@@ -5168,7 +5189,7 @@ function renderHero(data, stateLabel) {
   nameBox.textContent = label || "（还没设置群名片）";
   const action = data.current_action || {};
   const where = [data.zone_name, data.node_name].filter(Boolean).join(" · ");
-  const doing = action.desc || (action.type ? actionLabel(action.type) : "");
+  const doing = (data.activity || {}).label || action.desc || (action.type ? actionLabel(action.type) : "");
   subBox.textContent = [
     stateLabel || data.state || "",
     where,
@@ -5316,7 +5337,7 @@ function renderStatusSections(data, stateLabel) {
       }）`,
     );
   } else {
-    statusMeter(progressBox, "当前动作", 0, "没在做什么");
+    statusMeter(progressBox, "当前动作", 0, (data.activity || {}).label || "自由休息");
   }
   const plan = data.current_plan;
   const steps = plan && plan.steps ? plan.steps : [];
@@ -7032,6 +7053,7 @@ function genreEditor(world) {
 
 async function refreshStatus() {
   loadEvents();
+  const requestId = ui.statusRequest = (ui.statusRequest || 0) + 1;
   const sessionId = $("status-session").value;
   if (!sessionId) {
     setStatusEmpty("还没有添加任何会话白名单。");
@@ -7039,6 +7061,7 @@ async function refreshStatus() {
   }
   try {
     const data = await apiGet("state", { session: sessionId });
+    if ($("status-session").value !== sessionId || ui.statusRequest !== requestId) return;
     ui.status = data;
     clearStatusEmpty();
     // 扩展想显示的状态优先（例如亲密扩展在戏里时说"兴奋中"）：
@@ -7052,7 +7075,12 @@ async function refreshStatus() {
     if ($("tab-map")) renderMap();
 
     const values = data.values || {};
-    renderValueRows(values, data);
+    if (ui.valuesEdit && ui.valueSession !== sessionId) {
+      ui.valuesEdit = false;
+      ui.valueDraft = {};
+    }
+    // Do not replace the slider being dragged or overwrite its draft during polling.
+    if (!ui.valuesEdit) renderValueRows(values, data);
 
     // 群名片：直接改、锁定/解锁、恢复原名
     const nicknameOwner = String(data.nickname_owner || "");
@@ -7268,7 +7296,7 @@ async function loadOverview() {
 }
 
 function actionItems() {
-  return actions().map((action) => ({
+  return actions().filter(action => !action.idle).map((action) => ({
     id: action.id,
     name: action.name || action.id,
     desc: action.description || describeAction(action),
@@ -7537,6 +7565,23 @@ function renderMap() {
 }
 
 /** 天气图标：按描述里的关键词猜一个，猜不到就用通用的。 */
+function appendMapActivity(box, markers, focusSession) {
+  const marker = markers.find(item => item.session_id === focusSession) || markers[0];
+  if (!marker) return;
+  const activity = marker.activity || {};
+  const text = activity.label || stateLabelOf(marker.state, marker) || "自由休息";
+  const badge = el("div", "node-activity");
+  badge.appendChild(el("span", "node-activity-kind", activity.kind === "idle" ? "闲置" : "正在"));
+  badge.appendChild(el("span", "node-activity-text", text));
+  const full = markers.map(item => {
+    const current = item.activity || {};
+    return `${sessionShortName(item.session_id)} · ${nodeLabel(item.node_id)}\n${current.label || item.state || "自由休息"}${current.detail ? `：${current.detail}` : ""}`;
+  }).join("\n\n");
+  badge.title = full;
+  box.title = full;
+  box.appendChild(badge);
+}
+
 function weatherIcon(desc) {
   const text = String(desc || "");
   if (/雷/.test(text)) return "⛈";
@@ -7880,6 +7925,7 @@ function renderWorldMap() {
       box.appendChild(badge);
     }
     box.style.left = `${num(zone.x)}px`;
+    appendMapActivity(box, markers, focusSession);
     box.style.top = `${num(zone.y)}px`;
     box.style.setProperty("--node-color", zone.color || "#7FB2E5");
     box.dataset.id = zone.id;
@@ -8055,6 +8101,7 @@ function renderZoneMap() {
       box.appendChild(badge);
     }
     box.style.left = `${num(node.x)}px`;
+    appendMapActivity(box, markers, focusSession);
     box.style.top = `${num(node.y)}px`;
     box.style.setProperty("--node-color", node.color || "#8B7DD8");
     box.dataset.id = node.id;
@@ -8760,6 +8807,52 @@ function generateGenericActions() {
   });
 }
 
+function editIdleLife() {
+  const config = ui.config.world.idle_life || {};
+  openFormDialog({
+    title: "闲置生活设置",
+    hint: "空闲时静默轮换已启用的闲置动作，正式动作优先。无需每轮调模型，也不会发送闲置文案。改完后保存配置。",
+    fields: [
+      { key: "enabled", label: "自动闲置生活", type: "checkbox", value: config.enabled !== false },
+      { key: "min", label: "最短停留（分钟）", type: "number", value: num(config.duration_min_minutes, 10), min: 1, max: 120 },
+      { key: "max", label: "最长停留（分钟）", type: "number", value: num(config.duration_max_minutes, 30), min: 1, max: 120 },
+      { key: "relief", label: "闲置缓解强度（0~1）", type: "number", value: num(config.relief_scale, 0.35), min: 0, max: 1, step: 0.05 },
+      { key: "prompt", label: "生成时的补充要求", type: "textarea", value: config.generation_prompt || "", hint: "例如喜欢哼歌、喜欢观察小细节。只在生成草稿时使用。" },
+    ],
+    onSubmit: (data) => {
+      const low = Number(data.min), high = Number(data.max), relief = Number(data.relief);
+      if (![low, high, relief].every(Number.isFinite) || low < 1 || high > 120 || low > high || relief < 0 || relief > 1) {
+        toast("时长须为 1~120 分钟，最长不小于最短；强度须为 0~1");
+        return false;
+      }
+      ui.config.world.idle_life = { ...config, enabled: Boolean(data.enabled), duration_min_minutes: Math.round(low), duration_max_minutes: Math.round(high), relief_scale: relief, generation_prompt: data.prompt || "" };
+      markDirty();
+      return true;
+    },
+  });
+}
+
+function generateIdleActions() {
+  askGenerateCount({
+    title: "按人设生成闲置动作",
+    hint: "读当前人设和闲置生活的补充要求，生成不依赖特定地点的生活细节。确认后才加入动作库；运行时静默轮换。",
+    defaultValue: 8, min: 1, max: 24,
+    onRun: async (count) => {
+      if (ui.dirty && !(await saveAll())) throw new Error("先保存人设与闲置设置，再生成动作");
+      const result = await apiPost("generate/idle-actions", { count });
+      const drafts = result.actions || [];
+      if (!drafts.length) throw new Error((result.problems || []).join("；") || "没有可用草稿，请重试");
+      return () => openCustomDialog({
+        title: `闲置动作草稿（${drafts.length} 个）`,
+        hint: "这些是通用闲置动作：不依赖地点、自动静默执行。可在动作卡片中修改名称、生活类别和数值效果。",
+        confirmText: "加入选中的动作",
+        build: (body) => buildActionDraftList(body, drafts, result.problems || []),
+        onSubmit: () => commitGeneratedActions(drafts),
+      });
+    },
+  });
+}
+
 function buildActionDraftList(body, drafts, problems) {
   drafts.forEach((draft) => {
     draft._pick = draft._pick !== false;
@@ -8815,7 +8908,7 @@ function buildActionDraftList(body, drafts, problems) {
       const nodeButton = el(
         "button",
         "ghost small",
-        (draft.allowed_nodes || []).map((id) => nodeLabel(id)).join("、") || "选地点",
+        (draft.allowed_nodes || []).map((id) => nodeLabel(id)).join("、") || (draft.scope === "global" ? "全局" : "选地点"),
       );
       nodeButton.type = "button";
       nodeButton.title = "这个动作属于哪些地点";
@@ -11274,6 +11367,17 @@ function renderActionForm() {
   const isTool = action.llm_level === "tool";
   const isCommand = action.llm_level === "command";
   const isNodeScoped = action.scope === "node";
+  form.appendChild(checkboxField("作为闲置生活动作", Boolean(action.idle), (value) => {
+    action.idle = value;
+    if (value) Object.assign(action, { category: "continuous", llm_level: "template", target_type: "none", visible: false, interruptible: true });
+    if (value) action.on_complete.trigger = "none";
+    renderActionForm();
+  }, { hint: "空闲时自动静默轮换；须为持续、模板、无对象动作，结束触发选无。不会调用模型或发送消息。" }));
+  form.appendChild(selectField("生活影响", action.life_role || "auto", [
+    { key: "auto", label: "自动判断" }, { key: "none", label: "只用手配效果" },
+    { key: "rest", label: "休息：轻缓孤独与无聊" }, { key: "interest", label: "兴趣：主要缓解无聊" },
+    { key: "explore", label: "探索：新鲜感与独处满足" }, { key: "social", label: "社交：共同活动与陪伴" },
+  ], (value) => { action.life_role = value; }, { hint: "正式动作完成时生效；持续生活也会缓慢缓解。你手配的孤独 / 无聊效果优先，不叠加默认完成奖励。" }));
 
   form.appendChild(
     inputField("动作 ID", action.id, (value) => {
@@ -12613,6 +12717,7 @@ function actionCard(action) {
   head.appendChild(toggle);
   head.appendChild(el("span", "card-name", action.name || action.id));
   if (action.category === "continuous") head.appendChild(el("span", "badge", "持续"));
+  if (action.idle) head.appendChild(el("span", "badge", "闲置生活"));
   if (action.llm_level === "tool") head.appendChild(el("span", "badge", "工具"));
   if (action.builtin) head.appendChild(el("span", "badge", "内置"));
   if (action.import_source === "tool_import") head.appendChild(el("span", "badge", "导入"));
@@ -17420,7 +17525,7 @@ function renderSettings() {
   /* --- 状态变化速度 --- */
   const dynamics = settingsSection(
     "状态变化速度",
-    "数值每分钟变化多少。默认值下，精力大约 11 小时掉到 0，孤独大约 20 小时涨满，心潮大约 50 分钟回落干净；"
+    "数值每分钟变化多少。孤独默认每个清醒日缓慢增加，无聊主要来自持续单调。休息、兴趣、探索、社交和事件会调节需求；"
       + "好奇心过了 0.7 之后涨得越来越慢，不会一路顶死在满值。",
     "觉得她太爱睡觉就调小精力衰减；觉得她太黏人就调小孤独增长；觉得她老跑去上网查东西就调小好奇增长。",
   );
@@ -17454,6 +17559,12 @@ function renderSettings() {
     );
   });
   dynamics._fields.appendChild(el("div", "sub-title", "今天的基调"));
+  dynamics._fields.appendChild(checkboxField("自己的生活缓解孤独与无聊", world.state_dynamics.independent_life_enabled !== false,
+    (value) => { world.state_dynamics.independent_life_enabled = value; },
+    { hint: "启用增长软上限与休息 / 兴趣 / 探索 / 社交的调节。关闭后，手配动作与事件效果仍生效。" }));
+  dynamics._fields.appendChild(inputField("生活缓解强度", num(world.state_dynamics.life_relief_strength, 1),
+    (value) => { world.state_dynamics.life_relief_strength = num(value, 1); },
+    { type: "number", min: 0, max: 2, step: 0.1, hint: "0~2，默认 1；闲置动作还会乘上闲置生活设置中的强度。" }));
   dynamics._fields.appendChild(
     checkboxField(
       "每天掷一次今天的基调",

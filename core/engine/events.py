@@ -1296,6 +1296,7 @@ class EventsMixin:
                 now=now,
                 cause=f"刚才那件事（{package.title}）",
             )
+        self._apply_event_life(state, check.tier, settlement.state_delta)
         # 判定档位本身也带一点情绪：成功偏正面、失败偏负面（可关）
         if bool(getattr(config, "result_emotion", True)):
             pulse = tier_emotion(check.tier)
@@ -1568,6 +1569,7 @@ class EventsMixin:
                 cause=f"刚才那件小事（{package.title}）",
             )
         result = package.outcome or package.hook
+        self._apply_event_life(state, str(thread.get("tone") or "daily"), package.effects)
         if result:
             # 微事件群里不主动说，但会进"这段时间发生的事"，动作完成续说时顺口带一句
             keep = max(1, int(getattr(self.world.events, "event_digest_lines", 12) or 12))

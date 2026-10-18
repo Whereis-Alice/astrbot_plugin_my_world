@@ -123,10 +123,11 @@ DEFAULT_WORLD: dict[str, Any] = {
     },
     "state_dynamics": {
         "energy_decay_per_min": 0.0015,
-        "loneliness_growth_per_min": 0.0008,
+        "cadence_version": 2,
+        "loneliness_growth_per_min": 0.00005,
         "curiosity_growth_per_min": 0.0010,
         "affect_decay_per_min": 0.02,
-        "boredom_growth_per_min": 0.0012,
+        "boredom_growth_per_min": 0.00012,
         "sleep_energy_recovery_per_min": 0.0020,
         "nap_energy_recovery_per_min": 0.0008,
         "sleep_curiosity_decay_per_min": 0.0012,

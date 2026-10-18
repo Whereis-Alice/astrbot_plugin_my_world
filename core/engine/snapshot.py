@@ -257,6 +257,7 @@ class SnapshotMixin:
             "interject": dict(state.interject_stats or {}),
             "tool_breakers": self.tool_breaker_state(),
             "current_action": state.current_action,
+            "activity": self.activity_view(state),
             "current_plan": state.current_plan,
             "last_reasoning": state.last_reasoning,
             "thoughts": state.thoughts[-5:],
@@ -546,10 +547,12 @@ class SnapshotMixin:
         result: list[dict[str, Any]] = []
         for session_id in self.enabled_session_ids():
             try:
-                state = await self.load_state(session_id, cold_start=False)
+                with self.config_scope(session_id):
+                    state = await self.load_state(session_id, cold_start=False)
+                    node = self.node(state.node_id)
+                    activity = self.activity_view(state)
             except Exception:
                 continue
-            node = self.node(state.node_id)
             result.append(
                 {
                     "session_id": session_id,
@@ -558,6 +561,7 @@ class SnapshotMixin:
                     "state": state.state,
                     "mood": state.mood,
                     "world_time": state.world_time,
+                    "activity": activity,
                 }
             )
         return result

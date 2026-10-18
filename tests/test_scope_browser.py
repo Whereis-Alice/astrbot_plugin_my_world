@@ -14,7 +14,7 @@ SCOPE_BRIDGE = r"""
   window.scopeWrites = [];
   const local = {};
   const mapKeys = ['zones', 'zone_edges', 'nodes', 'edges'];
-  const actionKeys = ['actions', 'purged_actions'];
+  const actionKeys = ['actions', 'purged_actions', 'idle_life'];
   const fixed = ['admin_ids', 'proactive_chat_paused', 'wizard_done', 'schema_version'];
   const pick = (world, block) => Object.fromEntries(Object.entries(world).filter(([key]) =>
     block === 'map' ? mapKeys.includes(key) : block === 'actions' ? actionKeys.includes(key)

@@ -7202,7 +7202,8 @@ label.inline > input[type="checkbox"]:checked + span {
   position: relative;
   height: calc(100vh - 148px);
   min-height: 540px;
-  overflow: hidden;
+  /* 平移由地图变换控制，避免聚焦控件时浏览器滚动画布舞台。 */
+  overflow: clip;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--panel-2);
@@ -7482,7 +7483,7 @@ label.inline > input[type="checkbox"]:checked + span {
   height: auto;
   min-height: 0;
   margin: 0;
-  overflow: hidden;
+  overflow: clip;
   border: 0;
   border-radius: 12px;
   background-color: var(--panel-2);
@@ -7706,6 +7707,30 @@ label.inline > input[type="checkbox"]:checked + span {
 .node.here {
   overflow: visible;
 }
+
+.node .node-activity {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  max-width: 220px;
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 4px 14px #0002;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.node-activity-kind { color: var(--muted); font-size: 10px; flex-shrink: 0; }
+.node-activity-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .node.other {
   border-style: dashed;

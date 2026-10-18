@@ -363,6 +363,11 @@ class StateDynamics:
         # 困意（sleep_pressure）：睡着的分支会提前 return，所以先算它，
         # 这样"睡着时迅速回落"和"醒着时慢慢攒"两条路都走得到。
         self._tick_sleep_pressure(state, minutes=minutes, world=world, now=now)
+        from .life import current_life_role
+
+        role, life_scale = current_life_role(state, world)
+        life_enabled = bool(self.config.independent_life_enabled)
+        strength = float(self.config.life_relief_strength) if life_enabled else 0.0
 
         if state.state in ("sleeping", "napping"):
             rate = (
@@ -378,6 +383,9 @@ class StateDynamics:
                 cool = max(0.0, float(self.config.sleep_curiosity_decay_per_min)) * minutes
                 floor = clamp_value(float(self.config.sleep_curiosity_floor), 0.0, 1.0)
                 state.curiosity = max(min(floor, curiosity), curiosity - cool)
+            if strength:
+                state.loneliness = max(min(0.15, state.loneliness), state.loneliness - 0.00004 * minutes * strength)
+                state.boredom = max(min(0.10, state.boredom), state.boredom - 0.00012 * minutes * strength)
             # 睡着的时候那股"想被碰一碰"也淡下去：睡醒没那么憋
             state.desire = clamp_value(
                 float(state.desire)
@@ -424,11 +432,15 @@ class StateDynamics:
             energy_delta *= 1.2
         state.energy += energy_delta
 
-        # 孤独：基础增长；窗边发呆加速；氛围调制
+        # 孤独：缓慢积累，独处生活提供满足；氛围和基调调节速度。
         lonely_rate = self.config.loneliness_growth_per_min * day_lonely
         lonely_rate *= 1 + lonely_air * mult
         if state.state == "staring":
             lonely_rate *= 1.5
+        if life_enabled:
+            lonely_rate *= max(0.15, 1.0 - max(0.0, state.loneliness - 0.5) * 1.6)
+            if role != "none":
+                lonely_rate *= 0.35
         state.loneliness += lonely_rate * minutes
 
         # 好奇：基础增长；氛围调制；搜索时消耗
@@ -441,13 +453,26 @@ class StateDynamics:
             state.curiosity -= 0.002 * minutes
             state.boredom -= 0.003 * minutes
 
-        # 无聊：基础增长；安静环境增长变慢；热闹环境下降
+        # 无聊：单调时增长，投入活动时放慢并逐步缓解。
         boredom_rate = self.config.boredom_growth_per_min * day_bored
         boredom_rate *= 1 - calm * mult * 0.5
         boredom_rate *= 1 - liveliness * mult * 0.5
         # 同一个地方待得越久越坐不住：换地点（node_since 重置）就把这个系数清零
-        boredom_rate *= self.dwell_factor(state, now)
+        boredom_rate *= 1.0 if life_enabled and role != "none" else self.dwell_factor(state, now)
+        if life_enabled:
+            boredom_rate *= max(0.2, 1.0 - max(0.0, state.boredom - 0.5) * 1.6)
+            if role != "none":
+                boredom_rate *= 0.25
         state.boredom += boredom_rate * minutes
+        if strength and life_scale:
+            lonely_relief, bored_relief = {
+                "rest": (0.00006, 0.00020),
+                "interest": (0.00012, 0.00060),
+                "explore": (0.00008, 0.00045),
+                "social": (0.00060, 0.00035),
+            }.get(role, (0.0, 0.0))
+            state.loneliness = max(min(0.15, state.loneliness), state.loneliness - lonely_relief * minutes * strength * life_scale)
+            state.boredom = max(min(0.10, state.boredom), state.boredom - bored_relief * minutes * strength * life_scale)
 
         # 欲求：想被碰一碰。没人碰就一直慢慢涨，累着 / 心情差的时候涨得慢。
         desire_rate = self._desire_config("desire_growth_per_min", 0.000231)
@@ -633,7 +658,7 @@ class StateDynamics:
         """重新算出对外可见的效价（基线 + 偏移），并夹好范围。"""
 
         state.affect = clamp_value(float(state.affect), 0.0, 1.0)
-        state.valence_offset = clamp_value(float(state.valence_offset), -0.5, 0.5)
+        state.valence_offset = clamp_value(float(state.valence_offset), -1.0, 1.0)
         base = valence_baseline(state, hour=hour)
         state.valence = clamp_value(base + float(state.valence_offset), 0.0, 1.0)
 
@@ -884,8 +909,9 @@ class StateDynamics:
             if field == "valence":
                 current = float(state.valence)
                 target = self._apply_operator(text, current, scale)
+                limit = 1.0 if text.startswith("=") else 0.5
                 state.valence_offset = clamp_value(
-                    float(state.valence_offset) + (target - current), -0.5, 0.5
+                    float(state.valence_offset) + (target - current), -limit, limit
                 )
                 continue
             if not hasattr(state, field):

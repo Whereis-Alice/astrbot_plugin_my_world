@@ -344,6 +344,10 @@ class ActionsRunMixin:
                 outcome=outcome,
             )
             return
+        if definition.idle:
+            outcome.notes.append("闲置动作由空闲轮换执行，不进入正式动作链")
+            return
+        state.idle_activity = {}
         ok, reason = self._check_preconditions(state, definition)
         if not ok:
             outcome.notes.append(f"动作 {definition.id} 前置条件不满足（{reason}），已跳过")
@@ -619,6 +623,7 @@ class ActionsRunMixin:
                 affect=state.affect,
                 valence=state.valence,
             )
+        self._apply_life_completion(state, definition)
         self.dynamics.apply_effects(
             state, definition.on_complete.effects, world=self.world, now=self._now()
         )

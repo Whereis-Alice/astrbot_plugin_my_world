@@ -643,6 +643,8 @@ class PromptBuilder:
     def precondition_hints(self, node_id: str) -> str:
         lines: list[str] = []
         for action in self.world.actions:
+            if action.idle:
+                continue
             pre = action.preconditions
             hints: list[str] = []
             if pre.not_state:
@@ -879,7 +881,9 @@ class PromptBuilder:
         if current_action:
             action_desc = str(current_action.get("desc") or current_action.get("type", "无"))
         else:
-            action_desc = "没在做什么"
+            from .life import activity_view
+
+            action_desc = activity_view(state, self.world)["label"]
         if state.state == "sleeping":
             action_desc = "正在睡觉"
         elif state.state == "napping":
@@ -1111,6 +1115,8 @@ class PromptBuilder:
             "真正落到心里去要的是更亲昵的那一头；没人碰就一直慢慢涨。"
             "跟孤独感不是一回事（那是想有人说话）。",
             "这些是你的内部感受，不要报数字，但语气、动作和用词要能体现出来。",
+            "群友一天只与你聊几句也很正常。你有自己的日程、兴趣和休息；"
+            "独处不等于被冷落，可以自己找事做，不必靠频繁找群友说话消磨时间。",
         ])
         if dwell_minutes > 0:
             # 她得知道自己"在这儿待了多久"：久待无聊涨得更快，也是换地方的理由
@@ -1237,6 +1243,12 @@ class PromptBuilder:
             left = max(0, total - int(action.get("elapsed_ticks", 0) or 0))
             what = action.get("desc") or self.action_label(action.get("type"))
             lines.append(f"- 正在做（还没做完）：{what}（还要约 {left} tick）")
+        else:
+            from .life import idle_definition
+
+            idle = idle_definition(state, self.world)
+            if idle:
+                lines.append(f"- 空闲时的小事：{idle.name or idle.id}。{idle.description}")
         plan = state.current_plan or {}
         steps = plan.get("steps") or []
         current = int(plan.get("current_step", 0) or 0)

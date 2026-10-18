@@ -146,6 +146,9 @@ class ConfigStore:
 
     def load_world(self) -> WorldConfig:
         raw = self._read_json(self.world_path, default_world())
+        if self._migrate_life_cadence(raw):
+            self.snapshot_before("降低旧默认孤独与无聊增长")
+            self._write_json(self.world_path, raw)
         # 升级补字段：默认值 + 用户值（用户值优先）
         merged = _deep_merge(default_world(), raw)
         merged["nodes"] = raw.get("nodes", merged.get("nodes", []))
@@ -172,6 +175,18 @@ class ConfigStore:
         return world
 
     @staticmethod
+    def _migrate_life_cadence(raw: dict[str, Any]) -> bool:
+        dynamics = raw.get("state_dynamics")
+        if not isinstance(dynamics, dict) or dynamics.get("cadence_version", 0) >= 2:
+            return False
+        for key, old, new in (("loneliness_growth_per_min", 0.0008, 0.00005),
+                              ("boredom_growth_per_min", 0.0012, 0.00012)):
+            if dynamics.get(key) == old:
+                dynamics[key] = new
+        dynamics["cadence_version"] = 2
+        return True
+
+    @staticmethod
     def _disable_default_actions(world: WorldConfig) -> int:
         """把随插件附带的默认动作停用（核心动作和用户自己加的动作除外）。"""
 
@@ -196,6 +211,14 @@ class ConfigStore:
 
     def load_sessions(self) -> SessionsConfig:
         raw = self._read_json(self.sessions_path, {"sessions": []})
+        changed = False
+        for row in raw.get("sessions", []):
+            settings = (row.get("config_overrides") or {}).get("settings") if isinstance(row, dict) else None
+            if isinstance(settings, dict):
+                changed = self._migrate_life_cadence(settings) or changed
+        if changed:
+            self.snapshot_before("更新独立会话生活节奏")
+            self._write_json(self.sessions_path, raw)
         sessions, warnings = parse_sessions(raw)
         self.warnings.extend(warnings)
         self._sessions = sessions

@@ -37,6 +37,99 @@ class WorkbenchBrowserTests(unittest.TestCase):
           };
         }""")
 
+    def install_console(self):
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            snapshot = executor.submit(asyncio.run, console_snapshot()).result()
+        self.page.evaluate("""data => {
+          window.numericState = data;
+          window.numericWrites = [];
+          const read = AstrBotPluginPage.apiGet, write = AstrBotPluginPage.apiPost;
+          AstrBotPluginPage.apiGet = (endpoint, params) => endpoint === 'state'
+            ? Promise.resolve(structuredClone(numericState)) : read(endpoint, params);
+          AstrBotPluginPage.apiPost = (endpoint, data) => {
+            if (endpoint === 'state/action' && data.action === 'set_values') {
+              numericWrites.push(structuredClone(data));
+              Object.assign(numericState.values, data.values);
+              return Promise.resolve({ok: true, applied: data.values});
+            }
+            return write(endpoint, data);
+          };
+        }""", snapshot)
+        self.page.locator('button[data-tab="status"]').click()
+        self.page.evaluate("""data => {
+          for (const id of ['status-session','map-session']) {
+            const select=document.getElementById(id);
+            select.add(new Option('合成测试',data.session_id));select.value=data.session_id;
+          }
+          document.getElementById('status-session').dispatchEvent(new Event('change'));
+        }""", snapshot)
+        return snapshot
+
+    def test_numeric_draft_survives_refresh_and_top_button_saves_only_changed_fields(self):
+        self.install_console()
+        self.page.locator('#values-edit').click()
+        slider = self.page.locator('#status-values input[type="range"]').nth(1)
+        slider.evaluate("node => {node.value='0.21';node.dispatchEvent(new Event('input',{bubbles:true}));}")
+        self.page.locator('#status-refresh').click()
+        expect(slider).to_have_value('0.21')
+        self.page.locator('#values-edit').click()
+        self.page.wait_for_function('numericWrites.length === 1')
+        self.assertEqual(self.page.evaluate('numericWrites[0].values'), {'loneliness': 0.21})
+        expect(self.page.locator('#values-edit')).to_have_text('编辑数值')
+        self.assertEqual(self.errors, [])
+
+    def test_idle_settings_validate_and_action_role_options_are_readable(self):
+        self.capture_writes()
+        self.page.locator('button[data-tab="actions"]').click()
+        self.page.locator('#action-generate-idle').locator('xpath=ancestor::details[1]/summary').click()
+        self.page.locator('#action-idle-settings').click()
+        self.page.locator('[data-dialog-key="min"]').fill('40')
+        self.page.locator('[data-dialog-key="max"]').fill('20')
+        self.page.locator('#dialog-ok').click()
+        expect(self.page.locator('#dialog')).to_be_visible()
+        self.page.locator('[data-dialog-key="max"]').fill('50')
+        self.page.locator('[data-dialog-key="enabled"]').uncheck()
+        self.page.locator('#dialog-ok').click()
+        self.page.locator('#save').click()
+        self.page.wait_for_function('policyWrites.length > 0')
+        self.assertFalse(self.page.evaluate('policyWrites.at(-1).idle_life.enabled'))
+        self.page.locator('.action-card').first.click()
+        select = self.page.locator('#action-form label').filter(has_text='生活影响').locator('select')
+        select.select_option('interest')
+        expect(select.locator('option:checked')).to_contain_text('兴趣')
+        self.assertEqual(self.errors, [])
+
+    def test_idle_generator_previews_then_commits_quiet_actions(self):
+        self.page.locator('button[data-tab="actions"]').click()
+        self.page.locator('#action-generate-idle').locator('xpath=ancestor::details[1]/summary').click()
+        self.page.locator('#action-generate-idle').click()
+        self.page.locator('#dialog-ok').click()
+        self.page.wait_for_function('pendingGeneration.length > 0')
+        self.page.evaluate("""() => finishGeneration({actions:[{id:'idle_sample',name:'轻轻哼歌',description:'哼一段旋律',
+          idle:true,category:'continuous',scope:'global',llm_level:'template',group:'闲置生活',life_role:'interest',
+          enabled:true,target_type:'none',on_complete:{trigger:'none',effects:{}}}],problems:[]})""")
+        expect(self.page.locator('#dialog-title')).to_contain_text('闲置动作草稿')
+        expect(self.page.locator('.draft-row button').first).to_have_text('全局')
+        self.page.locator('#dialog-ok').click()
+        expect(self.page.locator('.action-card').filter(has_text='轻轻哼歌')).to_contain_text('闲置生活')
+        self.assertEqual(self.errors, [])
+
+    def test_map_shows_quiet_activity_and_full_hover_text_in_both_levels(self):
+        snapshot = self.install_console()
+        self.page.evaluate("""data => {
+          const read = AstrBotPluginPage.apiGet;
+          AstrBotPluginPage.apiGet = (endpoint, params) => endpoint === 'states'
+            ? Promise.resolve({sessions:[{session_id:data.session_id,node_id:'bedroom',state:'idle',
+              activity:{kind:'idle',label:'轻轻哼歌',detail:'哼一段熟悉的旋律，完整说明。'}}]}) : read(endpoint,params);
+        }""", snapshot)
+        self.page.locator('button[data-tab="map"]').click()
+        badge = self.page.locator('.node-activity').first
+        expect(badge).to_contain_text('轻轻哼歌')
+        self.assertIn('完整说明', badge.get_attribute('title'))
+        self.page.locator('.node.here[data-kind="zone"]').dblclick()
+        expect(self.page.locator('.node.here[data-kind="node"] .node-activity')).to_contain_text('轻轻哼歌')
+        self.assertEqual(self.errors, [])
+
     def test_event_policy_validates_weights_and_saves_the_new_switch(self):
         self.capture_writes()
         self.page.locator('button[data-tab="events"]').click()
@@ -143,6 +236,15 @@ class WorkbenchBrowserTests(unittest.TestCase):
         self.page.locator('button[data-tab="map"]').click()
         for width, height in [(1600, 900), (1280, 692), (1024, 640), (390, 844)]:
             self.host.set_viewport_size({'width': width, 'height': height})
+            if width < 1100:
+                expect(self.page.locator('#map-side')).to_have_class('map-side collapsed')
+                self.page.locator('#map-zoom-fit').click(trial=True)
+            self.page.locator('#map-zoom-fit').click()
+            self.assertTrue(self.page.locator('#canvas').evaluate("""canvas => {
+              const stage=canvas.closest('.map-stage'), c=canvas.getBoundingClientRect(), s=stage.getBoundingClientRect();
+              return stage.scrollTop === 0 && stage.scrollLeft === 0 && canvas.scrollTop === 0 && canvas.scrollLeft === 0
+                && Math.abs(c.top-s.top) <= 1 && Math.abs(c.left-s.left) <= 1;
+            }"""), f'canvas remains aligned after focusing fit at {width}')
             self.assertTrue(self.page.locator('.map-topbar').evaluate("""bar => {
               const controls=[...bar.querySelectorAll('button,select,summary')].filter(el=>el.getClientRects().length && !el.closest('.tool-menu-body'));
               return controls.every(el=>{const r=el.getBoundingClientRect();const b=bar.getBoundingClientRect();

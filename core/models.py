@@ -476,6 +476,10 @@ class ActionDef(Permissive):
     """``duration_mode=llm`` 时的最长时长（秒）。"""
 
     interruptible: bool = True
+    idle: bool = False
+    """空闲时可静默执行的生活动作；不调用模型、不发送消息。"""
+    life_role: Literal["auto", "none", "rest", "interest", "explore", "social"] = "auto"
+    """生活需求的影响类别；none 只使用动作自己配置的数值效果。"""
     intimacy: float | None = None
     """这个动作有多"亲密的肢体接触"：0 = 不是，1 = 就是抱抱亲亲这种。
 
@@ -709,8 +713,9 @@ def action_is_legacy(action: Any) -> bool:
 
 
 class StateDynamics(Permissive):
+    cadence_version: int = 2
     energy_decay_per_min: float = 0.0015
-    loneliness_growth_per_min: float = 0.0008
+    loneliness_growth_per_min: float = 0.00005
     curiosity_growth_per_min: float = 0.0010
     affect_decay_per_min: float = 0.02
     """心潮每分钟回落多少。默认 0.02 ≈ 50 分钟从满值回到平静。"""
@@ -736,7 +741,10 @@ class StateDynamics(Permissive):
     填 0 = 不限制。
     """
 
-    boredom_growth_per_min: float = 0.0012
+    boredom_growth_per_min: float = 0.00012
+    independent_life_enabled: bool = True
+    life_relief_strength: float = Field(default=1.0, ge=0, le=2)
+    """自己的生活对孤独和无聊的调节强度。0 关闭缓解，手配效果照常。"""
     sleep_energy_recovery_per_min: float = 0.0020
     nap_energy_recovery_per_min: float = 0.0008
     sleep_curiosity_decay_per_min: float = 0.0012
@@ -2208,6 +2216,14 @@ class PersonaConfig(Permissive):
     """候选池最多攒多少条（超了丢最旧的）。"""
 
 
+class IdleLifeConfig(Permissive):
+    enabled: bool = True
+    duration_min_minutes: int = Field(default=10, ge=1, le=120)
+    duration_max_minutes: int = Field(default=30, ge=1, le=120)
+    relief_scale: float = Field(default=0.35, ge=0, le=1)
+    generation_prompt: str = ""
+
+
 class WorldConfig(Permissive):
     proactive_chat_paused: bool = False
     """全局暂停自主搭话；所有会话都生效，日程、事件和被动回复保留。"""
@@ -2370,6 +2386,7 @@ class WorldConfig(Permissive):
     nodes: list[NodeDef] = Field(default_factory=list)
     edges: list[EdgeDef] = Field(default_factory=list)
     actions: list[ActionDef] = Field(default_factory=list)
+    idle_life: IdleLifeConfig = Field(default_factory=IdleLifeConfig)
 
     # --- 便捷索引 ---
 
@@ -2408,7 +2425,7 @@ class WorldConfig(Permissive):
         return {action.id: action for action in self.actions}
 
     def actions_in(self, node_id: str) -> list[ActionDef]:
-        return [a for a in self.actions if a.available_in(node_id)]
+        return [a for a in self.actions if not a.idle and a.available_in(node_id)]
 
     def adjacent(self) -> dict[str, list[tuple[str, int]]]:
         """房间层的**完整**邻接表：区域内连线 + 跨区门户。

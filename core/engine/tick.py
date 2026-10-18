@@ -103,7 +103,7 @@ class TickMixin:
             # 正在做的动作被停用了：立刻停下（否则"停用"看起来没生效）
             current = state.current_action or {}
             current_def = self.world.action_map().get(str(current.get("type") or ""))
-            if current and current_def is not None and not current_def.enabled:
+            if current and current_def is not None and (not current_def.enabled or current_def.idle):
                 state.current_action = None
                 state.state = STATE_IDLE
                 await self._log_event(
@@ -115,6 +115,7 @@ class TickMixin:
                     },
                 )
 
+            self._tick_idle_life(state)
             # 1) 推进持续动作
             await self._tick_continuous(state, node, outcome)
 
@@ -274,6 +275,7 @@ class TickMixin:
                         await self._log_event(state, "extreme", {"flag": flag})
                         break
 
+            self._tick_idle_life(state)
             # 6) 群名片同步
             await self._sync_nickname(state, node)
 
@@ -449,6 +451,7 @@ class TickMixin:
             handled_followup = True
 
         effects = (definition.on_complete.effects if definition else {}) or {}
+        self._apply_life_completion(state, definition, elapsed_minutes=int(action.get("elapsed_ticks", 0)) * self.tick_seconds / 60)
         if effects:
             self.dynamics.apply_effects(state, effects, world=self.world, now=self._now())
         # 持续型亲密动作（靠着、按摩这类）做完也算安抚，同上

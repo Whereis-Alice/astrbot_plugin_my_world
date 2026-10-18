@@ -10,7 +10,7 @@ import inspect
 from typing import Any
 
 MAP_KEYS = frozenset({"zones", "zone_edges", "nodes", "edges"})
-ACTION_KEYS = frozenset({"actions", "purged_actions"})
+ACTION_KEYS = frozenset({"actions", "purged_actions", "idle_life"})
 GLOBAL_KEYS = frozenset(
     {
         "admin_ids",

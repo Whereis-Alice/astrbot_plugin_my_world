@@ -3357,7 +3357,7 @@ def _event_persona_id(event: AstrMessageEvent) -> str:
 def _render_status(snapshot: dict[str, Any], pronoun: str = "她") -> str:
     values = snapshot.get("values", {})
     action = snapshot.get("current_action") or {}
-    action_text = action.get("desc") or action.get("type") or "没在做什么"
+    action_text = (snapshot.get("activity") or {}).get("label") or action.get("desc") or action.get("type") or "自由休息"
     travel = snapshot.get("travel") or []
     lines = [
         f"{pronoun}现在在【{snapshot.get('node_name') or snapshot.get('node_id')}】",
