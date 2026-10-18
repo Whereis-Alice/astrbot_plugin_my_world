@@ -3064,7 +3064,7 @@ body.dragging-map-node {
   pointer-events: none;
 }
 
-/* 分三层：连线在最下、节点居中、标签在最上；短边上的点对点标签不会被节点框盖住 */
+/* 连线、路线标签、节点从下到上排列，名称与活动始终清楚。 */
 #canvas-edges {
   z-index: 1;
 }
@@ -3072,11 +3072,11 @@ body.dragging-map-node {
 /* 内容层：定宽定高，节点以它为定位基准，比画布宽时由画布滚动 */
 #canvas-nodes {
   position: relative;
-  z-index: 2;
+  z-index: 3;
 }
 
 #canvas-labels {
-  z-index: 3;
+  z-index: 2;
 }
 
 .edge-ticks {
@@ -7516,8 +7516,8 @@ label.inline > input[type="checkbox"]:checked + span {
 }
 
 #canvas-edges { z-index: 1; }
-#canvas-nodes { z-index: 2; }
-#canvas-labels { z-index: 3; }
+#canvas-nodes { z-index: 3; }
+#canvas-labels { z-index: 2; }
 
 #canvas-edges .edge-hit {
   fill: none;
@@ -7599,6 +7599,9 @@ label.inline > input[type="checkbox"]:checked + span {
 .node {
   position: absolute;
   width: 128px;
+  height: 72px;
+  display: flex;
+  flex-direction: column;
   padding: 9px 10px 8px;
   overflow: hidden;
   border: 1px solid var(--line-strong);
@@ -7630,8 +7633,10 @@ label.inline > input[type="checkbox"]:checked + span {
 }
 
 .node.dimmed {
-  opacity: 0.3;
+  opacity: 1;
 }
+
+.node.dimmed > * { opacity: 0.45; }
 
 .node.selected {
   border-color: var(--node-color, var(--accent));
@@ -7680,7 +7685,7 @@ label.inline > input[type="checkbox"]:checked + span {
 
 .node .node-count {
   display: inline-block;
-  margin-top: 5px;
+  margin-top: 0;
   padding: 1px 7px;
   border-radius: 999px;
   background: var(--bg-inset);
@@ -7699,6 +7704,9 @@ label.inline > input[type="checkbox"]:checked + span {
   color: #fff;
   font-size: 10px;
   font-weight: 600;
+  max-width: calc(100% + 8px);
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
   transform: translateX(-50%);
   box-shadow: 0 4px 12px -5px var(--accent);
@@ -7710,44 +7718,58 @@ label.inline > input[type="checkbox"]:checked + span {
   overflow: visible;
 }
 
-.node .node-activity {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 4;
+.node-meta {
   display: flex;
   align-items: center;
-  gap: 6px;
-  width: max-content;
-  max-width: 220px;
-  padding: 5px 9px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--panel);
-  color: var(--text);
-  box-shadow: 0 4px 14px #0002;
-  font-size: 11px;
-  line-height: 1.4;
+  gap: 4px;
+  min-width: 0;
+  min-height: 18px;
+  margin-top: auto;
 }
 
-.node-activity-kind { color: var(--muted); font-size: 10px; flex-shrink: 0; }
-.node-activity-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node .node-activity {
+  position: static;
+  transform: none;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  gap: 3px;
+  width: auto;
+  max-width: 100%;
+  min-height: 18px;
+  height: 18px;
+  padding: 1px 3px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: none;
+  font-size: 9px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.node-activity-kind { color: var(--muted); font-size: 9px; flex-shrink: 0; }
+.node-activity-icon { flex-shrink: 0; }
+.node-activity-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .node-activity-count { flex-shrink: 0; color: var(--accent-ink); font-size: 9px; }
-.node .node-activities { position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%); z-index: 5; }
-.node-activities summary { list-style: none; cursor: pointer; }
-.node-activities summary::-webkit-details-marker { display: none; }
-.node .node-activities .node-activity { position: static; transform: none; max-width: 300px; }
-.node.activity-open { z-index: 10; }
-.node-activity-list { width: 280px; max-height: 220px; overflow: auto; margin-top: 5px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--panel); box-shadow: var(--shadow-2); }
-.node-activity-row { padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: 11px; }
-.node-activity-row:last-child { border-bottom: 0; }
-.node-activity-session { color: var(--muted); font-size: 9px; overflow-wrap: anywhere; }
-.node-activity-doing { margin-top: 4px; color: var(--text); }
+.map-details-dialog { width: min(540px, 100%); }
+.map-details-body { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.node-activity-row { padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); font-size: 13px; overflow-wrap: anywhere; }
+.node-activity-session { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.node-activity-doing { margin-top: 6px; color: var(--text); font-weight: 600; }
+.node-activity-place { margin-top: 4px; color: var(--accent-ink); font-size: 11px; }
+.node-activity-detail { margin-top: 8px; color: var(--muted); white-space: pre-wrap; line-height: 1.7; }
+.map-exit-row { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; width: 100%; height: auto; min-height: 54px; padding: 12px; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.map-exit-name { font-weight: 600; }
+.map-exit-cost { color: var(--muted); font-size: 11px; }
+.node-id-row { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.node-id-row .node-id { flex: 1; min-width: 0; }
 
 .node.other {
   border-style: dashed;
-  opacity: 0.92;
+  opacity: 1;
 }
 
 .node.other .node-here {
@@ -7758,16 +7780,18 @@ label.inline > input[type="checkbox"]:checked + span {
   text-overflow: ellipsis;
 }
 
-.portal-chip {
-  position: absolute;
-  max-width: 260px;
-  padding: 3px 9px;
+.node .portal-chip {
+  position: static;
+  flex: 0 0 auto;
+  min-height: 18px;
+  height: 18px;
+  padding: 1px 3px;
   overflow: hidden;
   border: 1px dashed var(--line-strong);
   border-radius: 999px;
   background: var(--panel);
   color: var(--muted);
-  font-size: 11px;
+  font-size: 9px;
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;

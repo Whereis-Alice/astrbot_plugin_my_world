@@ -22,6 +22,7 @@ const ui = {
   selectedAction: "",
   selectedZone: "",
   mapLevel: "world",
+  mapDetails: null,
   mapView: { scale: 1, x: 0, y: 0 },
   mapViewReady: false,
   mapLabelMode: (() => {
@@ -2474,7 +2475,7 @@ function closeDialog(fromSubmit = false) {
   const body = $("dialog-body");
   if (body) body.classList.remove("dialog-wide");
   const card = $("dialog-card");
-  if (card) card.classList.remove("wide");
+  if (card) card.classList.remove("wide", "map-details-dialog");
   dialogState = null;
   if (typeof dismiss === "function") dismiss();
 }
@@ -3540,22 +3541,6 @@ function applyMapView() {
   world.style.transform = `translate(${Math.round(view.x)}px, ${Math.round(view.y)}px) scale(${scale})`;
   const label = $("map-zoom-label");
   if (label) label.textContent = `${Math.round(view.scale * 100)}%`;
-  positionMapActivityOverlays();
-}
-
-function positionMapActivityOverlays() {
-  const canvas = $("canvas");
-  if (!canvas) return;
-  const bounds = canvas.getBoundingClientRect();
-  const scale = Math.max(0.05, Math.round((ui.mapView?.scale || 1) * 100) / 100);
-  document.querySelectorAll("#canvas-nodes .node > .node-activity, #canvas-nodes .node > .node-activities").forEach(stack => {
-    stack.style.translate = "";
-    const rect = stack.getBoundingClientRect();
-    if (rect.right < bounds.left || rect.left > bounds.right) return;
-    const shift = rect.left < bounds.left + 8 ? bounds.left + 8 - rect.left
-      : rect.right > bounds.right - 8 ? bounds.right - 8 - rect.right : 0;
-    if (shift) stack.style.translate = `${shift / scale}px 0`;
-  });
 }
 
 function mapZoomBy(factor, clientX, clientY) {
@@ -7378,7 +7363,7 @@ function describeAction(action) {
 
 const MAP_NS = "http://www.w3.org/2000/svg";
 const MAP_NODE_W = 128;
-const MAP_NODE_H = 64;
+const MAP_NODE_H = 72;
 const MAP_MIN_SCALE = 0.25;
 const MAP_MAX_SCALE = 2.6;
 
@@ -7577,31 +7562,121 @@ function applyMapFocus() {
 }
 
 function renderMap() {
-  const expanded = new Set([...document.querySelectorAll("#canvas-nodes .node-activities[open]")]
-    .map(stack => `${stack.closest(".node").dataset.kind}:${stack.closest(".node").dataset.id}`));
   ui.mapHoverNode = "";
   ui.mapHoverEdge = "";
   updateMapToolbar();
   renderWeatherBanner();
   if (ui.mapLevel === "world") renderWorldMap();
   else renderZoneMap();
-  document.querySelectorAll("#canvas-nodes .node-activities").forEach(stack => {
-    const box = stack.closest(".node");
-    if (expanded.has(`${box.dataset.kind}:${box.dataset.id}`)) {
-      stack.open = true;
-      box.classList.add("activity-open");
-    }
-  });
   const hovered = document.querySelector("#canvas-nodes .node:hover");
   ui.mapHoverNode = hovered ? hovered.dataset.id : "";
   applyMapFocus();
+  refreshMapDetails();
 }
 
-/** 天气图标：按描述里的关键词猜一个，猜不到就用通用的。 */
+/** 会话筛选也包含同一共享生活组的其它会话。 */
 function mapScopeMatches(item, scope) {
   if (String(item.session_id) === String(scope)) return true;
   const group = groups().find(group => String(group.id) === String(scope));
   return Boolean(group && (group.sessions || []).some(id => String(id) === String(item.session_id)));
+}
+
+function mapNodeMeta(box) {
+  let meta = box.querySelector(".node-meta");
+  if (!meta) {
+    meta = el("div", "node-meta");
+    box.appendChild(meta);
+  }
+  return meta;
+}
+
+function stopMapButtonGestures(button) {
+  button.addEventListener("mousedown", event => event.stopPropagation());
+  button.addEventListener("dblclick", event => event.stopPropagation());
+}
+
+function mapDetailMarkers(level, id) {
+  const scope = $("map-session")?.value || "";
+  const all = $("map-show-all")?.checked;
+  return (ui.overview || []).filter(item => {
+    if (!all && !mapScopeMatches(item, scope)) return false;
+    const node = nodes().find(node => node.id === item.node_id);
+    return level === "world" ? node && zoneOfNode(node) === id : item.node_id === id;
+  });
+}
+
+function mapNodeExits(nodeId, zoneId) {
+  return zoneEdges().filter(edge =>
+    (edge.from_zone === zoneId && edge.from_node === nodeId)
+    || (edge.to_zone === zoneId && edge.to_node === nodeId));
+}
+
+function openMapDetails(kind, id, level = ui.mapLevel) {
+  ui.mapDetails = { kind, id, level, zoneId: ui.selectedZone };
+  openCustomDialog({
+    title: "地图详情", hideCancel: true, confirmText: "关闭",
+    build: body => body.appendChild(el("div", "map-details-body")),
+    onSubmit: () => { ui.mapDetails = null; return true; },
+    onDismiss: () => { ui.mapDetails = null; },
+  });
+  $("dialog-card").classList.remove("wide");
+  $("dialog-card").classList.add("map-details-dialog");
+  refreshMapDetails();
+  $("dialog-close").focus();
+}
+
+function refreshMapDetails() {
+  const selection = ui.mapDetails;
+  const body = $("dialog-body")?.querySelector(".map-details-body");
+  if (!selection || !body || $("dialog").classList.contains("hidden")) return;
+  const { kind, id, level, zoneId } = selection;
+  const place = level === "world" ? zones().find(zone => zone.id === id) : nodes().find(node => node.id === id);
+  if (!place) { closeDialog(); return; }
+  const exits = kind === "exits" ? mapNodeExits(id, zoneId) : [];
+  const markers = kind === "activity" ? mapDetailMarkers(level, id) : [];
+  const fingerprint = JSON.stringify([place.name, exits, markers, $("map-session")?.value]);
+  if (selection.fingerprint === fingerprint) return;
+  selection.fingerprint = fingerprint;
+  const scrollTop = $("dialog-body").scrollTop;
+  body.innerHTML = "";
+  $("dialog-title").textContent = `${place.name || id} · ${kind === "exits" ? "跨区通道" : "此刻活动"}`;
+  $("dialog-hint").textContent = kind === "exits"
+    ? "选择通道查看对面区域，角色的位置不会因此改变。"
+    : "各会话的当前活动；共享同一份生活状态的会话合并显示。";
+  if (kind === "exits") {
+    exits.forEach(edge => {
+      const outgoing = edge.from_zone === zoneId;
+      const targetZone = outgoing ? edge.to_zone : edge.from_zone;
+      const targetNode = outgoing ? edge.to_node : edge.from_node;
+      const zone = zones().find(zone => zone.id === targetZone);
+      const row = el("button", "map-exit-row");
+      row.type = "button";
+      row.appendChild(el("span", "map-exit-name", `${zone?.name || targetZone} · ${nodeLabel(targetNode)}`));
+      row.appendChild(el("span", "map-exit-cost", `${num(edge.ticks, 1)} tick${edge.bidirectional === false ? outgoing ? " · 单向出口" : " · 单向入口" : " · 双向"}`));
+      row.addEventListener("click", () => { closeDialog(); enterZone(targetZone); });
+      body.appendChild(row);
+    });
+  } else {
+    const scope = $("map-session")?.value || "";
+    const grouped = new Map();
+    markers.forEach(item => {
+      const key = item.state_key || item.session_id;
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key).push(item);
+    });
+    grouped.forEach(items => {
+      const row = el("div", "node-activity-row");
+      const current = items[0].activity || {};
+      const names = items.map(item => sessionShortName(item.session_id)).join("、");
+      row.appendChild(el("div", "node-activity-session", `${items.some(item => mapScopeMatches(item, scope)) ? "当前 · " : ""}${names}${items.length > 1 ? " · 共享生活" : ""}`));
+      row.appendChild(el("div", "node-activity-doing", `${current.kind === "idle" ? "🍃 " : ""}正在 ${current.label || items[0].state || "自由休息"}`));
+      row.appendChild(el("div", "node-activity-place", nodeLabel(items[0].node_id)));
+      if (current.detail) row.appendChild(el("div", "node-activity-detail", current.detail));
+      body.appendChild(row);
+    });
+  }
+  if (!body.childElementCount) body.appendChild(el("p", "muted", kind === "exits" ? "这里暂时没有跨区通道。" : "当前筛选下没有会话在这里。"));
+  $("dialog-body").scrollTop = scrollTop;
 }
 
 function appendMapActivity(box, markers, focusSession) {
@@ -7612,7 +7687,9 @@ function appendMapActivity(box, markers, focusSession) {
   if (!marker) return;
   const activity = marker.activity || {};
   const text = activity.label || stateLabelOf(marker.state, marker) || "自由休息";
-  const badge = el("div", "node-activity");
+  const badge = el("button", "node-activity");
+  badge.type = "button";
+  badge.setAttribute("aria-haspopup", "dialog");
   if (activity.kind === "idle") {
     const icon = el("span", "node-activity-icon", "🍃");
     icon.title = "闲置生活：空闲时的小事，正式活动优先";
@@ -7626,43 +7703,17 @@ function appendMapActivity(box, markers, focusSession) {
   }).join("\n\n");
   badge.title = full;
   box.title = full;
-  if (markers.length === 1) {
-    box.appendChild(badge);
-    return;
-  }
-  const stack = el("details", "node-activities");
-  const summary = el("summary");
-  badge.classList.add("node-activity-main");
-  badge.appendChild(el("span", "node-activity-count", `+${markers.length - 1} 会话 ▾`));
-  summary.appendChild(badge);
-  stack.appendChild(summary);
-  const list = el("div", "node-activity-list");
-  const grouped = new Map();
-  [marker, ...markers.filter(item => item !== marker)].forEach(item => {
-    const key = item.state_key || item.session_id;
-    if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key).push(item);
+  if (markers.length > 1) badge.appendChild(el("span", "node-activity-count", `+${markers.length - 1}`));
+  badge.setAttribute("aria-label", `查看此刻活动，${markers.length} 个会话`);
+  stopMapButtonGestures(badge);
+  badge.addEventListener("click", event => {
+    event.stopPropagation();
+    openMapDetails("activity", box.dataset.id);
   });
-  grouped.forEach(items => {
-    const row = el("div", "node-activity-row");
-    const current = items[0].activity || {};
-    const names = items.map(item => sessionShortName(item.session_id)).join("、");
-    row.appendChild(el("div", "node-activity-session", `${items.some(item => mapScopeMatches(item, focusSession)) ? "当前 · " : ""}${names}`));
-    row.appendChild(el("div", "node-activity-doing", `${current.kind === "idle" ? "🍃 " : ""}正在 ${current.label || items[0].state || "自由休息"}`));
-    row.title = `${names}\n${current.detail || ""}${items.length > 1 ? "\n共享同一份生活状态" : ""}`;
-    list.appendChild(row);
-  });
-  stack.appendChild(list);
-  stack.addEventListener("mousedown", event => event.stopPropagation());
-  stack.addEventListener("click", event => event.stopPropagation());
-  stack.addEventListener("dblclick", event => event.stopPropagation());
-  stack.addEventListener("toggle", () => {
-    box.classList.toggle("activity-open", stack.open);
-    if (stack.isConnected) positionMapActivityOverlays();
-  });
-  box.appendChild(stack);
+  mapNodeMeta(box).appendChild(badge);
 }
 
+/** 天气图标：按描述里的关键词猜一个，猜不到就用通用的。 */
 function weatherIcon(desc) {
   const text = String(desc || "");
   if (/雷/.test(text)) return "⛈";
@@ -8006,7 +8057,6 @@ function renderWorldMap() {
       box.appendChild(badge);
     }
     box.style.left = `${num(zone.x)}px`;
-    appendMapActivity(box, markers, focusSession);
     box.style.top = `${num(zone.y)}px`;
     box.style.setProperty("--node-color", zone.color || "#7FB2E5");
     box.dataset.id = zone.id;
@@ -8014,9 +8064,11 @@ function renderWorldMap() {
     const head = el("div", "node-head");
     head.appendChild(el("span", "node-icon", displayIcon(zone.icon)));
     head.appendChild(el("div", "node-name", zone.name || zone.id));
+    head.title = zone.name || zone.id;
     box.appendChild(head);
     box.appendChild(el("div", "node-id", zone.id));
-    box.appendChild(el("div", "node-count", `${inside.length} 个地点`));
+    if (!markers.length) mapNodeMeta(box).appendChild(el("div", "node-count", `${inside.length} 个地点`));
+    appendMapActivity(box, markers, focusSession);
     box.addEventListener("mousedown", (event) => startDrag(event, zone));
     // 单击只切选中态（重建 DOM 会让双击永远打不到同一个元素）
     box.addEventListener("click", () => selectZone(zone.id));
@@ -8182,7 +8234,6 @@ function renderZoneMap() {
       box.appendChild(badge);
     }
     box.style.left = `${num(node.x)}px`;
-    appendMapActivity(box, markers, focusSession);
     box.style.top = `${num(node.y)}px`;
     box.style.setProperty("--node-color", node.color || "#8B7DD8");
     box.dataset.id = node.id;
@@ -8190,8 +8241,26 @@ function renderZoneMap() {
     const head = el("div", "node-head");
     head.appendChild(el("span", "node-icon", displayIcon(node.icon)));
     head.appendChild(el("div", "node-name", node.name || node.id));
+    head.title = node.name || node.id;
     box.appendChild(head);
-    box.appendChild(el("div", "node-id", node.id));
+    const identifier = el("div", "node-id-row");
+    identifier.appendChild(el("div", "node-id", node.id));
+    box.appendChild(identifier);
+    appendMapActivity(box, markers, focusSession);
+    const exits = mapNodeExits(node.id, zoneId);
+    if (exits.length) {
+      const button = el("button", "portal-chip", `↗ ${exits.length}`);
+      button.type = "button";
+      button.title = `跨区通道（${exits.length} 条），点击查看对面地点与耗时`;
+      button.setAttribute("aria-label", `${node.name || node.id}的跨区通道，${exits.length} 条`);
+      button.setAttribute("aria-haspopup", "dialog");
+      stopMapButtonGestures(button);
+      button.addEventListener("click", event => {
+        event.stopPropagation();
+        openMapDetails("exits", node.id, "zone");
+      });
+      identifier.appendChild(button);
+    }
     box.addEventListener("mousedown", (event) => startDrag(event, node));
     box.addEventListener("click", () => selectNode(node.id));
     box.addEventListener("mouseenter", () => {
@@ -8203,33 +8272,6 @@ function renderZoneMap() {
       applyMapFocus();
     });
     container.appendChild(box);
-  });
-
-  // 通往其他区域的出口：标在那一端地点旁边，点一下跳到对面区域
-  const exits = zoneEdges().filter(
-    (edge) => edge.from_zone === zoneId || edge.to_zone === zoneId,
-  );
-  exits.forEach((edge, index) => {
-    const here = edge.from_zone === zoneId ? edge.from_node : edge.to_node;
-    const thereZone = edge.from_zone === zoneId ? edge.to_zone : edge.from_zone;
-    const thereNode = edge.from_zone === zoneId ? edge.to_node : edge.from_node;
-    const anchor = byId[here];
-    if (!anchor) return;
-    const zone = zones().find((item) => item.id === thereZone);
-    const chip = el(
-      "div",
-      "portal-chip",
-      `→ ${zone ? zone.name || zone.id : thereZone}·${nodeLabel(thereNode)}（${num(edge.ticks, 1)} tick）`,
-    );
-    chip.style.left = `${num(anchor.x) + 8}px`;
-    const preceding = exits.slice(0, index).filter(item => (item.from_zone === zoneId ? item.from_node : item.to_node) === here).length;
-    chip.style.top = `${num(anchor.y) + MAP_NODE_H + (hereMarkers(here).length ? 48 : 10) + preceding * 24}px`;
-    chip.title = "点一下进对面区域看看";
-    chip.addEventListener("click", (event) => {
-      event.stopPropagation();
-      enterZone(thereZone);
-    });
-    container.appendChild(chip);
   });
 
   if (!ui.mapViewReady) fitMapToCanvas({ silent: true });

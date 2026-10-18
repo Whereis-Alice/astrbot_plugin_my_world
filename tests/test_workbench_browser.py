@@ -65,6 +65,92 @@ class WorkbenchBrowserTests(unittest.TestCase):
         }""", snapshot)
         return snapshot
 
+    def install_dense_map(self):
+        snapshot = self.install_console()
+        self.page.evaluate("""data => {
+          window.mapStates=Array.from({length:24},(_,index)=>({
+            session_id:index?`test:GroupMessage:${200+index}`:data.session_id,
+            state_key:`life_${index}`,node_id:'lobby',state:'idle',
+            activity:{kind:'idle',label:'摆弄小兔子发夹并回想刚读过的长篇故事',detail:'活动完整说明。'.repeat(25)}
+          }));
+          mapStates.push({session_id:'test:GroupMessage:500',node_id:'bedroom',state:'idle',
+            activity:{kind:'action',label:'翻看Galgame攻略本中的长篇剧情分析',detail:'长活动说明'}});
+          const read=AstrBotPluginPage.apiGet;
+          AstrBotPluginPage.apiGet=async(key,params)=>{
+            if(key==='states')return {sessions:structuredClone(mapStates)};
+            const config=await read(key,params);
+            if(key!=='config')return config;
+            const ids=['lobby','bedroom','study','bar','window','kitchen'];
+            config.world.nodes.filter(n=>n.zone_id==='home').forEach(n=>{
+              const index=ids.indexOf(n.id);n.x=80+(index%3)*160;n.y=100+Math.floor(index/3)*150;
+            });
+            config.world.zone_edges.push(
+              {id:'many_exit_1',from_zone:'home',to_zone:'street',from_node:'lobby',to_node:'street_gate',ticks:5,bidirectional:false},
+              {id:'many_exit_2',from_zone:'park',to_zone:'home',from_node:'park_gate',to_node:'lobby',ticks:7,bidirectional:false}
+            );
+            config.scope='';return config;
+          };
+          const select=document.getElementById('config-scope');
+          select.add(new Option('读取密集地图','dense-map'));select.value='dense-map';
+          select.dispatchEvent(new Event('change'));
+        }""", snapshot)
+        self.page.locator('button[data-tab="map"]').click()
+        self.page.locator('#map-show-all').check()
+        self.page.locator('.node.here[data-kind="zone"]').dblclick()
+        self.page.locator('#map-zoom-fit').click()
+        return snapshot
+
+    def assert_map_badges_stay_inside_nodes(self):
+        self.assertTrue(self.page.evaluate("""() => {
+          const overlap=(a,b)=>a.left<b.right&&a.right>b.left&&a.top<b.bottom&&a.bottom>b.top;
+          const nodes=[...document.querySelectorAll('#canvas-nodes .node')];
+          return nodes.every(node=>[...node.querySelectorAll('.node-activity,.portal-chip')].every(button=>{
+            const r=button.getBoundingClientRect(),n=node.getBoundingClientRect();
+            return r.left>=n.left-1&&r.right<=n.right+1&&r.top>=n.top-1&&r.bottom<=n.bottom+1
+              &&nodes.filter(other=>other!==node).every(other=>!overlap(r,other.getBoundingClientRect()));
+          }));
+        }"""))
+
+    def test_many_exits_and_long_activities_do_not_cover_neighboring_places(self):
+        self.install_dense_map()
+        for width,height in [(1440,900),(390,844)]:
+            self.host.set_viewport_size({'width':width,'height':height})
+            self.page.locator('#map-zoom-fit').click()
+            self.assert_map_badges_stay_inside_nodes()
+        exits=self.page.locator('.node[data-id="lobby"] .portal-chip')
+        expect(exits).to_have_count(1)
+        expect(exits).to_contain_text('4')
+        exits.click()
+        expect(self.page.locator('.map-exit-row')).to_have_count(4)
+        expect(self.page.locator('.map-details-body')).to_contain_text('单向入口')
+        expect(self.page.locator('.map-details-body')).to_contain_text('单向出口')
+        self.page.locator('.map-exit-row').nth(2).focus()
+        self.page.locator('#map-show-all').dispatch_event('change')
+        expect(self.page.locator('.map-exit-row').nth(2)).to_be_focused()
+        self.page.locator('.map-exit-row').first.click()
+        expect(self.page.locator('#dialog')).not_to_be_visible()
+        expect(self.page.locator('#map-crumbs')).to_contain_text('商业街')
+        self.assertEqual(self.errors, [])
+
+    def test_activity_details_scroll_refresh_and_close_outside_the_scaled_map(self):
+        self.install_dense_map()
+        self.page.locator('.node[data-id="lobby"] .node-activity').click()
+        expect(self.page.locator('.node-activity-row')).to_have_count(24)
+        self.host.set_viewport_size({'width':390,'height':844})
+        self.assertTrue(self.page.locator('#dialog-card').evaluate("""card=>{
+          const r=card.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&r.bottom<=innerHeight;
+        }"""))
+        self.assertTrue(self.page.locator('#dialog-body').evaluate('e=>e.scrollHeight>e.clientHeight'))
+        self.page.locator('#dialog-body').evaluate('e=>e.scrollTop=180')
+        self.page.evaluate("mapStates[0].activity.label='刷新后的此刻活动'")
+        self.page.locator('button[data-tab="map"]').dispatch_event('click')
+        expect(self.page.locator('.map-details-body')).to_contain_text('刷新后的此刻活动')
+        self.assertGreaterEqual(self.page.locator('#dialog-body').evaluate('e=>e.scrollTop'),150)
+        self.page.locator('#dialog-ok').click()
+        expect(self.page.locator('#dialog')).not_to_be_visible()
+        self.assert_map_badges_stay_inside_nodes()
+        self.assertEqual(self.errors, [])
+
     def test_numeric_draft_survives_refresh_and_top_button_saves_only_changed_fields(self):
         self.install_console()
         self.page.locator('#values-edit').click()
@@ -149,26 +235,26 @@ class WorkbenchBrowserTests(unittest.TestCase):
         self.page.locator('.node.here[data-kind="zone"]').dblclick()
         self.page.locator('#map-zoom-fit').click()
         badge = self.page.locator('.node[data-id="lobby"] .node-activity')
-        expect(badge).to_contain_text('+2 会话')
+        expect(badge).to_contain_text('+2')
         self.assertTrue(badge.evaluate("""badge => {
           const r=badge.getBoundingClientRect();
           return [...document.querySelectorAll('.portal-chip')].every(chip => {const c=chip.getBoundingClientRect();return c.bottom<=r.top || c.top>=r.bottom || c.right<=r.left || c.left>=r.right;});
         }"""))
-        self.page.locator('.node[data-id="lobby"] .node-activities summary').click()
+        badge.click()
         expect(self.page.locator('.node-activity-row')).to_have_count(2)
-        expect(self.page.locator('.node-activity-list')).to_contain_text('200')
-        expect(self.page.locator('.node-activity-list')).to_contain_text('轻轻哼歌')
+        expect(self.page.locator('.map-details-body')).to_contain_text('200')
+        expect(self.page.locator('.map-details-body')).to_contain_text('轻轻哼歌')
         self.host.set_viewport_size({'width':390,'height':844})
-        self.page.locator('#map-zoom-fit').click()
         self.page.locator('#map-show-all').dispatch_event('change')
-        expect(self.page.locator('.node-activities')).to_have_attribute('open', '')
-        self.assertTrue(self.page.locator('.node-activity-list').evaluate("""list => {
-          const r=list.getBoundingClientRect(), c=document.getElementById('canvas').getBoundingClientRect();
-          return r.left>=c.left && r.right<=c.right;
+        expect(self.page.locator('#dialog')).to_be_visible()
+        self.assertTrue(self.page.locator('.map-details-body').evaluate("""list => {
+          const r=list.getBoundingClientRect();
+          return r.left>=0 && r.right<=innerWidth;
         }"""))
+        self.page.locator('#dialog-close').click()
         self.page.locator('#map-show-all').uncheck()
         expect(self.page.locator('.node[data-id="lobby"] .node-activity')).to_contain_text('睡觉')
-        expect(self.page.locator('.node-activities')).to_have_count(0)
+        self.assertEqual(self.page.locator('.node[data-id="lobby"] .node-activity-count').count(), 0)
         self.assertEqual(self.errors, [])
 
     def test_world_smart_routes_only_show_the_hovered_zones_direct_routes(self):
@@ -215,11 +301,11 @@ class WorkbenchBrowserTests(unittest.TestCase):
         expect(self.page.locator('.node.here .node-activity')).to_contain_text('睡觉')
         expect(self.page.locator('.node.here.other')).to_have_count(0)
         self.page.locator('.node.here[data-kind="zone"]').dblclick()
-        expect(self.page.locator('.node.here .node-activity')).to_contain_text('+1 会话')
-        self.page.locator('.node.here .node-activities summary').click()
+        expect(self.page.locator('.node.here .node-activity')).to_contain_text('+1')
+        self.page.locator('.node.here .node-activity').click()
         expect(self.page.locator('.node-activity-row')).to_have_count(1)
         expect(self.page.locator('.node-activity-session')).to_contain_text('当前 · ')
-        expect(self.page.locator('.node-activity-list')).not_to_contain_text('旁人的活动')
+        expect(self.page.locator('.map-details-body')).not_to_contain_text('旁人的活动')
         self.assertEqual(self.errors, [])
 
     def test_event_policy_validates_weights_and_saves_the_new_switch(self):
