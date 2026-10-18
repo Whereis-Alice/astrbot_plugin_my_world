@@ -4,10 +4,10 @@
 
 为 AstrBot 角色建立持续运行的生活：她有自己的住处、作息、情绪、计划和人际关系。即使没人聊天，世界也会继续推进；有人找她时，这些经历会成为回复的背景。
 
-![version](https://img.shields.io/badge/version-v4.9.1-4f6bf5)
-![AstrBot](https://img.shields.io/badge/AstrBot-%E2%89%A5%204.29.1-8b6cf0)
+![version](https://img.shields.io/badge/version-v4.9.2-4f6bf5)
+![AstrBot](https://img.shields.io/badge/AstrBot-%E2%89%A5%204.28.2-8b6cf0)
 
-需要 **AstrBot 4.29.1 至 4.x**，使用 AstrBot 自带依赖，无需额外安装 Python 包。旧版 AstrBot 缺少当前编辑器使用的 Web API 接口，请先升级宿主。
+支持 **AstrBot 4.28.2 至 4.x**，使用 AstrBot 自带依赖，无需额外安装 Python 包。4.28.2 可以正常安装，无需为本插件升级到 4.29.1。更早版本尚未纳入兼容验证。
 
 地图和动作构成角色的虚拟生活。例如“去书房看书”会改变地点、时间、状态与记忆。聊天回复和真实工具调用继续使用 AstrBot 原生 Agent，可与世界书、记忆、视觉、语音和输出增强插件配合。
 
