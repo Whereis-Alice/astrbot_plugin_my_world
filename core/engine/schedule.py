@@ -13,7 +13,7 @@ from ..models import (
 )
 from ..pathfinding import nearest_node
 from ..prompt import period_of
-from ..state import WorldState
+from ..state import STATE_DROWSY, WorldState
 from ..timeline import render_event
 from .models import TickOutcome
 from .util import _clip_text
@@ -184,6 +184,7 @@ class ScheduleMixin:
         manual: bool,
         smart_note: str,
         notes: list[str] | None = None,
+        status: str = "",
     ) -> None:
         """写一条既保留摘要、又包含完整执行过程的日程记录。"""
 
@@ -200,6 +201,7 @@ class ScheduleMixin:
                 "time": slot,
                 "actions": " → ".join(self._chain_labels(chain)),
                 "manual": bool(manual),
+                "status": status,
                 "smart": bool(schedule.smart),
                 "once": bool(getattr(schedule, "once", False)),
                 "note": str(getattr(schedule, "note", "") or ""),
@@ -588,13 +590,16 @@ class ScheduleMixin:
                     if not self.schedule_in_scope(schedule, session_id):
                         # 这条日程是别的会话 / 别的组的事
                         continue
-                    if self.world.sleep.mode == "autonomous" and state.is_sleeping:
+                    if self.world.sleep.mode == "autonomous" and (
+                        state.is_sleeping or state.state == STATE_DROWSY
+                        or state.sleep_rhythm.get("decision") == "sleep"
+                    ):
                         claimed = await self.db.call("mark_schedule_fired", session_id=session_id,
                             schedule_id=schedule.id, day_key=day_key, slot=slot)
                         if claimed:
                             await self._log_event(state, "skip", {
                                 "action": f"schedule:{schedule.id}",
-                                "note": "自主作息正在睡眠，自动日程让位；手动试跑仍可执行。",
+                                "note": "自主作息已准备入睡或正在睡眠，自动日程让位；手动试跑仍可执行。",
                             })
                         continue
                     if self.world.sleep.mode == "autonomous" and any(
@@ -701,14 +706,9 @@ class ScheduleMixin:
                         brief.append("这条日程要做的事（按顺序）：" + " → ".join(chain_labels))
                     if brief:
                         state.event_digest = [*list(state.event_digest or []), *brief][-6:]
-                    await self._run_chain(state, chain, outcome, depth=0)
+                    status = await self._run_chain(state, chain, outcome, depth=0)
                     outcome.notes.append(f"日程 {schedule.id} 已触发")
-                    # 做完了这一整串要有交代：她之后提起"我刚做了…"才有据可依
-                    if chain_labels:
-                        state.event_digest = [
-                            *list(state.event_digest or []),
-                            "按日程做完了：" + " → ".join(chain_labels),
-                        ][-6:]
+                    self._note_schedule_progress(state, chain_labels, status, outcome)
                     state.add_event(
                         "schedule",
                         {"id": schedule.id, "note": str(schedule.note or "")},
@@ -724,6 +724,7 @@ class ScheduleMixin:
                         manual=False,
                         smart_note=smart_note,
                         notes=outcome.notes,
+                        status=status,
                     )
                     await self._echo_events_since(state, outcome, echo_marker)
                     outcomes.append(outcome)
@@ -806,7 +807,8 @@ class ScheduleMixin:
                 manual_brief.append("这条日程要做的事（按顺序）：" + " → ".join(manual_labels))
             if manual_brief:
                 state.event_digest = [*list(state.event_digest or []), *manual_brief][-6:]
-            await self._run_chain(state, chain, outcome, depth=0, plan_source="manual")
+            status = await self._run_chain(state, chain, outcome, depth=0, plan_source="manual")
+            self._note_schedule_progress(state, manual_labels, status, outcome)
             # 手动跑一次也算"上次执行"：编辑器里试跑之后，提示词里就能看到时间
             last_map = dict(getattr(state, "schedule_last_fired", None) or {})
             last_map[str(schedule.id)] = float(self._now())
@@ -824,6 +826,7 @@ class ScheduleMixin:
                 manual=True,
                 smart_note=smart_note,
                 notes=outcome.notes,
+                status=status,
             )
             await self._echo_events_since(state, outcome, echo_marker)
             running = str((state.current_action or {}).get("desc") or "")
@@ -843,8 +846,23 @@ class ScheduleMixin:
             "schedule_id": schedule.id,
             "messages": list(outcome.messages),
             "notes": notes,
+            "status": status,
             "note": _clip_text(f"已执行「{schedule.time} {schedule.id}」：{summary}", 160),
         }
+
+    def _note_schedule_progress(self, state: WorldState, labels: list[str], status: str,
+            outcome: TickOutcome) -> None:
+        """日程触发只记本轮真实进度，不能把排队步骤当成已经发生的经历。"""
+
+        text = {
+            "running": "日程已启动，持续动作或后续步骤尚未完成",
+            "completed": "按日程做完了",
+            "partial": "日程本轮结束，有步骤跳过",
+            "skipped": "日程未执行，有步骤跳过",
+        }.get(status, "日程已触发，完成情况请查看执行过程")
+        note = text + ("：" + " → ".join(labels) if labels else "")
+        state.event_digest = [*list(state.event_digest or []), note][-6:]
+        outcome.notes.append(text)
 
     def expand_chain_for_travel(self, state: WorldState, chain: list[Any]) -> list[Any]:
         """给日程的 auto_travel 用：把"需要先在某处"的动作前面自动插一步移动。

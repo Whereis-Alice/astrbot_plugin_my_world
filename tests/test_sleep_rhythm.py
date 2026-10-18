@@ -32,6 +32,122 @@ class SleepRhythmTests(unittest.IsolatedAsyncioTestCase):
             await self.engine._tick_sleep_rhythm(state, outcome)
         return outcome
 
+    def add_due_schedule(self, *, chain=None):
+        self.store.save_schedules({"schedules":[{"id":"evening_activity", "time":"21:30",
+            "smart":False, "auto_travel":False,
+            "action_chain":chain or [{"type":"walk_to", "target_node":"window"}]}]})
+        self.engine.reload_config()
+
+    async def test_automatic_activity_does_not_replace_the_walk_to_bed(self):
+        self.add_due_schedule()
+        self.llm.replies = ['{"decision":"sleep","hours":7,"reason":"准备休息"}']
+        await self.assess()
+        before = await self.get_state()
+        self.assertEqual(before.current_action["target_node"], "bedroom")
+        await self.engine.run_schedules()
+        state = await self.get_state()
+        self.assertEqual(state.current_action, before.current_action)
+        self.assertEqual(state.current_plan, before.current_plan)
+
+    async def test_automatic_activity_does_not_replace_drowsiness_or_repeat_skip_logs(self):
+        self.add_due_schedule()
+        await self.prepare_pending_sleep(drowsy=True)
+        before = await self.get_state()
+        await self.engine.run_schedules()
+        state = await self.get_state()
+        self.assertEqual(state.state, "drowsy")
+        self.assertIsNone(state.current_action)
+        self.assertEqual(state.drowsy_sleep_step, before.drowsy_sleep_step)
+        rows = await self.db.call("query_events", session_id=fixture.SESSION, limit=30)
+        await self.engine.run_schedules()
+        self.assertEqual(await self.db.call("query_events", session_id=fixture.SESSION, limit=30), rows)
+
+    async def test_an_instant_reminder_also_yields_to_a_pending_sleep_decision(self):
+        self.add_due_schedule(chain=[{"type":"say", "messages":["日程提醒"]}])
+        await self.prepare_pending_sleep()
+        await self.set_state(current_plan=None)
+        self.assertEqual(await self.engine.run_schedules(), [])
+        self.assertEqual(self.messenger.sent, [])
+
+    async def test_manual_activity_can_still_run_while_bedtime_is_pending(self):
+        self.add_due_schedule()
+        await self.prepare_pending_sleep()
+        result = await self.engine.run_schedule_now(fixture.SESSION, "evening_activity")
+        self.assertTrue(result["ok"])
+        self.assertEqual((await self.get_state()).current_action["target_node"], "window")
+
+    async def test_a_started_schedule_does_not_claim_the_whole_chain_is_finished(self):
+        self.add_due_schedule(chain=[{"type":"walk_to", "target_node":"window"},
+            {"type":"say", "messages":["这里光线好"]}])
+        await self.set_state(sleep_rhythm={"awake_since":self.clock.now()})
+        await self.engine.run_schedules()
+        state = await self.get_state()
+        self.assertEqual(state.current_action["type"], "walk_to")
+        self.assertTrue(state.current_plan)
+        digest = " ".join(state.event_digest)
+        self.assertNotIn("按日程做完了", digest)
+        self.assertIn("日程已启动", digest)
+
+    async def test_manual_schedule_summary_also_describes_progress(self):
+        self.add_due_schedule()
+        await self.engine.run_schedule_now(fixture.SESSION, "evening_activity")
+        self.assertIn("日程已启动", " ".join((await self.get_state()).event_digest))
+
+    async def test_skipped_continuous_step_does_not_discard_later_valid_steps(self):
+        self.add_due_schedule(chain=[{"type":"walk_to", "target_node":"missing_place"},
+            {"type":"say", "messages":["先在这里待着吧"]}])
+        outcomes = await self.engine.run_schedules()
+        self.assertTrue(any("先在这里待着吧" in outcome.messages for outcome in outcomes))
+        state = await self.get_state()
+        self.assertIsNone(state.current_action)
+        self.assertIn("有步骤跳过", " ".join(state.event_digest))
+
+    async def test_skipped_step_preserves_current_activity_and_keeps_processing(self):
+        self.add_due_schedule(chain=[{"type":"walk_to", "target_node":"missing_place"},
+            {"type":"say", "messages":["这里也挺好"]}])
+        await self.set_state(current_action={"type":"read", "duration_ticks":30, "elapsed_ticks":5})
+        before = await self.get_state()
+        outcomes = await self.engine.run_schedules()
+        self.assertEqual((await self.get_state()).current_action, before.current_action)
+        self.assertTrue(any("这里也挺好" in item.messages for item in outcomes))
+
+    async def test_fixed_mode_schedule_still_runs_when_a_manual_sleep_is_pending(self):
+        self.add_due_schedule()
+        await self.switch_sleep_mode("fixed")
+        await self.set_state(node_id="bedroom", state="drowsy", current_plan=None,
+            drowsy_sleep_step={"type":"sleep", "duration":25200, "plan_source":"manual"},
+            sleep_rhythm={"mode":"fixed", "awake_since":self.clock.now()})
+        self.assertTrue(await self.engine.run_schedules())
+        self.assertEqual((await self.get_state()).current_action["type"], "walk_to")
+
+    async def test_schedule_log_saves_trigger_progress_for_instant_and_continuous_chains(self):
+        for chain, status in (([{"type":"say", "messages":["提醒一下"]}], "completed"),
+                ([{"type":"walk_to", "target_node":"window"}], "running"),
+                ([{"type":"walk_to", "target_node":"missing"}], "skipped")):
+            with self.subTest(status=status):
+                self.add_due_schedule(chain=chain)
+                await self.set_state(state="idle", node_id="study", current_action=None, current_plan=None,
+                    schedule_checked_at=0, sleep_rhythm={"awake_since":self.clock.now()})
+                result = await self.engine.run_schedule_now(fixture.SESSION, "evening_activity")
+                self.assertEqual(result["status"], status)
+                rows = await self.db.call("query_events", session_id=fixture.SESSION, limit=30)
+                runs = [row for row in rows if row["event_type"] == "schedule"]
+                self.assertEqual(runs[0]["detail"]["status"], status)
+
+    async def test_full_sleep_after_a_yielded_schedule_records_only_the_actual_sleep(self):
+        self.add_due_schedule()
+        self.engine.world.sleep.drowsy = True
+        self.llm.replies = ['{"decision":"sleep","hours":7,"reason":"休息"}']
+        await self.assess()
+        await self.engine.run_schedules()
+        for _ in range(8):
+            self.clock.advance(60)
+            await self.engine._tick_session(fixture.SESSION)
+        state = await self.get_state()
+        self.assertEqual(state.current_action["type"], "sleep")
+        self.assertEqual(state.node_id, "bedroom")
+        self.assertNotIn("按日程做完了", " ".join(state.event_digest))
+
     async def prepare_pending_sleep(self, *, drowsy=False):
         from core.planner import create_plan
         await self.set_state(node_id="bedroom" if drowsy else "study",

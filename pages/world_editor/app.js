@@ -13608,6 +13608,8 @@ function renderScheduleHistory(data) {
     head.appendChild(el("span", "schedule-run-title", detail.id || "日程"));
     if (detail.manual) head.appendChild(el("span", "schedule-run-badge manual", "手动"));
     if (!detail.manual) head.appendChild(el("span", "schedule-run-badge auto", "到点"));
+    const runStatus = {running: "本轮启动", completed: "本轮完成", partial: "部分跳过", skipped: "未执行"}[detail.status];
+    if (runStatus) head.appendChild(el("span", "schedule-run-badge", runStatus));
     if (detail.smart) head.appendChild(el("span", "schedule-run-badge", "智能补全"));
     if (detail.once) head.appendChild(el("span", "schedule-run-badge", "一次性"));
     const steps = Array.isArray(detail.steps) ? detail.steps : [];
@@ -13653,6 +13655,9 @@ function fillScheduleRunPanel(inner, detail, steps) {
   inner.innerHTML = "";
   if (String(detail.note || "").trim()) {
     inner.appendChild(el("p", "schedule-run-note", `这次想做的事：${detail.note}`));
+  }
+  if (detail.status === "running") {
+    inner.appendChild(el("p", "muted", "这条记录保存日程启动时的过程。持续动作和排队步骤的后续结果，请在日志中查看。"));
   }
   inner.appendChild(scheduleRunTimeline(steps));
   const notes = Array.isArray(detail.notes) ? detail.notes : [];

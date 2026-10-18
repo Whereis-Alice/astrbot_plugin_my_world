@@ -177,6 +177,7 @@ class GenerationBrowserTests(unittest.TestCase):
                         "time": "20:30",
                         "actions": "走到书房 → 上网",
                         "manual": False,
+                        "status": "running",
                         "smart": True,
                         "once": False,
                         "note": "看看今天有什么新闻",
@@ -238,9 +239,11 @@ class GenerationBrowserTests(unittest.TestCase):
 
         self.page.locator('button[data-tab="schedules"]').click()
         expect(self.page.locator(".schedule-run-row")).to_have_count(1)
+        expect(self.page.locator(".schedule-run-head")).to_contain_text("本轮启动")
         self.page.locator(".schedule-run-head").click()
         expect(self.page.locator(".schedule-run-step")).to_have_count(2)
         expect(self.page.locator(".schedule-run-row")).to_contain_text("今天有三条科技新闻")
+        expect(self.page.locator(".schedule-run-row")).to_contain_text("后续结果，请在日志中查看")
         self.host.screenshot(path=str(self.shots / "schedule-run-details.png"))
         self.assertEqual(self.errors, [])
 

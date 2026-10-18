@@ -939,10 +939,11 @@ class ActionsRunMixin:
         *,
         depth: int,
         plan_source: str = "schedule",
-    ) -> None:
+    ) -> str:
         """执行日程动作链：瞬时动作立即执行；持续动作启动后，剩余步骤转为计划。"""
 
         skipped = 0
+        completed = 0
         for index, step in enumerate(chain or []):
             action = PlannedAction(
                 type=str(getattr(step, "type", "") or ""),
@@ -1004,9 +1005,17 @@ class ActionsRunMixin:
                 )
                 continue
             if definition.category == "continuous":
+                previous_action = state.current_action
+                previous_drowsy = state.drowsy_sleep_step
                 await self._start_action(
                     state, self.node(state.node_id), outcome, definition, action, depth, True
                 )
+                started = state.current_action is not previous_action or (
+                    state.state == STATE_DROWSY and state.drowsy_sleep_step is not previous_drowsy)
+                if not started:
+                    skipped += 1
+                    outcome.notes.append(f"日程动作 {action.type} 未启动，继续检查后续步骤")
+                    continue
                 if state.state == STATE_DROWSY and state.drowsy_sleep_step:
                     state.drowsy_sleep_step["plan_source"] = plan_source
                 rest = chain[index + 1 :]
@@ -1038,8 +1047,8 @@ class ActionsRunMixin:
                     if state.current_plan and plan_source == "manual":
                         # 保留日程发言来源，单独标记手动试跑供模式交接识别。
                         state.current_plan["manual"] = True
-                return
-            await self._execute_actions(
+                return "running"
+            executed = await self._execute_actions(
                 state,
                 self.node(state.node_id),
                 outcome,
@@ -1051,9 +1060,16 @@ class ActionsRunMixin:
                 # 到了别处这一步就跳过，而不是悄悄替她走一趟。
                 allow_remote_travel=False,
             )
+            if executed:
+                completed += 1
+            else:
+                skipped += 1
         if chain and not skipped:
             # 整条日程顺顺利利跑完：心情上给一点正反馈
             self.dynamics.apply_event(state, "schedule_done", now=self._now())
+        if skipped:
+            return "partial" if completed else "skipped"
+        return "completed" if chain else "skipped"
 
     async def _generate_text_actions(
         self,

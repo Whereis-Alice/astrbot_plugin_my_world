@@ -252,6 +252,9 @@ def _render_body(
         head = f"日程「{detail.get('id', '')}」{who}"
         if when:
             head = f"{head}（{when}）"
+        status = {"running": "本轮启动", "completed": "本轮完成", "partial": "部分跳过", "skipped": "未执行"}.get(detail.get("status"))
+        if status:
+            head += f"〔{status}〕"
         actions = _clip(detail.get("actions"), 80)
         return f"{head}：{actions}" if actions else head
 
