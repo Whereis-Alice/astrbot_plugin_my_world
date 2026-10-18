@@ -125,9 +125,101 @@ class WorkbenchBrowserTests(unittest.TestCase):
         self.page.locator('button[data-tab="map"]').click()
         badge = self.page.locator('.node-activity').first
         expect(badge).to_contain_text('轻轻哼歌')
+        expect(badge).to_contain_text('正在')
+        expect(badge.locator('.node-activity-icon')).to_have_text('🍃')
         self.assertIn('完整说明', badge.get_attribute('title'))
         self.page.locator('.node.here[data-kind="zone"]').dblclick()
         expect(self.page.locator('.node.here[data-kind="node"] .node-activity')).to_contain_text('轻轻哼歌')
+        self.assertEqual(self.errors, [])
+
+    def test_multi_session_activity_and_portals_do_not_hide_sleeping_badge(self):
+        snapshot = self.install_console()
+        self.page.evaluate("""data => {
+          window.mapStates=[{session_id:data.session_id,state_key:data.session_id,node_id:'lobby',state:'sleeping',
+            activity:{kind:'action',label:'睡觉',detail:'正式睡眠'}},
+            {session_id:'test:GroupMessage:200',state_key:data.session_id,node_id:'lobby',state:'sleeping',activity:{kind:'action',label:'睡觉'}},
+            {session_id:'test:GroupMessage:300',state_key:'other',node_id:'lobby',state:'idle',activity:{kind:'idle',label:'轻轻哼歌'}}];
+          const read=AstrBotPluginPage.apiGet;
+          AstrBotPluginPage.apiGet=(key,params)=>key==='states'?Promise.resolve({sessions:mapStates}):read(key,params);
+        }""", snapshot)
+        self.page.locator('button[data-tab="map"]').click()
+        self.page.locator('#map-show-all').check()
+        self.page.locator('#map-zoom-fit').click()
+        expect(self.page.locator('.node.here .node-activity').first).to_contain_text('正在睡觉')
+        self.page.locator('.node.here[data-kind="zone"]').dblclick()
+        self.page.locator('#map-zoom-fit').click()
+        badge = self.page.locator('.node[data-id="lobby"] .node-activity')
+        expect(badge).to_contain_text('+2 会话')
+        self.assertTrue(badge.evaluate("""badge => {
+          const r=badge.getBoundingClientRect();
+          return [...document.querySelectorAll('.portal-chip')].every(chip => {const c=chip.getBoundingClientRect();return c.bottom<=r.top || c.top>=r.bottom || c.right<=r.left || c.left>=r.right;});
+        }"""))
+        self.page.locator('.node[data-id="lobby"] .node-activities summary').click()
+        expect(self.page.locator('.node-activity-row')).to_have_count(2)
+        expect(self.page.locator('.node-activity-list')).to_contain_text('200')
+        expect(self.page.locator('.node-activity-list')).to_contain_text('轻轻哼歌')
+        self.host.set_viewport_size({'width':390,'height':844})
+        self.page.locator('#map-zoom-fit').click()
+        self.page.locator('#map-show-all').dispatch_event('change')
+        expect(self.page.locator('.node-activities')).to_have_attribute('open', '')
+        self.assertTrue(self.page.locator('.node-activity-list').evaluate("""list => {
+          const r=list.getBoundingClientRect(), c=document.getElementById('canvas').getBoundingClientRect();
+          return r.left>=c.left && r.right<=c.right;
+        }"""))
+        self.page.locator('#map-show-all').uncheck()
+        expect(self.page.locator('.node[data-id="lobby"] .node-activity')).to_contain_text('睡觉')
+        expect(self.page.locator('.node-activities')).to_have_count(0)
+        self.assertEqual(self.errors, [])
+
+    def test_world_smart_routes_only_show_the_hovered_zones_direct_routes(self):
+        self.page.locator('button[data-tab="map"]').click()
+        self.page.locator('#tab-map [data-label-mode="smart"]').click()
+        self.page.locator('#map-side-close').click()
+        self.page.locator('#map-zoom-fit').click()
+        self.host.mouse.move(0, 0)
+        expect(self.page.locator('.edge-path:visible')).to_have_count(0)
+        expect(self.page.locator('.edge-pair:visible')).to_have_count(0)
+        target=self.page.locator('.node[data-kind="zone"]').first
+        identifier=target.get_attribute('data-id')
+        target.hover()
+        self.assertGreater(self.page.locator('.edge-path:visible').count(), 0)
+        for path in self.page.locator('.edge-path:visible').all():
+            self.assertIn(identifier,[path.get_attribute('data-from'),path.get_attribute('data-to')])
+        expect(self.page.locator('.edge-tick-chip:visible')).to_have_count(0)
+        self.host.mouse.move(0, 0)
+        expect(self.page.locator('.edge-pair:visible')).to_have_count(0)
+        expect(self.page.locator('.edge-path:visible')).to_have_count(0)
+        self.page.locator('#tab-map [data-label-mode="all"]').click()
+        self.assertGreater(self.page.locator('.edge-pair:visible').count(),0)
+        self.assertEqual(self.errors, [])
+
+    def test_selected_life_group_keeps_member_activities_in_both_maps(self):
+        snapshot = self.install_console()
+        self.page.evaluate("""data => {
+          const read=AstrBotPluginPage.apiGet;
+          AstrBotPluginPage.apiGet=async (key,params)=>key==='states'?{sessions:[
+            {session_id:'test:GroupMessage:200',state_key:data.session_id,node_id:'lobby',state:'sleeping',activity:{kind:'action',label:'睡觉'}},
+            {session_id:data.session_id,state_key:data.session_id,node_id:'lobby',state:'sleeping',activity:{kind:'action',label:'睡觉'}},
+            {session_id:'test:GroupMessage:300',node_id:'lobby',state:'idle',activity:{kind:'idle',label:'旁人的活动'}}
+          ]}:key==='config'?{...await read(key,params),scope:'',sessions:{
+            sessions:[{session_id:data.session_id},{session_id:'test:GroupMessage:200'},{session_id:'test:GroupMessage:300'}],
+            groups:[{id:'shared_life',name:'共享生活',main_session:data.session_id,sessions:[data.session_id,'test:GroupMessage:200']}]
+          }}:read(key,params);
+          const select=document.getElementById('config-scope');
+          select.add(new Option('重新读取测试配置','refresh-groups'));select.value='refresh-groups';
+          select.dispatchEvent(new Event('change'));
+        }""", snapshot)
+        self.page.locator('button[data-tab="map"]').click()
+        self.page.locator('#map-session').select_option('shared_life')
+        self.page.locator('#map-show-all').uncheck()
+        expect(self.page.locator('.node.here .node-activity')).to_contain_text('睡觉')
+        expect(self.page.locator('.node.here.other')).to_have_count(0)
+        self.page.locator('.node.here[data-kind="zone"]').dblclick()
+        expect(self.page.locator('.node.here .node-activity')).to_contain_text('+1 会话')
+        self.page.locator('.node.here .node-activities summary').click()
+        expect(self.page.locator('.node-activity-row')).to_have_count(1)
+        expect(self.page.locator('.node-activity-session')).to_contain_text('当前 · ')
+        expect(self.page.locator('.node-activity-list')).not_to_contain_text('旁人的活动')
         self.assertEqual(self.errors, [])
 
     def test_event_policy_validates_weights_and_saves_the_new_switch(self):

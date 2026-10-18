@@ -1104,6 +1104,8 @@ class SleepQuality(Permissive):
 class SleepConfig(Permissive):
     """她睡觉时怎么回应消息、怎么把她叫起来。"""
 
+    node_id: str = ""
+    """Preferred sleeping place; empty selects a bedroom in the home area."""
     reply_mode: SleepReplyMode = "template"
     """被叫（但没说要叫醒她）时怎么办：template=回一句固定文案，silent=完全不回，normal=照常回复。"""
 
@@ -2425,7 +2427,10 @@ class WorldConfig(Permissive):
         return {action.id: action for action in self.actions}
 
     def actions_in(self, node_id: str) -> list[ActionDef]:
-        return [a for a in self.actions if not a.idle and a.available_in(node_id)]
+        sleeping_place = self.sleep_node_id()
+        return [a for a in self.actions if a.enabled and not a.idle and (
+            node_id == sleeping_place if a.id == "sleep" and sleeping_place else a.available_in(node_id)
+        )]
 
     def adjacent(self) -> dict[str, list[tuple[str, int]]]:
         """房间层的**完整**邻接表：区域内连线 + 跨区门户。
@@ -2495,9 +2500,23 @@ class WorldConfig(Permissive):
                 graph[edge.to_zone].append((edge.from_zone, edge.ticks))
         return graph
 
+    def sleep_node_id(self) -> str:
+        """Resolve the sleeping place without depending on the map's node order."""
+        if self.sleep.node_id in self.node_map():
+            return self.sleep.node_id
+        home = next((zone.id for zone in self.zones if zone.is_home), "")
+        bedrooms = [node for node in self.nodes if (
+            "bedroom" in node.id.lower().split("_")
+            or any(word in node.name for word in ("卧室", "寝室", "寝房", "睡房"))
+            or node.name.strip().lower() in {"bedroom", "sleeping room"}
+        )]
+        bedrooms.sort(key=lambda node: (bool(home) and node.zone_id != home, node.id != "bedroom"))
+        return bedrooms[0].id if bedrooms else ""
+
     def default_node_id(self) -> str:
-        if any(node.id == "bedroom" for node in self.nodes):
-            return "bedroom"
+        bedroom = self.sleep_node_id()
+        if bedroom:
+            return bedroom
         return self.nodes[0].id if self.nodes else ""
 
 

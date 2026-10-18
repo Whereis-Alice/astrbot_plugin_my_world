@@ -556,6 +556,7 @@ class SnapshotMixin:
             result.append(
                 {
                     "session_id": session_id,
+                    "state_key": self.state_key(session_id),
                     "node_id": state.node_id,
                     "node_name": node.name if node is not None else state.node_id,
                     "state": state.state,

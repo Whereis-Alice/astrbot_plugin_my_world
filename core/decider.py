@@ -286,11 +286,12 @@ class Decider:
             (exhausted or sleepy)
             and state.world_time >= state.no_sleep_until
             and not state.sleep_delayed
+            and (self.can_nap() or self.world.sleep_allowed_now(self.local_hour()))
         ):
             steps = self._travel_then(node_id, home, graph)
             if self.is_night() or not self.can_nap():
                 steps.append({"action": "sleep", "duration": self._action_duration("sleep")})
-                reason = "困得撑不住了，该睡了" if sleepy and not exhausted else "夜深了，该睡了"
+                reason = "困得撑不住了，该睡了" if sleepy and not exhausted else "精力低，该休息了"
             else:
                 steps.append({"action": "nap", "duration": self.nap_seconds(state)})
                 reason = (
@@ -491,6 +492,8 @@ class Decider:
         graph = self.world.adjacent()
         home = self.world.default_node_id()
         if flag == "force_sleep":
+            if not self.can_nap() and not self.world.sleep_allowed_now(self.local_hour()):
+                return None
             steps = self._travel_then(state.node_id, home, graph)
             # 白天透支不该一睡八小时：先眯到小睡动作的上限，缓过来再说过。
             if self.is_night() or not self.can_nap():

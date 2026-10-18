@@ -2252,6 +2252,31 @@ class TestDecider(unittest.TestCase):
         self.assertIn("sleep", actions)
         self.assertNotIn("nap", actions)
 
+    def test_disabled_nap_does_not_allow_an_eight_hour_sleep_in_daytime(self):
+        self.world.action_map()["nap"].enabled = False
+        decider = Decider(self.world, hour_provider=lambda: 17)
+        state = WorldState(session_id="s1", node_id="study", energy=0.1, world_time=10)
+        plan = decider.rule_plan(state)
+        self.assertNotIn("sleep", [step["action"] for step in (plan or {}).get("steps", [])])
+        self.assertIsNone(decider.forced_plan(state, "force_sleep"))
+
+    def test_custom_bedroom_and_explicit_sleep_place_override_map_order(self):
+        self.world.nodes[0].id = "entryway"
+        self.world.nodes[0].name = "玄关"
+        self.world.nodes[1].id = "alice_bedroom"
+        self.world.nodes[1].name = "卧室工作间"
+        self.assertEqual(self.world.default_node_id(), "alice_bedroom")
+        self.assertIn("sleep", [action.id for action in self.world.actions_in("alice_bedroom")])
+        self.assertNotIn("sleep", [action.id for action in self.world.actions_in("entryway")])
+        self.world.sleep.node_id = "window"
+        self.assertEqual(self.world.sleep_node_id(), "window")
+        self.assertIn("sleep", [action.id for action in self.world.actions_in("window")])
+        self.assertNotIn("sleep", [action.id for action in self.world.actions_in("alice_bedroom")])
+        self.world.action_map()["sleep"].enabled = False
+        self.assertNotIn("sleep", [action.id for action in self.world.actions_in("window")])
+        self.world.sleep.node_id = "missing"
+        self.assertEqual(self.world.sleep_node_id(), "alice_bedroom")
+
     def test_she_can_plan_a_trip_outside(self):
         """在家待腻了 + 白天 → 她会想去外面走走（不再一直窝在家里）。"""
 

@@ -308,6 +308,13 @@ class ActionsRunMixin:
     ) -> bool | None:
         # 这里是所有动作真正开始执行的唯一入口（计划 / 日程 / 自主行为 / 工具后续都走这里），
         # 因此把「能不能做」的校验统一放在这里，避免某条路径绕过检查。
+        if definition.id == "sleep":
+            target = self.world.sleep_node_id()
+            if not self._action_usable_now(definition) or (target and state.node_id != target):
+                note = "当前时段不能睡整觉" if not self._action_usable_now(definition) else f"需要先走到睡眠地点 {target}"
+                outcome.notes.append(note)
+                await self._log_event(state, "skip", {"action": "sleep", "note": note}, outcome=outcome)
+                return False
         if (definition.id in {"say", "share", "poke"} or definition.llm_level in {"tool", "command"}) and not self.speech_allowed(
             self._speech_target(state, action, outcome) or outcome.home(), outcome.speech_kind,
         ):
@@ -333,7 +340,7 @@ class ActionsRunMixin:
             note = ""
         if note:
             outcome.add_speech(note, outcome.home())
-        if not definition.available_in(state.node_id):
+        if not definition.available_in(state.node_id) and not (definition.enabled and definition.id == "sleep" and self.world.sleep_node_id() == state.node_id):
             outcome.notes.append(
                 f"动作 {definition.id} 在 {state.node_id} 不可用，已跳过"
             )

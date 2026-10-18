@@ -144,6 +144,48 @@ class IndependentEngineTests(unittest.IsolatedAsyncioTestCase):
         self.store.save_world(raw)
         self.engine.reload_config()
 
+    async def test_sleep_execution_checks_time_and_walks_to_a_custom_bedroom(self):
+        from datetime import datetime
+        self.clock.set_struct(datetime(2026, 10, 18, 17, 45))
+        state = WorldState(SESSION, node_id="lobby", world_time=10)
+        outcome = TickOutcome(SESSION)
+        action = PlannedAction(type="sleep", duration=28800)
+        executed = await self.engine._execute_actions(state, self.engine.node('lobby'), outcome, [action], depth=0, autonomous=True)
+        self.assertFalse(executed)
+        self.assertIsNone(state.current_action)
+        self.clock.set_struct(datetime(2026, 10, 18, 23, 45))
+        raw = self.store.raw_world()
+        raw['sleep']['node_id'] = 'study'
+        raw['sleep']['drowsy'] = False
+        self.store.save_world(raw)
+        self.engine.reload_config()
+        executed = await self.engine._execute_actions(state, self.engine.node('lobby'), outcome, [action], depth=0, autonomous=True)
+        self.assertTrue(executed)
+        self.assertEqual(state.current_action['type'], 'walk_to')
+        self.assertEqual(state.current_action['target_node'], 'study')
+        state.node_id = 'study'
+        state.current_action = None
+        state.state = 'idle'
+        await self.engine._tick_plan(state, self.engine.node('study'), outcome, depth=0)
+        self.assertEqual(state.state, 'sleeping', repr((outcome.notes,state.current_plan)))
+        self.assertEqual(state.node_id, 'study')
+
+    async def test_unreachable_bedroom_does_not_sleep_at_the_door(self):
+        from datetime import datetime
+        self.clock.set_struct(datetime(2026, 10, 18, 23, 45))
+        raw = self.store.raw_world()
+        raw['sleep']['node_id'] = 'bedroom'
+        raw['edges'] = []
+        self.store.save_world(raw)
+        self.engine.reload_config()
+        state = WorldState(SESSION, node_id='lobby', world_time=10)
+        outcome = TickOutcome(SESSION)
+        executed = await self.engine._execute_actions(state, self.engine.node('lobby'), outcome,
+            [PlannedAction(type='sleep')], depth=0, autonomous=True)
+        self.assertFalse(executed)
+        self.assertIsNone(state.current_action)
+        self.assertTrue(any('无法走到' in note for note in outcome.notes))
+
     async def test_edit_waits_for_tick_lock_and_survives_reload(self):
         async with self.engine.session_state(SESSION) as state:
             state.affect_synced_at = self.clock.now() - 3600

@@ -12,7 +12,7 @@ from ..models import (
     ActionDef,
     NodeDef,
 )
-from ..pathfinding import nearest_node
+from ..pathfinding import find_path, nearest_node
 from ..planner import (
     active_plan,
     advance,
@@ -118,7 +118,7 @@ class ActionsMixin:
         """这个动作现在这个时段能不能用。
 
         目前只有一条：非夜晚不给「睡觉」（提示词不提供、解析也拒掉）。
-        日程 / 手动投递这类明确指令不受影响——那是用户自己安排的。
+        计划与日程实际执行时也检查此限制。
         """
 
         if str(getattr(action, "id", "")) != "sleep":
@@ -131,6 +131,8 @@ class ActionsMixin:
         candidates = [
             node.id for node in self.world.nodes if definition.available_in(node.id)
         ]
+        if definition.id == "sleep" and self.world.sleep_node_id():
+            candidates = [self.world.sleep_node_id()]
         if not candidates:
             return ""
         return nearest_node(self.world.adjacent(), node_id, candidates) or ""
@@ -569,6 +571,10 @@ class ActionsMixin:
                     outcome=outcome,
                 )
                 continue
+            if not self._action_usable_now(definition):
+                outcome.notes.append(f"「{definition.name or definition.id}」当前时段不可用，已跳过")
+                await self._log_event(state, "skip", {"action": definition.id, "note": outcome.notes[-1]}, outcome=outcome)
+                continue
             if (
                 tool_answered and action.type == "say"
                 and self._speech_target(state, action, outcome) == outcome.home()
@@ -643,7 +649,16 @@ class ActionsMixin:
                     outcome=outcome,
                 )
                 continue
-            if not definition.available_in(state.node_id):
+            if definition.id == "sleep" and self.world.sleep_node_id() and state.node_id != self.world.sleep_node_id():
+                target = self.world.sleep_node_id()
+                if find_path(self.world.adjacent(), state.node_id, target) is not None:
+                    await self._travel_then_continue(state, outcome, definition, target,
+                                                     queued_actions[index:], carried=carried)
+                    return True
+                outcome.notes.append(f"无法走到睡眠地点 {target}，这一步不睡")
+                await self._log_event(state, "skip", {"action": definition.id, "note": outcome.notes[-1]}, outcome=outcome)
+                continue
+            if not definition.available_in(state.node_id) and not (definition.id == "sleep" and self.world.sleep_node_id() == state.node_id):
                 # A2 兜底：她想去别处做这件事，自己又没写移动 —— 插件带她过去
                 target = (
                     self._nearest_node_with_action(state.node_id, definition)

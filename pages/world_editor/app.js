@@ -3540,6 +3540,22 @@ function applyMapView() {
   world.style.transform = `translate(${Math.round(view.x)}px, ${Math.round(view.y)}px) scale(${scale})`;
   const label = $("map-zoom-label");
   if (label) label.textContent = `${Math.round(view.scale * 100)}%`;
+  positionMapActivityOverlays();
+}
+
+function positionMapActivityOverlays() {
+  const canvas = $("canvas");
+  if (!canvas) return;
+  const bounds = canvas.getBoundingClientRect();
+  const scale = Math.max(0.05, Math.round((ui.mapView?.scale || 1) * 100) / 100);
+  document.querySelectorAll("#canvas-nodes .node > .node-activity, #canvas-nodes .node > .node-activities").forEach(stack => {
+    stack.style.translate = "";
+    const rect = stack.getBoundingClientRect();
+    if (rect.right < bounds.left || rect.left > bounds.right) return;
+    const shift = rect.left < bounds.left + 8 ? bounds.left + 8 - rect.left
+      : rect.right > bounds.right - 8 ? bounds.right - 8 - rect.right : 0;
+    if (shift) stack.style.translate = `${shift / scale}px 0`;
+  });
 }
 
 function mapZoomBy(factor, clientX, clientY) {
@@ -7527,6 +7543,7 @@ function applyMapFocus() {
     if (hoverTo) focusedIds.add(hoverTo);
   }
   const focused = Boolean(hoverNode || hoverEdge);
+  const smartWorld = ui.mapLevel === "world" && (ui.mapLabelMode || "smart") === "smart";
   document.querySelectorAll("#canvas-nodes .node").forEach((element) => {
     const id = element.dataset.id;
     const related = !focused || focusedIds.has(id);
@@ -7534,44 +7551,74 @@ function applyMapFocus() {
     element.classList.toggle("hot", Boolean(hoverNode) && id === hoverNode);
   });
   document.querySelectorAll("#canvas-edges .edge-path").forEach((path) => {
-    const related = !focused
-      || (hoverEdge
-        ? path.dataset.key === hoverEdge
-        : focusedIds.has(path.dataset.from) && focusedIds.has(path.dataset.to));
+    const related = hoverEdge ? path.dataset.key === hoverEdge
+      : Boolean(hoverNode) && (path.dataset.from === hoverNode || path.dataset.to === hoverNode);
     const hot = hoverEdge ? path.dataset.key === hoverEdge : (Boolean(hoverNode) && related);
+    path.classList.toggle("hidden-route", smartWorld && !related);
     path.classList.toggle("dimmed", focused && !hot);
     path.classList.toggle("hot", hot);
   });
   document.querySelectorAll("#canvas-labels [data-edge-key]").forEach((element) => {
     const key = element.dataset.edgeKey;
-    const related = !focused
-      || (hoverEdge
-        ? key === hoverEdge
-        : focusedIds.has(element.dataset.from) && focusedIds.has(element.dataset.to));
+    const related = hoverEdge ? key === hoverEdge
+      : Boolean(hoverNode) && (element.dataset.from === hoverNode || element.dataset.to === hoverNode);
     const pairVisible = element.dataset.pairVisible === "1";
     const wantPair = hoverEdge
       ? key === hoverEdge
       : (Boolean(hoverNode) && related ? true : pairVisible);
-    const show = element.dataset.role === "pair" ? wantPair : !wantPair;
+    const show = smartWorld ? related && element.dataset.role === "pair"
+      : element.dataset.role === "pair" ? wantPair : !wantPair;
     element.classList.toggle("hidden-label", !show);
     element.classList.toggle("dimmed", focused && !related);
+  });
+  document.querySelectorAll("#canvas-edges .edge-hit").forEach(hit => {
+    hit.style.pointerEvents = smartWorld ? "none" : "stroke";
   });
 }
 
 function renderMap() {
+  const expanded = new Set([...document.querySelectorAll("#canvas-nodes .node-activities[open]")]
+    .map(stack => `${stack.closest(".node").dataset.kind}:${stack.closest(".node").dataset.id}`));
+  ui.mapHoverNode = "";
+  ui.mapHoverEdge = "";
   updateMapToolbar();
   renderWeatherBanner();
-  return ui.mapLevel === "world" ? renderWorldMap() : renderZoneMap();
+  if (ui.mapLevel === "world") renderWorldMap();
+  else renderZoneMap();
+  document.querySelectorAll("#canvas-nodes .node-activities").forEach(stack => {
+    const box = stack.closest(".node");
+    if (expanded.has(`${box.dataset.kind}:${box.dataset.id}`)) {
+      stack.open = true;
+      box.classList.add("activity-open");
+    }
+  });
+  const hovered = document.querySelector("#canvas-nodes .node:hover");
+  ui.mapHoverNode = hovered ? hovered.dataset.id : "";
+  applyMapFocus();
 }
 
 /** 天气图标：按描述里的关键词猜一个，猜不到就用通用的。 */
+function mapScopeMatches(item, scope) {
+  if (String(item.session_id) === String(scope)) return true;
+  const group = groups().find(group => String(group.id) === String(scope));
+  return Boolean(group && (group.sessions || []).some(id => String(id) === String(item.session_id)));
+}
+
 function appendMapActivity(box, markers, focusSession) {
-  const marker = markers.find(item => item.session_id === focusSession) || markers[0];
+  const owner = groupOwning(focusSession);
+  const marker = markers.find(item => item.session_id === focusSession)
+    || markers.find(item => owner && item.session_id === owner.main_session)
+    || markers.find(item => mapScopeMatches(item, focusSession)) || markers[0];
   if (!marker) return;
   const activity = marker.activity || {};
   const text = activity.label || stateLabelOf(marker.state, marker) || "自由休息";
   const badge = el("div", "node-activity");
-  badge.appendChild(el("span", "node-activity-kind", activity.kind === "idle" ? "闲置" : "正在"));
+  if (activity.kind === "idle") {
+    const icon = el("span", "node-activity-icon", "🍃");
+    icon.title = "闲置生活：空闲时的小事，正式活动优先";
+    badge.appendChild(icon);
+  }
+  badge.appendChild(el("span", "node-activity-kind", "正在"));
   badge.appendChild(el("span", "node-activity-text", text));
   const full = markers.map(item => {
     const current = item.activity || {};
@@ -7579,7 +7626,41 @@ function appendMapActivity(box, markers, focusSession) {
   }).join("\n\n");
   badge.title = full;
   box.title = full;
-  box.appendChild(badge);
+  if (markers.length === 1) {
+    box.appendChild(badge);
+    return;
+  }
+  const stack = el("details", "node-activities");
+  const summary = el("summary");
+  badge.classList.add("node-activity-main");
+  badge.appendChild(el("span", "node-activity-count", `+${markers.length - 1} 会话 ▾`));
+  summary.appendChild(badge);
+  stack.appendChild(summary);
+  const list = el("div", "node-activity-list");
+  const grouped = new Map();
+  [marker, ...markers.filter(item => item !== marker)].forEach(item => {
+    const key = item.state_key || item.session_id;
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(item);
+  });
+  grouped.forEach(items => {
+    const row = el("div", "node-activity-row");
+    const current = items[0].activity || {};
+    const names = items.map(item => sessionShortName(item.session_id)).join("、");
+    row.appendChild(el("div", "node-activity-session", `${items.some(item => mapScopeMatches(item, focusSession)) ? "当前 · " : ""}${names}`));
+    row.appendChild(el("div", "node-activity-doing", `${current.kind === "idle" ? "🍃 " : ""}正在 ${current.label || items[0].state || "自由休息"}`));
+    row.title = `${names}\n${current.detail || ""}${items.length > 1 ? "\n共享同一份生活状态" : ""}`;
+    list.appendChild(row);
+  });
+  stack.appendChild(list);
+  stack.addEventListener("mousedown", event => event.stopPropagation());
+  stack.addEventListener("click", event => event.stopPropagation());
+  stack.addEventListener("dblclick", event => event.stopPropagation());
+  stack.addEventListener("toggle", () => {
+    box.classList.toggle("activity-open", stack.open);
+    if (stack.isConnected) positionMapActivityOverlays();
+  });
+  box.appendChild(stack);
 }
 
 function weatherIcon(desc) {
@@ -7722,7 +7803,7 @@ function renderWorldMap() {
   const focusSession = $("map-session") ? $("map-session").value : "";
   const showAll = $("map-show-all") ? $("map-show-all").checked : false;
   const positions = (ui.overview || []).filter(
-    (item) => item.node_id && (showAll || item.session_id === focusSession),
+    (item) => item.node_id && (showAll || mapScopeMatches(item, focusSession)),
   );
   const zoneOfSession = (item) => {
     const node = nodes().find((row) => row.id === item.node_id);
@@ -7905,7 +7986,7 @@ function renderWorldMap() {
     const markers = positions.filter((item) => zoneOfSession(item) === zone.id);
     if (markers.length) {
       box.classList.add("here");
-      const focused = markers.some((item) => item.session_id === focusSession);
+      const focused = markers.some((item) => mapScopeMatches(item, focusSession));
       const label = focused
         ? markers.length > 1
           ? `她在这里 · ${markers.length} 个会话`
@@ -7994,7 +8075,7 @@ function renderZoneMap() {
   const showAll = $("map-show-all") ? $("map-show-all").checked : false;
   const positions = (ui.overview || []).filter(
     (item) =>
-      insideIds.has(item.node_id) && (showAll || item.session_id === focusSession),
+      insideIds.has(item.node_id) && (showAll || mapScopeMatches(item, focusSession)),
   );
   const hereMarkers = (nodeId) => positions.filter((item) => item.node_id === nodeId);
 
@@ -8082,7 +8163,7 @@ function renderZoneMap() {
     const markers = hereMarkers(node.id);
     if (markers.length) {
       box.classList.add("here");
-      const focused = markers.some((item) => item.session_id === focusSession);
+      const focused = markers.some((item) => mapScopeMatches(item, focusSession));
       let label = "";
       if (focused) {
         label = markers.length > 1 ? `她在这里（共 ${markers.length} 个会话）` : "她在这里";
@@ -8141,7 +8222,8 @@ function renderZoneMap() {
       `→ ${zone ? zone.name || zone.id : thereZone}·${nodeLabel(thereNode)}（${num(edge.ticks, 1)} tick）`,
     );
     chip.style.left = `${num(anchor.x) + 8}px`;
-    chip.style.top = `${num(anchor.y) + 62 + index * 22}px`;
+    const preceding = exits.slice(0, index).filter(item => (item.from_zone === zoneId ? item.from_node : item.to_node) === here).length;
+    chip.style.top = `${num(anchor.y) + MAP_NODE_H + (hereMarkers(here).length ? 48 : 10) + preceding * 24}px`;
     chip.title = "点一下进对面区域看看";
     chip.addEventListener("click", (event) => {
       event.stopPropagation();
@@ -18538,6 +18620,11 @@ function renderSettings() {
     "夜晚时段决定「睡觉」这个动作什么时候可选，也决定熬夜的代价。",
     "默认 23:00–07:00 算夜里。起止小时填成一样表示没有夜晚时段：睡觉不受时段限制，熬夜代价也不生效。",
   );
+  world.sleep = world.sleep || {};
+  nightSection._fields.appendChild(selectField("睡眠地点", world.sleep.node_id || "",
+    [{key: "", label: "自动选择家中的卧室"}, ...nodeItems().map(node => ({key: node.id, label: node.name}))],
+    value => {world.sleep.node_id = value;},
+    {hint: "睡整觉前先走到这里；自动模式优先选择家中名称含卧室的地点。"}));
   nightSection._fields.appendChild(
     inputField(
       "夜晚开始（小时，0~23）",
