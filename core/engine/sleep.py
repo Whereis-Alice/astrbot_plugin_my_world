@@ -369,6 +369,7 @@ class SleepMixin:
         state.drowsy_day = self._today_key(now)
         state.current_action = None
         state.state = STATE_DROWSY
+        state.pending_arrival = False
         state.add_event("drowsy", {"action": definition.id})
         await self._log_event(
             state,
@@ -421,6 +422,8 @@ class SleepMixin:
     ) -> None:
         """临睡期结束：把揣着的那一步睡觉真的执行掉。"""
 
+        if await self._defer_rhythm_for_event(state, outcome):
+            return
         step = dict(state.drowsy_sleep_step or {})
         state.drowsy_sleep_step = {}
         state.drowsy_started_world_time = 0
@@ -474,19 +477,15 @@ class SleepMixin:
             state.goodnight_day = self._today_key(self._now())
             await self._log_event(state, "goodnight", {"said": False}, outcome=outcome)
             return False
-        outcome.session_id = self._freeze_plan_target(
-            state, outcome, plan, fallback=state.session_id
-        )
-        await self._apply_plan(state, node, outcome, plan)
         state.goodnight_day = self._today_key(self._now())
-        await self._tick_plan(state, node, outcome, depth=0)
+        said = await self._run_sleep_greeting(state, node, outcome, plan)
         await self._log_event(
             state,
             "goodnight",
-            {"said": True, "note": str(plan.get("reason") or "")[:80]},
+            {"said": said, "note": str(plan.get("reason") or "")[:80]},
             outcome=outcome,
         )
-        return True
+        return said
 
     async def _maybe_say_goodmorning(
         self, state: WorldState, node: NodeDef | None, outcome: TickOutcome
@@ -514,18 +513,41 @@ class SleepMixin:
         if plan is None or not self.plan_speaks(plan):
             await self._log_event(state, "goodmorning", {"said": False}, outcome=outcome)
             return False
-        outcome.session_id = self._freeze_plan_target(
-            state, outcome, plan, fallback=state.session_id
-        )
-        await self._apply_plan(state, node, outcome, plan)
-        await self._tick_plan(state, node, outcome, depth=0)
+        said = await self._run_sleep_greeting(state, node, outcome, plan)
         await self._log_event(
             state,
             "goodmorning",
-            {"said": True, "note": str(plan.get("reason") or "")[:80]},
+            {"said": said, "note": str(plan.get("reason") or "")[:80]},
             outcome=outcome,
         )
-        return True
+        return said
+
+    async def _run_sleep_greeting(
+        self, state: WorldState, node: NodeDef | None, outcome: TickOutcome, plan: dict
+    ) -> bool:
+        """只执行这一刻的问候，保留睡眠状态与睡醒后排队的安排。"""
+
+        definition = self.world.action_map().get("say")
+        if (definition is None or not definition.enabled or definition.category != "instant"
+                or definition.llm_level in {"tool", "command"}):
+            return False
+        steps = [step for step in plan.get("steps", [])
+                 if step.get("action") == "say" and step.get("messages")]
+        if not steps:
+            return False
+        greeting = {**plan, "steps": steps[:self.world.limits.max_actions_per_message]}
+        self._freeze_plan_target(state, outcome, greeting, fallback=state.session_id)
+        before = len(outcome.said_messages()) + sum(len(items) for items in outcome.routed.values())
+        previous_home = outcome.speech_home
+        try:
+            for step in greeting["steps"]:
+                outcome.speech_home = str(step.get("session") or previous_home or outcome.session_id)
+                await self._start_action(state, node, outcome, definition,
+                    self._step_to_action(step), 0, True, from_plan=False)
+        finally:
+            outcome.speech_home = previous_home
+        after = len(outcome.said_messages()) + sum(len(items) for items in outcome.routed.values())
+        return after > before
 
     def _apply_wake_quality(
         self, state: WorldState, *, slept_minutes: float, startled: int = 0

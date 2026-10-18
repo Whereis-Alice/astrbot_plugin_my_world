@@ -10,6 +10,7 @@ from ..json_actions import parse_action_payload
 from ..mood import keyword_signal
 from ..state import (
     STATE_AWAKENING,
+    STATE_DROWSY,
     STATE_IDLE,
     WorldState,
     chat_event_key,
@@ -1261,7 +1262,7 @@ class ReplyMixin:
         notes: list[str] = []
         woke = False
         # 睡眠中被明确叫醒 -> 打断睡眠
-        if self._is_asleep(state) and self._wake_hit(ctx):
+        if (self._is_asleep(state) or state.state == STATE_DROWSY) and self._wake_hit(ctx):
             self._wake_up_state(state, ctx)
             if state.wake_note:
                 notes.append(state.wake_note)

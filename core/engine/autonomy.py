@@ -10,7 +10,7 @@ from ..planner import (
     active_plan,
     create_plan,
 )
-from ..state import WorldState
+from ..state import STATE_DROWSY, WorldState
 from .models import TickOutcome
 from .util import _clip_text
 
@@ -46,7 +46,7 @@ class AutonomyMixin:
             node = self.node(state.node_id) or self.node(self.default_node_id())
             if state.current_action is not None or active_plan(state) is not None:
                 return None
-            if state.is_sleeping:
+            if state.is_sleeping or state.state == STATE_DROWSY:
                 return None
             if self.world.sleep.mode == "autonomous" and state.sleep_rhythm.get("decision") == "sleep":
                 await self._run_rhythm_sleep(state, outcome)
@@ -220,7 +220,7 @@ class AutonomyMixin:
         但仍然守冷却和一个专门的每小时上限，避免来回走 + 反复决策把 token 烧光。
         """
 
-        if not self.world.decider.enabled or state.is_sleeping:
+        if not self.world.decider.enabled or state.is_sleeping or state.state == STATE_DROWSY:
             return
         if state.current_plan is not None or state.current_action is not None:
             return

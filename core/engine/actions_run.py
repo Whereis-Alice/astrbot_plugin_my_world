@@ -315,6 +315,8 @@ class ActionsRunMixin:
                 outcome.notes.append(note)
                 await self._log_event(state, "skip", {"action": "sleep", "note": note}, outcome=outcome)
                 return False
+            if autonomous and await self._defer_rhythm_for_event(state, outcome):
+                return False
         if (definition.id in {"say", "share", "poke"} or definition.llm_level in {"tool", "command"}) and not self.speech_allowed(
             self._speech_target(state, action, outcome) or outcome.home(), outcome.speech_kind,
         ):

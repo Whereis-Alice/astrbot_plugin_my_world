@@ -152,10 +152,7 @@ class SleepRhythmMixin:
             return
         if self._now() < _number(state.sleep_rhythm.get("retry_at")):
             return
-        thread = self._active_thread(state)
-        if thread and self._thread_critical(thread):
-            state.sleep_rhythm["retry_at"] = self._now() + 900
-            await self._log_event(state, "skip", {"action": "sleep", "note": "危险事件还在关键阶段，先处理眼前事情，15 分钟后再检查休息"})
+        if await self._defer_rhythm_for_event(state, outcome):
             return
         definition = self.world.action_map().get("sleep")
         target = self.world.sleep_node_id()
@@ -195,6 +192,22 @@ class SleepRhythmMixin:
             reason=str(state.sleep_rhythm.get("reason") or "休息"), source="forced" if force else "sleep_rhythm")
         await self._apply_plan(state, self.node(state.node_id), outcome, plan)
         await self._tick_plan(state, self.node(state.node_id), outcome, depth=0)
+
+    async def _defer_rhythm_for_event(self, state: WorldState, outcome: TickOutcome) -> bool:
+        """入睡前再次检查关键事件；结束后立即让作息继续，日志最多每 15 分钟一条。"""
+
+        if self.world.sleep.mode != "autonomous":
+            return False
+        thread = self._active_thread(state)
+        if not thread or not self._thread_critical(thread):
+            state.sleep_rhythm.pop("event_notice_at", None)
+            return False
+        if self._now() >= _number(state.sleep_rhythm.get("event_notice_at")):
+            state.sleep_rhythm["event_notice_at"] = self._now() + 900
+            await self._log_event(state, "skip", {
+                "action": "sleep", "note": "危险事件还在关键阶段，先处理眼前事情再休息",
+            }, outcome=outcome)
+        return True
 
     def _start_sleep_rhythm(self, state: WorldState, kind: str, duration_ticks: int) -> None:
         state.sleep_rhythm.update(sleep_started_at=self._now(), sleeping_kind=kind,

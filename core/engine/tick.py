@@ -488,6 +488,8 @@ class TickMixin:
             )
             state.sleep_started_at = 0
             # 睡醒给她一次机会说早安（发不发、发给谁由她自己定，一天一次）
+            state.current_action = None
+            state.state = STATE_IDLE
             await self._maybe_say_goodmorning(state, node, outcome)
         elif definition is not None and definition.id == "nap":
             self._finish_sleep_rhythm(state, action, interrupted=False)
