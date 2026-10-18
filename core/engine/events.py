@@ -7,6 +7,7 @@ from datetime import (
     timedelta,
 )
 from typing import Any
+from ..event_rhythm import TONES, in_event_hours, pick_tone
 from ..events import (
     ABILITIES,
     ABILITY_LABELS,
@@ -232,9 +233,9 @@ class EventsMixin:
         if state.state == STATE_WALKING:
             return "她正在走路"
         current = state.current_action or {}
-        if current:
-            if str(current.get("type") or "") == "walk_to":
-                return "她正在走路"
+        if str(current.get("type") or "") == "walk_to":
+            return "她正在走路"
+        if current and (manual or not config.while_busy):
             label = str(current.get("desc") or "").strip()
             definition = self.world.action_map().get(str(current.get("type") or ""))
             name = label or (definition.name if definition is not None else "") or str(
@@ -639,6 +640,7 @@ class EventsMixin:
         seed: str = "",
         thread: dict[str, Any] | None = None,
         genre: dict[str, Any] | None = None,
+        tone: str = "",
     ) -> EventPackage | None:
         """让打杂 / 生成器模型现编一件（提示词是裁剪过的，不带世界规则与动作表）。"""
 
@@ -646,6 +648,10 @@ class EventsMixin:
         llm = self.creator_llm or self.helper_llm
         if llm is None:
             return None
+        if thread:
+            tone = tone or str(thread.get("tone") or "")
+            if genre is None and thread.get("genre"):
+                genre = {"name": thread["genre"]}
         system, prompt = self.prompts.build_event_package_prompt(
             persona_brief=await self.event_persona_brief(state.session_id),
             scene_line=self.prompts.scene_compact(node),
@@ -657,9 +663,12 @@ class EventsMixin:
             tier=tier,
             genre=genre,
             genre_scale=str(getattr(config, "genre_scale", "") or ""),
+            tone_note=(": ".join(TONES[tone]) if tone in TONES else ""),
+            extra_prompt=config.auto.extra_prompt if tone else "",
             recent_memories=[
                 str(getattr(item, "content", "") or "")
                 for item in self.memory.recall(
+                    automatic=True,
                     session_id=state.session_id,
                     persona_id="",
                     node_id=state.node_id,
@@ -717,6 +726,20 @@ class EventsMixin:
         if self._active_thread(state) is not None:
             return
 
+        auto = config.auto
+        if not auto.enabled:
+            return
+        today = self.local_now().date().isoformat()
+        if state.auto_event_day != today:
+            state.auto_event_day = today
+            state.auto_event_count = 0
+        if state.auto_event_count >= auto.max_per_day:
+            return
+        if not in_event_hours(self.local_now().hour, auto.start_hour, auto.end_hour):
+            return
+        if now < state.auto_event_retry_at:
+            return
+
         blocked = self._event_block_reason(state, now)
         if blocked:
             self._log("debug", f"这次不安排事件：{blocked}")
@@ -760,6 +783,7 @@ class EventsMixin:
                 )
                 return
         genre: dict[str, Any] | None = None
+        tone = str((thread or {}).get("tone") or "")
         if seed:
             # 用户投递的事件：照着他给的种子现编一件
             package = await self._generate_event_package(
@@ -769,11 +793,23 @@ class EventsMixin:
                 package = self._seed_package(seed, tier=tier)
         else:
             # 题材由代码按权重掷（模型只会挑自己偏好的那类写），每一件都临场生成
-            genre = self._pick_genre(state)
+            # A continuation keeps the original subject and tone. Re-drawing
+            # them mid-story used to turn an ordinary discovery into trouble.
+            if thread and thread.get("genre"):
+                genre = {"name": thread["genre"]}
+            else:
+                genre = self._pick_genre(state)
+            if thread is None and source == "roll":
+                tone = pick_tone(config.auto.tone_weights, self.rng)
             package = await self._generate_event_package(
-                state, node, tier=tier, thread=thread, genre=genre
+                state, node, tier=tier, thread=thread, genre=genre, tone=tone
             )
         if package is None:
+            if source == "roll" and thread is None:
+                state.auto_event_failures = min(5, state.auto_event_failures + 1)
+                state.auto_event_retry_at = self._event_time() + min(
+                    3600, 300 * (2 ** (state.auto_event_failures - 1))
+                )
             # 生成失败（没配模型 / 模型没给出可用的包）：这一轮就当没出事
             self._log("debug", "事件生成没拿到可用的包，这次跳过")
             await self._log_event(
@@ -789,6 +825,12 @@ class EventsMixin:
             package.place = place_key
             package.place_name = place_name
             thread = new_thread(package, now=self._event_time(), scope=SCOPE_SESSION)
+            if source == "roll":
+                state.auto_event_count += 1
+                state.auto_event_failures = 0
+                state.auto_event_retry_at = 0.0
+            if tone:
+                thread["tone"] = tone
             state.event_threads = [
                 *list(state.event_threads or []),
                 thread,
@@ -830,6 +872,7 @@ class EventsMixin:
                 "source": package.source or source,
                 "thread": thread.get("id"),
                 "genre": genre_name or str(thread.get("genre") or ""),
+                "tone": tone,
                 "critical": bool(package.critical),
                 # 掷骰明细：时间差、当时的概率、掷出的值（排查"为什么突然连出两件"用）
                 "roll": dict(roll_info or {}),

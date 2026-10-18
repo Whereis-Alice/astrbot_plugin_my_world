@@ -1,8 +1,9 @@
-"""地图寻路：BFS 最短路径。"""
+"""地图寻路：按实际耗时寻找最短路线。"""
 
 from __future__ import annotations
 
-from collections import deque
+from heapq import heappop, heappush
+from itertools import count
 
 Graph = dict[str, list[tuple[str, int]]]
 
@@ -14,18 +15,26 @@ def find_path(graph: Graph, start: str, goal: str) -> list[str] | None:
         return [start]
     if start not in graph or goal not in graph:
         return None
-    visited = {start}
-    queue: deque[list[str]] = deque([[start]])
+    order = count()
+    costs = {start: 0}
+    previous: dict[str, str] = {}
+    queue = [(0, next(order), start)]
     while queue:
-        path = queue.popleft()
-        for neighbor, _ticks in graph.get(path[-1], []):
-            if neighbor in visited:
+        cost, _, current = heappop(queue)
+        if cost != costs.get(current):
+            continue
+        if current == goal:
+            path = [goal]
+            while path[-1] != start:
+                path.append(previous[path[-1]])
+            return list(reversed(path))
+        for neighbor, ticks in graph.get(current, []):
+            candidate = cost + max(1, int(ticks))
+            if candidate >= costs.get(neighbor, float("inf")):
                 continue
-            new_path = path + [neighbor]
-            if neighbor == goal:
-                return new_path
-            visited.add(neighbor)
-            queue.append(new_path)
+            costs[neighbor] = candidate
+            previous[neighbor] = current
+            heappush(queue, (candidate, next(order), neighbor))
     return None
 
 
@@ -43,7 +52,7 @@ def path_ticks(graph: Graph, path: list[str]) -> int:
         )
         if step is None:
             return 0
-        total += step
+        total += max(1, int(step))
     return total
 
 

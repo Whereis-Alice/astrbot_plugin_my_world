@@ -1,0 +1,180 @@
+/* Shared workspace chrome. Keep commands compact and reading areas spacious. */
+.topbar { padding: 9px 18px; gap: 12px; flex-wrap: nowrap; min-height: 58px; }
+.topbar-left { flex: 1; flex-wrap: nowrap; gap: 14px; }
+.topbar-right { flex-wrap: nowrap; gap: 7px; }
+.topbar .field { display: flex; flex-direction: row; align-items: center; gap: 7px; margin: 0; min-width: 0; }
+.topbar .field > span { font-size: 11px; white-space: nowrap; color: var(--muted); }
+.topbar .field select { width: clamp(100px, 14vw, 220px); max-width: 220px; min-width: 0; height: 32px; padding: 4px 24px 4px 8px; font-size: 12px; }
+.topbar .field-scope select { width: clamp(100px, 11vw, 170px); }
+.topbar .page-title { white-space: nowrap; font-size: 14px; }
+.topbar .page-title::after { display: none; }
+.topbar .proactive-control { margin: 0; font-size: 11px; gap: 5px; padding: 4px 0; border: 0; background: none; white-space: nowrap; }
+.topbar #proactive-state { display: none; }
+.topbar button { min-height: 32px; padding: 5px 10px; font-size: 12px; }
+.topbar #theme-toggle { min-width: 0; }
+.topbar #save-state { max-width: 100px; font-size: 11px; }
+.topbar .field-contacts-session { display: none; }
+.content:has(#tab-contacts.active) .field-contacts-session { display: flex; }
+.content:has(#tab-contacts.active) .field-session { display: none; }
+.workbench-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; min-height: 42px; }
+.workbench-caption { display: grid; gap: 2px; margin-right: auto; }
+.workbench-caption strong { font-size: 16px; color: var(--text); }
+.workbench-caption > span { font-size: 11px; color: var(--muted); }
+.command-menu { position: relative; z-index: 15; font-size: 12px; }
+.command-menu > summary, .directory-options > summary { list-style: none; cursor: pointer; padding: 7px 11px; border: 1px solid var(--line); border-radius: 8px; color: var(--text-2); background: var(--panel); white-space: nowrap; }
+.command-menu > summary::after { content: "⌄"; margin-left: 9px; color: var(--muted); }
+.command-menu[open] > summary { border-color: var(--accent); color: var(--accent-ink); }
+.command-menu-body { position: absolute; right: 0; top: calc(100% + 6px); display: grid; gap: 6px; min-width: 220px; width: max-content; max-width: min(340px, 86vw); max-height: 65dvh; overflow: auto; padding: 12px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--panel); box-shadow: var(--shadow-3); }
+.command-menu:not([open]) > .command-menu-body { display: none; }
+.command-menu-body > button { text-align: left; }
+.command-menu-body p { margin: 4px; font-size: 11px; }
+.nickname-menu .command-menu-body { width: 300px; }
+.console-toolbar { padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+#tab-status .dash { grid-template-columns: minmax(330px, 1.05fr) minmax(330px, 1fr); gap: 18px; align-items: start; }
+#tab-status .hero-card { background: var(--panel); border-top: 3px solid var(--accent); }
+#tab-status .hero-top { padding-bottom: 14px; }
+#tab-status .hero-avatar { border-radius: 16px; }
+#tab-status .status-card { display: grid; grid-template-columns: 1fr; gap: 0; }
+#tab-status .status-block { padding: 14px 0; border-bottom: 1px solid var(--line); }
+#tab-status .status-block:last-child { border: 0; }
+#tab-status .status-block h3 { margin: 0 0 9px; font-size: 11px; color: var(--muted); letter-spacing: .08em; }
+#tab-status .values-legend { margin-bottom: 16px; }
+#tab-status .chat-context { max-height: 240px; }
+/* Address book: one command row, two directory rows, one identity row. */
+main:has(#tab-contacts.active) { padding: 8px 16px 16px; }
+#tab-contacts.active { gap: 8px; }
+.contacts-command-bar { gap: 8px; flex-wrap: nowrap; min-height: 36px; }
+.contacts-command-bar > button, .contacts-management { align-self: center; }
+.contacts-views-bar { flex: 1; min-width: 0; gap: 8px; }
+.contacts-subtabs { padding: 0; gap: 3px; border: 0; background: transparent; }
+.contacts-subtabs button { padding: 6px 10px; font-size: 12px; }
+.contacts-views-meta { display: none; }
+.contacts-management > summary { padding: 6px 10px; }
+.contacts-management-menu { left: auto; right: 0; }
+.contacts-unified { grid-template-columns: clamp(240px, 23%, 290px) minmax(0, 1fr); border-radius: 12px; }
+.contacts-directory { grid-template-rows: auto auto minmax(0, 1fr); }
+.contacts-directory-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 12px 12px 8px; }
+.contacts-directory-head h2 { font-size: 13px; white-space: nowrap; }
+.contacts-count { font-size: 10px; padding: 2px 5px; }
+.directory-options { position: relative; z-index: 12; }
+.directory-options > summary { border: 0; padding: 4px 0; font-size: 11px; background: transparent; }
+.directory-options > .contacts-filter-bar { position: absolute; right: 0; top: calc(100% + 8px); width: 240px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); box-shadow: var(--shadow-3); }
+.directory-options:not([open]) > .contacts-filter-bar { display: none; }
+.contacts-search-box { margin: 0 12px 8px; }
+.contacts-search-box input { height: 32px; font-size: 12px; padding: 5px 0; }
+.contacts-directory .contact-row { min-height: 76px; padding: 9px 8px; gap: 9px; }
+.contacts-profile-pane { grid-template-rows: auto minmax(0, 1fr); }
+.contacts-profile-head { gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--line); flex-wrap: nowrap; }
+.contacts-profile-identity { flex: 1; gap: 9px; }
+.contacts-avatar { width: 34px; height: 34px; flex-basis: 34px; font-size: 15px; border-radius: 10px; }
+.contacts-profile-identity h2 { margin: 0 0 2px; font-size: 16px; }
+.contacts-profile-identity p { font-size: 10px; line-height: 1.5; }
+.contacts-profile-head-meta { flex: 0 1 190px; gap: 2px; }
+.contacts-profile-head-meta .contacts-count { border: 0; background: transparent; padding: 0; font-size: 10px; }
+.contacts-detail-tabs { align-self: stretch; align-items: center; flex-shrink: 0; gap: 12px; padding: 0; border: 0; }
+.contacts-detail-tabs button { padding: 8px 0; font-size: 12px; }
+.contacts-detail.unified { padding: 14px 18px 24px; }
+.contact-page { gap: 16px; }
+.contact-overview-card { padding: 8px 12px !important; line-height: 1.6; }
+.contact-overview-card > summary { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; font-size: 12px; color: var(--text-2); }
+.contact-overview-card > summary::before { content: "▸ "; color: var(--accent-ink); }
+.contact-overview-card[open] > summary::before { content: "▾ "; }
+.contact-overview-card:not([open]) > p { display: none; }
+.weaver-field-list { gap: 10px; margin-top: 10px; }
+.weaver-field-row { padding: 12px 14px; gap: 6px; }
+/* Actions: search and create first, filters second, then the library. */
+.action-command-bar { margin-bottom: 10px; }
+.action-search { display: flex; align-items: center; gap: 9px; flex: 1 1 240px; max-width: 470px; padding: 0 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); }
+.action-search > span { color: var(--muted); font-size: 22px; }
+.action-search input { flex: 1; min-width: 0; border: 0; background: transparent; padding: 8px 0; font-size: 13px; }
+.action-command-bar #action-count { margin-left: auto; font-size: 11px; }
+#tab-actions .action-filters { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; padding: 0 0 12px; margin: 0; border-bottom: 1px solid var(--line); background: none; }
+.action-view-tools { margin-left: auto; }
+.action-view-tools select { max-width: 140px; padding: 5px 8px; font-size: 12px; }
+.action-library-note { font-size: 11px; color: var(--muted); margin: 9px 0 14px; }
+#tab-actions .action-layout { grid-template-columns: 180px minmax(0, 1fr); gap: 18px; align-items: start; }
+#tab-actions .action-menu { background: transparent; border: 0; box-shadow: none; padding: 0; position: sticky; top: 76px; }
+.action-menu h2 { font-size: 11px; color: var(--muted); padding: 4px 10px; margin: 0 0 8px; }
+.action-menu-list { gap: 3px; }
+.action-menu-list button { border-radius: 8px; padding: 8px 10px; font-size: 12px; }
+#tab-actions .action-grid { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+#tab-actions .action-group-head { padding: 6px 0; margin: 6px 0 0; border: 0; background: transparent; box-shadow: none; font-size: 12px; }
+#tab-actions .action-card { display: grid; grid-template-rows: auto auto minmax(42px, 1fr) auto; min-height: 180px; height: auto; padding: 16px; gap: 9px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: none; cursor: pointer; overflow: visible; }
+#tab-actions .action-card:hover, #tab-actions .action-card:focus-visible { border-color: var(--accent); box-shadow: 0 4px 16px color-mix(in srgb, var(--accent) 9%, transparent); outline: none; transform: none; }
+#tab-actions .action-card.off { opacity: .7; background: var(--bg-soft); }
+#tab-actions .action-card .card-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0; }
+#tab-actions .action-card .card-name { flex: 1; font-size: 14px; font-weight: 650; min-width: 90px; }
+#tab-actions .action-card .card-head > input[role="switch"] { order: 5; margin-left: auto; accent-color: var(--accent); cursor: pointer; }
+#tab-actions .action-card .badge { font-size: 10px; padding: 1px 5px; border-radius: 4px; }
+#tab-actions .action-card .card-meta { display: flex; flex-wrap: wrap; gap: 8px; font-size: 10px; color: var(--muted); margin: 0; }
+#tab-actions .action-card .card-desc { font-size: 12px; line-height: 1.75; color: var(--text-2); margin: 0; }
+#tab-actions .action-card .card-actions { display: flex; position: static; justify-content: flex-end; gap: 5px; padding-top: 8px; margin: 0; border-top: 1px solid var(--line); opacity: 1; }
+#tab-actions .action-card .card-actions button { width: 28px; height: 26px; min-height: 26px; font-size: 13px; }
+.action-bulk-bar { flex: 1 0 100%; gap: 7px; padding: 10px; font-size: 11px; }
+.action-bulk-hint { display: none; }
+.map-route-result { padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-soft); overflow-wrap: anywhere; }
+.map-route-result h3 { margin: 0 0 8px; }
+/* Related event controls share rows so the complete policy is easy to scan. */
+#dialog-body:has([data-dialog-key="tone_weights"]),
+#dialog-body:has([data-dialog-key="micro"]) { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+#dialog-body:has([data-dialog-key="micro"]) > .field:has([data-dialog-key="enabled"]),
+#dialog-body:has([data-dialog-key="micro"]) > .field:has(textarea),
+#dialog-body:has([data-dialog-key="micro"]) > .dialog-error { grid-column: 1 / -1; }
+#dialog-body:has([data-dialog-key="micro"]) > .field { min-width: 0; }
+#dialog-body:has([data-dialog-key="micro"]) input[type="number"] { width: 100%; }
+/* Expanded records must retain their intrinsic height inside the scrolling list. */
+#schedule-history { max-height: min(680px, 72dvh); }
+#schedule-history > .schedule-run-row { flex: 0 0 auto; min-height: min-content; }
+.schedule-run-inner, .schedule-run-step, .schedule-run-step-body { min-height: min-content; flex-shrink: 0; }
+.schedule-run-step-text, .schedule-run-notes p { white-space: pre-wrap; }
+@media (max-width: 1200px) {
+  .topbar { gap: 8px; padding: 8px 12px; }
+  .topbar-left { gap: 9px; }
+  .topbar .field > span { display: none; }
+  .topbar .field select { width: 155px; }
+  .topbar .field-scope select { width: 135px; }
+  .topbar #save-state { display: none; }
+  .contacts-profile-head-meta { display: none; }
+  #tab-actions .action-layout { grid-template-columns: 155px minmax(0, 1fr); gap: 12px; }
+}
+@media (max-width: 850px) {
+  .contacts-unified { grid-template-columns: minmax(0, 1fr); }
+  .contacts-profile-head { display: flex; flex-wrap: wrap; padding: 10px 14px; gap: 8px; }
+  #contacts-back { font-size: 0; min-width: 28px; padding: 5px; }
+  #contacts-back::before { content: "←"; font-size: 16px; }
+  .contacts-profile-identity { width: auto; }
+  .contacts-detail-tabs { gap: 10px; }
+  #tab-status .dash { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 760px) {
+  #dialog-body:has([data-dialog-key="micro"]) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .topbar { flex-wrap: wrap; gap: 7px; }
+  .topbar-left { flex-wrap: wrap; gap: 6px; }
+  .topbar .field select { width: 128px; max-width: 150px; font-size: 11px; }
+  .topbar .field-scope select { width: 112px; }
+  .topbar .page-title { font-size: 13px; }
+  .topbar-right { margin-left: auto; }
+  .topbar .proactive-control { font-size: 10px; }
+  .topbar button { font-size: 11px; padding: 4px 7px; }
+  .contacts-command-bar { flex-wrap: wrap; gap: 5px; }
+  .contacts-command-bar .contacts-views-bar { flex-basis: 100%; }
+  .contacts-command-bar > button { margin-left: auto; }
+  .contacts-subtabs { width: 100%; }
+  .contacts-subtabs button { flex: 1; padding: 6px; }
+  .contacts-directory-head { padding-top: 9px; }
+  .contacts-profile-identity h2 { font-size: 14px; }
+  .contacts-profile-identity p { max-width: 210px; }
+  .contacts-detail-tabs { width: 100%; justify-content: flex-start; }
+  .contacts-detail-tabs button { padding: 5px 0; }
+  #tab-actions .action-layout { display: flex; flex-direction: column; }
+  #tab-actions .action-menu { position: static; width: 100%; }
+  .action-menu h2 { display: none; }
+  .action-menu-list { display: flex; overflow-x: auto; max-height: 80px; }
+  .action-menu-list > * { flex: 0 0 auto; }
+  #tab-actions .action-main { width: 100%; min-width: 0; }
+  #tab-actions .action-grid { grid-template-columns: minmax(0, 1fr); }
+  .action-command-bar #action-count { width: 100%; order: 5; }
+  .action-command-bar .action-search { max-width: none; flex-basis: 100%; }
+  .action-view-tools { flex-wrap: wrap; margin-left: 0; }
+  .console-toolbar .workbench-caption { flex-basis: 100%; margin-bottom: 4px; }
+}

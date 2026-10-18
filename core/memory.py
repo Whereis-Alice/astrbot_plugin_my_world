@@ -282,6 +282,8 @@ class MemoryEngine:
         limit: int = 5,
         now: float | None = None,
         fallback: bool = True,
+        automatic: bool = False,
+        strict_keyword: bool = False,
     ) -> list[RecalledMemory]:
         """召回记忆。返回按分数降序的结果。
 
@@ -289,6 +291,13 @@ class MemoryEngine:
         ``keyword``：主题关键词，命中越多的排越前（是加成，不是硬过滤）。
         """
 
+        if limit <= 0:
+            return []
+        config = self.world.memory if self.world else None
+        if automatic and config and (
+            config.automatic_recall == "manual" or config.recall_max_chars == 0
+        ):
+            return []
         mode = mode or (self.world.memory_scope_mode if self.world else SCOPE_GROUP_PERSONA)
         now = now if now is not None else time.time()
         wanted_sessions = self.sessions(session_id)
@@ -319,6 +328,8 @@ class MemoryEngine:
 
         scored: list[tuple[float, dict[str, Any]]] = []
         for item in candidates:
+            if automatic and config and config.automatic_recall == "life_only" and item.get("type") == INTERACTION:
+                continue
             score = self._score(item, focus_user=focus_user, node_id=node_id, now=now)
             if keyword:
                 score *= self._keyword_bonus(content=item.get("content", ""), keyword=keyword)
@@ -330,9 +341,27 @@ class MemoryEngine:
         if keyword:
             # 主题词一个都没命中的，只在没别的东西可 recall 时才拿出来垫底
             hits = [pair for pair in scored if self._keyword_hits(pair[1].get("content", ""), keyword)]
-            if hits:
+            if hits or strict_keyword:
                 scored = hits
-        results = [self._to_recalled(score, item) for score, item in scored[:limit]]
+        results: list[RecalledMemory] = []
+        seen: set[tuple] = set()
+        used_chars = 0
+        for score, item in scored:
+            body = re.sub(r"[\W_]+", "", str(item.get("content") or "")).casefold()
+            identity = (body, item.get("node_id"), int(float(item.get("created_at") or 0) // 86400),
+                        tuple(sorted(item.get("related_users") or [])), tuple(sorted(item.get("participants") or [])))
+            if not body or identity in seen:
+                continue
+            recalled = self._to_recalled(score, item)
+            # Budget the complete line, including date and original context.
+            cost = len(recalled.render(stamp="YYYY-MM-DD 午夜")) + 1
+            if automatic and config and used_chars + cost > config.recall_max_chars:
+                continue
+            seen.add(identity)
+            results.append(recalled)
+            used_chars += cost
+            if len(results) >= limit:
+                break
         if results:
             self.db.mark_recalled([item.id for item in results], when=now)
         return results

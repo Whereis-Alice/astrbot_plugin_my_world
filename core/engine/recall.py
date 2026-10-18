@@ -50,6 +50,9 @@ class RecallMixin:
         """
 
         config = self.world.profile
+        memory_config = self.world.memory
+        if memory_config.automatic_recall == "manual" or memory_config.recall_max_chars == 0:
+            return []
         if not bool(getattr(config, "enabled", True)):
             return []
         now = time.time()
@@ -74,6 +77,8 @@ class RecallMixin:
             session_ids=self.group_sessions(state.session_id), now=now, limit=8
         )
         for row in rows:
+            if memory_config.automatic_recall == "life_only" and row.get("type") == "interaction":
+                continue
             user_id = next(
                 (
                     str(entry)

@@ -2959,6 +2959,35 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, Star):
             "· /mw action purge confirm 真正清除（不可撤销）"
         )
 
+    @filter.llm_tool(name="mw_memory_lookup")
+    @session_scoped
+    async def tool_memory_lookup(self, event: AstrMessageEvent, topic: str = "") -> str:
+        """查询角色在当前会话及共享生活组内记下的经历，核实以前发生的事。
+
+        Args:
+            topic(string): 要查的话题；留空返回最近相关的记忆。
+        """
+        session_id = event.unified_msg_origin
+        if not self.engine.is_enabled(session_id):
+            return "这个会话尚未启用我的世界。"
+        with self.engine.config_scope(session_id):
+            items = self.engine.memory.recall(
+                session_id=session_id, persona_id=_event_persona_id(event),
+                keyword=str(topic or "").strip(), strict_keyword=bool(str(topic or "").strip()),
+                mode="group", limit=5,
+            )
+        if not items:
+            return "没有找到相关的历史记忆，不要据此编造经历。"
+        lines = ["历史记忆参考（以当前消息为准）："]
+        used = 0
+        for item in items:
+            line = item.render(stamp=self.engine.prompts._memory_stamp(item.created_at, self.engine.local_now()))
+            if used + len(line) > 6000:
+                continue
+            lines.append(line)
+            used += len(line)
+        return "\n".join(lines) if len(lines) > 1 else "相关记忆过长，请缩小话题后查询。"
+
     # ---------------- 给主人格 / 别的插件用的日程工具 ----------------
 
     @filter.llm_tool(name="mw_schedule_list")

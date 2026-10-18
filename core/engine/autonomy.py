@@ -292,6 +292,7 @@ class AutonomyMixin:
             node=node,
             available_tools=self.available_tools(),
             memories=self.memory.recall(
+                automatic=True,
                 session_id=state.session_id, persona_id="", node_id=state.node_id, limit=4
             ),
             engagement_hint=self.engagement.hint(state),

@@ -26,6 +26,8 @@ class DialogueMemoryMixin:
     ) -> None:
         """把一条「她参与的对话」放进待总结缓冲（不立刻写记忆）。"""
 
+        if not self.world.memory.dialogue_summary:
+            return
         clean = " ".join(str(text or "").split())
         if not clean:
             return
@@ -144,11 +146,13 @@ class DialogueMemoryMixin:
             reply = await self._ask_llm(session_id, system_prompt, prompt)
             outcome.llm_calls += 1
             summary = self._clean_memory_summary(reply)
+        generated = bool(summary)
         if not summary:
             summary = self._fallback_memory_text(entries)
         if not summary:
             return outcome
 
+        summary = _clip_text(summary, max(10, int(config.summary_max_chars)))
         users = [
             str(item.get("user_id"))
             for item in entries
@@ -166,7 +170,7 @@ class DialogueMemoryMixin:
                 related_users=users,
                 emotion=mood,
                 weight=0.5,
-                source="llm" if summary else "runtime",
+                source="llm" if generated else "runtime",
                 affect=affect,
                 valence=valence,
             )

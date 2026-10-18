@@ -4387,6 +4387,8 @@ class PromptBuilder:
         recent_memories: list[str] | None = None,
         genre: dict[str, Any] | None = None,
         genre_scale: str = "",
+        tone_note: str = "",
+        extra_prompt: str = "",
     ) -> tuple[str, str]:
         """让打杂模型编一件她身边发生的事（返回 system, user）。
 
@@ -4422,8 +4424,8 @@ class PromptBuilder:
             '  "followup": {"success": "如果成了，下一步会怎样",\n'
             '               "fail": "如果没成，会怎样"},\n'
             '  "outcome": "微事件专用：直接发生的结果",\n'
-            '  "effects": {"valence": -0.02},\n'
-            '  "abilities": {"dexterity": -0.01},\n'
+            '  "effects": {},\n'
+            '  "abilities": {},\n'
             '  "memory": "她自己会记住的一句话（可以留空）"\n'
             "}\n"
             "规则：\n"
@@ -4434,7 +4436,9 @@ class PromptBuilder:
             "- difficulty 是这件事本身的难度：0.2 很轻松，0.5 得费点劲，0.8 相当棘手；\n"
             "- critical 只有在这件事**危险或紧急、她必须先处理完**时才填 true"
             "（例如被人跟着、正在下大雨回不去、屋里进了一只大虫子）；\n"
-            "- 涉及判断、涉及别人、结果会分岔的事用 need_intervene（她会开口找人商量）；\n"
+            "- 只有确实需要别人的协助才用 need_intervene；普通选择、日常交流与小收获用 solo；\n"
+            "- 事件不等于麻烦。普通日常和好事可以直接有结果，不必先制造危机、求助或失败；\n"
+            "- effects 与 abilities 只写实际发生的变化，允许为空；好事不应惯性扣心情或能力；\n"
             "- 只有发生在想象、游戏、剧情里的事才用 mode: imagined（她的实际位置不变）；\n"
             "- **这件事必须和上面那个地点的描述对得上**：只能用那里本来就有的东西和设施，"
             "不要凭空给这个地点加东西（书房里不会突然出现自动售货机）；"
@@ -4461,6 +4465,13 @@ class PromptBuilder:
         ]
         if state_line:
             blocks.append(f"# 她此刻\n{state_line}")
+        if tone_note:
+            blocks.append(
+                f"# 本次事件类别（由程序抽取，优先于题材中的例子）\n{tone_note}\n"
+                "题材只决定发生在哪个生活领域，不得把好事或日常改写成糟心事。"
+            )
+        if extra_prompt:
+            blocks.append(f"# 自动事件偏好\n{extra_prompt}")
         if scene_line:
             blocks.append(f"# 场景\n{scene_line}")
         if thread_digest:

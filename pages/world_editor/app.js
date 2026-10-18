@@ -3376,7 +3376,7 @@ function configFingerprint() {
 
 function currentConfigBlock() {
   const tab = document.querySelector("#tabs button.active")?.dataset.tab;
-  return CONFIG_BLOCKS[tab] ? tab : "";
+  return ["events", "memories"].includes(tab) ? "settings" : CONFIG_BLOCKS[tab] ? tab : "";
 }
 
 function restoreGlobalBlock(block) {
@@ -4169,6 +4169,7 @@ function bindButtons() {
   });
   $("status-nickname-reset").addEventListener("click", () => nicknameAction("reset_nickname"));
 
+  $("map-routes")?.addEventListener("click", openMapRoutes);
   $("map-back").addEventListener("click", backToWorldMap);
   const weatherRefresh = $("map-weather-refresh");
   if (weatherRefresh) weatherRefresh.addEventListener("click", refreshWeatherNow);
@@ -4405,6 +4406,16 @@ function bindButtons() {
   if ($("schedule-generate")) {
     $("schedule-generate").addEventListener("click", generateScheduleDrafts);
   }
+  const commandMenus = () => document.querySelectorAll(".command-menu[open], .directory-options[open], .contacts-management[open]");
+  document.addEventListener("click", (event) => commandMenus().forEach(menu => {
+    if (!menu.contains(event.target)) menu.open = false;
+  }));
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    commandMenus().forEach(menu => { menu.open = false; });
+  });
+  $("event-auto")?.addEventListener("click", editAutoEvents);
+  $("memory-policy")?.addEventListener("click", editMemoryPolicy);
   if ($("schedule-auto")) {
     $("schedule-auto").addEventListener("click", editAutoSchedules);
   }
@@ -5983,6 +5994,7 @@ function renderCurrentEvent(box, badgeBox, data) {
   if (active.tier_label) titleRow.appendChild(eventBadge(active.tier_label, "tier"));
   if (active.place_name) titleRow.appendChild(eventBadge(active.place_name, "place"));
   if (active.genre) titleRow.appendChild(eventBadge(active.genre, "genre"));
+  if (active.tone) titleRow.appendChild(eventBadge(({daily: "日常", good: "好事", bad: "坏事", annoying: "糟心事", strange: "怪事"})[active.tone] || active.tone, "genre"));
   if (active.critical) titleRow.appendChild(eventBadge("危险", "danger"));
   box.appendChild(titleRow);
   if (active.hook) box.appendChild(el("p", "event-hook", active.hook));
@@ -6956,8 +6968,7 @@ function genreEditor(world) {
   box.appendChild(
     fieldHead(
       "事件题材与权重",
-      "代码按权重抽一个题材，再让模型「就在这个题材里」编——不这样写，模型永远只生成温馨小事，" +
-        "「被人跟着」这种偏暗的题材一次都不会出现。权重 0 = 不生成这一类。",
+      "程序按权重抽取生活领域，模型负责写具体内容；好事、坏事等倾向另在事件页设置。权重 0 = 不生成。",
     ),
   );
   const list = el("div", "genre-list");
@@ -8115,6 +8126,36 @@ function backToWorldMap() {
   ui.mapHoverEdge = "";
   renderMap();
   renderNodeForm();
+}
+
+function openMapRoutes() {
+  const places = nodes();
+  if (!places.length) return toast("先在地图里添加地点。");
+  const names = new Map(places.map(node => [node.id, node.name || node.id]));
+  const choices = places.map(node => ({value: node.id, label: node.name || node.id}));
+  openFormDialog({
+    title: "路线检查", hint: "检查当前草稿，无需先保存。按路线耗时选路，考虑单向通道与跨区门户，不调用模型。",
+    confirmText: "计算与检查", values: {start: places.find(node => node.id === "bedroom")?.id || places[0].id, target: places.at(-1).id},
+    fields: [{key: "start", label: "从哪里出发", type: "select", options: choices}, {key: "target", label: "想去哪里", type: "select", options: choices}],
+    onSubmit: async (values) => {
+      const map = Object.fromEntries(["nodes", "edges", "zones", "zone_edges"].map(key => [key, ui.config.world[key] || []]));
+      const result = await apiPost("map/inspect", {map, start: values.start, target: values.target});
+      const body = $("dialog-body");
+      body.querySelector(".map-route-result")?.remove();
+      const panel = el("section", "map-route-result");
+      const listNames = ids => ids.map(id => names.get(id) || id).join("、");
+      panel.appendChild(el("h3", "", result.path ? "推荐路线" : "暂时走不到"));
+      panel.appendChild(el("p", "", result.path ? result.path.map(id => names.get(id) || id).join(" → ") : "请检查区内连线、跨区门户与路线方向。"));
+      if (result.path) panel.appendChild(el("p", "muted", `耗时 ${result.ticks} 拍，约 ${Math.round(result.ticks * Number(result.tick_seconds || 60) / 60)} 分钟（按当前时钟速度）`));
+      panel.appendChild(el("p", "", `从此起点可达 ${result.reachable.length} / ${places.length} 个地点`));
+      if (result.unreachable.length) panel.appendChild(el("p", "warn", `走不到：${listNames(result.unreachable)}`));
+      if (result.no_return.length) panel.appendChild(el("p", "warn", `可以去，但无法沿地图返回起点：${listNames(result.no_return)}`));
+      if (result.warnings?.length) panel.appendChild(el("p", "muted", result.warnings.join("；")));
+      body.appendChild(panel);
+      panel.scrollIntoView({block: "nearest"});
+      return false;
+    },
+  });
 }
 
 function updateMapToolbar() {
@@ -9613,6 +9654,96 @@ async function commitGeneratedWorldMap(zones, nodes, edges, zoneEdges, newAction
  * 自动生成日程：每天过了设定的时间点，她自己排几条一次性安排。
  * 配置写进日程配置里的 auto 块，和别的设置一样，点右上角「保存」后生效。
  */
+function canEditLifeSettings() {
+  if (ui.scope && !ui.scopeBlocks.has("settings")) {
+    toast("此范围正在继承全局设置。请在顶栏「本页配置」中开启单独配置，或切回全局默认。");
+    return false;
+  }
+  return true;
+}
+
+function editAutoEvents() {
+  if (!canEditLifeSettings()) return;
+  const world = ui.config.world;
+  const events = world.events || (world.events = {});
+  const auto = events.auto || {};
+  const tones = [["daily", "日常", 40], ["good", "好事", 30], ["bad", "坏事", 10], ["annoying", "糟心事", 10], ["strange", "怪事", 10]];
+  openFormDialog({
+    title: "自动生成事件", wide: true,
+    hint: "按概率生成新事件，不堆积。关闭后仍可手动投递，已有线索会继续。保存到顶部编辑范围。",
+    confirmText: "应用设置",
+    values: {
+      enabled: auto.enabled !== false,
+      max_per_day: auto.max_per_day ?? 12, start_hour: auto.start_hour ?? 0, end_hour: auto.end_hour ?? 0,
+      min_gap: events.min_gap_minutes ?? 30,
+      micro: events.micro_per_hour ?? 1, small: events.small_per_hour ?? .3, big: events.big_per_hour ?? .02,
+      extra_prompt: auto.extra_prompt || "",
+      ...Object.fromEntries(tones.map(([key, , fallback]) => [key, auto.tone_weights ? (auto.tone_weights[key] ?? 0) : fallback])),
+    },
+    fields: [
+      {key: "enabled", label: "启用自动生成", type: "checkbox"},
+      {key: "max_per_day", label: "每天最多几件（1~100）", type: "number", hint: "每个共享生活独立计数，微事件也计入；已有事件的后续不重复计数。"},
+      {key: "start_hour", label: "开始时刻（0~23 点）", type: "number"},
+      {key: "end_hour", label: "结束时刻（0~23 点）", type: "number", hint: "不含结束小时；起止相同表示全天，支持跨午夜。睡眠限制仍生效。"},
+      {key: "min_gap", label: "两件事至少间隔几分钟", type: "number"},
+      {key: "micro", label: "微事件：每小时期望次数", type: "number", hint: "只影响状态与记忆。0 表示关闭这一档。"},
+      {key: "small", label: "小事件：每小时期望次数", type: "number"},
+      {key: "big", label: "大事件：每小时期望次数", type: "number"},
+      ...tones.map(([key, label]) => ({key, label: `${label} · 相对权重`, type: "number", hint: "数值越大越常见，0 表示不生成；不要求加起来等于 100。"})),
+      {key: "extra_prompt", label: "额外偏好", type: "textarea", hint: "例如：最近以平静的校园日常为主，偶尔有小惊喜。题材和禁区仍在设置页管理。"},
+    ],
+    onSubmit: (values) => {
+      const weights = Object.fromEntries(tones.map(([key]) => [key, Math.max(0, num(values[key], 0))]));
+      if (!Object.values(weights).some((value) => value > 0)) {
+        toast("至少保留一种事件类别；要暂停请关闭自动生成。");
+        return false;
+      }
+      events.auto = {
+        ...auto, enabled: Boolean(values.enabled),
+        max_per_day: Math.max(1, Math.min(100, Math.round(num(values.max_per_day, 12)))),
+        start_hour: Math.max(0, Math.min(23, Math.round(num(values.start_hour, 0)))),
+        end_hour: Math.max(0, Math.min(23, Math.round(num(values.end_hour, 0)))),
+        tone_weights: weights, extra_prompt: String(values.extra_prompt || "").trim(),
+      };
+      events.min_gap_minutes = Math.max(0, Math.min(1440, num(values.min_gap, 30)));
+      for (const [field, key] of [["micro_per_hour", "micro"], ["small_per_hour", "small"], ["big_per_hour", "big"]]) events[field] = Math.max(0, Math.min(12, num(values[key], 0)));
+      markDirty();
+      toast("事件设置已修改，点顶栏「保存」后生效");
+      return true;
+    },
+  });
+}
+
+function editMemoryPolicy() {
+  if (!canEditLifeSettings()) return;
+  const memory = ui.config.world.memory || (ui.config.world.memory = {});
+  openFormDialog({
+    title: "记忆与共存设置",
+    hint: "Anamnesis 负责聊天，本插件保留生活经历，可减少重复。数据库各自独立，已有记忆保留。",
+    confirmText: "应用设置",
+    values: {mode: "custom", automatic: memory.automatic_recall || "all", summary: memory.dialogue_summary !== false, chars: memory.recall_max_chars ?? 1200},
+    fields: [
+      {key: "mode", label: "使用方案", type: "select", options: [{value: "custom", label: "按下方选项设置"}, {value: "companion", label: "与 Anamnesis 共存：只自动回忆生活经历"}], onChange: ({control, body}) => {
+        if (control.value !== "companion") return;
+        body.querySelector('[data-dialog-key="automatic"]').value = "life_only";
+        body.querySelector('[data-dialog-key="summary"]').checked = false;
+      }},
+      {key: "automatic", label: "自动回忆的内容", type: "select", options: [{value: "all", label: "全部记忆"}, {value: "life_only", label: "只回忆生活经历（排除聊天摘要）"}, {value: "manual", label: "不自动回忆，只在主动查询时取用"}], onChange: ({body}) => { body.querySelector('[data-dialog-key="mode"]').value = "custom"; }},
+      {key: "summary", label: "本插件继续总结聊天", type: "checkbox", onChange: ({body}) => { body.querySelector('[data-dialog-key="mode"]').value = "custom"; }},
+      {key: "chars", label: "自动回忆最多字符数（0~12000）", type: "number", hint: "默认 1200，含日期与原文。0 = 不自动注入。本预算不限制画像、当前状态或其他插件的注入。"},
+    ],
+    onSubmit: (values) => {
+      const companion = values.mode === "companion";
+      memory.automatic_recall = companion ? "life_only" : values.automatic;
+      memory.dialogue_summary = companion ? false : Boolean(values.summary);
+      memory.recall_max_chars = Math.max(0, Math.min(12000, Math.round(num(values.chars, 1200))));
+      markDirty();
+      toast("记忆设置已修改，已有数据保留；点顶栏「保存」后生效");
+      return true;
+    },
+  });
+}
+
 function editAutoSchedules() {
   const schedules = (ui.config && ui.config.schedules) || {};
   schedules.auto = schedules.auto || {};
@@ -12432,6 +12563,16 @@ function renderActionTable(list) {
 
 function actionCard(action) {
   const card = el("div", "action-card");
+  card.tabIndex = 0;
+  card.setAttribute("role", "group");
+  card.setAttribute("aria-label", `${action.name || action.id}，按回车编辑`);
+  card.addEventListener("keydown", (event) => {
+    if (event.target === card && event.key === "Enter") {
+      event.preventDefault();
+      if (ui.actionSelectMode) toggleActionSelected(action.id);
+      else openActionDrawer(action.id);
+    }
+  });
   if (action.enabled === false) card.classList.add("off");
   // 扩展带来的动作由扩展自己在它的设置里管：这里不给删、也不给停用，
   // 不然"停用了"下次加载又冒出来，用户会以为开关坏了。
@@ -12466,6 +12607,8 @@ function actionCard(action) {
     markDirty();
     renderActionGrid();
   });
+  toggle.setAttribute("role", "switch");
+  toggle.setAttribute("aria-label", `启用${action.name || action.id}`);
   head.appendChild(toggle);
   head.appendChild(el("span", "card-name", action.name || action.id));
   if (action.category === "continuous") head.appendChild(el("span", "badge", "持续"));
@@ -15067,9 +15210,9 @@ function renderContactDetail(data) {
   );
   box.insertBefore(identitySection, profileSection);
   if (person.digest) {
-    const overview = el("div", "contact-section contact-overview-card");
+    const overview = el("details", "contact-section contact-overview-card");
     overview.dataset.contactPanel = "profile";
-    overview.appendChild(el("h3", "", "她记得这个人"));
+    overview.appendChild(el("summary", "", `概述 · ${person.digest}`));
     overview.appendChild(el("p", "", person.digest));
     box.prepend(overview);
   }
@@ -15848,10 +15991,10 @@ function renderThoughtsPage() {
     const stateText = stateLabelOf(detail.state || "", {}) || "未记录";
     const meta = el("div", "thought-detail-grid");
     [
-      ["在哪", detail.env || row.node_name || "未记录"],
+      ["环境", detail.env || row.node_name || "未记录"],
       ["状态", stateText],
       ["心情", detail.mood || "未记录"],
-      ["在和谁说话", detail.who || row.target || "没有特定对象"],
+      ["对象", detail.who || row.target || "没有特定对象"],
     ].forEach(([label, value]) => {
       const cell = el("div", "thought-detail-item");
       cell.appendChild(el("span", "thought-detail-label", label));
@@ -15861,26 +16004,26 @@ function renderThoughtsPage() {
     item.appendChild(meta);
 
     const thoughtText = el("div", "thought-text");
-    thoughtText.appendChild(el("span", "thought-label", "心里想的："));
+    thoughtText.appendChild(el("span", "thought-label", "想法："));
     thoughtText.appendChild(
       document.createTextNode(String(row.content || detail.inner || "未记录")),
     );
     item.appendChild(thoughtText);
     item.appendChild(
-      el("div", "thought-intent", `打算怎么办：${detail.intent || "没有留下明确打算"}`),
+      el("div", "thought-intent", `打算：${detail.intent || "没有留下明确打算"}`),
     );
 
     // 回了谁、回了哪条、她回了什么：光有一句心里话看不出这一轮的来龙去脉
     if (row.target || row.quote || row.reply) {
       const context = el("div", "thought-context");
       if (row.target) {
-        context.appendChild(el("span", "thought-chip", `回了 ${row.target}`));
+        context.appendChild(el("span", "thought-chip", `与 ${row.target}`));
       }
       if (row.quote) {
-        context.appendChild(el("span", "thought-quote", `对方说：${row.quote}`));
+        context.appendChild(el("span", "thought-quote", `对方：${row.quote}`));
       }
       if (row.reply) {
-        context.appendChild(el("span", "thought-reply", `她回：${row.reply}`));
+        context.appendChild(el("span", "thought-reply", `我：${row.reply}`));
       }
       item.appendChild(context);
     }

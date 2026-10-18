@@ -214,6 +214,25 @@ class DialogueInjectTests(unittest.TestCase):
         self.assertIn("<worldtree_persona>", req.system_prompt)
         plugin.db.raw.close()
 
+    def test_anamnesis_temporary_memory_and_tool_history_survive_injection(self):
+        session = "aiocqhttp:GroupMessage:inject-memory"
+        plugin, _context = self._plugin(session)
+        req = Request("还记得上次种的薄荷吗")
+        reference = self.module.TextPart(text="--- BEGIN HISTORICAL MEMORY REFERENCE ---\n上周在庭院种了薄荷\n--- END HISTORICAL MEMORY REFERENCE ---")
+        mark = getattr(reference, "mark_as_temp", None)
+        if callable(mark):
+            mark()
+        req.extra_user_content_parts.append(reference)
+        history = [{"role": "assistant", "content": "曾经的对话"},
+                   {"role": "user", "content": "外部记忆工具的历史记录"}]
+        req.contexts = [dict(item) for item in history]
+        event = Event("还记得上次种的薄荷吗", session=session)
+        asyncio.run(plugin.on_llm_request(event, req))
+        self.assertIn(reference, req.extra_user_content_parts)
+        self.assertEqual(sum("上周在庭院种了薄荷" in str(getattr(part, "text", "")) for part in req.extra_user_content_parts), 1)
+        self.assertEqual(req.contexts, history)
+        plugin.db.raw.close()
+
     def test_two_people_at_once_are_not_merged(self):
         """两个人几乎同时 @ 她：各回各的，第二个人不能被并进第一轮、也不能被吞。"""
 

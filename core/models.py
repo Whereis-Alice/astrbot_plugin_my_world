@@ -1012,6 +1012,12 @@ class MemoryConfig(Permissive):
     一句以她的视角写的记忆。
     """
 
+    automatic_recall: Literal["all", "life_only", "manual"] = "all"
+    """自动召回全部记忆、只召回生活经历，或仅在模型主动查询时召回。"""
+
+    recall_max_chars: int = Field(default=1200, ge=0, le=12000)
+    """每次自动召回的文本预算（字符，含每条的时间与原文）；0 表示不自动注入。"""
+
     dialogue_summary: bool = True
     """是否把对话总结成片段记下来（关掉就不再记录聊天内容，只留动作与内心活动）。"""
 
@@ -1189,6 +1195,31 @@ class SleepConfig(Permissive):
     """醒来时的起床气结算。"""
 
 
+class EventAutoConfig(Permissive):
+    """自动事件的节奏与情绪分布；手动投递和已有线索不受此开关影响。"""
+
+    enabled: bool = True
+    max_per_day: int = Field(default=12, ge=1, le=100)
+    start_hour: int = Field(default=0, ge=0, le=23)
+    end_hour: int = Field(default=0, ge=0, le=23)
+    tone_weights: dict[str, float] = Field(default_factory=lambda: {
+        "daily": 40, "good": 30, "bad": 10, "annoying": 10, "strange": 10,
+    })
+    extra_prompt: str = ""
+
+    @field_validator("tone_weights")
+    @classmethod
+    def valid_tone_weights(cls, value):
+        import math
+
+        keys = {"daily", "good", "bad", "annoying", "strange"}
+        if any(key not in keys or not math.isfinite(weight) or weight < 0 for key, weight in value.items()):
+            raise ValueError("事件类别权重必须是有限的非负数")
+        if not any(value.values()):
+            raise ValueError("至少保留一种事件类别；关闭自动生成请使用开关")
+        return value
+
+
 class EventConfig(Permissive):
     """事件系统：她一个人待着的时候会不会遇上点事。
 
@@ -1198,6 +1229,8 @@ class EventConfig(Permissive):
 
     enabled: bool = True
     """事件系统总开关（关掉 = 她只按动作与日程生活，不会遇到随机事件）。"""
+
+    auto: EventAutoConfig = Field(default_factory=EventAutoConfig)
 
     micro_per_hour: float = 1.0
     """微事件：只影响她自己的状态和记忆，不会为此说话。"""
@@ -1345,11 +1378,11 @@ class EventConfig(Permissive):
     genres: list[dict[str, Any]] = Field(
         default_factory=lambda: [
             {"name": "日常小事", "weight": 40,
-             "examples": "做饭、找东西、东西坏了、收快递、打扫"},
+             "examples": "做饭、收快递、打扫、泡茶、整理房间"},
             {"name": "人际", "weight": 20,
-             "examples": "被误解、拌嘴、被冷落、被搭讪、被人跟着、遇到不讲理的"},
+             "examples": "收到善意、偶遇熟人、一次交谈、误会、互相帮助"},
             {"name": "情绪与身体", "weight": 15,
-             "examples": "失眠、头疼、太累、心里发闷、突然想起旧事"},
+             "examples": "伸懒腰、精神不错、想起旧事、犯困、心里发闷"},
             {"name": "意外与麻烦", "weight": 12,
              "examples": "丢东西、下雨没带伞、被洒了一身、走错路、手机没电"},
             {"name": "好奇与发现", "weight": 8,

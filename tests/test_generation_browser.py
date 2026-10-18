@@ -137,7 +137,11 @@ class GenerationBrowserTests(unittest.TestCase):
 
     def open_generator(self, tab="map", button="zone-generate"):
         self.page.locator(f'button[data-tab="{tab}"]').click()
-        self.page.locator(f"#{button}").click()
+        trigger = self.page.locator(f"#{button}")
+        menu = trigger.locator("xpath=ancestor::details[1]")
+        if menu.count() and not trigger.is_visible():
+            menu.locator("summary").first.click()
+        trigger.click()
 
     def test_thought_and_schedule_history_keep_full_details(self):
         thoughts = [

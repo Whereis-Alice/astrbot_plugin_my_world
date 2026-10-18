@@ -292,6 +292,7 @@ class EventFlowMixin:
                     "imagined": package.mode == MODE_IMAGINED,
                     "need_help": package.needs_help,
                     "source": package.source or "follow",
+                    "tone": str(thread.get("tone") or ""),
                     "thread": thread.get("id"),
                     "step": len(list(thread.get("steps") or [])) + 1,
                 },

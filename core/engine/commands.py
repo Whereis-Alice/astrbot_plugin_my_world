@@ -358,6 +358,7 @@ class CommandsMixin:
             "place": str(thread.get("place") or ""),
             "place_name": str(thread.get("place_name") or ""),
             "genre": str(thread.get("genre") or ""),
+            "tone": str(thread.get("tone") or ""),
             "opened_at": float(thread.get("opened_at") or 0.0),
             "updated_at": float(thread.get("updated_at") or 0.0),
             "closed_at": float(thread.get("closed_at") or 0.0),

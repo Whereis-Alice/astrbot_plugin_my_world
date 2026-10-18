@@ -47,6 +47,7 @@ class MemoryActionsMixin:
             persona_id="",
             nodes=list(query.get("nodes") or []),
             keyword=str(query.get("keyword") or ""),
+            strict_keyword=True,
             memory_type=str(query.get("type") or ""),
             mode=(self.world.memory_scope_mode if self.world else None),
             limit=limit,

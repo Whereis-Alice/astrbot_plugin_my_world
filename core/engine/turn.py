@@ -77,6 +77,7 @@ class TurnMixin:
         async with self.session_state(session_id) as state:
             node = self.node(state.node_id) or self.node(self.default_node_id())
             memories = self.memory.recall(
+                automatic=True,
                 session_id=session_id,
                 persona_id=persona_id,
                 node_id=state.node_id,

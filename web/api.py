@@ -27,11 +27,13 @@ from ..core.defaults import (
 from ..core.generator import grid_layout_nodes, spring_layout_zones
 from ..core.json_actions import extract_json_object
 from ..core.llm_usage import collect_llm_usage
+from ..core.map_inspection import inspect_routes
 from ..core.models import (
     DEFAULT_INTIMACY,
     FIELD_LABELS,
     normalize_edge_keys,
     normalize_legacy_keys,
+    parse_world,
 )
 from ..core.profile_weaver_store import AuditActor
 from ..core.prompt import prompt_section_index
@@ -194,6 +196,7 @@ class WebApiMixin:
         register(f"/{p}/states", self.api_states, ["GET"], "所有会话的简要状态")
         register(f"/{p}/state/action", self.api_state_action, ["POST"], "手动触发动作")
         register(f"/{p}/logs", self.api_logs, ["GET"], "事件日志")
+        register(f"/{p}/map/inspect", self.api_map_inspect, ["POST"], "检查草稿路线、可达性与单向出口")
         register(f"/{p}/ticks", self.api_ticks, ["GET"], "运行记录：最近几拍 tick 的明细")
         register(f"/{p}/logs/export", self.api_logs_export, ["GET"], "导出事件日志")
         register(f"/{p}/memories", self.api_memories, ["GET"], "记忆列表")
@@ -2438,6 +2441,27 @@ class WebApiMixin:
                 "level": "world",
             }
         )
+
+    async def api_map_inspect(self):
+        """检查编辑器当前草稿的路线；不保存地图、不调用模型。"""
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload)
+        if guard is not None:
+            return guard
+        draft = payload.get("map")
+        keys = ("nodes", "edges", "zones", "zone_edges")
+        if not isinstance(draft, dict) or any(not isinstance(draft.get(key), list) for key in keys):
+            return error_response("地图需要包含地点、区域与连线数组")
+        if not draft["nodes"]:
+            return error_response("地图还没有地点，请先新增地点")
+        if len(draft["nodes"]) > 1000 or len(draft["edges"]) + len(draft["zone_edges"]) > 10000:
+            return error_response("地图过大，请分区域检查")
+        try:
+            world, warnings = parse_world({key: draft[key] for key in keys})
+            result = inspect_routes(world, str(payload.get("start") or ""), str(payload.get("target") or ""))
+        except (ValidationError, ValueError) as exc:
+            return error_response(f"无法检查路线：{exc}")
+        return json_response({**result, "warnings": warnings, "tick_seconds": self.engine.tick_seconds})
 
     async def api_generate_schedules(self):
         """按她的人设与生活节奏生成日程草稿（不落库）。"""

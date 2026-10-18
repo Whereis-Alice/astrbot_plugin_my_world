@@ -415,6 +415,10 @@ class WorldState:
     """上一次掷「要不要发生事件」的真实时间（按小时期望次数折算概率）。"""
 
     last_event_started_at: float = 0.0
+    auto_event_day: str = ""
+    auto_event_count: int = 0
+    auto_event_retry_at: float = 0.0
+    auto_event_failures: int = 0
     """上一件事是什么时候开始的（真实时间）：用来保证两件事之间的最小间隔。"""
 
     node_since: float = 0.0

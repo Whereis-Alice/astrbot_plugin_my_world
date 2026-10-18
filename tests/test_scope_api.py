@@ -87,6 +87,30 @@ class ScopeApiTests(unittest.IsolatedAsyncioTestCase):
         with self.plugin.engine.config_scope(self.session):
             self.assertEqual(self.plugin.engine.world.persona.samples[0]["text"], "Local sample")
 
+    async def test_map_inspector_uses_draft_without_saving(self):
+        before = self.plugin.store.raw_world()
+        draft = {"zones": [{"id": "home"}], "zone_edges": [],
+                 "nodes": [{"id": name, "zone_id": "home"} for name in ["a", "b", "c"]],
+                 "edges": [{"from": "a", "to": "b", "ticks": 2, "bidirectional": False}]}
+        result = await self.call("map/inspect", method="POST", map=draft, start="a", target="b")
+        self.assertEqual(result["status_code"], 200)
+        self.assertEqual(result["data"]["path"], ["a", "b"])
+        self.assertEqual(result["data"]["no_return"], ["b"])
+        self.assertEqual(result["data"]["unreachable"], ["c"])
+        self.assertEqual(self.plugin.store.raw_world(), before)
+        invalid = await self.call("map/inspect", method="POST", map={"nodes": []})
+        self.assertEqual(invalid["status_code"], 400)
+
+    async def test_native_memory_query_stays_in_current_session_and_works_without_auto_recall(self):
+        self.plugin.engine.world.memory.automatic_recall = "manual"
+        for session, content in [(self.session, "在庭院种下了薄荷"), ("other:GroupMessage:99", "在远方的秘密庭院种了薄荷")]:
+            self.plugin.engine.memory.remember(session_id=session, persona_id="", node_id="bedroom", content=content)
+        event = types.SimpleNamespace(unified_msg_origin=self.session, get_extra=lambda *args: "")
+        result = await self.plugin.tool_memory_lookup(event, topic="薄荷")
+        self.assertIn("种下了薄荷", result)
+        self.assertNotIn("秘密", result)
+        self.assertIn("没有找到", await self.plugin.tool_memory_lookup(event, topic="毕业考试"))
+
     async def test_contact_note_merges_from_profile_weaver_facts(self):
         """通讯录备注：本插件这边没写过时，借「心迹画像」搬来的那条（只补空）。"""
 

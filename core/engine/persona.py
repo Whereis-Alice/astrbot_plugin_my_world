@@ -215,6 +215,7 @@ class PersonaMixin:
                         node=node,
                         available_tools=self.available_tools(),
                         memories=self.memory.recall(
+                            automatic=True,
                             session_id=session_id,
                             persona_id="",
                             node_id=state.node_id,
@@ -257,6 +258,7 @@ class PersonaMixin:
                                 recent_chat=recent_chat,
                                 profile_text=profile_text,
                                 memories=self.memory.recall(
+                                    automatic=True,
                                     session_id=session_id,
                                     persona_id="",
                                     node_id=state.node_id,

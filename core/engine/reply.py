@@ -658,6 +658,7 @@ class ReplyMixin:
                 if ask:
                     extra_notes = [*(extra_notes or []), ask]
                 memories = self.memory.recall(
+                    automatic=True,
                     session_id=state.session_id,
                     persona_id=ctx.persona_id,
                     node_id=state.node_id,
