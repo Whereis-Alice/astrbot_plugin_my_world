@@ -439,6 +439,7 @@ class Database:
         min_weight: float | None = None,
         tiers: list[str] | None = None,
         participants: list[str] | None = None,
+        text_terms: list[str] | None = None,
         due_review_before: float | None = None,
         limit: int = 200,
         order: str = "created_at DESC",
@@ -475,6 +476,14 @@ class Database:
         if due_review_before is not None:
             sql += " AND next_review_at > 0 AND next_review_at <= ?"
             params.append(float(due_review_before))
+        if text_terms:
+            # Filter before LIMIT: older matches must not be hidden by recent,
+            # unrelated records. instr treats % and _ as literal characters.
+            searchable = "lower(coalesce(content, '') || char(10) || coalesce(context, '') || char(10) || coalesce(keywords, ''))"
+            sql += " AND (" + " OR ".join(
+                f"instr({searchable}, lower(?)) > 0" for _ in text_terms
+            ) + ")"
+            params.extend(text_terms)
         sql += f" ORDER BY {order} LIMIT ?"
         params.append(int(limit))
         rows = [self._memory_row(row) for row in self._query(sql, params)]

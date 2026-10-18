@@ -9719,14 +9719,14 @@ function editMemoryPolicy() {
   const memory = ui.config.world.memory || (ui.config.world.memory = {});
   openFormDialog({
     title: "记忆与共存设置",
-    hint: "Anamnesis 负责聊天，本插件保留生活经历，可减少重复。数据库各自独立，已有记忆保留。",
+    hint: "可分工记录，也可双份保存聊天。默认只自动回忆生活，聊天记录按需查询，减少重复注入。两边数据库独立，已有记忆保留。",
     confirmText: "应用设置",
     values: {mode: "custom", automatic: memory.automatic_recall || "all", summary: memory.dialogue_summary !== false, chars: memory.recall_max_chars ?? 1200},
     fields: [
-      {key: "mode", label: "使用方案", type: "select", options: [{value: "custom", label: "按下方选项设置"}, {value: "companion", label: "与 Anamnesis 共存：只自动回忆生活经历"}], onChange: ({control, body}) => {
-        if (control.value !== "companion") return;
+      {key: "mode", label: "使用方案", type: "select", options: [{value: "custom", label: "按下方选项设置"}, {value: "companion", label: "分工记录：Anamnesis 存聊天，本插件存生活"}, {value: "dual", label: "双份保存：聊天都记录，本插件只自动回忆生活"}], onChange: ({control, body}) => {
+        if (!["companion", "dual"].includes(control.value)) return;
         body.querySelector('[data-dialog-key="automatic"]').value = "life_only";
-        body.querySelector('[data-dialog-key="summary"]').checked = false;
+        body.querySelector('[data-dialog-key="summary"]').checked = control.value === "dual";
       }},
       {key: "automatic", label: "自动回忆的内容", type: "select", options: [{value: "all", label: "全部记忆"}, {value: "life_only", label: "只回忆生活经历（排除聊天摘要）"}, {value: "manual", label: "不自动回忆，只在主动查询时取用"}], onChange: ({body}) => { body.querySelector('[data-dialog-key="mode"]').value = "custom"; }},
       {key: "summary", label: "本插件继续总结聊天", type: "checkbox", onChange: ({body}) => { body.querySelector('[data-dialog-key="mode"]').value = "custom"; }},
@@ -9734,8 +9734,9 @@ function editMemoryPolicy() {
     ],
     onSubmit: (values) => {
       const companion = values.mode === "companion";
-      memory.automatic_recall = companion ? "life_only" : values.automatic;
-      memory.dialogue_summary = companion ? false : Boolean(values.summary);
+      const dual = values.mode === "dual";
+      memory.automatic_recall = companion || dual ? "life_only" : values.automatic;
+      memory.dialogue_summary = companion ? false : dual || Boolean(values.summary);
       memory.recall_max_chars = Math.max(0, Math.min(12000, Math.round(num(values.chars, 1200))));
       markDirty();
       toast("记忆设置已修改，已有数据保留；点顶栏「保存」后生效");
@@ -15032,13 +15033,18 @@ function contactWeaverSection(data) {
   const visibleFields = (detail.fields || []).filter(
     (field) => !managedNames.has(String(field.name || "")),
   );
-  const card = el("div", "contact-section contact-weaver-section");
-  const head = el("div", "section-head");
+  const card = el("details", "contact-section contact-weaver-section");
+  card.open = ui.contactFieldsExpanded !== false;
+  card.addEventListener("toggle", () => { ui.contactFieldsExpanded = card.open; });
+  const head = el("summary", "section-head");
   head.appendChild(el("h3", "", "关于这个人"));
+  head.appendChild(el("span", "contact-field-count", `${visibleFields.length} 个字段`));
+  head.appendChild(el("span", "contact-fold-label"));
   if (canEdit) {
     const add = el("button", "ghost tiny", "添加字段…");
     add.type = "button";
     add.dataset.act = "weaver-add";
+    add.addEventListener("click", (event) => event.preventDefault());
     head.appendChild(add);
   }
   card.appendChild(head);

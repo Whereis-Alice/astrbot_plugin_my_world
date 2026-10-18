@@ -93,6 +93,40 @@ class RecallPolicyTests(unittest.TestCase):
         self.remember("在花园种了一盆薄荷。", scope="persona")
         self.assertEqual(len(self.recall()), 1)
 
+    def test_topic_search_finds_old_records_before_candidate_limit_in_every_scope(self):
+        for scope, mode, persona in [("group", "group", "p"), ("persona", "persona", "p"),
+                                     ("global", "group", "p"), ("node", "group", "p"),
+                                     ("group", "group_persona", "")]:
+            with self.subTest(scope=scope, persona=persona):
+                topic = f"毕业旅行-{scope}-{persona or 'unknown'}"
+                old = self.db.add_memory(session_id="s", persona_id=persona, node_id="bedroom",
+                                         scope=scope, content=topic, created_at=1000)
+                for index in range(510):
+                    self.db.add_memory(session_id="s", persona_id=persona, node_id="bedroom",
+                                       scope=scope, content=f"普通日常 {index}", created_at=1001 + index)
+                results = self.memory.recall(session_id="s", persona_id=persona, mode=mode,
+                                             node_id="bedroom", keyword=topic,
+                                             strict_keyword=True, now=1600, limit=50)
+                self.assertIn(old, [item.id for item in results])
+
+    def test_topic_search_includes_original_context_and_keywords_with_literal_punctuation(self):
+        original = self.db.add_memory(session_id="s", persona_id="p", node_id="bedroom", scope="group",
+                                      content="一起做过实验", context="Project_A reached 90%", tier="gist")
+        tagged = self.db.add_memory(session_id="s", persona_id="p", node_id="bedroom", scope="group",
+                                    content="整理了工具箱", keywords=["望远镜"])
+        self.assertEqual([item.id for item in self.recall(keyword="project_a", strict_keyword=True)], [original])
+        self.assertEqual([item.id for item in self.recall(keyword="90%", strict_keyword=True)], [original])
+        self.assertEqual([item.id for item in self.recall(keyword="望远镜", strict_keyword=True)], [tagged])
+        self.assertEqual(self.recall(keyword="%_", strict_keyword=True), [])
+        self.assertTrue(self.recall(keyword="没有这个主题"))
+
+    def test_topic_search_does_not_expand_session_or_node_permissions(self):
+        self.db.add_memory(session_id="other", persona_id="p", node_id="bedroom", scope="group",
+                           content="秘密毕业旅行")
+        self.db.add_memory(session_id="s", persona_id="p", node_id="study", scope="node",
+                           content="秘密毕业旅行")
+        self.assertEqual(self.recall(mode="group", node_id="bedroom", keyword="毕业旅行", strict_keyword=True), [])
+
 
 class TonePolicyTests(unittest.TestCase):
     def test_time_window_supports_midnight_and_all_day(self):

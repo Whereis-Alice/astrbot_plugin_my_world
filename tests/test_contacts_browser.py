@@ -186,6 +186,26 @@ class ContactsBrowserTests(unittest.TestCase):
         expect(self.page.locator('#contacts-list')).to_be_visible()
         self.assertEqual(self.errors, [])
 
+    def test_about_person_folds_and_retains_preference_after_selection_and_edit(self):
+        section = self.page.locator('.contact-weaver-section')
+        section.locator(':scope > summary').click()
+        expect(section).not_to_have_attribute('open', '')
+        expect(self.page.locator('.weaver-field-row').first).to_be_hidden()
+        self.page.locator('[data-user="10002"]').click()
+        expect(self.page.locator('#contacts-title')).to_contain_text('10002')
+        expect(section).not_to_have_attribute('open', '')
+        count = self.page.evaluate('contactCalls.length')
+        self.page.locator('#contacts-refresh').click()
+        self.page.wait_for_function('count => contactCalls.length > count', arg=count)
+        expect(section).not_to_have_attribute('open', '')
+        section.locator('[data-act="weaver-add"]').click()
+        expect(self.page.locator('#dialog')).to_be_visible()
+        expect(section).not_to_have_attribute('open', '')
+        self.page.locator('#dialog-cancel').click()
+        section.locator(':scope > summary').click()
+        expect(self.page.locator('.weaver-field-row').first).to_be_visible()
+        self.assertEqual(self.errors, [])
+
     def test_rail_icons_do_not_move_when_activated(self):
         self.page.locator('#sidebar-toggle').click()
         button = self.page.locator('button[data-tab="contacts"]')

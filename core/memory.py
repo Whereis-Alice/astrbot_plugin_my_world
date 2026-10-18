@@ -288,7 +288,8 @@ class MemoryEngine:
         """召回记忆。返回按分数降序的结果。
 
         ``node_id`` / ``nodes``：按地点过滤（``nodes`` 用于"回想某个区域里的所有地点"）。
-        ``keyword``：主题关键词，命中越多的排越前（是加成，不是硬过滤）。
+        ``keyword``：先在作用域内查找主题，命中越多排越前；无命中时可回退近期记忆。
+        ``strict_keyword``：有主题时不回退无关记忆。
         """
 
         if limit <= 0:
@@ -304,27 +305,31 @@ class MemoryEngine:
         wanted_nodes = [str(item) for item in (nodes or []) if str(item)]
         if node_id and node_id not in wanted_nodes:
             wanted_nodes.append(node_id)
-        candidates = self._query(
-            session_id,
-            persona_id,
-            mode,
-            node_id,
-            nodes=wanted_nodes,
-            memory_type=memory_type,
-            session_ids=wanted_sessions,
-        )
-        # 降级策略只用于「人格未知」（persona_id 为空）的旧数据兼容：
-        # 此时把本会话的所有记忆拉进来，但绝不跨会话取 group 级记忆，避免隐私泄露。
-        if not candidates and fallback and not persona_id:
-            candidates = self._query(
+        terms = self._keyword_terms(keyword)
+
+        def query(terms: list[str]) -> list[dict[str, Any]]:
+            rows = self._query(
                 session_id,
                 persona_id,
-                SCOPE_GROUP,
+                mode,
                 node_id,
                 nodes=wanted_nodes,
                 memory_type=memory_type,
                 session_ids=wanted_sessions,
+                text_terms=terms,
             )
+            # Unknown-persona compatibility stays inside the current life group.
+            if not rows and fallback and not persona_id:
+                rows = self._query(
+                    session_id, persona_id, SCOPE_GROUP, node_id,
+                    nodes=wanted_nodes, memory_type=memory_type,
+                    session_ids=wanted_sessions, text_terms=terms,
+                )
+            return rows
+
+        candidates = query(terms)
+        if not candidates and terms and not strict_keyword:
+            candidates = query([])
 
         scored: list[tuple[float, dict[str, Any]]] = []
         for item in candidates:
@@ -332,7 +337,7 @@ class MemoryEngine:
                 continue
             score = self._score(item, focus_user=focus_user, node_id=node_id, now=now)
             if keyword:
-                score *= self._keyword_bonus(content=item.get("content", ""), keyword=keyword)
+                score *= self._keyword_bonus(content=self._search_text(item), keyword=keyword)
             if score <= 0:
                 continue
             scored.append((score, item))
@@ -340,7 +345,7 @@ class MemoryEngine:
 
         if keyword:
             # 主题词一个都没命中的，只在没别的东西可 recall 时才拿出来垫底
-            hits = [pair for pair in scored if self._keyword_hits(pair[1].get("content", ""), keyword)]
+            hits = [pair for pair in scored if self._keyword_hits(self._search_text(pair[1]), keyword)]
             if hits or strict_keyword:
                 scored = hits
         results: list[RecalledMemory] = []
@@ -376,10 +381,11 @@ class MemoryEngine:
         nodes: list[str] | None = None,
         memory_type: str = "",
         session_ids: list[str] | None = None,
+        text_terms: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """按作用域模式取候选记忆。
 
-        语义（写死在测试里，改动会在 tests/test_memory.py 里暴露）：
+        作用域语义：
         - group：本会话的全部记忆 + 全局记忆；
         - persona：该人格在所有会话的记忆 + 全局记忆；
         - group_persona：本会话本身的 + 该人格的 + 全局（默认，最贴合「同一个她在不同群里共享人格记忆」）；
@@ -401,6 +407,7 @@ class MemoryEngine:
                 node_id=where,
                 scope=SCOPE_NODE,
                 memory_type=memory_type or None,
+                text_terms=text_terms,
                 limit=200,
             )
             rows.extend(
@@ -418,7 +425,8 @@ class MemoryEngine:
             for scope in (SCOPE_GLOBAL, SCOPE_GROUP, SCOPE_PERSONA, SCOPE_GROUP_PERSONA):
                 rows.extend(
                     self.db.query_memories(
-                        scope=scope, memory_type=memory_type or None, limit=500
+                        scope=scope, memory_type=memory_type or None,
+                        text_terms=text_terms, limit=500
                     )
                 )
 
@@ -426,7 +434,8 @@ class MemoryEngine:
             rows.extend(
                 item
                 for item in self.db.query_memories(
-                    session_ids=scoped, memory_type=memory_type or None, limit=500
+                    session_ids=scoped, memory_type=memory_type or None,
+                    text_terms=text_terms, limit=500
                 )
                 if item.get("scope") in (SCOPE_GROUP, SCOPE_GROUP_PERSONA)
             )
@@ -434,13 +443,15 @@ class MemoryEngine:
             rows.extend(
                 item
                 for item in self.db.query_memories(
-                    persona_id=persona_id, memory_type=memory_type or None, limit=500
+                    persona_id=persona_id, memory_type=memory_type or None,
+                    text_terms=text_terms, limit=500
                 )
                 if item.get("scope") in (SCOPE_PERSONA, SCOPE_GROUP_PERSONA)
             )
         rows.extend(
             self.db.query_memories(
-                scope=SCOPE_GLOBAL, memory_type=memory_type or None, limit=200
+                scope=SCOPE_GLOBAL, memory_type=memory_type or None,
+                text_terms=text_terms, limit=200
             )
         )
         if wanted_nodes:
@@ -482,14 +493,18 @@ class MemoryEngine:
         return score
 
     @staticmethod
-    def _keyword_hits(content: Any, keyword: str) -> int:
-        """主题词在内容里命中几个（中文按字/词直接包含即可）。"""
+    def _keyword_terms(keyword: str) -> list[str]:
+        return list(dict.fromkeys(str(keyword or "").replace("，", " ").replace(",", " ").split()))
 
-        text = str(content or "")
-        words = [word for word in str(keyword or "").replace("，", " ").replace(",", " ").split() if word]
-        if not words:
-            words = [str(keyword or "").strip()]
-        return sum(1 for word in words if word and word in text)
+    @staticmethod
+    def _search_text(item: dict[str, Any]) -> str:
+        return "\n".join(str(item.get(key) or "") for key in ("content", "context", "keywords"))
+
+    @classmethod
+    def _keyword_hits(cls, content: Any, keyword: str) -> int:
+        """字面话题匹配；英文不区分大小写，不做语义推断。"""
+        text = str(content or "").lower()
+        return sum(word.lower() in text for word in cls._keyword_terms(keyword))
 
     def _keyword_bonus(self, *, content: Any, keyword: str) -> float:
         hits = self._keyword_hits(content, keyword)
