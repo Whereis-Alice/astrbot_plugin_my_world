@@ -49,9 +49,11 @@ class AutonomyMixin:
             if state.is_sleeping:
                 return None
             if not self.engagement.can_speak(state):
-                outcome.notes.append("处于冷却期，跳过自主行为")
+                outcome.notes.append("处于发言冷却期，继续安静生活")
+                await self._quiet_rule_plan(state, node, outcome)
             elif not self._within_hourly_limit(state):
-                outcome.notes.append("达到每小时自主行为上限")
+                outcome.notes.append("达到每小时自主行为上限，继续安静生活")
+                await self._quiet_rule_plan(state, node, outcome)
             else:
                 # 长期低落会关掉「想被注意到」这条动机（带最小关闭时长）
                 self._refresh_interject_closed(state)
@@ -69,6 +71,31 @@ class AutonomyMixin:
         if outcome.messages or outcome.live_messages or outcome.debug_messages:
             await self._deliver(outcome)
         return outcome
+
+    async def _quiet_rule_plan(
+        self, state: WorldState, node: NodeDef | None, outcome: TickOutcome
+    ) -> None:
+        """Speech throttles must not stop sleep, recovery or ordinary movement.
+
+        Quiet provenance follows queued steps and their completion, so an action
+        finishing after the cooldown cannot unexpectedly publish its narration.
+        """
+
+        plan = self.decider.rule_plan(state, group_chatting=False, interject_allowed=False)
+        if plan is None:
+            return
+        steps = []
+        for step in plan.get("steps") or []:
+            definition = self.world.action_map().get(str(step.get("action") or ""))
+            if definition is None or definition.id in {"say", "share", "poke"}:
+                continue
+            if definition.llm_level in {"tool", "command"} or step.get("interject"):
+                continue
+            steps.append({**step, "kind": "quiet"})
+        if not steps:
+            return
+        await self._apply_plan(state, node, outcome, {**plan, "steps": steps})
+        await self._tick_plan(state, node, outcome, depth=0)
 
     async def _decide_normally(
         self,
@@ -196,7 +223,8 @@ class AutonomyMixin:
         if state.current_plan is not None or state.current_action is not None:
             return
         if not self.engagement.can_speak(state):
-            outcome.notes.append("抵达新地点，但处于冷却期，不做决策")
+            outcome.notes.append("抵达新地点，冷却期内继续安静生活")
+            await self._quiet_rule_plan(state, node, outcome)
             return
         if not self._arrival_decision_allowed(state):
             outcome.notes.append("抵达新地点的决策次数已达每小时上限")

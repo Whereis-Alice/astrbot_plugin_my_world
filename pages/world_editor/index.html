@@ -6,6 +6,7 @@
     <title>我的世界编辑器</title>
     <link rel="icon" href="./assets/logo.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./style.css" />
+    <link rel="stylesheet" href="./contacts.css" />
     <!-- 主题在解析样式前就定下来，避免刷新时先闪一下浅色 -->
     <script>
       (function () {
@@ -549,28 +550,26 @@
         <!-- 会话 -->
         <!-- 通讯录：她认识的人（画像 + 关系 + 好感度） -->
         <section id="tab-contacts" class="tab">
-          <div id="contacts-toolbar" class="page-head contacts-toolbar">
-            <div class="page-head-left">
-              <label class="field">
-                <span>会话</span>
-                <select id="contacts-session"></select>
-              </label>
-              <div class="toolbar">
-                <button id="contacts-refresh" class="ghost">刷新</button>
-                <button id="contacts-consolidate" class="ghost" title="把这段时间的经历消化成记忆与画像（她睡着时也会自动做）">
-                  现在整理一次
-                </button>
-                <button id="contacts-preview" class="ghost" title="只跑一遍模型给你看（提示词 + 模型原话 + 解析结果），不写任何记忆和画像">
-                  预览整理
-                </button>
-                <button id="contacts-clear" class="ghost danger" title="把她在这个会话组里认识的人全部忘掉（画像、事实、关系、好感记录）">
-                  清空通讯录
-                </button>
+          <div id="contacts-toolbar" class="contacts-command-bar">
+            <label class="field">
+              <span>通讯录范围</span>
+              <select id="contacts-session" aria-label="通讯录范围"></select>
+            </label>
+            <button id="contacts-refresh" class="ghost" type="button">刷新</button>
+            <details class="contacts-management">
+              <summary class="ghost">整理与管理</summary>
+              <div class="contacts-management-menu">
+                <button id="contacts-consolidate" class="ghost" type="button">现在整理一次</button>
+                <button id="contacts-preview" class="ghost" type="button">预览整理结果</button>
+                <details class="contacts-places-disclosure">
+                  <summary>她能说话的地方</summary>
+                  <div id="contacts-places" class="list" data-keep-text></div>
+                  <button id="contacts-goto-sessions" class="ghost" type="button">管理会话</button>
+                </details>
+                <button id="contacts-clear" class="ghost danger" type="button">清空当前通讯录…</button>
               </div>
-            </div>
-            <div class="page-head-right">
-              <span class="muted" id="contacts-note"></span>
-            </div>
+            </details>
+            <p id="contacts-note" class="hint-line"></p>
           </div>
           <div id="contacts-views-bar" class="contacts-views-bar">
             <div class="contacts-subtabs" role="tablist" aria-label="通讯录视图">
@@ -581,13 +580,7 @@
             </div>
             <div class="contacts-views-meta">
               <span id="contacts-toolbar-summary" class="contacts-toolbar-summary"></span>
-              <button
-                id="contacts-toolbar-toggle"
-                class="ghost contacts-toolbar-toggle"
-                type="button"
-                aria-expanded="true"
-                title="收起 / 展开通讯录工具栏"
-              >▴</button>
+
             </div>
           </div>
 
@@ -616,14 +609,10 @@
                   </select>
                 </div>
                 <div id="contacts-list" class="contacts-directory-list" data-keep-text></div>
-                <div class="contacts-directory-foot">
-                  <h3>她能说话的地方</h3>
-                  <div id="contacts-places" class="list" data-keep-text></div>
-                  <button id="contacts-goto-sessions" class="ghost">去会话页管理</button>
-                </div>
               </aside>
-              <section class="contacts-profile-pane">
+              <section class="contacts-profile-pane" aria-label="联系人资料">
                 <header class="contacts-profile-head">
+                  <button id="contacts-back" class="ghost small" type="button">← 联系人</button>
                   <div class="contacts-profile-identity">
                     <span id="contacts-avatar" class="contacts-avatar">?</span>
                     <div>
@@ -638,10 +627,9 @@
                     <span id="contacts-detail-completeness" class="contacts-count hidden"></span>
                   </div>
                 </header>
-                <nav id="contacts-detail-tabs" class="contacts-detail-tabs hidden" aria-label="联系人详情">
-                  <button type="button" class="on" data-contact-detail-tab="profile">资料</button>
-                  <button type="button" data-contact-detail-tab="relation">关系</button>
-                  <button type="button" data-contact-detail-tab="activity">活动与记录</button>
+                <nav id="contacts-detail-tabs" class="contacts-detail-tabs" role="tablist" aria-label="联系人详情">
+                  <button id="contact-tab-profile" type="button" role="tab" aria-selected="true" aria-controls="contact-page-profile" class="on" data-contact-detail-tab="profile">认识与经历</button>
+                  <button id="contact-tab-relation" type="button" role="tab" aria-selected="false" aria-controls="contact-page-relation" tabindex="-1" data-contact-detail-tab="relation">关系</button>
                 </nav>
                 <div id="contacts-detail" class="contacts-detail unified" data-keep-text></div>
               </section>

@@ -907,6 +907,9 @@ class WebApiMixin:
             else []
         )
         payload["facts"] = store.facts(session_id, user_id, statuses=["active", "candidate", "past"])
+        from ..core.contact_knowledge import contact_knowledge
+
+        payload["knowledge"] = contact_knowledge(weaver_detail, payload["facts"])
         # 称呼与备注：详细画像里的昵称/备注就是通讯录的规范字段，不再另造一套。
         person = payload.get("person")
         if isinstance(person, dict):
@@ -1014,6 +1017,10 @@ class WebApiMixin:
             },
         )
         payload["miss_threshold"] = overview.get("threshold")
+        payload["model_context"] = "\n\n".join(block for block in (
+            self.engine.prompts.profile_block(payload.get("person"), []),
+            weaver_service.prompt_block(session_id, user_id) if weaver_service else "",
+        ) if block)
         config = self.engine.world.profile
         payload["bonds_config"] = [
             {

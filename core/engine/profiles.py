@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 from .. import profile_weaver as profile_weaver_bridge
+from ..contact_knowledge import contact_knowledge
 from ..state import WorldState
 from .models import MessageContext
 
@@ -48,7 +49,7 @@ class ProfilesMixin:
                     "since": self._date_text(item.get("since")),
                 }
             )
-        return {
+        result = {
             "user_id": view.user_id,
             "name": view.name,
             "affinities": list(view.affinities),
@@ -85,6 +86,8 @@ class ProfilesMixin:
                 {
                     "kind": str(item.get("kind") or "other"),
                     "text": str(item.get("text") or ""),
+                    "evidence": str(item.get("evidence") or ""),
+                    "status": str(item.get("status") or "active"),
                 }
                 for item in view.facts
             ],
@@ -101,6 +104,17 @@ class ProfilesMixin:
             "last_talked_at": view.last_talked_at,
             "last_seen_at": view.last_seen_at,
         }
+        service = getattr(self, "profile_weaver_service", None)
+        if service is not None and service.enabled:
+            detail = service.detail_for(session_id, user_id)
+            result["facts"] = contact_knowledge(detail, result["facts"])["facts"]
+            fields = {item.get("name"): item.get("value") for item in detail.get("fields") or []}
+            nickname = next((str(fields[name]).strip() for name in
+                             ("昵称", "称呼", "网名", "名字", "别名") if fields.get(name)), "")
+            if nickname:
+                result["call_me"] = nickname
+                result["name"] = nickname
+        return result
 
     def other_people(
         self, state: WorldState, session_id: str, *, exclude_user_id: str = ""
@@ -146,9 +160,8 @@ class ProfilesMixin:
         if person is not None:
             person = self._apply_grudge_coldness(state, user_id, person)
         others = self.other_people(state, session_id, exclude_user_id=user_id)
-        # 心迹画像自己也往提示词里注入，而且我们每隔几小时就把它的字段搬了一份；
-        # 两边都写等于同一句话读两遍，所以它在注入时这里跳过"搬来的"那些事实
-        # （本插件自己整理出来的事实照旧全给）。它关掉或者没装时不跳。
+        # Integrated reads remove only copies of fields still present in the
+        # structured profile. Older imported experiences without a field survive.
         link = bool(getattr(self.world.profile, "weaver_link", True))
         weaver = getattr(self, "profile_weaver_service", None)
         weaver_owns_profile = bool(weaver is not None and weaver.enabled)
@@ -159,7 +172,7 @@ class ProfilesMixin:
                 limit_others=int(self.world.profile.digest_limit),
                 skip_weaver_facts=(
                     (link and bool(getattr(self, "weaver_injecting", False)))
-                    or weaver_owns_profile
+                    and not weaver_owns_profile
                 ),
             )
         ]
@@ -175,6 +188,12 @@ class ProfilesMixin:
                     user_id,
                     str(getattr(ctx, "user_name", "") or ""),
                 )
+            )
+        if weaver is not None and weaver.llm_tools_enabled:
+            blocks.append(
+                "需要核实偏好、回忆约定或了解联系人时，可以主动调用 mw_profile_lookup。"
+                "不传参数查当前说话人，也可按称呼或用户 ID 查询当前会话认识的人；"
+                "待确认的经历不可当成定论。"
             )
         return "\n\n".join(block for block in blocks if str(block or "").strip())
 
@@ -253,6 +272,10 @@ class ProfilesMixin:
         )
         if not items:
             return {"ok": False, "reason": "心迹画像的数据还在，但里面没有可搬的画像"}
+        items = [item for item in items if not item.get("source_session")
+                 or str(item.get("source_session")) == str(session_id)]
+        if not items:
+            return {"ok": False, "reason": "心迹画像中没有当前会话可导入的记录"}
         result = self.profiles.import_external(session_id, items, source="心迹画像")
         if result.get("ok"):
             self._log(
@@ -317,10 +340,6 @@ class ProfilesMixin:
     async def maybe_sync_profile_weaver(self, data_root: str) -> str:
         """每隔几小时自动同步一次心迹画像（它一直在记新东西）。"""
 
-        if getattr(self, "profile_weaver_service", None) is not None:
-            # 原插件的画像存储与字段级历史已由通讯录内核直接接管，
-            # 不再把同一批字段重复搬成这里的事实。
-            return ""
         profile = getattr(self.world, "profile", None)
         if profile is None or not bool(getattr(profile, "enabled", True)):
             return ""
@@ -348,5 +367,9 @@ class ProfilesMixin:
             await self.db.call("kv_set", self.PROFILE_WEAVER_SYNC_KV, float(now))
         except Exception:
             pass
+        service = getattr(self, "profile_weaver_service", None)
+        if service is not None and service.enabled:
+            service._sync_latest_legacy_profiles()
+            return ""
         result = await self.sync_profile_weaver_by_session(data_root)
         return "" if not result.get("added") else f"同步到 {result.get('added')} 条画像字段"

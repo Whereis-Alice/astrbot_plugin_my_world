@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from datetime import timedelta
 from typing import Any
 from ..generator import (
     DEFAULT_MAP_NODES_PER_ZONE,
@@ -896,6 +897,14 @@ class GenerationMixin:
                 {"id": item.id, "time": item.time, "note": item.note}
                 for item in (self.schedules.schedules or [])
             ]
+        life_lines = [f"当前时间：{self.local_now().strftime('%Y-%m-%d %H:%M')}"]
+        if session_id:
+            state = await self.load_state(session_id, cold_start=False)
+            life_lines.append(f"地点：{self.node_label(state.node_id)}；状态：{state.state}；精力：{state.energy:.2f}")
+            life_lines.extend(self.prompts._event_line(event) for event in
+                              (state.recent_events or [])[-8:] if isinstance(event, dict))
+            life_lines.extend("未完的心事：" + str(item.get("text") or item.get("topic") or "")[:180]
+                              for item in (state.own_topics or [])[:4] if isinstance(item, dict))
         system_prompt, prompt = self.prompts.build_schedule_generator_prompt(
             persona_text=await self._persona_text(session_id),
             zones=[
@@ -921,6 +930,7 @@ class GenerationMixin:
                 else ""
             ),
             extra_prompt=str(extra_prompt or ""),
+            life_context="\n".join(line for line in life_lines if line),
         )
         reply = await self._ask_creator(session_id, system_prompt, prompt, raise_errors=True)
         schedules, problems = parse_generated_schedules(
@@ -940,6 +950,10 @@ class GenerationMixin:
     """「今天已经自动排过日程了吗」记在 kv 里，按配置范围分开。"""
 
     async def maybe_auto_generate_schedules(self) -> str:
+        async with self._auto_schedule_lock:
+            return await self._auto_generate_schedules()
+
+    async def _auto_generate_schedules(self) -> str:
         """到点自动排今天的**一次性**日程（每个配置范围每天只排一次）。
 
         用户在日程页打开「自动生成」之后，每天到了设定的时间点，就用同一个
@@ -961,16 +975,24 @@ class GenerationMixin:
         scope_key = self.config_scope_id or "global"
         today = self._today_key(self._now())
         kv_key = f"{self.AUTO_SCHEDULE_KV}:{scope_key}"
+        attempt_key = f"{kv_key}:attempt"
         try:
             if str(await self.db.call("kv_get", kv_key) or "") == today:
                 return ""
         except Exception:
             pass
-        # 先记上再干活：生成失败也别每个 tick 都去撞一次模型
-        try:
-            await self.db.call("kv_set", kv_key, today)
-        except Exception:
-            pass
+        # Persist a bounded retry window. A provider outage must not consume the
+        # whole day's plan, and restarting must not reset the retry budget.
+        attempt = await self.db.call("kv_get", attempt_key) or {}
+        if not isinstance(attempt, dict) or attempt.get("day") != today:
+            attempt = {"day": today, "count": 0, "retry_at": 0}
+        count = int(attempt.get("count") or 0)
+        if count >= 3 or self._now() < float(attempt.get("retry_at") or 0):
+            return ""
+        await self.db.call("kv_set", attempt_key, {
+            "day": today, "count": count + 1,
+            "retry_at": self._now() + 900 * (3 ** count),
+        })
         try:
             wanted = max(1, min(6, int(getattr(config, "per_day", 2) or 2)))
         except (TypeError, ValueError):
@@ -996,6 +1018,16 @@ class GenerationMixin:
         added = 0
         for draft in drafts:
             item = dict(draft)
+            # The automated job can only create bounded one-off plans, even if
+            # the provider forgets `once` or proposes a time already passed.
+            current = self.local_now()
+            tomorrow = (current + timedelta(days=1)).date().isoformat()
+            item["once"] = True
+            item["date"] = str(item.get("date") or today)
+            if item["date"] not in {today, tomorrow}:
+                continue
+            if item["date"] == today and str(item.get("time") or "") <= current.strftime("%H:%M"):
+                item["date"] = tomorrow
             base = str(item.get("id") or "auto_plan")
             candidate = base
             index = 2
@@ -1012,11 +1044,30 @@ class GenerationMixin:
         data["schedules"] = kept
         self.save_scoped_schedules(data, reason="自动生成一次性日程")
         self.reload_config()
+        if added:
+            await self.db.call("kv_set", kv_key, today)
         note = f"自动排了 {added} 条一次性日程"
         if dropped:
             note += f"，清掉 {dropped} 条过期没跑的"
         self._log("info", f"[my_world] {note}")
         return note
+
+    async def auto_generate_schedule_scopes(self) -> None:
+        """Generate global plans once and each independent schedule library once."""
+
+        scopes = [""]
+        for session_id in self.tick_session_ids():
+            with self.config_scope(session_id):
+                session = self.session_config(self.config_scope_id)
+                overrides = getattr(session, "config_overrides", None) or {}
+                if "schedules" in overrides and self.config_scope_id not in scopes:
+                    scopes.append(self.config_scope_id)
+        for scope in scopes:
+            try:
+                with self.config_scope(scope):
+                    await self.maybe_auto_generate_schedules()
+            except Exception as exc:
+                self._log("warning", f"自动排日程失败 scope={scope or 'global'}（有限重试）：{exc}")
 
     async def generate_events(
         self, count: Any = 0, flavor: str = "", extra_prompt: str = ""

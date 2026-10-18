@@ -314,6 +314,7 @@ class MyWorldEngine(
         self.load_warnings: list[str] = []
         self._sessions_index: dict[str, SessionDef] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._auto_schedule_lock = asyncio.Lock()
         self._last_decider_at: dict[str, float] = {}
         self._last_presence_at: dict[str, float] = {}
         self._event_writes: dict[str, int] = {}

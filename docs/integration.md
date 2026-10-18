@@ -171,6 +171,10 @@ AstrBot 的管线轮不到跑：准备调模型前 → `on_waiting_llm_request`�
 > 批量维护入口在“数据与备份 → 高级记录管理”。
 > 原插件顶层指令和三个 `profileweaver_*` LLM 工具都继续可用。
 
+模型还可以主动使用 `mw_profile_lookup` 查询画像、关系和共同经历：不传参数查当前发送者，
+也可按称呼、用户 ID 或话题查询当前会话可见的联系人。它是只读工具，保留会话隔离；
+旧画像插件仍启用时，也会独立注册。参数与数据范围见[记忆与通讯录](memory.md)。
+
 另外两个可以按需关掉的干扰点：
 
 - **日程工具**：`mw_schedule_list` / `mw_schedule_add` / `mw_schedule_remove` 是给主人格用的。

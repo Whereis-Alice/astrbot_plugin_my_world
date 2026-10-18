@@ -237,8 +237,8 @@
     "default": ""
   },
   "weaver_llm_tools_enabled": {
-    "description": "启用画像写入工具",
-    "hint": "允许模型通过 profileweaver_* 工具读取和维护当前说话人的画像。",
+    "description": "启用通讯录查询与画像工具",
+    "hint": "启用 mw_profile_lookup 主动查询当前会话可见的联系人、关系和经历，并保留 profileweaver_* 工具维护当前说话人的画像。",
     "obvious_hint": true,
     "type": "bool",
     "default": true

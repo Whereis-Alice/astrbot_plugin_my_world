@@ -3069,6 +3069,7 @@ class PromptBuilder:
         flavor: str = "",
         today: str = "",
         extra_prompt: str = "",
+        life_context: str = "",
     ) -> tuple[str, str]:
         """基于她的人设与生活节奏，生成**日程**草稿。"""
 
@@ -3132,6 +3133,10 @@ class PromptBuilder:
             blocks.append("# 她的人际关系\n" + str(relations).strip()[:800])
         if once and today:
             blocks.append(f"# 今天是\n{today}（date 只能写 {today} 或它的第二天）")
+        if life_context:
+            blocks.append("# 此刻的生活与未完的事\n" + life_context[:1800]
+                          + "\n结合精力、当前活动和已有约定安排下一步；延续已有经历，给休息留出时间。"
+                          + "一次性安排应在现在之后，不要重排已经过去的时刻。")
         if extra_prompt:
             blocks.append("# 额外要求（优先满足）\n" + str(extra_prompt).strip()[:600])
         blocks.append(f"现在生成 {max(1, int(count))} 条日程，只输出 JSON。")

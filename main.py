@@ -126,11 +126,7 @@ from .adapters.profile_commands import (
     ProfileCommandsMixin,
     install_profile_commands,
 )
-from .adapters.profile_weaver_tools import (
-    ProfileWeaverForgetTool,
-    ProfileWeaverRememberTool,
-    ProfileWeaverViewTool,
-)
+from .adapters.profile_weaver_tools import register_profile_tools, unregister_profile_tools
 from .adapters.tools import AstrBotTools, _clip_brief, _tool_result_text
 from .adapters.vision import AstrBotVision, _images_head
 from .web.api import WebApiMixin
@@ -401,37 +397,9 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, Star):
         self.profile_weaver_service = ProfileWeaverService(
             self, str(self.store.data_dir.parent)
         )
-        self._legacy_weaver_active = profile_weaver_active(self.context)
-        self.profile_weaver_service.prompt_enabled = not self._legacy_weaver_active
-        self._weaver_tools_registered = False
-        extract_tools = [
-            ProfileWeaverRememberTool(plugin=self.profile_weaver_service),
-            ProfileWeaverForgetTool(plugin=self.profile_weaver_service),
-        ]
-        self.profile_weaver_service.auto_extract_tools = (
-            ToolSet(tools=extract_tools)
-            if ToolSet is not None
-            else extract_tools
+        register_profile_tools(
+            self, legacy_active=profile_weaver_active(self.context), toolset_type=ToolSet
         )
-        if (
-            self.profile_weaver_service.llm_tools_enabled
-            and not self._legacy_weaver_active
-        ):
-            try:
-                self.context.add_llm_tools(
-                    ProfileWeaverViewTool(
-                        plugin=self.profile_weaver_service,
-                    ),
-                    ProfileWeaverRememberTool(
-                        plugin=self.profile_weaver_service,
-                    ),
-                    ProfileWeaverForgetTool(
-                        plugin=self.profile_weaver_service,
-                    ),
-                )
-                self._weaver_tools_registered = True
-            except Exception as exc:
-                self.logger.warning(f"[my_world] 画像工具注册失败：{exc}")
         # 扩展挂载点：独立插件（如果装了）会通过 `star_cls.extension_host` 找到它
         self.extension_host = ExtensionHost(self)
         created = self.store.ensure_files()
@@ -636,16 +604,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, Star):
             except (asyncio.CancelledError, Exception):
                 pass
         self._reflection_tasks.clear()
-        if self._weaver_tools_registered:
-            for name in (
-                "profileweaver_view_profile",
-                "profileweaver_remember_field",
-                "profileweaver_forget_field",
-            ):
-                try:
-                    self.context.unregister_llm_tool(name)
-                except Exception:
-                    pass
+        unregister_profile_tools(self)
         try:
             await self.db.close()
         except Exception:

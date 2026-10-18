@@ -104,6 +104,11 @@ try {
         } | Out-Null
         $refJson = Invoke-GhJson -Endpoint "repos/$Repo/git/ref/heads/main" -Method GET
         $parentSha = ($refJson | ConvertFrom-Json).object.sha
+    } else {
+        & git merge-base --is-ancestor $parentSha $head
+        if ($LASTEXITCODE -ne 0) {
+            throw "远端 main 不是本地 HEAD 的祖先。请先 fetch 并合并远端修改，再运行此脚本。"
+        }
     }
     # 断点续传：已经上传过的 blob 记在 .git 里，重跑时不再重复上传
     $gitDir = (git rev-parse --git-dir).Trim()
@@ -184,7 +189,7 @@ try {
     Write-Host "更新 refs/heads/main → $commitSha"
     Invoke-GhJson -Endpoint "repos/$Repo/git/refs/heads/main" -Method PATCH -Payload @{
         sha   = $commitSha
-        force = $true
+        force = $false
     } | Out-Null
     Write-Host "完成：https://github.com/$Repo/commit/$commitSha"
     Write-Host "（本地 HEAD $head 的树已推送；日常同步请直接 git push）"

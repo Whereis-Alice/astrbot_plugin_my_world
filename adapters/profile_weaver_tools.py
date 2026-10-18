@@ -23,6 +23,45 @@ except ImportError:  # pragma: no cover
 FORGET_TOOL_NAME = "profileweaver_forget_field"
 REMEMBER_TOOL_NAME = "profileweaver_remember_field"
 VIEW_TOOL_NAME = "profileweaver_view_profile"
+LOOKUP_TOOL_NAME = "mw_profile_lookup"
+
+
+def register_profile_tools(plugin: Any, *, legacy_active: bool, toolset_type: Any) -> None:
+    """Install the independent lookup tool alongside compatible legacy tools."""
+
+    service = plugin.profile_weaver_service
+    plugin._legacy_weaver_active = legacy_active
+    service.prompt_enabled = not legacy_active
+    plugin._weaver_tools_registered = False
+    plugin._contact_lookup_registered = False
+    extract = [ProfileWeaverRememberTool(plugin=service), ProfileWeaverForgetTool(plugin=service)]
+    service.auto_extract_tools = toolset_type(tools=extract) if toolset_type else extract
+    if not service.llm_tools_enabled:
+        return
+    try:
+        plugin.context.add_llm_tools(ContactLookupTool(plugin=service))
+        plugin._contact_lookup_registered = True
+    except Exception as exc:
+        plugin.logger.warning(f"[my_world] 通讯录查询工具注册失败：{exc}")
+    if not legacy_active:
+        try:
+            plugin.context.add_llm_tools(ProfileWeaverViewTool(plugin=service), *extract)
+            plugin._weaver_tools_registered = True
+        except Exception as exc:
+            plugin.logger.warning(f"[my_world] 画像工具注册失败：{exc}")
+
+
+def unregister_profile_tools(plugin: Any) -> None:
+    names = []
+    if getattr(plugin, "_contact_lookup_registered", False):
+        names.append(LOOKUP_TOOL_NAME)
+    if getattr(plugin, "_weaver_tools_registered", False):
+        names.extend((VIEW_TOOL_NAME, REMEMBER_TOOL_NAME, FORGET_TOOL_NAME))
+    for name in names:
+        try:
+            plugin.context.unregister_llm_tool(name)
+        except Exception:
+            pass
 
 
 @pydantic_dataclass
@@ -151,3 +190,30 @@ class ProfileWeaverViewTool(FunctionTool[AstrAgentContext]):
         if inspect.isawaitable(result):
             result = await result
         return str(result)
+
+
+@pydantic_dataclass
+class ContactLookupTool(FunctionTool[AstrAgentContext]):
+    plugin: Any = Field(default=None, repr=False)
+    name: str = LOOKUP_TOOL_NAME
+    description: str = (
+        "主动查询通讯录：用户的稳定画像、偏好、关系和共同经历。"
+        "需要了解某人、回忆约定、选择礼物或核实偏好时调用，无需等用户要求。"
+        "不传参数查当前发送者；按称呼或用户 ID 查询当前会话可见的其他联系人。"
+        "同名时先返回候选 ID，再按 ID 查询。topic 可筛选字段与经历。"
+        "只读，不猜测信息，不读取其他群或私聊的专属画像。"
+    )
+    parameters: dict[str, Any] = Field(default_factory=lambda: {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "联系人称呼或用户 ID；留空查当前发送者", "default": ""},
+            "user_id": {"type": "string", "description": "明确的用户 ID，优先于 query", "default": ""},
+            "topic": {"type": "string", "description": "可选关键词，如生日、爱好、约定；留空查全部", "default": ""},
+        },
+        "required": [],
+    })
+
+    async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs: Any) -> str:
+        if self.plugin is None:
+            return "通讯录查询失败：插件实例未初始化。"
+        return str(self.plugin.handle_llm_lookup(context.context.event, **kwargs))

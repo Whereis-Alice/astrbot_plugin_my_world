@@ -40,7 +40,12 @@ python -m pytest -q
 python -m pytest tests/test_dialogue_inject.py -q   # 注入式接管（主路径）
 python -m pytest tests/test_world_generator.py -q   # 区域 / 日程 / 事件生成
 python -m pytest tests/test_frontend.py -q          # 编辑器契约
+python -m pytest tests/test_contacts.py -q          # 合并画像、工具读取、静默生活和排程恢复
+python -m pytest tests/test_contacts_browser.py -q  # 需要 Playwright + Chromium
 ```
+
+通讯录的加载和切换状态在 `pages/world_editor/contact-workbench.js`，布局在 `contacts.css`。
+它通过依赖注入复用编辑器的 API 与字段编辑入口，不依赖打包器。浏览器回归使用合成资料，覆盖长详情、66 人列表、短视口、手机布局、异步请求竞态与侧栏图标。
 
 ## 两个版本开关
 
@@ -65,3 +70,4 @@ pwsh tools/push_via_api.ps1 -Repo Whereis-Alice/astrbot_plugin_my_world
 ```
 
 它按 blob → tree → commit → ref 的顺序推当前 HEAD 的内容，认证走本机已登录的 `gh`。
+推送前校验本地提交包含远端历史；更新分支时使用非强制方式，远端并发更新会被拒绝。

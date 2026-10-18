@@ -125,6 +125,8 @@ class ScopedConfigMixin:
         接话、早晚问候这些）看顶栏那个「自主搭话」总闸。
         """
 
+        if kind == "quiet":
+            return False
         if kind == "reply":
             return True
         if kind == "schedule":

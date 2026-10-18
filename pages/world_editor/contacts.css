@@ -1,0 +1,228 @@
+/* The address book owns its viewport. Headers and tabs occupy explicit grid
+   rows; only the list and detail body scroll. No JS height measurements. */
+.content:has(#tab-contacts.active) {
+  height: 100dvh;
+  min-height: 0;
+}
+.content:has(#tab-contacts.active) > .topbar { flex: 0 0 auto; }
+main:has(#tab-contacts.active) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding: 16px 18px 18px;
+  max-width: none;
+}
+#tab-contacts.active {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  gap: 12px;
+  animation: none;
+}
+.contacts-command-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+}
+.contacts-command-bar .field { min-width: 190px; max-width: 330px; }
+.contacts-command-bar .field > span { font-size: 11px; }
+.contacts-command-bar > .hint-line { margin: 0 0 0 auto; max-width: 580px; }
+.contacts-command-bar > button,
+.contacts-management { align-self: flex-end; }
+.contacts-management { position: relative; z-index: 20; }
+.contacts-management > summary {
+  cursor: pointer;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 7px 12px;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.contacts-management-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  display: grid;
+  gap: 8px;
+  width: 300px;
+  max-height: min(480px, 60dvh);
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: var(--shadow-3);
+}
+.contacts-management:not([open]) > .contacts-management-menu { display: none; }
+.contacts-places-disclosure { padding: 8px; font-size: 12px; overflow-wrap: anywhere; }
+.contacts-places-disclosure > summary { cursor: pointer; }
+.contacts-views-bar { display: flex; gap: 12px; align-items: center; flex: 0 0 auto; }
+.contacts-subtabs { margin: 0; }
+.contacts-views-meta { min-width: 0; margin-left: auto; }
+.contacts-toolbar-summary { font-size: 12px; color: var(--muted); }
+.contacts-view { min-height: 0; flex: 1; overflow: auto; }
+#contacts-view-contacts { display: flex; overflow: hidden; }
+.contacts-unified {
+  display: grid;
+  grid-template-columns: clamp(250px, 24%, 330px) minmax(0, 1fr);
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--panel);
+}
+.contacts-directory {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  min-height: 0;
+  min-width: 0;
+  background: var(--bg-soft);
+  border-right: 1px solid var(--line);
+}
+.contacts-directory-head { padding: 18px 16px 12px; }
+.contacts-directory-head h2 { margin: 0; font-size: 15px; }
+.contacts-search-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 14px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
+}
+.contacts-search-box > span { font-size: 20px; color: var(--muted); }
+.contacts-search-box input { min-width: 0; width: 100%; border: 0; background: transparent; }
+.contacts-filter-bar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; padding: 12px 14px; }
+.contacts-filter-bar .pill { min-height: 28px; padding: 3px 9px; font-size: 11px; }
+.contacts-filter-bar select { width: 100%; min-width: 0; font-size: 12px; background: transparent; }
+.contacts-directory-list { overflow: auto; min-height: 0; padding: 0 8px 12px; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.contacts-directory .contact-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 10px;
+  width: 100%;
+  height: auto;
+  min-height: 92px;
+  align-items: start;
+  margin: 4px 0;
+  padding: 12px 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.contacts-directory .contact-row:hover { background: var(--bg-inset); }
+.contacts-directory .contact-row.active { background: var(--accent-soft); border-color: var(--accent-ring); }
+.contact-row-avatar,
+.contacts-avatar { display: grid; place-items: center; border: 1px solid var(--accent-ring); border-radius: 12px; background: var(--accent-soft); color: var(--accent-ink); font-weight: 700; }
+.contact-row-avatar { width: 34px; height: 34px; font-size: 14px; }
+.contact-row-body { min-width: 0; }
+.contacts-directory-list .contact-row-body { display: grid; gap: 3px; }
+.contact-row-head { gap: 5px; }
+.contact-row-head strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.contact-row-meta { font-size: 11px; line-height: 1.7; }
+.contact-row-weaver { font-size: 11px; }
+.contact-row .pill { font-size: 10px; padding: 1px 6px; }
+.contacts-profile-pane { display: grid; grid-template-rows: auto auto minmax(0, 1fr); min-width: 0; min-height: 0; }
+.contacts-profile-head { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 18px 22px; }
+.contacts-profile-identity { display: flex; gap: 12px; align-items: center; min-width: 0; }
+.contacts-avatar { width: 44px; height: 44px; flex: 0 0 44px; font-size: 18px; }
+.contacts-profile-identity > div { min-width: 0; flex: 1; }
+.contacts-profile-identity h2 { margin: 0 0 4px; font-size: 19px; overflow-wrap: anywhere; }
+.contacts-profile-identity p { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+.contacts-profile-head-meta { display: grid; gap: 6px; justify-items: end; max-width: 50%; }
+.contacts-profile-head-meta .contacts-count { white-space: normal; font-size: 11px; }
+.contacts-detail-tabs { display: flex; gap: 20px; padding: 0 22px; border-bottom: 1px solid var(--line); }
+.contacts-detail-tabs button { flex: 0 0 auto; padding: 10px 0; background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; }
+.contacts-detail-tabs button.on { color: var(--accent-ink); border-bottom-color: var(--accent); }
+.contacts-detail.unified { overflow: auto; min-height: 0; padding: 20px 22px 32px; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.contact-page[hidden] { display: none !important; }
+.contact-page { display: grid; gap: 20px; }
+.contact-page > .contact-section { margin: 0; padding: 0; border: 0; min-width: 0; }
+.contact-section > h3,
+.contact-section > .section-head h3 { color: var(--text); font-size: 14px; margin: 0; }
+.contact-overview-card { padding: 16px !important; border-radius: 10px; background: var(--accent-soft); line-height: 1.8; }
+.contact-overview-card p { margin: 8px 0 0; font-size: 13px; }
+.contact-context-preview { font-size: 12px; }
+.contact-context-preview > summary { cursor: pointer; color: var(--muted); }
+.contact-context-preview pre { max-height: 340px; overflow: auto; white-space: pre-wrap; }
+.contact-identity-section > summary,
+.contact-records-section > summary { cursor: pointer; padding: 10px 0; color: var(--text-2); }
+.contact-identity-section > summary::after,
+.contact-records-section > summary::after { content: "展开 ▾"; font-size: 11px; color: var(--muted); }
+.contact-identity-section[open] > summary::after,
+.contact-records-section[open] > summary::after { content: "收起 ▴"; }
+.contact-identity-section:not([open]) > :not(summary),
+.contact-records-section:not([open]) > :not(summary) { display: none; }
+.contact-identity-section[open] { display: grid; gap: 8px; }
+.contact-managed-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.weaver-field-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+.weaver-field-row { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-soft); }
+.weaver-field-head { align-items: baseline; gap: 6px; }
+.weaver-field-time { font-size: 10px; }
+.weaver-field-value { flex: 1; margin: 0; font-size: 13px; line-height: 1.8; overflow-wrap: anywhere; white-space: pre-wrap; }
+.weaver-field-actions { margin: 0; gap: 5px; }
+.weaver-field-actions button { font-size: 11px; }
+.contact-evidence { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.contact-evidence > summary { cursor: pointer; }
+.contact-evidence p { margin: 6px 0; line-height: 1.7; }
+.contact-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 12px 0; border-bottom: 1px solid var(--line); line-height: 1.7; font-size: 13px; }
+.contact-line > span:nth-child(2) { flex: 1 1 60%; overflow-wrap: anywhere; }
+.contact-line .contact-evidence { width: 100%; order: 2; }
+.contact-line > .muted { font-size: 11px; }
+.contact-inline { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 0; }
+.contact-inline input { flex: 1; min-width: 150px; }
+.contact-record-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 0; border-top: 1px solid var(--line); font-size: 12px; }
+.contact-record-main { flex: 1; min-width: 0; display: grid; gap: 4px; overflow-wrap: anywhere; }
+.contacts-empty { display: grid; justify-items: center; align-content: center; min-height: 180px; padding: 20px; color: var(--muted); text-align: center; line-height: 1.8; }
+#contacts-back { display: none; }
+/* The active marker has its own pseudo-element; it cannot move the icon. */
+#app.side-rail .tabs button.active::after { content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: 2px; background: var(--accent); }
+@media (max-width: 1100px) {
+  .contacts-command-bar > .hint-line { width: 100%; max-width: none; font-size: 11px; }
+  .weaver-field-list { grid-template-columns: minmax(0, 1fr); }
+  .contacts-profile-head { align-items: flex-start; flex-wrap: wrap; }
+  .contacts-profile-head-meta { max-width: 100%; justify-items: start; }
+}
+@media (max-width: 850px) {
+  .contacts-unified { grid-template-columns: minmax(0, 1fr); }
+  .contacts-directory { border-right: 0; }
+  .contacts-profile-pane { display: none; }
+  #tab-contacts.contact-open .contacts-directory { display: none; }
+  #tab-contacts.contact-open .contacts-profile-pane { display: grid; }
+  #contacts-back { display: block; flex: 0 0 auto; }
+  .contacts-profile-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    padding: 12px 14px;
+  }
+  #contacts-back { justify-self: start; }
+  .contacts-profile-identity { width: 100%; }
+  .contacts-profile-head-meta { display: flex; gap: 6px; flex-wrap: wrap; }
+  .contacts-profile-head-meta:has(> .hidden:only-child) { display: none; }
+  .contacts-detail.unified { padding: 16px; }
+  .contacts-toolbar-summary { display: none; }
+}
+@media (max-width: 760px) {
+  .app:has(#tab-contacts.active) { display: flex; flex-direction: column; height: 100dvh; min-height: 0; }
+  .app:has(#tab-contacts.active) > .sidebar { flex: 0 0 auto; }
+  .content:has(#tab-contacts.active) { flex: 1; height: auto; min-height: 0; }
+  .content:has(#tab-contacts.active) > .topbar { padding: 8px 10px; gap: 8px; }
+  main:has(#tab-contacts.active) { padding: 10px; }
+  .contacts-command-bar .field { flex: 1; min-width: 150px; max-width: none; }
+  .contacts-command-bar { gap: 6px; }
+  .contacts-subtabs { width: 100%; display: flex; }
+  .contacts-subtabs button { flex: 1; padding: 8px 6px; font-size: 12px; }
+  .contacts-management-menu { left: auto; right: 0; width: min(300px, 85vw); }
+}

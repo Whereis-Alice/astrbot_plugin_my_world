@@ -48,7 +48,7 @@ class TickMixin:
         try:
             # 自动排日程也是"每天一次"的事：放在会话循环之前，
             # 排好的安排这一轮就能按正常逻辑被看见。
-            await self.maybe_auto_generate_schedules()
+            await self.auto_generate_schedule_scopes()
         except Exception as exc:
             self._log("debug", f"自动排日程失败：{exc}")
         try:
