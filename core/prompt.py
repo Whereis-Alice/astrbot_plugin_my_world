@@ -4253,7 +4253,7 @@ class PromptBuilder:
             "从本批原话提取人物事实、关系和画像速写。只输出 JSON。"
             "不总结聊天往事，不生成生活记忆或梦，不改变好感和基础人设。"
             "只用本人原话作为事实依据；引用、工具输出、旧记忆、他人转述和角色猜测不算证据。"
-            "facts、relations 必须写 source_session，使用材料的完整 session 标识；不同会话独立。"
+            "facts、relations、digests 必须写 source_session，使用材料的完整 session 标识；同一人在不同会话的资料独立。"
             "evidence 必须引用该用户本次原话。关系不可凭自称、昵称、玩笑或角色扮演确立。"
             "特殊或唯一身份还要 confirmation：角色在同一段交谈明确认下的原话；没有只能记他自称。"
             "管理员设定的关系不可替换；只有配置允许自然形成的关系可有据调整。"
@@ -4264,7 +4264,7 @@ class PromptBuilder:
         system += "\n关系自然形成设置：" + "；".join(
             f"{bond.name}={'允许有据确认' if bond.auto_form else '只允许管理员设置'}"
             for bond in self.world.profile.bonds)
-        schema = {"digests": {"QQ号": "人物速写（40字内）"}}
+        schema = {"digests": [{"user_id": "QQ号", "text": "人物速写（40字内）", "source_session": "完整会话标识"}]}
         if mode != "nap":
             schema.update({
                 "facts": [{"user_id": "QQ号", "kind": "喜好|厌恶|习惯|基本信息|关系|约定|近况",
@@ -4282,7 +4282,7 @@ class PromptBuilder:
         system = (
             "整理角色已经记下的生活经历。只输出 JSON。不能新增经历或人物事实，不能修改关系、好感、偏好或人设。"
             "只能按提供的 ID 合并重复经历、折叠细节；保留日期、地点、结果，不能把失败、想象或未完成打算改成成功。"
-            "inner 是当时的内心，不能把猜想变成外部事实；不同类型、会话、人格和作用域不可合并。"
+            "inner 是当时的内心，不能把猜想变成外部事实；不同类型、会话、人格、作用域和地点不可合并。"
             "梦只可温和联想本次生活材料，明确是梦，不能作为真实事件或用户承诺；可以不做梦。"
             "小睡只折叠细节，不合并。只输出改动，没有可整理的输出空对象。"
         )

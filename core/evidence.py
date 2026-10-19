@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS memory_vector(memory_id INTEGER NOT NULL, model_key T
     revision TEXT NOT NULL, vector TEXT NOT NULL, PRIMARY KEY(memory_id, model_key));
 CREATE INDEX IF NOT EXISTS idx_memory_source_age ON memory_source(observed_at);
 CREATE INDEX IF NOT EXISTS idx_memory_evidence_source ON memory_evidence(source_id);
+CREATE TABLE IF NOT EXISTS profile_review_source(source_id TEXT NOT NULL,
+    mode TEXT NOT NULL, at REAL NOT NULL, PRIMARY KEY(source_id, mode));
 """
 
 
@@ -103,7 +105,27 @@ class EvidenceStoreMixin:
             self._execute("DELETE FROM memory_source WHERE observed_at<? AND NOT EXISTS "
                           "(SELECT 1 FROM memory_evidence WHERE source_id=memory_source.id)",
                           (time.time() - 90 * 86400,))
+            self._execute("DELETE FROM profile_review_source WHERE NOT EXISTS "
+                          "(SELECT 1 FROM memory_source WHERE id=profile_review_source.source_id)")
         return source["id"]
+
+    def reviewed_profile_sources(self, source_ids: list[str], mode: str) -> set[str]:
+        """A full review includes a nap's digest work; a nap cannot consume facts."""
+        reviewed: set[str] = set()
+        modes = ["full", "nap"] if mode == "nap" else ["full"]
+        for start in range(0, len(source_ids), 400):
+            batch = source_ids[start:start + 400]
+            rows = self._query(
+                "SELECT source_id FROM profile_review_source WHERE source_id IN ("
+                + ",".join("?" for _ in batch) + ") AND mode IN ("
+                + ",".join("?" for _ in modes) + ")", [*batch, *modes])
+            reviewed.update(row["source_id"] for row in rows)
+        return reviewed
+
+    def mark_profile_reviewed(self, source_ids: list[str], mode: str, now: float) -> None:
+        for source_id in source_ids:
+            self._execute("INSERT OR IGNORE INTO profile_review_source(source_id,mode,at) VALUES(?,?,?)",
+                          (source_id, mode, now))
 
     def source_record(self, source_id: str) -> dict | None:
         rows = self._query("SELECT snapshot,eligible FROM memory_source WHERE id=?", (source_id,))

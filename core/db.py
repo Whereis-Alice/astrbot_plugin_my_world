@@ -546,6 +546,7 @@ class Database(ModelCallStoreMixin, BackgroundStoreMixin, EvidenceStoreMixin, So
         node_id: str | None = None,
         scope: str | None = None,
         memory_type: str | None = None,
+        memory_types: list[str] | None = None,
         min_weight: float | None = None,
         tiers: list[str] | None = None,
         participants: list[str] | None = None,
@@ -576,6 +577,11 @@ class Database(ModelCallStoreMixin, BackgroundStoreMixin, EvidenceStoreMixin, So
         if memory_type is not None:
             sql += " AND type = ?"
             params.append(memory_type)
+        if memory_types is not None:
+            if not memory_types:
+                return []
+            sql += " AND type IN (" + ",".join("?" for _ in memory_types) + ")"
+            params.extend(memory_types)
         if min_weight is not None:
             sql += " AND weight >= ?"
             params.append(float(min_weight))

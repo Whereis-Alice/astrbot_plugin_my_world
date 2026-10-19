@@ -170,23 +170,26 @@ class Consolidator:
 
         rows = self.memory.db.query_memories(
             session_ids=self._sessions_of(session_id),
+            memory_types=["scene", "event", "inner"],
             limit=max(1, int(limit)),
         )
         labels = dict(session_labels or {})
         lines: list[str] = []
         for item in rows:
-            if item.get("type") == DREAM:
-                continue
             stamp = time.strftime(
-                "%m-%d", time.localtime(float(item.get("created_at") or 0.0))
+                "%Y-%m-%d %H:%M", time.localtime(float(item.get("created_at") or 0.0))
             )
             tier = "要点" if str(item.get("tier")) == "gist" else "原文"
             people = ",".join(str(entry) for entry in (item.get("participants") or []))
             tail = f"（{people}）" if people else ""
             where = self._where(str(item.get("session_id") or ""), labels)
+            node_id = str(item.get("node_id") or "")
+            node = self.world.node_map().get(node_id)
+            place = str(node.name or node_id) if node else node_id or "未标地点"
             lines.append(
-                f"#{item['id']} [{stamp}·{tier}·{item['type']}·{where}] "
-                f"{str(item.get('content') or '')[:120]}{tail}"
+                f"#{item['id']} [{stamp}·{tier}·{item['type']}·{where}·地点={place}"
+                f"·persona={item.get('persona_id') or '未标人设'}·scope={item.get('scope')}] "
+                f"{str(item.get('content') or '')[:400]}{tail}"
             )
         return lines
 
@@ -249,23 +252,35 @@ class Consolidator:
             result.note = "没有可用的整理模型"
             return result
         stamp = float(now if now is not None else time.time())
-        records, observed = [], {}
+        records, observed, originals = [], {}, {}
         for row in chat_records or []:
             snapshot = source_snapshot(row, session_id)
             stored = self.memory.db.source_record(snapshot["id"])
             if stored is not None and not stored["eligible"] or row.get("eligible") is False and stored is None:
                 continue
-            if snapshot["kind"] not in {"direct_speech", "self_statement"}:
-                continue
             original = stored or snapshot
+            if original["kind"] not in {"direct_speech", "self_statement"} or original["id"] in originals:
+                continue
             body = direct_text(str(original.get("text") or ""))
             if not body:
                 continue
-            records.append({**row, "text": body, "source_id": snapshot["id"]})
+            # A stored quote's author, origin and role are immutable too.
+            records.append({**row, **original, "text": body, "source_id": original["id"],
+                            "origin": original["session"], "is_self": original["kind"] == "self_statement"})
+            originals[original["id"]] = original
             if not stored:
                 observed[snapshot["id"]] = snapshot
-        profile_key = self._batch_key(session_id, result.mode, records)
         stages = []
+        if records and self.world.profile.enabled and self.world.profile.consolidate_enabled:
+            # Recognize a completed batch from before per-source receipts existed.
+            if self.memory.db.kv_get(self._batch_key(session_id, result.mode, records)) and not dry_run:
+                with self.memory.db.atomic():
+                    for snapshot in observed.values():
+                        self.memory.db.observe_source(snapshot, eligible=True)
+                    self.memory.db.mark_profile_reviewed([row["source_id"] for row in records], result.mode, stamp)
+            reviewed = self.memory.db.reviewed_profile_sources([row["source_id"] for row in records], result.mode)
+            records = [row for row in records if row["source_id"] not in reviewed][:400]
+        profile_key = self._batch_key(session_id, result.mode, records)
         if records and self.world.profile.enabled and self.world.profile.consolidate_enabled and not self.memory.db.kv_get(profile_key):
             known_profiles = []
             for sid in self._sessions_of(session_id):
@@ -280,16 +295,19 @@ class Consolidator:
                 date_text=time.strftime("%Y-%m-%d", time.localtime(stamp)), mode=result.mode,
                 max_items=12 if result.mode == "full" else 6,
             )
-            stages.append(("profiles", profile_key, system, prompt, {}))
+            before = {(str(row.get("origin") or session_id), str(row.get("user_id") or ""))
+                      for row in records if not row.get("is_self")}
+            versions = {(sid, uid): self._profile_version(sid, uid) for sid, uid in before}
+            stages.append(("profiles", profile_key, system, prompt, versions))
         old = self.memory_lines(session_id, session_labels=session_labels)
         old_ids = {int(line.split(" ", 1)[0][1:]) for line in old}
-        fields = ("content", "context", "session_id", "persona_id", "scope", "tier", "type", "source", "pinned")
+        fields = ("content", "context", "session_id", "persona_id", "scope", "tier", "type", "source", "pinned",
+                  "node_id", "created_at", "emotion", "weight", "participants", "related_users", "keywords")
         def version(mid):
             row = self.memory.db.memory_by_id(mid)
             return {key: row.get(key) for key in fields} if row else None
         versions = {mid: version(mid) for mid in old_ids}
-        life_key = "life-review:" + hashlib.sha256(json.dumps(
-            [session_id, result.mode, versions], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        life_key = self._life_review_key(session_id, result.mode, versions)
         if old and self.world.memory.sleep_review and not self.memory.db.kv_get(life_key):
             system, prompt = self.prompts.build_life_review_prompt(
                 memories=old, persona_text=persona_text, mode=result.mode)
@@ -333,12 +351,28 @@ class Consolidator:
                 if self.memory.db.kv_get(batch_key):
                     continue
                 if kind == "profiles":
-                    for snapshot in observed.values():
-                        self.memory.db.observe_source(snapshot, eligible=True)
-                    for sid, local in self._scoped_profile_updates(session_id, payload, records, result).items():
-                        known = self.known_ids(sid, [row for row in records if str(row.get("origin") or session_id) == sid])
+                    source_ids = [row["source_id"] for row in records]
+                    if self.memory.db.reviewed_profile_sources(source_ids, result.mode):
+                        result.skipped.append("部分原话已被另一轮整理，本次结果不保存，剩余原话留待下次")
+                        continue
+                    if not self._sources_current({sid: originals[sid] for sid in source_ids}):
+                        result.skipped.append("原话来源或使用资格已改变，本次人物整理结果不保存")
+                        continue
+                    for source_id in source_ids:
+                        if source_id in observed:
+                            self.memory.db.observe_source(observed[source_id], eligible=True)
+                    updates = self._scoped_profile_updates(session_id, payload, records, result)
+                    changed = {key for key, value in before.items() if self._profile_version(*key) != value}
+                    for sid, local in updates.items():
+                        for uid in {uid for where, uid in changed if where == sid}:
+                            for field in ("facts", "relations"):
+                                local[field] = [item for item in local[field] if str(item.get("user_id")) != uid]
+                            local["digests"].pop(uid, None)
+                            result.skipped.append(f"人物资料已改变，保留当前资料：{sid} / {uid}")
+                        known = {uid for where, uid in before if where == sid and (where, uid) not in changed}
                         apply = self._apply_nap if result.mode == "nap" else self._apply_full
                         apply(sid, local, result, now=stamp, known=known)
+                    self.memory.db.mark_profile_reviewed(source_ids, result.mode, stamp)
                 else:
                     valid = {mid for mid, original in before.items() if original is not None
                              and version(mid) == original}
@@ -351,7 +385,7 @@ class Consolidator:
                 self.memory.db.kv_set(batch_key, {"at": stamp})
                 if kind == "life":
                     after = {mid: version(mid) for mid in before}
-                    after_key = "life-review:" + hashlib.sha256(json.dumps([session_id, result.mode, after], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+                    after_key = self._life_review_key(session_id, result.mode, after)
                     self.memory.db.kv_set(after_key, {"at": stamp})
                 result.ok = True
         if dry_run:
@@ -359,6 +393,37 @@ class Consolidator:
             result.parsed = parsed
             result.note = "预览：画像与生活分开整理，没有写库"
         return result
+
+    def _profile_version(self, session_id: str, user_id: str) -> dict | None:
+        """Ignore normal presence counters; protect edits to stable contact data."""
+        row = self.profiles.profile(session_id, user_id)
+        if row is None:
+            return None
+        payload = row.get("payload") or {}
+        return {"digest": row.get("digest"), "first_seen_at": row.get("first_seen_at"),
+                "identity": {key: payload.get(key) for key in ("note", "call_me", "call_him")},
+                "facts": self.profiles.facts(session_id, user_id),
+                "bonds": self.profiles.bonds(session_id, user_id)}
+
+    def _sources_current(self, originals: dict[str, dict]) -> bool:
+        for source_id, original in originals.items():
+            current = self.memory.db.source_record(source_id)
+            if current is not None and (not current["eligible"] or any(
+                current.get(key) != value for key, value in original.items() if key != "eligible"
+            )):
+                return False
+            if current is None and original.get("eligible"):
+                return False
+        return True
+
+    @staticmethod
+    def _life_review_key(session_id: str, mode: str, versions: dict) -> str:
+        # Recall strengthens weight automatically. It is checked during an
+        # in-flight review but does not turn unchanged material into a new batch.
+        material = {mid: {key: value for key, value in row.items() if key != "weight"} if row else None
+                    for mid, row in versions.items()}
+        return "life-review:" + hashlib.sha256(json.dumps(
+            [session_id, mode, material], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
     @staticmethod
@@ -377,7 +442,6 @@ class Consolidator:
         sessions = set(self._sessions_of(session_id)) | {session_id}
         origin_records = {sid: [row for row in records if str(row.get("origin") or session_id) == sid]
                           for sid in sessions}
-        known = {sid: self.known_ids(sid, rows) for sid, rows in origin_records.items()}
         local = {sid: {"facts": [], "relations": [], "affinity": [], "digests": {}} for sid in sessions}
 
         def normalized(text):
@@ -396,13 +460,9 @@ class Consolidator:
             if item.get("evidence") and not matches:
                 return ""
             if explicit:
-                return explicit if explicit in sessions and uid in known[explicit] and (not matches or explicit in matches) else ""
+                return explicit if explicit in matches else ""
             if len(matches) == 1:
                 return next(iter(matches))
-            if not matches:
-                candidates = {sid for sid in sessions if uid in known[sid]}
-                if len(candidates) == 1:
-                    return next(iter(candidates))
             return ""
 
         for field in ("facts", "relations", "affinity"):
@@ -417,10 +477,14 @@ class Consolidator:
                     local[sid][field].append(item)
                 else:
                     result.skipped.append(f"材料里没这个人或会话来源不明确，未修改{field}：{item.get('user_id')}")
-        for uid, text in (payload.get("digests") or {}).items() if isinstance(payload.get("digests"), dict) else []:
-            sid = destination({"user_id": str(uid)})
+        digests = payload.get("digests")
+        rows = [{"user_id": str(uid), "text": text} for uid, text in digests.items()] if isinstance(digests, dict) else self._rows(digests)
+        for item in rows[:40]:
+            sid = destination(item)
             if sid:
-                local[sid]["digests"][str(uid)] = text
+                local[sid]["digests"][str(item.get("user_id"))] = item.get("text")
+            else:
+                result.skipped.append(f"速写缺少明确的本人发言来源：{item.get('user_id')}")
         return {sid: part for sid, part in local.items()
                 if any(part.get(field) for field in ("facts", "relations", "digests"))}
 
@@ -462,16 +526,23 @@ class Consolidator:
     ) -> None:
         for item in self._rows(payload.get("merge")):
             keep = self._int(item.get("keep_id"))
-            drops = [self._int(value) for value in (item.get("drop_ids") or [])]
-            drops = [value for value in drops if value]
+            requested = item.get("drop_ids") or []
+            if not isinstance(requested, list):
+                result.skipped.append("合并编号格式不正确，保留原记录")
+                continue
+            drops = {self._int(value) for value in requested} - {keep}
             text = str(item.get("text") or "").strip()
             allowed = payload.get("_review_ids", set())
             kept = self.memory.db.memory_by_id(keep) if keep in allowed else None
             if kept is None or kept.get("pinned") or not text:
                 continue
-            drops = [value for value in drops if value != keep and value in allowed]
-            drops = [value for value in drops if (row := self.memory.db.memory_by_id(value))
-                     and not row.get("pinned") and all(row.get(key) == kept.get(key) for key in ("session_id", "persona_id", "scope", "type"))]
+            compatible = {value for value in drops if value in allowed and (row := self.memory.db.memory_by_id(value))
+                          and not row.get("pinned") and all(row.get(key) == kept.get(key) for key in ("session_id", "persona_id", "scope", "type", "node_id"))}
+            if drops != compatible:
+                # Reject the whole rewrite: its text may have combined material
+                # from a protected or unrelated record, including the keep row.
+                result.skipped.append("合并包含固定、未提供或不同归属/地点的记录，保留本组合并原文")
+                continue
             self.memory.fold(keep, text=text[:200], when=now)
             for drop in drops:
                 sources = self.memory.db.memory_sources(drop)["sources"]
