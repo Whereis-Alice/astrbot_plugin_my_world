@@ -25,7 +25,7 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
     const items = data.items || [], active = items.filter(item => !CLOSED.has(item.status));
     $("life-count").textContent = `${active.length} 件牵挂 · ${items.filter(item => item.status === "completed").length} 件完成`;
     $("life-now-title").textContent = data.activity?.label || "自由休息";
-    $("life-now-reason").textContent = data.reason || "在日常的节奏里，留一点不必赶路的时间。";
+    $("life-now-reason").textContent = data.reason || data.choice?.reason || "在日常的节奏里，留一点不必赶路的时间。";
     $("life-recovery").textContent = data.recovery?.note || "";
     $("life-recovery").classList.toggle("hidden", !data.recovery?.note);
     const featured = active.find(item => item.status === "working") || active.find(item => item.status === "active");
@@ -157,7 +157,7 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
     selected = null; opener = event.currentTarget; body.replaceChildren(); $("life-drawer-title").textContent = "日子留下的东西";
     drawerSession = data.session; drawerRevision++;
     const interests = Object.values(data.interests || {}).filter(item => (item.days || []).length >= 3 && item.sessions >= 3 && item.minutes >= 45);
-    body.append(line("慢慢形成的兴趣", interests.length ? "至少三个不同日子里的实际投入，才会在后续选择中成为参考。" : "还在积累；一时兴起不会改变她的长期喜好。"));
+    body.append(line("日子留下的活动经验", interests.length ? "多日的实际投入可提供温和节奏参考；做得多不等于喜欢，原有人设始终优先。" : "还在积累；一时兴起不会改变她的长期喜好。"));
     for (const item of interests) body.append(line(item.label, `${item.days.length} 天 · ${item.sessions} 次 · 累计 ${Math.round(item.minutes)} 分钟`));
     body.append(line("生活的阶段记录", (data.artifacts || []).length ? "这些记录证明世界内做过的活动；外部文件、发送和购物以真实结果为准。" : "完成事项后，实际活动的阶段结果会留在这里。"));
     for (const item of [...(data.artifacts || [])].reverse()) body.append(line(item.label, `${item.result}\n${TIME(item.at)}`));

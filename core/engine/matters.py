@@ -10,6 +10,7 @@ from .. import life_matters as matters
 from ..config_scope import session_scoped
 from ..json_actions import extract_json_object
 from ..life import life_role
+from ..life_policy import choose_life
 from ..model_calls import model_context
 from ..pathfinding import find_path
 from ..planner import create_plan
@@ -18,12 +19,18 @@ from .models import TickOutcome
 
 
 class MattersMixin:
-    def _matter_can_work(self, state) -> bool:
+    def life_choice(self, state) -> dict:
         thread = self._active_thread(state)
-        return (not state.is_sleeping and not state.current_action and not state.current_plan
-                and state.state == "idle" and state.energy >= .4
-                and not (thread and self._thread_critical(thread))
-                and not (self.world.sleep.mode == "autonomous" and state.sleep_rhythm.get("decision") == "sleep"))
+        schedules = [self._next_schedule(sid) for sid in self.group_sessions(state.session_id)]
+        minutes = [row["in_minutes"] for row in schedules if row is not None]
+        choice = choose_life(state, now=self._now(), critical=bool(thread and self._thread_critical(thread)),
+                             schedule_minutes=min(minutes) if minutes else None,
+                             sleep_requested=self.world.sleep.mode == "autonomous")
+        state.life_decision = choice
+        return choice
+
+    def _matter_can_work(self, state) -> bool:
+        return state.state == "idle" and self.life_choice(state)["kind"] in {"idle", "matter"}
 
     def life_seed_due(self, state: WorldState) -> bool:
         """One suggestion a day; transient failures get a bounded, delayed retry."""
@@ -255,7 +262,7 @@ class MattersMixin:
                 eligible.append(candidate)
             if not eligible:
                 return
-            item = min(eligible, key=lambda m: (float(m.get("last_attempt_at") or 0), float(m.get("at") or 0)))
+            item = min(eligible, key=lambda m: (m.get("kind") != "promise", float(m.get("last_attempt_at") or 0), float(m.get("at") or 0)))
             item["last_attempt_at"] = now
             review = bool(item.get("needs_review"))
             if item.get("steps") and not item.get("needs_replan") and not review:
@@ -274,12 +281,14 @@ class MattersMixin:
             with model_context("life_matter", f"为生活事项 {snapshot['id']} 安排可执行的小步", session_id):
                 raw = await self._ask_judge(session_id,
                     "你为角色安排一个能持续数天的个人项目，只输出JSON。不要把计划写成已经发生的事实。"
+                    "基础人设的喜恶、价值观和能力优先；经历只用于温和延伸，不得改变身份、性格或强迫培养新爱好。"
                     "只能从候选动作与地点安排真实适配的小步；不可借看书完成发照片、购物、联系他人等外部操作。"
                     "外部操作或缺少能力时返回blocked及原因，等待实际对话/工具结果。"
                     '格式：{"motivation":"一句动机","steps":[{"text":"具体下一步","action":"候选ID",'
                     '"node":"候选地点","minutes":20,"day_offset":0}],"blocked":""}。最多6步，每步5到60分钟。'
                     "day_offset是从今天起经过几天才适合做，可跨多日，不要为填满日程而强行赶完。",
-                    json.dumps({"matter": snapshot, "available": candidates}, ensure_ascii=False))
+                    json.dumps({"persona": (await self._persona_text(session_id))[:6000],
+                                "matter": snapshot, "available": candidates}, ensure_ascii=False))
         payload = extract_json_object(raw or "") or {}
         async with self.session_state(session_id) as state:
             item = matters.find(state, snapshot["id"])
@@ -383,6 +392,11 @@ class MattersMixin:
             interest = state.life_interests.setdefault(definition.id, {"label": definition.name, "sessions": 0, "minutes": 0, "days": []})
             interest.update(sessions=interest["sessions"] + 1, minutes=interest["minutes"] + minutes, last_at=self._now())
             interest["days"] = sorted(set([*interest.get("days", []), self._today_key(self._now())]))[-30:]
+            # Receipts describe practiced circumstances, not a rewritten preference or personality.
+            hour = self.local_now().hour
+            period = "早晨" if 5 <= hour < 11 else "白天" if 11 <= hour < 18 else "晚间" if 18 <= hour < 23 else "夜间"
+            interest["episodes"] = [*interest.get("episodes", []), {"at": self._now(), "period": period,
+                "day": self._today_key(self._now()), "minutes": minutes, "node": state.node_id, "action": definition.id}][-30:]
             state.life_interests = dict(sorted(state.life_interests.items(), key=lambda pair: pair[1].get("last_at", 0))[-40:])
         matter_id, step_id = action.get("matter_id"), action.get("matter_step_id")
         if not matter_id or action.get("type") == "walk_to":

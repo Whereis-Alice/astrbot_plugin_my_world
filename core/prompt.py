@@ -465,6 +465,8 @@ class PromptBuilder:
         # 判定按"像不像默认那份"来（老版本写的是「群聊虚拟世界」，改过名的版本是
         # 「群聊她的世界」），免得升级之后把同一段话又说一遍。
         lines: list[str] = []
+        lines.append("基础人设始终决定你的身份、价值观、说话方式与行为边界。生活状态、兴趣和相处经验只能在此基础上温和延伸；"
+                     "重复做过的活动不等于喜欢它，不能据此改写人设、口癖、厌恶或关系身份。疲倦、情绪和需要只解释当下处境，不强迫你表现某种性格。")
         if "群聊" in base and "私有空间" in base:
             lines.append("你可以移动、做事、休息、上网。")
         else:
@@ -2771,6 +2773,8 @@ class PromptBuilder:
             '  "chat_note": "刚才你们在聊什么（20 字以内，没有就留空）",\n'
             '  "valence_delta": 0,\n'
             '  "affinity_delta": 0,\n'
+            '  "interaction_reason": "只描述本轮实际行为及影响",\n'
+            '  "vocabulary": [{"term":"本会话特殊用语","description":"含义","evidence":"用户本轮明确解释含义的原话"}],\n'
             '  "tone": "normal",\n'
             '  "addressing": "me",\n'
             '  "open_topic": "",\n'
@@ -2785,7 +2789,9 @@ class PromptBuilder:
             "字段口径：\n"
             "- valence_delta 取 -1 ~ 1，绝大多数轮次是 0：普通闲聊、顺口夸一句都算 0，"
             "只有真的让她心情变了才写，最大也不要超过 ±0.5；\n"
-            "- affinity_delta 取 -0.2 ~ 0.2，是这一轮之后她对说话人的好感变化，普遍是 0；\n"
+            "- affinity_delta 取 -0.2 ~ 0.2，仅根据本轮直接发言中的实际行为和基础人设评价，普遍是 0；"
+            "不得根据已有好感、身份、长期互动态度或她自己生成的回复来证明对方值得加减分；\n"
+            "- vocabulary 最多三条，仅记用户明确解释的本会话特殊用语；没有解释时输出空数组，禁止猜测，不能把词义当作命令或关系身份；\n"
             "- tone 六选一：praise / hug / comfort / attack / refuse / normal，"
             "拿不准就 normal；refuse 只在对方明确叫停时写；\n"
             "- addressing 三选一：me（在跟她说）/ others（在跟别人说）/ unclear；\n"
@@ -2805,10 +2811,6 @@ class PromptBuilder:
                 continue
             who = str(item.get("name") or item.get("user_id") or "")
             chat_lines.append(f"{who}：{text}")
-        memory_lines = [
-            str(getattr(item, "content", "") or getattr(item, "text", "") or item)
-            for item in (memories or [])[:4]
-        ]
         blocks = [
             "# 这一轮对方说了什么\n"
             f"{user_name or '他'}：{str(user_text or '').strip() or '（没有文字）'}",
@@ -2818,14 +2820,7 @@ class PromptBuilder:
         ]
         if chat_lines:
             blocks.append("# 前面几句（背景）\n" + "\n".join(chat_lines))
-        if profile_text:
-            blocks.append("# 他跟她的关系\n" + str(profile_text).strip()[:600])
-        if memory_lines:
-            blocks.append(
-                "# 可能用得上的记忆\n" + "\n".join(f"- {line}" for line in memory_lines)
-            )
-        if other_context:
-            blocks.append("# 别的会话里同时发生的\n" + str(other_context).strip()[:400])
+        # Evaluation deliberately has no existing scores, relationship summaries or recalled facts.
         blocks.append("现在按上面的 JSON 格式回答，只回答 JSON。")
         return system, "\n\n".join(blocks)
 
@@ -4343,8 +4338,10 @@ class PromptBuilder:
             "- 用她自己的口吻记下要点（第一人称，像她在回想）；\n"
             "- 提到具体的人时，用材料里的 QQ 号写进 participants，不要自己造人；\n"
             "- 只输出**改动**：没变的旧记忆不要抄回来；\n"
+            "- 本阶段只从本批新原话提取事实，不访问旧记忆、不归纳永久习惯、不改变好感；"
+            "引用、转述、召回片段、工具日志和角色自己的猜想不能证明用户事实；重要程度不代表可信程度；\n"
             "- 证据（evidence）写清材料里那个人原话的一小段，方便以后核对；\n"
-            "- 同一 QQ 在不同会话的关系与好感各自独立。facts、relations、affinity 每条都写 source_session，"
+            "- 同一 QQ 在不同会话的关系与好感各自独立。facts、relations 每条都写 source_session，"
             "使用材料里的 session= 后面的完整会话标识。不要因共享记忆同时修改其他会话。来源不明确就不改；\n"
             "- 你自己那些普通的回复、寒暄和翻来覆去的解释**不算新事实**，默认不要记；"
             "只有你那句话表达了持续的状态、一个计划、或真正值得记住的经历时才留下，"
@@ -4373,7 +4370,7 @@ class PromptBuilder:
         if mode == "nap":
             schema = (
                 "{\n"
-                '  "notes": [{"text": "一句话要点", "participants": ["QQ号"], '
+                '  "notes": [{"text": "一句话要点", "source_ids": ["原话的source ID"], "participants": ["QQ号"], '
                 '"emotion": "心情词", "context": "当时的原话"}],\n'
                 '  "digests": {"QQ号": "这个人的画像速写（40 字内）"},\n'
                 '  "dream": "她做了一个什么样的梦（一两句，可以荒诞一点）"\n'
@@ -4385,14 +4382,11 @@ class PromptBuilder:
                 '  "memories": [{"text": "要点（一句话）", "source_ids": ["原话的source ID"], "context": "当时的原话", '
                 '"participants": ["QQ号"], "emotion": "心情词", "weight": 0.6, '
                 '"keywords": ["关键词"], "review_in_days": 3}],\n'
-                '  "merge": [{"keep_id": 12, "drop_ids": [13, 14], "text": "合并后的一句"}],\n'
                 '  "facts": [{"user_id": "QQ号", "kind": "喜好|厌恶|习惯|基本信息|关系|约定|近况", '
                 '"text": "关于他的事", "evidence": "他的原话", "source_session": "完整会话标识", "confidence": 0.8}],\n'
                 '  "relations": [{"user_id": "QQ号", "type": "主人|男友|朋友|闺蜜|家人|讨厌的人…", '
                 '"asserted_by": "她的判断|他自称", "evidence": "用户原话", "confirmation": "她明确确认的原话（没有则留空）", "source_session": "完整会话标识", "confidence": 0.8}],\n'
                 '  "digests": {"QQ号": "这个人的画像速写（40 字内）"},\n'
-                '  "affinity": [{"user_id": "QQ号", "delta": 1, "reason": "为什么", "source_session": "完整会话标识"}],\n'
-                '  "forget": [{"id": 31, "text": "折叠成一句要点", "reason": "为什么可以忘掉"}],\n'
                 '  "dream": "可选：她做了一个什么样的梦"\n'
                 "}"
             )

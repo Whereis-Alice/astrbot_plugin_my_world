@@ -384,6 +384,7 @@ class DialoguePlan:
     """
 
     ok: bool = False
+    recalled_ids: list[int] = field(default_factory=list)
     system_prompt: str = ""
     user_prompt: str = ""
     runtime_part: str = ""

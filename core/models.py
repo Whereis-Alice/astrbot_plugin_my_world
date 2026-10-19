@@ -1756,6 +1756,8 @@ class FriendshipStage(Permissive):
 
 
 class ProfileConfig(Permissive):
+    interaction_learning: bool = True
+    vocabulary_learning: bool = True
     """用户画像 + 关系 + 好感度 + 回想回访（见 ``core/profile.py``）。"""
 
     enabled: bool = True

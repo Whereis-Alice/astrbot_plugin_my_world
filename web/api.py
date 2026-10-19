@@ -208,6 +208,9 @@ class WebApiMixin(LifeApiMixin):
         register(f"/{p}/state/action", self.api_state_action, ["POST"], "手动触发动作")
         register(f"/{p}/logs", self.api_logs, ["GET"], "事件日志")
         register(f"/{p}/model-calls", self.api_model_calls, ["GET"], "模型调用与 token 用量")
+        register(f"/{p}/decision-traces", self.api_decision_traces, ["GET"], "决策与执行记录")
+        register(f"/{p}/social-learning", self.api_social_learning, ["GET"], "相处习惯与会话词典")
+        register(f"/{p}/social-learning/update", self.api_social_update, ["POST"], "修正相处习惯与会话词典")
         register(f"/{p}/map/inspect", self.api_map_inspect, ["POST"], "检查草稿路线、可达性与单向出口")
         register(f"/{p}/ticks", self.api_ticks, ["GET"], "运行记录：最近几拍 tick 的明细")
         register(f"/{p}/logs/export", self.api_logs_export, ["GET"], "导出事件日志")
@@ -1166,6 +1169,7 @@ class WebApiMixin(LifeApiMixin):
             item["until_text"] = self.engine._date_text(item.get("until"))
         payload["bonds"] = bonds
         payload["affinity_logs"] = store.affinity_logs(session_id, user_id, limit=50)
+        payload["interaction"] = await self.db.call("interaction_detail", session_id, user_id)
         # 「她想不想这个人」：通讯录里一眼能看到，不用去状态页翻
         state = await self.engine.load_state(session_id, cold_start=False)
         # 「她记着他一笔账」：记的账是分人的，这里只回这个人的那条

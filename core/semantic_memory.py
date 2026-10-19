@@ -35,12 +35,12 @@ class SemanticMemory:
         self.retry_at = 0.0
         self.status = "未启用"
 
-    def _key(self, session: str, persona: str, query: str, mode: str = "") -> tuple:
+    def _key(self, session: str, persona: str, query: str, mode: str = "", *, automatic: bool = False) -> tuple:
         config = self.memory.world.memory
-        return session, persona, revision(query), config.semantic_endpoint, config.semantic_model, mode or self.memory.world.memory_scope_mode
+        return session, persona, revision(query), config.semantic_endpoint, config.semantic_model, mode or self.memory.world.memory_scope_mode, config.automatic_recall if automatic else "explicit"
 
-    def cached(self, session: str, persona: str, query: str, *, mode: str = "") -> dict[int, float]:
-        key = self._key(session, persona, query, mode)
+    def cached(self, session: str, persona: str, query: str, *, mode: str = "", automatic: bool = False) -> dict[int, float]:
+        key = self._key(session, persona, query, mode, automatic=automatic)
         scores = self.scores.get(key, {})
         if not scores or time.time() - self.score_times.get(key, 0) > 300:
             return {}
@@ -95,12 +95,14 @@ class SemanticMemory:
                 pass  # A ledger storage failure must not discard facts or disable lexical recall.
         return values
 
-    async def prepare(self, session: str, persona: str, query: str, *, mode: str = "") -> None:
+    async def prepare(self, session: str, persona: str, query: str, *, mode: str = "", automatic: bool = False) -> None:
         config = self.memory.world.memory
         if not config.semantic_enabled or not config.semantic_endpoint or not config.semantic_model or not query.strip() or time.time() < self.retry_at:
             return
-        key = self._key(session, persona, query, mode)
-        if self.cached(session, persona, query, mode=mode):
+        if automatic and (config.automatic_recall == "manual" or config.recall_max_chars == 0):
+            return
+        key = self._key(session, persona, query, mode, automatic=automatic)
+        if self.cached(session, persona, query, mode=mode, automatic=automatic):
             return
         scope = key[:2]
         lock = self.locks.setdefault(scope, asyncio.Lock())
@@ -111,6 +113,8 @@ class SemanticMemory:
                 # Apply the exact same privacy rules BEFORE sending any text to an embedding provider.
                 candidates = await asyncio.to_thread(self.memory._query, session, persona, mode or self.memory.world.memory_scope_mode,
                     session_ids=self.memory.sessions(session))
+                if automatic and config.automatic_recall == "life_only":
+                    candidates = [row for row in candidates if row.get("type") != "interaction"]
                 if not candidates:
                     return
                 model_key = revision(config.semantic_endpoint + "|" + config.semantic_model)

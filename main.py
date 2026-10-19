@@ -120,6 +120,7 @@ from .core.request_context import (
 )
 from .adapters.commands import AstrBotCommands
 from .adapters.llm import AstrBotLLM
+from .adapters.reflection import ReflectionMixin
 from .core.model_call_runtime import observe_native_response
 from .core.model_calls import call_context, model_operation
 from .adapters.messenger import AstrBotMessenger
@@ -330,7 +331,7 @@ def _extra_components(chain: Any, *, skip_plain: bool = True) -> list[Any]:
     "给 Bot 一个私有空间、动作、日程、场景记忆和工具能力，让 ta 像住在群里一样生活。",
     PLUGIN_VERSION,
 )
-class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, Star):
+class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
     def __init__(self, context: Context, config: AstrBotConfig) -> None:
         super().__init__(context, config)
         self.config = config
@@ -1451,6 +1452,8 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, Star):
         # 不调大模型、不执行动作，也不交给主人格替她熬夜聊天。
         sleep_reply = await self.engine.sleep_gate(ctx)
         if sleep_reply is not None:
+            self.engine.decision_trace(session_id, "gate", "silent" if not sleep_reply.messages else "fixed_reply",
+                                       sleep_reply.reason, mode=sleep_reply.mode)
             echo = self.engine.take_pending_echo(session_id)
             if sleep_reply.messages or echo:
                 # 睡觉时的固定文案也是在回这条消息，同样按开关带引用
@@ -1506,6 +1509,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, Star):
             await self._takeover_reply_legacy(event, req, ctx, session_id, incoming)
             return
         if self.engine.was_absorbed(incoming):
+            self.engine.decision_trace(session_id, "gate", "merged", "已并入另一轮回复，不重复发送")
             if self.debug:
                 self.logger.info(
                     f"[my_world] 这条被合并进上一次回复了，不单独回 session={session_id}"
@@ -1521,9 +1525,14 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, Star):
                 history=list(getattr(req, "contexts", None) or []),
                 inject_only=True,
             )
+        except Exception as exc:
+            self.engine.decision_trace(session_id, "prepare", "error", "准备回复失败", error=type(exc).__name__)
+            raise
         finally:
             self.engine.weaver_injecting = False
         if isinstance(plan, ReplyOutcome):
+            self.engine.decision_trace(session_id, "gate", "error" if plan.error else "handled" if plan.messages else "silent",
+                                       str(plan.error or "由世界事件处理"))
             # 门禁 / 事件线提前认领了这一条：插件自己把该说的说完，然后不再交给宿主。
             pending = [
                 str(item)
@@ -1553,6 +1562,9 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, Star):
         # 合并了后续消息时，宿主的 req.prompt 必须换成完整 batch，不能只留第一条。
         if len(getattr(plan, "batch", None) or []) > 1 and plan.user_prompt.strip():
             req.prompt = plan.user_prompt
+            # Before/after injection belongs to Anamnesis, not to a participant's new message.
+            if prompt_injection:
+                _append_extra_text(req, prompt_injection)
         # 换人设：宿主那份 persona 被摘掉，其余（工具说明、技能、安全提示、
         # 世界树 / helper_tools 之类写进 system_prompt 的内容）原样保留。
         preserved = _drop_persona_instructions(
@@ -1570,13 +1582,17 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, Star):
                 "session_id": session_id,
                 "user_id": ctx.user_id,
                 "user_name": ctx.user_name,
-                "user_text": ctx.text,
+                "user_text": ctx.raw_text or ctx.text,
+                "interaction_entries": list(plan.batch),
+                "recalled_ids": list(plan.recalled_ids),
                 "persona_id": ctx.persona_id,
                 "started_at": time.time(),
                 "model_attribution": call_context(),
                 "tools": [],
             },
         )
+        self.engine.decision_trace(session_id, "prepare", "awaiting_native", "已交给 AstrBot 原生 Agent",
+                                   memory_ids=list(plan.recalled_ids), message_ids=[str(row.get("message_id") or "") for row in plan.batch])
         if self.debug:
             self.logger.info(
                 f"[my_world] 注入接管 {session_id}："
@@ -1772,6 +1788,8 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, Star):
             turn["provider_reasoning"] = str(
                 getattr(response, "reasoning_content", "") or ""
             )
+        self.engine.decision_trace(str(turn.get("session_id") or ""), "response", "generated", "已观察到原生最终响应，等待发送",
+                                   trace_id=(turn.get("model_attribution") or {}).get("trace_id", ""))
         if self.debug:
             text = str(turn.get("reply") or "")
             if text:
@@ -1880,6 +1898,15 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, Star):
         except Exception as exc:
             self.logger.debug(f"[my_world] 推进水位线失败：{exc}")
         reply = str(turn.get("reply") or "").strip()
+        self.engine.decision_trace(session_id, "send", "sent", "已观察到宿主发送完成",
+                                   trace_id=(turn.get("model_attribution") or {}).get("trace_id", ""),
+                                   tools=[{"name": item.get("name", ""), "ok": item.get("ok")}
+                                          for item in (turn.get("tools") or []) if isinstance(item, dict)])
+        if turn.get("recalled_ids"):
+            try:
+                await self.db.call("mark_recalled", turn["recalled_ids"], when=time.time())
+            except Exception as exc:
+                self.logger.debug(f"[my_world] 召回命中未保存：{type(exc).__name__}")
         if reply:
             try:
                 await self.engine.record_self_reply(
@@ -1890,40 +1917,6 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, Star):
             except Exception as exc:
                 self.logger.warning(f"[my_world] 写回她说的话失败：{exc}")
         self._spawn_reflection(turn)
-
-    def _spawn_reflection(self, turn: dict[str, Any]) -> None:
-        """把回合复盘放到后台：她说完就完事，复盘慢一点不影响聊天。"""
-
-        async def run() -> None:
-            try:
-                result = await self.engine.reflect_turn(
-                    str(turn.get("session_id") or ""),
-                    user_id=str(turn.get("user_id") or ""),
-                    user_name=str(turn.get("user_name") or ""),
-                    user_text=str(turn.get("user_text") or ""),
-                    reply_text=str(turn.get("reply") or ""),
-                    reasoning_text=str(turn.get("provider_reasoning") or ""),
-                    tool_trace=list(turn.get("tools") or []),
-                    persona_id=str(turn.get("persona_id") or ""),
-                )
-                if result and self.debug:
-                    inner = str(dict(result.get("reasoning") or {}).get("inner") or "")
-                    self.logger.info(
-                        f"[my_world] 回合复盘："
-                        f"{result.get('tone') or 'normal'}｜{inner}"
-                    )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                self.logger.debug(f"[my_world] 回合复盘失败：{exc}")
-
-        task = asyncio.create_task(run())
-        self._reflection_tasks.add(task)
-        task.add_done_callback(self._reflection_tasks.discard)
-        if len(self._reflection_tasks) > 16:
-            for old in list(self._reflection_tasks)[:8]:
-                if not old.done():
-                    old.cancel()
 
     async def _send_debug_live(self, session_id: str, message: str) -> bool:
         """把调试行立刻发到群里（引擎那边一发生就调它）。"""

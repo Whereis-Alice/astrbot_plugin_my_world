@@ -1,4 +1,5 @@
 import { createContactWorkbench } from "./contact-workbench.js";
+import { createSocialLearning } from "./social-learning.js";
 import { createRelationshipsPage } from "./relationships.js";
 import { createModelCallsPage } from "./model-calls.js";
 import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js";
@@ -15604,6 +15605,17 @@ function renderContactDetail(data) {
   noteHistory.dataset.act = "weaver-history";
   noteHistory.dataset.field = "备注";
   managedActions.appendChild(noteHistory);
+  const interactionHistory = el("button", "ghost tiny", "相处习惯与互动依据");
+  const interactionSession = $("contacts-session").value;
+  const interactionUser = data.user_id;
+  interactionHistory.onclick = () => socialLearning.openPerson(interactionSession, interactionUser);
+  managedActions.appendChild(interactionHistory);
+  if (data.interaction?.habits?.length) {
+    const habits = el("div", "contact-section");
+    habits.appendChild(el("h3", "", "相处习惯"));
+    for (const habit of data.interaction.habits) habits.appendChild(el("p", "", habit.text));
+    identitySection.appendChild(habits);
+  }
   identitySection.appendChild(managedActions);
 
   // 四、事实列表
@@ -19068,6 +19080,16 @@ function renderSettings() {
     { hint: "正好感在最近直接交谈后保留几天，再缓慢回落；负面情绪仍逐渐缓和。默认 7，0 = 不保留。", type: "number", min: 0, max: 366 },
   ));
   profileSection._fields.appendChild(friendshipEditor(world));
+  for (const [key, title, hint] of [
+    ["interaction_learning", "从互动学习相处习惯", "按本轮实际行为缓慢调整好感，积累依据后归纳相处方式；原有人设始终优先。关闭后暂停这两项学习。"],
+    ["vocabulary_learning", "会话词典", "从原话学习共同用语，只在当前会话命中时参考；可在记忆页维护。关闭后暂停学习与注入。"],
+  ]) {
+    profileSection._fields.appendChild(pillsField(
+      title, world.profile?.[key] === false ? "off" : "on",
+      [{key: "on", label: "开", hint}, {key: "off", label: "关", hint: "保留已有记录，暂停自动使用与学习。"}],
+      value => { world.profile = world.profile || {}; world.profile[key] = value === "on"; }, {},
+    ));
+  }
   profileSection._fields.appendChild(el("div", "sub-title", "想念"));
   [
     [
@@ -20932,7 +20954,13 @@ const relationshipsPage = createRelationshipsPage({
   },
 });
 
-const modelCallsPage = createModelCallsPage({root: $("tab-model-calls"), apiGet, el});
+const socialLearning = createSocialLearning({apiGet, apiPost, el, toast,
+  sessions: () => ui.sessions.map(item => ({value: item.session_id, label: contactSessionLabel(item)})),
+  resolveSession: value => groups().find(group => group.id === value)?.main_session || value,
+});
+$("memory-vocabulary").addEventListener("click", () => socialLearning.openVocabulary($("memory-session").value));
+$("calls-decisions").addEventListener("click", () => socialLearning.openDecisions($("calls-session").value));
+const modelCallsPage = createModelCallsPage({root: $("tab-model-calls"), apiGet, el, openDecisions: socialLearning.openDecisions});
 const lifePage = createLifePage({root: $("tab-life"), apiGet, apiPost, el, toast,
   getSession: () => $("status-session").value,
   openSettings: () => openLifeSettings({world: ui.config.world, el, openCustomDialog, markDirty}),

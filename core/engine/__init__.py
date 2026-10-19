@@ -132,6 +132,7 @@ from .group_chat import GroupChatMixin
 from .send import SendMixin
 from .snapshot import SnapshotMixin
 from .turn import TurnMixin
+from .social import SocialMixin
 
 # --- 兼容再导出：这些名字以前挂在 core.engine 上，测试与第三方仍按旧路径引用 ---
 from ..state import STATE_NAPPING as STATE_NAPPING
@@ -250,6 +251,7 @@ class MyWorldEngine(
     SendMixin,
     SnapshotMixin,
     TurnMixin,
+    SocialMixin,
     ScopedConfigMixin,
 ):
     """世界状态机。"""

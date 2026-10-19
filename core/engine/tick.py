@@ -83,6 +83,8 @@ class TickMixin:
             CRITICAL_TICK.reset(schedule_token)
         for session_id in [row.session_id for row in outcomes if row.summary.get("memory_due")]:
             self.queue_background("memory:" + self.state_key(session_id), lambda sid=session_id: self.flush_pending_memory(sid))
+        for session_id in self.tick_session_ids():
+            self.queue_background("social:" + self.state_key(session_id), lambda sid=session_id: self.maintain_social_learning(sid))
         for outcome in outcomes:
             await self._deliver(outcome)
         self._record_tick(outcomes)

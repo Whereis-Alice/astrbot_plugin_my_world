@@ -16,6 +16,22 @@ def stable_interests(state) -> list[dict]:
             and value.get("minutes", 0) >= 45][:8]
 
 
+def routine_hints(state) -> list[dict]:
+    """Repeated, dated circumstances are context, never a new identity or taste."""
+    hints = []
+    for item in stable_interests(state):
+        periods = {}
+        for episode in item.get("episodes", []):
+            if not isinstance(episode, dict) or not episode.get("day") or not episode.get("period"):
+                continue
+            periods.setdefault(episode["period"], set()).add(episode["day"])
+        if periods:
+            period, days = max(periods.items(), key=lambda pair: len(pair[1]))
+            if len(days) >= 3:
+                hints.append({"action": item["action"], "label": item["label"], "period": period, "days": sorted(days)})
+    return hints[:4]
+
+
 def history(item: dict, kind: str, text: str, now: float, **evidence: Any) -> None:
     item["history"] = [*item.get("history", []), {
         "at": now, "kind": kind, "text": str(text)[:500], **evidence,
@@ -121,8 +137,13 @@ def context_block(state, *, session_id: str, user_id: str = "", now: float = 0) 
             "可以自然提起，不要逐条念清单。涉及他人的事情只能在来源会话提及。\n" + "\n".join(rows[:6])) if rows else ""
     interests = stable_interests(state)
     if interests:
-        block += "\n# 从日子里积累的兴趣\n这些是实际多日投入，供选择空闲活动参考；人设与当前需要优先，不必每次重复。\n" + "\n".join(
+        block += "\n# 从日子里积累的活动经验\n这些只证明实际多日投入，不证明喜欢，更不能覆盖人设的喜恶、身份和说话方式。"
+        block += "符合原有人设时才可温和延伸为日常偏好；可改变或放下，不必每次重复。\n" + "\n".join(
             f"- {item['label']}：{len(item['days'])} 天、{item['sessions']} 次、累计 {item['minutes']:g} 分钟" for item in interests)
+    routines = routine_hints(state)
+    if routines:
+        block += "\n# 可参考的生活节奏\n以下是实际重复发生的时段，只在符合人设、困意和日程时作为轻微倾向；不能推断她喜欢或讨厌什么。\n" + "\n".join(
+            f"- {item['label']}曾在{len(item['days'])}个日期的{item['period']}进行，可以考虑沿用，也可以换一种安排。" for item in routines)
     artifacts = [item for item in state.life_artifacts.values() if item.get("session") == session_id][-3:]
     if artifacts:
         block += "\n# 已留下的生活阶段记录\n以下仅证明世界内活动，不代表产出了真实文件、寄出物品或完成外部操作。\n" + "\n".join(

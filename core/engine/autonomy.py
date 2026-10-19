@@ -53,6 +53,8 @@ class AutonomyMixin:
                 return None
             if self.world.sleep.mode == "autonomous" and state.sleep_rhythm.get("decision") == "sleep":
                 await self._run_rhythm_sleep(state, outcome)
+            elif self.life_choice(state)["kind"] in {"event", "schedule"}:
+                outcome.notes.append(state.life_decision["reason"])
             elif not self.proactive_chat_allowed(session_id):
                 outcome.notes.append("自主搭话已关闭，继续安静生活")
                 await self._quiet_rule_plan(state, node, outcome)

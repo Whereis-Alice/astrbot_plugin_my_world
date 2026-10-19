@@ -347,6 +347,7 @@ class WorldState:
     life_updated_at: float = 0.0
     life_recovery: dict[str, Any] = field(default_factory=dict)
     life_interests: dict[str, Any] = field(default_factory=dict)
+    life_decision: dict[str, Any] = field(default_factory=dict)
     life_artifacts: dict[str, Any] = field(default_factory=dict)
 
     last_say_limit: int = 0

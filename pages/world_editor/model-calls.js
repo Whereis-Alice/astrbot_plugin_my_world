@@ -1,5 +1,6 @@
 /** The model ledger: filter locally selected scopes, read provider-reported usage. */
 export const CALL_PURPOSES = {
+  interaction_style: "相处习惯归纳",
   life_matter: "生活事项",
   embedding: "语义记忆检索",
   chat: "对话回复", plan: "自主决策", tick: "生活推进", event: "事件推进与结算", consolidate: "睡眠整理",
@@ -14,7 +15,7 @@ const number = value => value == null ? "—" : Number(value).toLocaleString("zh
 const stamp = value => new Date(Number(value) * 1000).toLocaleString("zh-CN", {hour12: false});
 const duration = value => value < 1000 ? `${number(value)} ms` : `${(Number(value) / 1000).toFixed(1)} s`;
 
-export function createModelCallsPage({ root, apiGet, el }) {
+export function createModelCallsPage({ root, apiGet, el, openDecisions }) {
   const $ = id => root.querySelector(`#${id}`);
   let page = 1, revision = 0, searchTimer, timer, data;
   const list = $("calls-list");
@@ -112,6 +113,11 @@ export function createModelCallsPage({ root, apiGet, el }) {
       field(fields, "调用链 ID", item.trace_id); field(fields, "请求次数", `第 ${item.attempt || 1} 次尝试`);
       field(fields, "会话标识", item.session_id || "编辑器 / 后台任务"); field(fields, "响应 ID", item.response_id);
       content.append(path, fields);
+      if (openDecisions && item.session_id) {
+        const decisions = el("button", "ghost small", "查看相关决策");
+        decisions.onclick = () => openDecisions(item.session_id, item.trace_id || "");
+        content.append(decisions);
+      }
       if (item.coverage && item.coverage !== "direct") content.append(el("p", "calls-coverage-note", "这是原生 Agent / 工具循环的最终响应记录。中间轮次、内部重试及其用量未由当前公开钩子提供，不能视为整个任务的总消耗。"));
       if (item.usage?.partial) content.append(el("p", "calls-coverage-note", "Provider 只返回了部分用量字段，汇总保留已提供的数值。"));
       if (item.error) content.append(el("p", "calls-error", item.error));

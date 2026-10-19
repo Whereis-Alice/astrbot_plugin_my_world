@@ -19,6 +19,7 @@ from typing import Any, Iterable
 from .model_call_store import MODEL_CALL_SCHEMA, ModelCallStoreMixin
 from .background import BackgroundStoreMixin
 from .evidence import EVIDENCE_SCHEMA, EvidenceStoreMixin
+from .social_learning import SOCIAL_SCHEMA, SocialStoreMixin
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS world_state (
@@ -238,7 +239,7 @@ def _fact_row(row: sqlite3.Row) -> dict[str, Any]:
     return item
 
 
-class Database(ModelCallStoreMixin, BackgroundStoreMixin, EvidenceStoreMixin):
+class Database(ModelCallStoreMixin, BackgroundStoreMixin, EvidenceStoreMixin, SocialStoreMixin):
     """同步 sqlite 封装。调用方应通过 AsyncDatabase 使用，避免阻塞事件循环。"""
 
     def __init__(self, path: str | Path) -> None:
@@ -255,7 +256,7 @@ class Database(ModelCallStoreMixin, BackgroundStoreMixin, EvidenceStoreMixin):
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=30000")
         conn.execute("PRAGMA synchronous=NORMAL")
-        conn.executescript(SCHEMA + MODEL_CALL_SCHEMA + EVIDENCE_SCHEMA)
+        conn.executescript(SCHEMA + MODEL_CALL_SCHEMA + EVIDENCE_SCHEMA + SOCIAL_SCHEMA)
         conn.commit()
         self._migrate(conn)
         return conn
@@ -940,6 +941,7 @@ class Database(ModelCallStoreMixin, BackgroundStoreMixin, EvidenceStoreMixin):
     def delete_user_profile(self, *, group_id: str, user_id: str) -> int:
         """把一个人整个忘掉（画像 + 事实 + 关系 + 好感日志）。"""
 
+        self.delete_social_person(group_id, user_id)
         removed = 0
         for table in ("user_profile", "user_fact", "user_bond", "affinity_log"):
             cursor = self._execute(

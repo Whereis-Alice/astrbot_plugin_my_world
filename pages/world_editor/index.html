@@ -12,6 +12,7 @@
     <link rel="stylesheet" href="./atelier.css" />
     <link rel="stylesheet" href="./model-calls.css" />
     <link rel="stylesheet" href="./life.css" />
+    <link rel="stylesheet" href="./social-learning.css" />
     <!-- 主题在解析样式前就定下来，避免刷新时先闪一下浅色 -->
     <script>
       (function () {
@@ -758,7 +759,8 @@
               <div class="toolbar">
                 <button id="memory-filter-toggle" class="ghost filter-toggle" type="button">更多筛选 ▾</button>
                 <button id="memory-search" class="ghost">筛选</button>
-                <button id="memory-policy" class="ghost" type="button">记忆与共存设置…</button>
+                <button id="memory-policy" class="ghost" type="button">共存设置</button>
+                <button id="memory-vocabulary" class="ghost" type="button">会话词典</button>
                 <button id="memory-add" class="primary">新增记忆</button>
               </div>
               <div class="toolbar">
@@ -816,8 +818,8 @@
               </div>
             </details>
             <details class="command-menu calls-help">
-              <summary aria-label="模型调用统计说明">ⓘ</summary>
-              <div class="command-menu-body"><strong>这次调用，因何发生</strong><p>展开记录可查看触发路径、重试原因和用量明细。这里只记录本插件参与的模型请求，从更新后开始累计。</p><p>插件直接请求逐次记录；AstrBot 原生聊天和画像工具循环只记录最终响应，中间轮次与内部重试无法通过当前公开钩子获取。</p><p>Token 使用 Provider 返回的数据。未提供的用量不计为零；汇总供排查参考，账单以服务商为准。</p><p>保留最近 30 天，最多 10,000 条。不主动保存提示词和回复正文。</p></div>
+              <summary aria-label="模型调用操作与统计说明">⋯</summary>
+              <div class="command-menu-body"><button id="calls-decisions" class="ghost" type="button">决策记录</button><strong>这次调用，因何发生</strong><p>展开记录可查看触发路径、重试原因和用量明细。这里只记录本插件参与的模型请求。</p><p>插件直接请求逐次记录；AstrBot 原生聊天和画像工具循环只记录最终响应，中间轮次与内部重试无法通过当前公开钩子获取。</p><p>Token 使用 Provider 返回的数据。未提供的用量不计为零；汇总供排查参考，账单以服务商为准。</p><p>保留最近 30 天，最多 10,000 条。不主动保存提示词和回复正文。</p></div>
             </details>
             <button id="calls-refresh" class="ghost" type="button">刷新</button>
           </div>

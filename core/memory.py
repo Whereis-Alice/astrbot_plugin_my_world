@@ -305,6 +305,7 @@ class MemoryEngine:
         fallback: bool = True,
         automatic: bool = False,
         strict_keyword: bool = False,
+        record_hits: bool = True,
     ) -> list[RecalledMemory]:
         """召回记忆。返回按分数降序的结果。
 
@@ -348,7 +349,7 @@ class MemoryEngine:
                 )
             return rows
 
-        semantic = self.semantic.cached(session_id, persona_id, keyword, mode=mode) if config and config.semantic_enabled and keyword else {}
+        semantic = self.semantic.cached(session_id, persona_id, keyword, mode=mode, automatic=automatic) if config and config.semantic_enabled and keyword else {}
         semantic = {mid: score for mid, score in semantic.items() if score >= config.semantic_min_similarity}
         candidates = query(terms)
         if semantic:
@@ -395,9 +396,61 @@ class MemoryEngine:
             used_chars += cost
             if len(results) >= limit:
                 break
-        if results:
+        if results and record_hits:
             self.db.mark_recalled([item.id for item in results], when=now)
         return results
+
+    @staticmethod
+    def participant_queries(records: list[dict], session_id: str, maximum: int = 6) -> dict[str, str]:
+        from .evidence import direct_text, source_snapshot
+        groups: dict[str, list[str]] = {}
+        records = [row for row in records if isinstance(row, dict)
+                   and source_snapshot(row, session_id)["kind"] == "direct_speech"
+                   and str(row.get("origin") or row.get("session") or session_id) == session_id
+                   and str(row.get("user_id") or "")
+                   and direct_text(str(row.get("raw_text") or row.get("text") or ""))]
+        # Recent participants first, preserving each person's message order.
+        users = list(dict.fromkeys(str(row.get("user_id") or "") for row in reversed(records)
+                     if isinstance(row, dict) and not row.get("is_self")))[:maximum]
+        for row in records:
+            if not isinstance(row, dict) or row.get("is_self") or row.get("is_recalled"):
+                continue
+            uid = str(row.get("user_id") or "")
+            if uid not in users or not uid or str(row.get("origin") or row.get("session") or session_id) != session_id:
+                continue
+            text = direct_text(str(row.get("raw_text") or row.get("text") or ""))
+            if text:
+                groups.setdefault(uid, []).append(text[:500])
+        return {uid: "\n".join(groups[uid][-6:])[:2000] for uid in users if uid in groups}
+
+    def recall_participants(self, *, records: list[dict], session_id: str, persona_id: str,
+                            node_id: str = "", limit: int = 5) -> list[RecalledMemory]:
+        """Per-speaker retrieval, fair merge, one shared injection budget and no premature hits."""
+        queries = self.participant_queries(records, session_id)
+        groups = [self.recall(session_id=session_id, persona_id=persona_id, node_id=node_id,
+                  focus_user=uid, keyword=query, limit=limit, automatic=True, record_hits=False)
+                  for uid, query in queries.items()]
+        if not groups:
+            groups = [self.recall(session_id=session_id, persona_id=persona_id, node_id=node_id,
+                      limit=limit, automatic=True, record_hits=False)]
+        result, seen, bodies, cost = [], set(), set(), 0
+        budget = self.world.memory.recall_max_chars if self.world else 1200
+        for index in range(max((len(group) for group in groups), default=0)):
+            for group in groups:
+                if index >= len(group):
+                    continue
+                item = group[index]
+                body = re.sub(r"[\W_]+", "", item.content).casefold()
+                size = len(item.render(stamp="YYYY-MM-DD 午夜")) + 1
+                if item.id in seen or body in bodies or cost+size > budget:
+                    continue
+                seen.add(item.id)
+                bodies.add(body)
+                result.append(item)
+                cost += size
+                if len(result) >= limit:
+                    return result
+        return result
 
     def _query(
         self,

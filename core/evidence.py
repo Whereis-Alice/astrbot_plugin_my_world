@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+import re
+from html.parser import HTMLParser
 from typing import Any
 
 EVIDENCE_SCHEMA = """
@@ -24,10 +26,65 @@ CREATE INDEX IF NOT EXISTS idx_memory_batch_pending ON memory_batch(session_id,s
 """
 
 
+EXTERNAL_MEMORY = re.compile(r"<(Anamnesis-Memory|RAG-Faiss-Memory)>.*?</\1>", re.S | re.I)
+
+
+def split_external_memory(text: str) -> tuple[str, str]:
+    """Separate known injected blocks; never mutate another plugin's request history."""
+    blocks = []
+    def collect(match):
+        blocks.append(match.group(0))
+        return ""
+    body = EXTERNAL_MEMORY.sub(collect, str(text or ""))
+    # A truncated injected block must not turn into direct speech either.
+    match = re.search(r"<(?:Anamnesis-Memory|RAG-Faiss-Memory)>", body, re.I)
+    if match:
+        blocks.append(body[match.start():])
+        body = body[:match.start()]
+    return body.strip(), "\n\n".join(blocks)
+
+
+class _DirectText(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.depth = 0
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {"quote", "blockquote", "quoted_message"}:
+            if not self.depth:
+                self.parts.append("\n")
+            self.depth += 1
+
+    def handle_endtag(self, tag):
+        if tag in {"quote", "blockquote", "quoted_message"} and self.depth:
+            self.depth -= 1
+            if not self.depth:
+                self.parts.append("\n")
+
+    def handle_data(self, data):
+        if not self.depth:
+            self.parts.append(data)
+
+
+def direct_text(text: str) -> str:
+    body, _ = split_external_memory(text)
+    body = body.split("[我的世界·此刻]", 1)[0]
+    body = "\n".join(line for line in body.splitlines() if not line.lstrip().startswith(">"))
+    # Only parse explicit quote markup; ordinary comparisons such as 'a < b' remain intact.
+    if re.search(r"</?(?:quote|blockquote|quoted_message)\b", body, re.I):
+        parser = _DirectText()
+        parser.feed(body)
+        body = "".join(parser.parts)
+    return body.strip()
+
+
 def source_snapshot(record: dict, session_id: str) -> dict:
     raw = {key: record.get(key) for key in ("user_id", "name", "text", "at", "message_id", "event_id", "is_self")}
     raw["session"] = str(record.get("origin") or record.get("session") or session_id)
     raw["kind"] = "self_statement" if record.get("is_self") else "direct_speech"
+    if record.get("is_recalled") or record.get("kind") in {"recalled_memory", "tool_result", "model_summary", "operation_log", "quote"}:
+        raw["kind"] = str(record.get("kind") or "recalled_memory")
     explicit = str(record.get("source_id") or record.get("event_key") or "")
     identity = [raw["session"], explicit] if explicit else raw
     raw["id"] = explicit if explicit.startswith("src_") else "src_" + hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:32]

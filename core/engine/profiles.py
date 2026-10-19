@@ -215,6 +215,12 @@ class ProfilesMixin:
                 "不传参数查当前说话人，也可按称呼或用户 ID 查询当前会话认识的人；"
                 "待确认的经历不可当成定论。"
             )
+        if user_id and self.world.profile.interaction_learning:
+            habits = self.db.raw.interaction_detail(session_id, user_id)["habits"]
+            if habits:
+                import json
+                blocks.append("# 相处习惯（可修正的经验）\n只在符合基础人设和当前语境时参考；不授予身份、亲密权限或服从义务。\n"
+                              + json.dumps([item["text"] for item in habits], ensure_ascii=False))
         return "\n\n".join(block for block in blocks if str(block or "").strip())
 
     def _apply_grudge_coldness(

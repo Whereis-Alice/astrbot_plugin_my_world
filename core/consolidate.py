@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import hashlib
-from .evidence import source_snapshot
+from .evidence import source_snapshot, direct_text
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
@@ -272,6 +272,7 @@ class Consolidator:
         max_items = 12 if result.mode == "full" else 6
         records = []
         source_map = {}
+        observed = {}
         for row in chat_records or []:
             snapshot = source_snapshot(row, session_id)
             stored = self.memory.db.source_record(snapshot["id"])
@@ -279,10 +280,23 @@ class Consolidator:
                 continue
             if row.get("eligible") is False and stored is None:
                 continue
-            record = {**row, "source_id": snapshot["id"]}
+            if snapshot["kind"] not in {"direct_speech", "self_statement"}:
+                continue
+            original = stored or snapshot
+            body = direct_text(str(original.get("text") or ""))
+            if not body:
+                continue
+            record = {**row, "text": body, "source_id": snapshot["id"]}
             records.append(record)
-            if stored:
-                source_map[snapshot["id"]] = stored
+            source_map[snapshot["id"]] = {**original, "text": body}
+            if not stored:
+                observed[snapshot["id"]] = snapshot
+
+        batch_key = self._batch_key(session_id, result.mode, records)
+        if records and not dry_run and self.memory.db.kv_get(batch_key):
+            result.ok = True
+            result.note = "这批来源已经整理过，不重复记账"
+            return result
 
         here = str(current_session or session_id or "")
         system, prompt = self.prompts.build_consolidate_prompt(
@@ -294,13 +308,9 @@ class Consolidator:
                 session_labels=session_labels,
                 current_session=here,
             ),
-            memories=(
-                self.memory_lines(session_id, session_labels=session_labels)
-                if result.mode == "full"
-                else []
-            ),
-            profiles=[f"[session={sid}] {line}" for sid in self._sessions_of(session_id)
-                      for line in self.profile_lines(sid)],
+            # New evidence extraction never sees recalled conclusions or existing feelings.
+            memories=[],
+            profiles=[],
             pending=list(pending or []),
             date_text=time.strftime("%Y-%m-%d", time.localtime(stamp)),
             mode=result.mode,
@@ -324,19 +334,46 @@ class Consolidator:
         if not isinstance(payload, dict) or not payload:
             result.note = "整理模型没有给出可用的 JSON"
             return result
+        # Scores belong to the blind per-turn evaluation, never to sleep or old-memory review.
+        if payload.pop("affinity", None):
+            result.skipped.append("睡眠整理不重复修改好感；会话来源不明确或已有的互动评价留给逐轮评估处理")
+        payload.pop("merge", None)
+        payload.pop("forget", None)
+        review_versions = {}
+        if result.mode == "full":
+            old = self.memory_lines(session_id, session_labels=session_labels)
+            old_ids = {int(line.split(" ", 1)[0][1:]) for line in old}
+            review_versions = {mid: self.memory.db.memory_by_id(mid) for mid in old_ids}
+            if old:
+                try:
+                    reviewed = extract_json_object(await llm(
+                        "只整理已经存在的记忆。不能提取新事实、判断用户动机、改变好感、关系或人设。"
+                        "保留日期和事实变化，不把旧总结作为新证据。只输出 JSON："
+                        '{"merge":[{"keep_id":1,"drop_ids":[2],"text":"保持原意的概括"}],'
+                        '"forget":[{"id":3,"text":"保留原意的简短要点"}]}。可以输出空对象。',
+                        json.dumps({"existing_memories": old}, ensure_ascii=False)) or "")
+                    if isinstance(reviewed, dict):
+                        payload.update({key: reviewed.get(key, []) for key in ("merge", "forget")})
+                except Exception:
+                    result.skipped.append("旧记忆整理暂缓；新证据仍独立保存")
+            payload["_review_ids"] = old_ids
         for field in ("memories", "notes"):
             for item in self._rows(payload.get(field)):
-                ids = [str(sid) for sid in item.get("source_ids", []) if str(sid) in source_map]
+                raw_ids = item.get("source_ids")
+                ids = [str(sid) for sid in raw_ids if str(sid) in source_map] if isinstance(raw_ids, list) else []
                 if not ids and item.get("context"):
                     quote = " ".join(str(item["context"]).split())
                     ids = [sid for sid, record in source_map.items() if len(quote) >= 4 and quote in str(record.get("text") or "")]
                 item["_evidence"] = [source_map[sid] for sid in ids]
-                if source_map and not ids:
+                if not ids:
                     item["_ungrounded"] = True
                 if ids:
                     item["context"] = "\n".join(f"{source_map[sid].get('name') or source_map[sid].get('user_id')}: {source_map[sid].get('text')}" for sid in ids)
-        batch_key = "consolidate:" + hashlib.sha256(json.dumps([session_id, result.mode, [row["source_id"] for row in records],
-                       payload if not records else ""], ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        if not records:
+            # Preserve idempotency for an old-memory-only review, without trusting new facts.
+            batch_key = self._batch_key(session_id, result.mode, records, {
+                k: v for k, v in payload.items() if not k.startswith("_")
+            })
         if self.memory.db.kv_get(batch_key):
             result.ok = True
             result.note = "这批来源已经整理过，不重复记账"
@@ -344,11 +381,20 @@ class Consolidator:
         result.ok = True
         if result.mode != "nap":
             payload = {**payload, "relations": self._grounded_relations(payload, records, result)}
-        scoped = self._scoped_profile_updates(session_id, payload, records, result)
         with self.memory.db.atomic():
             if self.memory.db.kv_get(batch_key):
                 result.note = "这批来源已经整理过，不重复记账"
                 return result
+            for snapshot in observed.values():
+                self.memory.db.observe_source(snapshot, eligible=True)
+            payload["_review_ids"] = {
+                mid for mid, before in review_versions.items()
+                if before is not None and (after := self.memory.db.memory_by_id(mid))
+                and all(before.get(key) == after.get(key) for key in (
+                    "content", "context", "session_id", "persona_id", "scope", "tier"
+                ))
+            }
+            scoped = self._scoped_profile_updates(session_id, payload, records, result)
             for sid, local in scoped.items():
                 local_records = [row for row in records if str(row.get("origin") or session_id) == sid]
                 local_known = self.known_ids(sid, local_records)
@@ -358,6 +404,13 @@ class Consolidator:
                     self._apply_full(sid, local, result, now=stamp, known=local_known)
             self.memory.db.kv_set(batch_key, {"at": stamp})
         return result
+
+    @staticmethod
+    def _batch_key(session_id, mode, records, payload=None):
+        return "consolidate:" + hashlib.sha256(json.dumps(
+            [session_id, mode, sorted({row["source_id"] for row in records}), payload or ""],
+            ensure_ascii=False, sort_keys=True,
+        ).encode()).hexdigest()
 
     def _scoped_profile_updates(self, session_id, payload, records, result):
         """Route social changes to their actual origin, never to all shared lives.
@@ -378,10 +431,14 @@ class Consolidator:
             uid = str(item.get("user_id") or "")
             explicit = str(item.get("source_session") or "")
             evidence = normalized(item.get("evidence"))
+            if not origin_records or not any(origin_records.values()):
+                return ""
             matches = {sid for sid, rows in origin_records.items() if any(
                 not row.get("is_self") and str(row.get("user_id")) == uid
                 and (not evidence or len(evidence) >= 4 and evidence in normalized(row.get("text")))
                 for row in rows)}
+            if item.get("evidence") and not matches:
+                return ""
             if explicit:
                 return explicit if explicit in sessions and uid in known[explicit] and (not matches or explicit in matches) else ""
             if len(matches) == 1:
@@ -464,17 +521,22 @@ class Consolidator:
         now: float,
         known: set[str] | None = None,
     ) -> None:
-        for item in self._rows(payload.get("memories")):
-            if self._write_memory(session_id, item, result, now=now):
-                result.memories += 1
         for item in self._rows(payload.get("merge")):
             keep = self._int(item.get("keep_id"))
             drops = [self._int(value) for value in (item.get("drop_ids") or [])]
             drops = [value for value in drops if value]
             text = str(item.get("text") or "").strip()
-            if keep and text:
-                self.memory.db.update_memory(keep, content=text[:200], tier="gist")
+            allowed = payload.get("_review_ids", set())
+            kept = self.memory.db.memory_by_id(keep) if keep in allowed else None
+            if kept is None or not text:
+                continue
+            drops = [value for value in drops if value != keep and value in allowed]
+            drops = [value for value in drops if (row := self.memory.db.memory_by_id(value))
+                     and all(row.get(key) == kept.get(key) for key in ("session_id", "persona_id", "scope"))]
+            self.memory.fold(keep, text=text[:200], when=now)
             for drop in drops:
+                sources = self.memory.db.memory_sources(drop)["sources"]
+                self.memory.db.attach_evidence(keep, [row["id"] for row in sources])
                 self.memory.fold(drop, text=text, when=now)
                 result.folded += 1
             if keep and (text or drops):
@@ -537,26 +599,16 @@ class Consolidator:
         result.digests += self._apply_digests(
             session_id, payload.get("digests"), known=known
         )
-        for item in self._rows(payload.get("affinity")):
-            user_id = str(item.get("user_id") or "").strip()
-            if not self._known(user_id, known):
-                result.skipped.append(f"材料里没这个人的好感变化被跳过：{user_id}")
-                continue
-            amount = self.profiles.apply_reply_affinity(
-                session_id,
-                user_id,
-                float(item.get("delta") or 0.0),
-                reason=str(item.get("reason") or "睡着的时候想了想"),
-                source="consolidate",
-                now=now,
-            )
-            if abs(amount) > 1e-9:
-                result.affinity += 1
         for item in self._rows(payload.get("forget")):
             memory_id = self._int(item.get("id"))
-            if memory_id:
+            if memory_id in payload.get("_review_ids", set()):
                 self.memory.fold(memory_id, text=str(item.get("text") or ""), when=now)
                 result.folded += 1
+        # Apply fresh evidence last: reviewing an old ID must not overwrite a
+        # new fact that updates that same ID through the conflict policy.
+        for item in self._rows(payload.get("memories")):
+            if self._write_memory(session_id, item, result, now=now):
+                result.memories += 1
         result.dream = self._apply_dream(session_id, payload.get("dream"), now=now)
 
     # ---------------- 落库：小睡 ----------------
@@ -609,6 +661,9 @@ class Consolidator:
         *,
         now: float,
     ) -> bool:
+        if item.get("_ungrounded"):
+            result.skipped.append("新记忆没有可核对的来源，暂不保存")
+            return False
         text = " ".join(str(item.get("text") or "").split())[:200]
         if not text:
             return False

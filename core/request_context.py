@@ -13,6 +13,7 @@ except Exception:  # pragma: no cover - 老版本没有这个类
     TextPart = None  # type: ignore[assignment]
 
 from .messages import _is_command
+from .evidence import split_external_memory
 
 
 _ASTRBOT_PERSONA_HEAD = "# Persona Instructions"
@@ -143,9 +144,9 @@ AstrBot 4.24.2+ 有 ``extra_user_content_parts`` 这条正规通道（helper_too
 def _split_prompt_injection(prompt: str) -> tuple[str, str]:
     """把 ``req.prompt`` 里被追加的临时信息摘出来：返回（用户说的话, 临时信息）。"""
 
-    text = str(prompt or "")
+    text, memory = split_external_memory(str(prompt or ""))
     if not text:
-        return "", ""
+        return "", memory
     cut = len(text)
     for marker in TEMP_CONTEXT_MARKERS:
         for needle in (f"\n\n{marker}", f"\n{marker}"):
@@ -154,8 +155,8 @@ def _split_prompt_injection(prompt: str) -> tuple[str, str]:
                 continue
             cut = min(cut, index + len(needle) - len(marker))
     if cut >= len(text):
-        return text.strip(), ""
-    return text[:cut].strip(), text[cut:].strip()
+        return text.strip(), memory
+    return text[:cut].strip(), "\n\n".join(part for part in (memory, text[cut:].strip()) if part)
 
 
 def _selected_provider_extra(event: Any) -> str:

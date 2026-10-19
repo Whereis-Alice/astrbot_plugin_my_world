@@ -113,7 +113,7 @@ class ConsolidateTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.facts, 1)
         self.assertEqual(result.relations, 1)
         self.assertEqual(result.digests, 1)
-        self.assertEqual(result.affinity, 1)
+        self.assertEqual(result.affinity, 0)
 
         rows = self.db.query_memories(session_id=SESSION)
         self.assertEqual(len(rows), 1)
@@ -124,7 +124,7 @@ class ConsolidateTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["text"] for item in facts], ["经常忘吃早饭"])
         self.assertIn("主人", [item["type"] for item in self.profiles.bonds(SESSION, USER)])
         self.assertEqual(self.profiles.profile(SESSION, USER)["digest"], "爱猫、常忘吃早饭，认你当主人")
-        self.assertGreater(self.profiles.profile(SESSION, USER)["affinity"], 0)
+        self.assertEqual(self.profiles.profile(SESSION, USER)["affinity"], 0)
 
     async def test_forget_only_folds_the_memory(self):
         memory_id = self.memory.remember(
@@ -174,7 +174,7 @@ class ConsolidateTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.profiles.facts(SESSION, USER)), 1)
         self.assertEqual(self.profiles.facts(PRIVATE, USER), [])
         self.assertEqual(self.profiles.profile(SESSION, USER)["affinity"], 0)
-        self.assertEqual(self.profiles.profile(PRIVATE, USER)["affinity"], 2)
+        self.assertEqual(self.profiles.profile(PRIVATE, USER)["affinity"], 0)
         self.assertEqual(self.profiles.profile(SESSION, USER)["digest"], "")
         self.assertEqual(self.profiles.profile(PRIVATE, USER)["digest"], "")
 
@@ -226,7 +226,7 @@ class ConsolidateTestCase(unittest.IsolatedAsyncioTestCase):
         self.profiles.touch(SESSION, USER, "不相疑")
         payload = {
             "notes": [
-                {"text": "他中午提了一句下午要开会", "participants": [USER]}
+                {"text": "他提过自己养过橘猫", "context": "我喜欢猫，养过一只橘猫", "participants": [USER]}
             ],
             "digests": {USER: "刚认识、话不多"},
             "dream": "梦见楼顶有只猫，猫是主人变的",
@@ -386,9 +386,11 @@ class ConsolidateTestCase(unittest.IsolatedAsyncioTestCase):
             return json.dumps(payload, ensure_ascii=False)
 
         self.profiles.touch(SESSION, USER, "不相疑")
+        changes_before = self.db._conn.total_changes
         result = await self.consolidator.run(
             session_id=SESSION, llm=llm, chat_records=self._chat(), dry_run=True
         )
+        self.assertEqual(self.db._conn.total_changes, changes_before)
         self.assertTrue(result.ok)
         self.assertIn("没有写库", result.note)
         self.assertIn("原始记录", result.preview.get("user", ""))

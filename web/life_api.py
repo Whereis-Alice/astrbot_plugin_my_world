@@ -10,6 +10,63 @@ from ..core.life_matters import CLOSED, ensure, visible
 
 
 class LifeApiMixin:
+    async def api_social_learning(self):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        session = self._scope(request.query.get("session", ""))
+        if not session:
+            return error_response("请先选择会话")
+        user = str(request.query.get("user_id") or "")
+        if user and self.engine.profiles.profile(session, user) is None:
+            return error_response("当前会话没有这个联系人")
+        return json_response({"session": session, "vocabulary": await self.db.call("vocabulary", session),
+            "interaction": await self.db.call("interaction_detail", session, user) if user else None})
+
+    async def api_social_update(self):
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload)
+        if guard is not None:
+            return guard
+        session = self._scope(payload.get("session"))
+        if not session or not self.engine.is_enabled(session):
+            return error_response("请先选择已启用的会话")
+        operation = str(payload.get("operation") or "")
+        if operation == "vocabulary":
+            ok = await self.db.call("set_vocabulary", session, str(payload.get("term") or ""),
+                str(payload.get("description") or ""), manual=True, status=str(payload.get("status") or "active"))
+        elif operation in {"habits", "resume"}:
+            user = str(payload.get("user_id") or "")
+            if not user or self.engine.profiles.profile(session, user) is None:
+                return error_response("当前会话没有这个联系人")
+            detail = await self.db.call("interaction_detail", session, user)
+            habits = [{"text": str(text).strip()[:80], "source_ids": [], "manual": True}
+                      for text in str(payload.get("text") or "").splitlines() if str(text).strip()][:3]
+            if operation == "resume":
+                habits = detail["habits"]
+            try:
+                revision = int(payload.get("revision", -1))
+            except (ValueError, TypeError):
+                return error_response("请刷新后再修改")
+            if operation == "resume":
+                ok = await self.db.call("resume_interaction_style", session, user, revision)
+            else:
+                ok = await self.db.call("save_interaction_style", session, user, habits,
+                    revision=revision, through=detail["cursor"], manual=True)
+        else:
+            return error_response("未知的操作")
+        return json_response({"ok": True}) if ok else error_response("内容无效、已达到容量，或资料已变化；请刷新后重试")
+
+    async def api_decision_traces(self):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        session = self._scope(request.query.get("session", ""))
+        if not session:
+            return error_response("请先选择会话")
+        return json_response({"session": session, "items": await self.db.call("decision_traces", session,
+            trace=str(request.query.get("trace") or "")[:100])})
+
     async def api_life(self):
         guard = self._guard()
         if guard is not None:
@@ -22,6 +79,7 @@ class LifeApiMixin:
                 items = [item for item in ensure(state, self.engine._now()) if visible(item, session_id)]
                 result = copy.deepcopy({"session": session_id, "items": items,
                     "activity": self.engine.activity_view(state), "reason": (state.current_plan or {}).get("reason", ""),
+                    "choice": self.engine.life_choice(state),
                     "recovery": state.life_recovery, "interests": state.life_interests,
                     "artifacts": [item for item in state.life_artifacts.values() if item.get("session") == session_id],
                     "semantic": self.engine.memory.semantic.status,

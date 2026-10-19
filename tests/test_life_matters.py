@@ -228,7 +228,7 @@ class MattersAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(matters.stable_interests(state), [])
         state.life_interests["read"]["days"].append("2026-10-19")
         state.life_interests["read"]["sessions"] = 3
-        self.assertIn("从日子里积累的兴趣", matters.context_block(state, session_id=SESSION))
+        self.assertIn("从日子里积累的活动经验", matters.context_block(state, session_id=SESSION))
 
     async def test_context_eligibility_uses_message_identity_and_keeps_full_original(self):
         state = await self.state()

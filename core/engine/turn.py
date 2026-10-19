@@ -60,6 +60,7 @@ class TurnMixin:
         reasoning_text: str = "",
         tool_trace: list[dict[str, Any]] | None = None,
         persona_id: str = "",
+        interaction_entries: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
         """回合复盘：她说完之后，把这一轮的心情 / 好感 / 话题 / 心事补记上。
 
@@ -70,6 +71,8 @@ class TurnMixin:
 
         if not self.is_enabled(session_id):
             return None
+        sources = self.interaction_sources(session_id, str(user_id or ""), user_text, interaction_entries)
+        persona_text = await self._persona_text(session_id)
         ctx = MessageContext(
             session_id=session_id,
             user_id=str(user_id or ""),
@@ -80,20 +83,11 @@ class TurnMixin:
         )
         async with self.session_state(session_id) as state:
             node = self.node(state.node_id) or self.node(self.default_node_id())
-            memories = self.memory.recall(
-                automatic=True,
-                session_id=session_id,
-                persona_id=persona_id,
-                node_id=state.node_id,
-                focus_user=user_id,
-                limit=4,
-            )
             recent_chat = [
                 dict(item)
                 for item in (state.recent_chat or [])
                 if isinstance(item, dict)
             ][-8:]
-            profile_text = self.profile_block(state, ctx)
             system, prompt = self.prompts.build_reflection_prompt(
                 state=state,
                 node=node,
@@ -101,11 +95,13 @@ class TurnMixin:
                 user_text=user_text,
                 reply_text=reply_text,
                 recent_chat=recent_chat,
-                profile_text=profile_text,
-                memories=memories,
+                profile_text="",
+                memories=[],
                 other_context="",
                 pronoun=pronounce_for(getattr(self.world, "gender", "female")),
             )
+            prompt += "\n\n# 基础人设（判断行为的依据，不得改写）\n" + persona_text[:6000]
+            prompt += "\n\n# 本轮可用的直接发言证据\n" + json.dumps(sources, ensure_ascii=False)
             prompt += "\n\n" + self._own_topic_block(state, ctx)
         if tool_trace:
             prompt += ("\n\n# 本轮原生工具的实际记录\n只有成功的实际结果覆盖具体目标才可确认该事项完成。"
@@ -143,15 +139,9 @@ class TurnMixin:
             )
             applied_affinity = 0.0
             if ctx.user_id:
-                applied_affinity = self.profiles.apply_reply_affinity(
-                    session_id,
-                    ctx.user_id,
-                    parsed.affinity_delta,
-                    reason=str(
-                        (parsed.reasoning or {}).get("intent") or "聊了这一轮"
-                    )[:60],
-                    now=self._now(),
-                )
+                applied_affinity = self.record_turn_interaction(session_id, ctx.user_id, sources,
+                    parsed.affinity_delta, str(payload.get("interaction_reason") or
+                    (parsed.reasoning or {}).get("intent") or "本轮真实互动")[:200])
                 if abs(applied_affinity) > 1e-9:
                     notes.append(f"好感 {applied_affinity:+.2f}")
             if parsed.valence_delta:
@@ -223,6 +213,7 @@ class TurnMixin:
                 ][:20],
             }
             state.last_reflection = reflection
+            self.learn_vocabulary(session_id, payload.get("vocabulary") if isinstance(payload.get("vocabulary"), list) else [], sources)
             log = [
                 dict(item)
                 for item in (getattr(state, "reflection_log", []) or [])

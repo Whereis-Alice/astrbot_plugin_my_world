@@ -1,0 +1,20 @@
+.learning-drawer { position: fixed; inset: 12px 12px 12px auto; margin: 0; width: min(680px, calc(100vw - 24px)); height: calc(100dvh - 24px); max-height: none; max-width: none; padding: 0; border: 1px solid var(--line-strong); border-radius: 22px; color: var(--text); background: radial-gradient(ellipse at 100% 0, var(--accent-soft), transparent 55%), var(--panel); box-shadow: var(--card-shadow); }
+.learning-drawer[open] { display: flex; flex-direction: column; }
+.learning-drawer::backdrop { background: #080b1680; backdrop-filter: blur(9px); }
+.learning-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 20px 24px 12px; }
+.learning-head h2 { margin: 0; font-size: 20px; letter-spacing: -.02em; }
+.learning-drawer > select { margin: 0 24px 12px; width: calc(100% - 48px); flex-shrink: 0; }
+.learning-body { overflow: auto; flex: 1; min-height: 0; padding: 0 24px 24px; display: flex; flex-direction: column; gap: 14px; }
+.learning-body > p { margin: 0; line-height: 1.7; }
+.learning-card { padding: 18px; border: 1px solid var(--line); border-radius: 15px; background: linear-gradient(125deg, var(--surface-highlight), transparent), var(--panel); overflow-wrap: anywhere; }
+.learning-card > strong { font-size: 16px; color: var(--accent); }
+.learning-card p { margin: 9px 0; line-height: 1.75; }
+.learning-card details { margin-top: 14px; font-size: 13px; }
+.learning-actions { display: flex; gap: 8px; margin-top: 12px; }
+.learning-form { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 9px; padding: 16px; background: var(--surface-highlight); border: 1px solid var(--line); border-radius: 14px; }
+.learning-form input, .learning-form textarea { min-width: 0; width: 100%; }
+.learning-form input:first-child, .learning-form textarea { grid-column: 1/-1; }
+.learning-quote { padding: 10px 12px; border-left: 2px solid var(--accent); background: var(--accent-soft); font-size: 13px; white-space: pre-wrap; }
+.learning-code { max-width: 100%; overflow-wrap: anywhere; white-space: pre-wrap; font-size: 12px; line-height: 1.7; }
+.learning-error { color: var(--danger, #e58a9e); }
+@media (max-width: 600px) { .learning-drawer { inset: 0; width: 100vw; height: 100dvh; border-radius: 0; } .learning-head { padding: 18px 16px 12px; } .learning-body { padding: 0 16px 20px; } .learning-drawer > select { margin-inline: 16px; width: calc(100% - 32px); } .learning-form { grid-template-columns: 1fr; } }

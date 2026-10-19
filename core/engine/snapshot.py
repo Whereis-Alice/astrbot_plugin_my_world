@@ -266,6 +266,7 @@ class SnapshotMixin:
                              if not item.get("who") or item.get("session") == session_id],
             "life_recovery": state.life_recovery,
             "life_interests": state.life_interests,
+            "life_decision": state.life_decision,
             "activity_reason": str((state.current_plan or {}).get("reason") or ""),
             "current_plan": state.current_plan,
             "last_reasoning": state.last_reasoning,
