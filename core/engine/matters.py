@@ -51,7 +51,9 @@ class MattersMixin:
         """At most one quiet personal suggestion per day, after her first six lived hours."""
         if not self.is_enabled(session_id) or not self.world.limits.life_matter_enabled or not self.world.limits.life_matter_self_start:
             return
-        key = f"life_seed:{self.state_key(session_id)}:{self._today_key(self._now())}"
+        world = self.world
+        state_key = self.state_key(session_id)
+        key = f"life_seed:{state_key}:{self._today_key(self._now())}"
         async with self.session_state(session_id) as state:
             matters.ensure(state, self._now())
             if not self.life_seed_due(state):
@@ -74,14 +76,21 @@ class MattersMixin:
         payload = extract_json_object(raw or "") or {}
         if "text" not in payload or not isinstance(payload["text"], str):
             return  # Unavailable/malformed is different from a valid "no new idea".
+        if self.world is not world or self.state_key(session_id) != state_key or not self.is_enabled(session_id):
+            return
         async with self.session_state(session_id) as state:
+            current_persona = await self._persona_text(session_id)
+            if (current_persona != persona or self.world is not world or state.session_id != state_key
+                    or not self.is_enabled(session_id) or not self.world.limits.life_matter_enabled
+                    or not self.world.limits.life_matter_self_start):
+                return
             matters.ensure(state, self._now())
+            if (not self._matter_can_work(state)
+                    or any(m["status"] not in matters.CLOSED for m in state.life_matters)):
+                return
             self.db.raw.kv_set(key, {"at": self._now(), "attempts": attempts, "done": True})
-            if (self.is_enabled(session_id) and self.world.limits.life_matter_enabled
-                    and self.world.limits.life_matter_self_start
-                    and not any(m["status"] not in matters.CLOSED for m in state.life_matters)):
-                self.add_life_matter(state, str(payload.get("text") or ""), session=session_id,
-                                     motivation=str(payload.get("motivation") or ""))
+            self.add_life_matter(state, str(payload.get("text") or ""), session=session_id,
+                                 motivation=str(payload.get("motivation") or ""))
 
     def confirm_matter_from_turn(self, state, ctx, matter_id: str, evidence: str, trace: list) -> bool:
         matters.ensure(state, self._now())

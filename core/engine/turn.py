@@ -71,6 +71,8 @@ class TurnMixin:
 
         if not self.is_enabled(session_id):
             return None
+        world = self.world
+        state_key = self.state_key(session_id)
         sources = self.interaction_sources(session_id, str(user_id or ""), user_text, interaction_entries)
         persona_text = await self._persona_text(session_id)
         ctx = MessageContext(
@@ -82,6 +84,8 @@ class TurnMixin:
             persona_id=str(persona_id or ""),
         )
         async with self.session_state(session_id) as state:
+            if self.world is not world or state.session_id != state_key or not self.is_enabled(session_id):
+                return None
             node = self.node(state.node_id) or self.node(self.default_node_id())
             recent_chat = [
                 dict(item)
@@ -122,7 +126,14 @@ class TurnMixin:
             json_fields=self.extensions.json_fields(),
         )
         notes: list[str] = []
+        if self.world is not world or self.state_key(session_id) != state_key or not self.is_enabled(session_id):
+            return None
         async with self.session_state(session_id) as state:
+            # The provider and the state lock can both outlive a persona/config change.
+            current_persona = await self._persona_text(session_id)
+            if (current_persona != persona_text or self.world is not world
+                    or state.session_id != state_key or not self.is_enabled(session_id)):
+                return None
             if parsed.reasoning:
                 state.note_reasoning(parsed.reasoning, source="reflect")
             # 复盘里那句「心里冒出来的一两句」也存下来：这样每聊一轮，
