@@ -970,6 +970,9 @@ class GenerationMixin:
         config = getattr(self.schedules, "auto", None)
         if config is None or not bool(getattr(config, "enabled", False)):
             return ""
+        world, schedules, scope = self.world, self.schedules, self.config_scope_id
+        session_id = self._generator_session_id()
+        state_key = self.state_key(session_id) if session_id else ""
         now = self.local_now()
         try:
             hour = max(0, min(23, int(getattr(config, "hour", 8) or 0)))
@@ -993,6 +996,9 @@ class GenerationMixin:
             attempt = {"day": today, "count": 0, "retry_at": 0}
         count = int(attempt.get("count") or 0)
         if count >= 3 or self._now() < float(attempt.get("retry_at") or 0):
+            return ""
+        persona = await self._persona_text(session_id)
+        if self.world is not world or self.schedules is not schedules:
             return ""
         await self.db.call("kv_set", attempt_key, {
             "day": today, "count": count + 1,
@@ -1018,6 +1024,14 @@ class GenerationMixin:
         result = await self.generate_schedules(
             wanted, "once", str(getattr(config, "extra_prompt", "") or "")
         )
+        current_persona = await self._persona_text(session_id)
+        if (self.world is not world or self.schedules is not schedules or self.config_scope_id != scope
+                or not config.enabled
+                or self._today_key(self._now()) != today or current_persona != persona
+                or session_id and (not self.is_enabled(state_key) or self.state_key(session_id) != state_key)
+                or self.scoped_schedules() != data):
+            self._log("info", "[my_world] 自动排日程：生成期间生活或配置已改变，保留当前安排，稍后重试")
+            return ""
         drafts = list(result.get("schedules") or [])
         used = {str(item.get("id") or "") for item in kept}
         added = 0

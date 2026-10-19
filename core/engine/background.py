@@ -46,6 +46,7 @@ class BackgroundMixin:
 
         async def run():
             ticket, admitted = object(), False
+            token = CRITICAL_TICK.set(False)
             try:
                 async with condition:
                     waiters.append(ticket)
@@ -67,6 +68,7 @@ class BackgroundMixin:
                     elif ticket in waiters:
                         waiters.remove(ticket)
                     condition.notify_all()
+                CRITICAL_TICK.reset(token)
         task = asyncio.create_task(run(), name="my_world:" + key)
         jobs[key] = task
         def forget(completed):
@@ -147,6 +149,8 @@ class BackgroundMixin:
         gap = min(elapsed, 24 * 3600)
         missing_ticks = max(0, int(gap / self.tick_seconds) - 1)
         old_tick = state.world_time
+        self._settle_idle_practice(state, at=previous)
+        state.idle_activity = {}
         state.world_time += missing_ticks
         # Translate relative counters by the elapsed life clock.
         current = state.current_action or {}

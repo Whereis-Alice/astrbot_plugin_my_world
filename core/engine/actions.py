@@ -53,10 +53,24 @@ class ActionsMixin:
         self.dynamics.apply_pulse(state, {key: value * config.life_relief_strength
                                         for key, value in effects.items()}, now=self._now())
 
+    def _settle_idle_practice(self, state: WorldState, *, at: float | None = None) -> None:
+        """Keep only the online part of quiet life before replacing or clearing it."""
+        from ..life import safe_idle_action
+
+        activity = state.idle_activity or {}
+        definition = self.world.action_map().get(str(activity.get("id") or ""))
+        if not definition or not safe_idle_action(definition):
+            return
+        activity["type"] = definition.id
+        activity["elapsed_ticks"] = max(0, min(state.world_time, int(activity.get("until_tick") or 0))
+                                         - int(activity.get("start_tick") or 0))
+        self.settle_life_practice(state, activity, at=at)
+
     def _tick_idle_life(self, state: WorldState) -> None:
         """Run a quiet background action; formal work always has priority."""
         from ..life import idle_definition, safe_idle_action
 
+        self._settle_idle_practice(state)
         if not self.world.idle_life.enabled or state.current_action or state.state != "idle":
             state.idle_activity = {}
             return

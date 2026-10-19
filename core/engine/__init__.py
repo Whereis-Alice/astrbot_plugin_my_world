@@ -360,12 +360,6 @@ class MyWorldEngine(
         self._group_lively_at: dict[str, float] = {}
         """每个会话上次结算"群里很热闹"的时刻（给这条脉冲限流）。"""
 
-        self._sleep_mark: dict[str, float] = {}
-        """每个会话"睡下的时刻"：睡够一会儿才跑整理（小睡另算）。"""
-
-        self._sleep_passes: dict[str, int] = {}
-        """这一段睡眠里已经整理过几次（一段最多两次）。"""
-
         self._pending_replies: dict[str, list[dict[str, Any]]] = {}
         # 连着被打断的次数（按"她"记，带时间窗）：刷屏时先让她把话说完
         self._interrupt_streak: dict[str, tuple[int, float]] = {}

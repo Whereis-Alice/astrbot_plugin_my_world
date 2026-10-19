@@ -234,7 +234,9 @@ class IndependentEngineTests(unittest.IsolatedAsyncioTestCase):
             first = dict(state.idle_activity)
             state.world_time += 1
             self.engine._tick_idle_life(state)
-            self.assertEqual(state.idle_activity, first)
+            self.assertEqual({key: state.idle_activity[key] for key in first}, first)
+            practice = state.life_interests[first["id"]]
+            self.assertEqual((practice["sessions"], practice["minutes"]), (1, 1))
             self.assertEqual(self.engine.activity_view(state)["label"], "轻轻哼歌")
             state.current_action = {"type": "walk_to", "target_node": "study", "desc": "走路"}
             self.engine._tick_idle_life(state)

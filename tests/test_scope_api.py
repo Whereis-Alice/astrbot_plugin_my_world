@@ -1,5 +1,6 @@
 """Registered Web API handlers must retain config and operational scope semantics."""
 
+import asyncio
 import os
 import tempfile
 import types
@@ -34,6 +35,43 @@ class ScopeApiTests(unittest.IsolatedAsyncioTestCase):
         # 处理器现在住在 web.api 里，patch 要落在它真正读的那个模块上
         with patch.object(self.module.web.api, "request", request):
             return await self.routes[endpoint]()
+
+    async def test_manual_review_route_releases_state_during_model_wait(self):
+        engine = self.plugin.engine
+        engine.consolidate_llm = types.SimpleNamespace()
+        engine.memory.remember(session_id=self.session, persona_id="", node_id="study", content="午后读了风车的说明")
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def model(*args):
+            entered.set()
+            await release.wait()
+            return '{"dream":"风车在云里转动"}'
+
+        engine._ask_consolidate = AsyncMock(side_effect=model)
+        task = asyncio.create_task(self.call("profile/consolidate", method="POST", session=self.session))
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            async with asyncio.timeout(.5):
+                async with engine.session_state(self.session) as state:
+                    state.world_time, state.energy = 777, .37
+        finally:
+            release.set()
+            result = await asyncio.wait_for(task, 2)
+        self.assertEqual(result["status_code"], 200, result)
+        self.assertTrue(result["data"]["ok"])
+        state = await engine.load_state(self.session, cold_start=False)
+        self.assertEqual((state.world_time, state.energy, state.last_dream), (777, .37, "风车在云里转动"))
+
+    async def test_manual_review_preview_route_preserves_materials(self):
+        engine = self.plugin.engine
+        engine.consolidate_llm = types.SimpleNamespace()
+        engine.memory.remember(session_id=self.session, persona_id="", node_id="study", content="午后读了风车的说明")
+        engine._ask_consolidate = AsyncMock(return_value='{"dream":"风车在云里转动"}')
+        result = await self.call("profile/consolidate", method="POST", session=self.session, dry_run=True)
+        self.assertEqual(result["status_code"], 200, result)
+        self.assertTrue(result["data"]["dry_run"])
+        self.assertFalse(engine.db.raw.query_memories(memory_type="dream"))
+        self.assertEqual((await engine.load_state(self.session, cold_start=False)).consolidate_cursor, 0)
 
     async def test_scope_roundtrip_and_restoration(self):
         world = self.plugin.store.raw_world()

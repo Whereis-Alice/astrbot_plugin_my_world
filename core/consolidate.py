@@ -48,6 +48,7 @@ class ConsolidateResult:
 
     mode: str = "full"
     ok: bool = False
+    retry_needed: bool = False
     note: str = ""
     memories: int = 0
     merged: int = 0
@@ -325,6 +326,7 @@ class Consolidator:
                 reply = await llm(system, prompt)
                 payload = extract_json_object(reply or "")
             except Exception as exc:
+                result.retry_needed = True
                 result.skipped.append(f"{'画像' if kind == 'profiles' else '生活'}整理暂缓：{exc}")
                 continue
             if self.world is not world or context_current is not None and not await context_current():
@@ -333,6 +335,7 @@ class Consolidator:
             result.raw = (result.raw + f"[{kind}] " + str(reply or ""))[:2000]
             previews.append({"stage": kind, "system": system, "user": prompt})
             if not isinstance(payload, dict):
+                result.retry_needed = True
                 result.note = "整理模型没有给出可用的 JSON"
                 continue
             # Strict output allowlists: ignore even valid JSON from the other stage.

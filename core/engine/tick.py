@@ -70,6 +70,8 @@ class TickMixin:
         # Different characters advance independently; commits for one character stay locked.
         results = await asyncio.gather(*(advance_one(sid) for sid in self.tick_session_ids()))
         outcomes.extend(row for row in results if row is not None)
+        for session_id in [row.session_id for row in outcomes if row.summary.get("sleep_review_due")]:
+            self.queue_background("memory:" + self.state_key(session_id), lambda sid=session_id: self.consolidate_session(sid, automatic=True))
         for session_id in [row.session_id for row in outcomes if row.summary.get("life_seed_due")]:
             self.queue_background("life_seed:" + self.state_key(session_id), lambda sid=session_id: self.seed_life_matter(sid))
         for session_id in [row.session_id for row in outcomes if row.summary.get("matters_pending")]:
@@ -191,8 +193,8 @@ class TickMixin:
             review = self.review_block(state)
             if review:
                 state.pending_review = review
-            # 睡着了：这段时间的经历该消化了（小睡只做轻整理）
-            await self.maybe_consolidate(state)
+            # Only inspect timing here. Slow review runs after releasing the state lock.
+            sleep_review_due = self.sleep_review_mode(state) is not None
             if mood_reset:
                 await self._log_event(state, "mood_reset", {"valence": round(state.valence, 3)})
             if bool(state.storm) != was_storm:
@@ -293,6 +295,7 @@ class TickMixin:
                 node = self.node(state.node_id) or node
             outcome.summary = {
                 "life_seed_due": self.life_seed_due(state),
+                "sleep_review_due": sleep_review_due,
                 "matters_pending": any(item.get("status") not in {"completed", "abandoned", "expired", "paused"} for item in state.life_matters),
                 "world_time": int(state.world_time),
                 "node_id": str(state.node_id or ""),
@@ -323,6 +326,7 @@ class TickMixin:
             return
         if not action.pop("offline_tick_settled", False):
             action["elapsed_ticks"] = int(action.get("elapsed_ticks", 0)) + 1
+        self.settle_life_practice(state, action)
         self.settle_matter_work(state, action)
         if int(action.get("elapsed_ticks", 0)) < int(action.get("duration_ticks", 0) or 0):
             return

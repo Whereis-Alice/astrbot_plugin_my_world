@@ -1790,11 +1790,7 @@ class WebApiMixin(LifeApiMixin):
             return error_response("缺少 session 参数")
         mode = str(payload.get("mode") or "full")
         dry_run = bool(payload.get("dry_run"))
-        state_key = self.engine.state_key(session_id)
-        async with self.engine.session_state(state_key) as state:
-            result = await self.engine.consolidate_now(
-                state, mode=mode, dry_run=dry_run
-            )
+        result = await self.engine.consolidate_session(session_id, mode=mode, dry_run=dry_run)
         if result is None:
             return error_response("整理没跑起来：先确认「睡眠整理模型」可用")
         if not result.get("ok"):

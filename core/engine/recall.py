@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from ..model_calls import model_operation
+from ..model_calls import model_context, model_operation
 
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
+from ..config_scope import session_scoped
 from ..state import (
     STATE_NAPPING,
     STATE_SLEEPING,
@@ -172,33 +174,29 @@ class RecallMixin:
             + "\n".join(lines)
         )
 
-    @model_operation("consolidate", "睡眠达到记忆整理时机")
-    async def maybe_consolidate(self, state: WorldState) -> dict[str, Any] | None:
-        """她睡着时整理这段经历；**一段睡眠最多两次**，不满足条件就什么都不做。
+    @staticmethod
+    def _sleep_review_cycle(state: WorldState) -> list:
+        return [str(state.state), state.sleep_started_at, state.sleep_rhythm.get("sleep_started_at", 0)]
 
-        节奏（都可配）：睡下 20 分钟 → 第一次（把白天的经历消化掉）；睡满 5 小时 →
-        补一次（睡前最后聊的那几句这时才进去）。醒来这一段就结束了，下次睡下重新算。
-        小睡只做轻整理，一段一次。
-        """
-
+    def sleep_review_mode(self, state: WorldState) -> str | None:
+        """Check eligibility without inference. Bookkeeping belongs to this saved sleep cycle."""
+        now = self._now()
+        if str(state.state) not in (STATE_SLEEPING, STATE_NAPPING):
+            state.sleep_rhythm.pop("review", None)
+            return None
         config = self.world.profile
         if not self.world.memory.sleep_review and not (config.enabled and config.consolidate_enabled):
             return None
-        key = str(state.session_id)
-        now = self._now()
-        awake = str(state.state) not in (STATE_SLEEPING, STATE_NAPPING)
-        if awake:
-            # 醒了：这一段睡眠结束，下次重新计时
-            self._sleep_mark.pop(key, None)
-            self._sleep_passes.pop(key, None)
+        cycle = self._sleep_review_cycle(state)
+        review = state.sleep_rhythm.get("review")
+        if not isinstance(review, dict) or review.get("cycle") != cycle:
+            started = float(state.sleep_rhythm.get("sleep_started_at") or now)
+            review = {"cycle": cycle, "mark": min(now, started), "passes": 0, "retry_at": 0}
+            state.sleep_rhythm["review"] = review
+        if now < float(review.get("retry_at") or 0):
             return None
-        mark = self._sleep_mark.get(key)
-        if mark is None:
-            self._sleep_mark[key] = now
-            self._sleep_passes[key] = 0
-            return None
-        elapsed = max(0.0, float(now) - float(mark))
-        passes = int(self._sleep_passes.get(key) or 0)
+        elapsed = max(0.0, now - float(review["mark"]))
+        passes = int(review.get("passes") or 0)
         if str(state.state) == STATE_NAPPING:
             if not bool(getattr(config, "nap_consolidate", True)):
                 return None
@@ -222,14 +220,79 @@ class RecallMixin:
         if cursor and now - cursor < 60:
             # 同一瞬间被别的路径也触发过：只认一次
             return None
+        return mode
+
+    def _record_sleep_review_attempt(self, state: WorldState, result: dict | None) -> None:
+        review = state.sleep_rhythm.get("review")
+        if not isinstance(review, dict) or review.get("cycle") != self._sleep_review_cycle(state):
+            return
+        if result and result.get("ok") and not result.get("retry_needed"):
+            review["passes"] = int(review.get("passes") or 0) + 1
+        review["retry_at"] = self._now() + 300
+
+    @model_operation("consolidate", "睡眠达到记忆整理时机")
+    async def maybe_consolidate(self, state: WorldState) -> dict[str, Any] | None:
+        """Explicit state-based review; the live clock uses consolidate_session outside its lock."""
+        mode = self.sleep_review_mode(state)
+        if mode is None:
+            return None
         result = await self.consolidate_now(state, mode=mode)
-        if result is not None:
-            self._sleep_passes[key] = passes + 1
+        self._record_sleep_review_attempt(state, result)
         return result
+
+    @session_scoped
+    @model_operation("consolidate", "整理生活经历与人物资料")
+    async def consolidate_session(
+        self, session_id: str, *, mode: str = "full", dry_run: bool = False, automatic: bool = False
+    ) -> dict[str, Any] | None:
+        """Snapshot under a short lock, infer outside it, then merge only review fields."""
+        world, state_key = self.world, self.state_key(session_id)
+        async with self.lock("consolidate:" + state_key):
+            if self.world is not world or self.state_key(session_id) != state_key or not self.is_enabled(session_id):
+                return None
+            async with self.session_state(session_id) as snapshot:
+                if automatic:
+                    mode = self.sleep_review_mode(snapshot)
+                    if mode is None:
+                        return None
+                cycle = self._sleep_review_cycle(snapshot) if automatic else None
+                persona = await self._persona_text(session_id)
+
+            async def state_current(current: WorldState) -> bool:
+                current_persona = await self._persona_text(session_id)
+                return (self.world is world and self.state_key(session_id) == state_key
+                        and self.is_enabled(session_id) and current_persona == persona
+                        and (cycle is None or self._sleep_review_cycle(current) == cycle))
+
+            async def context_current() -> bool:
+                # Keep this short validation coherent with a concurrent wake/edit.
+                # Consolidator commits synchronously immediately after it returns.
+                async with self.lock(state_key):
+                    current = await self.load_state(session_id, cold_start=False)
+                    return await state_current(current)
+
+            reason = "睡眠达到整理时机" if automatic else "管理员预览整理" if dry_run else "管理员手动整理"
+            with model_context("consolidate", reason, session_id):
+                result = await self.consolidate_now(snapshot, mode=mode, dry_run=dry_run, context_guard=context_current)
+            if not await context_current():
+                return None
+            if dry_run:
+                return result
+            async with self.session_state(session_id) as current:
+                if not await state_current(current):
+                    return None
+                if result and result.get("ok"):
+                    current.consolidate_cursor = snapshot.consolidate_cursor
+                    if result.get("dream"):
+                        current.last_dream = snapshot.last_dream
+                if automatic:
+                    self._record_sleep_review_attempt(current, result)
+            return result
 
     @model_operation("consolidate", "整理记忆与画像")
     async def consolidate_now(
-        self, state: WorldState, *, mode: str = "full", dry_run: bool = False
+        self, state: WorldState, *, mode: str = "full", dry_run: bool = False,
+        context_guard: Callable[[], Awaitable[bool]] | None = None,
     ) -> dict[str, Any] | None:
         """立刻整理一次（睡眠到点 / 编辑器手动点）。
 
@@ -245,7 +308,8 @@ class RecallMixin:
         async def context_current() -> bool:
             persona = await self._persona_text(session_id)
             return (self.world is world and self.state_key(session_id) == state_key
-                    and self.is_enabled(session_id) and persona == persona_text)
+                    and self.is_enabled(session_id) and persona == persona_text
+                    and (context_guard is None or await context_guard()))
 
         records = self.chat_window(state, session_id)
         result = await self.consolidator.run(
@@ -278,7 +342,8 @@ class RecallMixin:
                 "parsed": result.parsed,
             }
         # 游标用引擎时钟（和 maybe_consolidate 的记账同一个域，测试里可以推进假时钟）
-        state.consolidate_cursor = self._now()
+        if result.ok:
+            state.consolidate_cursor = self._now()
         if result.dream:
             state.last_dream = result.dream
         await self._log_event(
@@ -302,6 +367,7 @@ class RecallMixin:
         return {
             "mode": mode,
             "ok": bool(result.ok),
+            "retry_needed": result.retry_needed,
             "note": result.note or result.summary(),
             "summary": result.summary(),
             "dream": result.dream,

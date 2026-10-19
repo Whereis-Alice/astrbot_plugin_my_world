@@ -361,6 +361,7 @@ class ActionsRunMixin:
         if definition.idle:
             outcome.notes.append("闲置动作由空闲轮换执行，不进入正式动作链")
             return
+        self._settle_idle_practice(state)
         state.idle_activity = {}
         ok, reason = self._check_preconditions(state, definition)
         if not ok:

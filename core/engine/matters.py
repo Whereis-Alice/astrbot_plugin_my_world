@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import copy
 import json
+from datetime import datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 from .. import life_matters as matters
 from ..config_scope import session_scoped
@@ -147,6 +149,7 @@ class MattersMixin:
         return total
 
     def pause_matter_action(self, state, action: dict, *, at: float | None = None) -> None:
+        self.settle_life_practice(state, action, at=at)
         if self.settle_matter_work(state, action, at=at):
             item = matters.find(state, str(action.get("matter_id") or ""))
             step = next(s for s in item["steps"] if s["id"] == action.get("matter_step_id"))
@@ -232,7 +235,7 @@ class MattersMixin:
         rows = []
         for action in self.world.actions:
             # Personal quiet work cannot send messages, touch a person or replay external tools.
-            if (not action.enabled or action.idle or action.category != "continuous"
+            if (not action.enabled or action.idle or action.id == "walk_to" or action.category != "continuous"
                     or action.llm_level != "template" or action.target_type != "none"
                     or action.tool_list() or action.trigger_command or action.on_complete.trigger not in {"none", "llm_followup"}
                     or life_role(action) not in {"interest", "explore"}):
@@ -249,6 +252,7 @@ class MattersMixin:
     async def advance_life_matters(self, session_id: str) -> None:
         if not self.is_enabled(session_id) or not self.world.limits.life_matter_enabled:
             return
+        world, state_key = self.world, self.state_key(session_id)
         now = self._now()
         async with self.session_state(session_id) as state:
             self.reconcile_matters(state)
@@ -281,8 +285,11 @@ class MattersMixin:
             snapshot = copy.deepcopy(item)
             candidates = self._matter_actions(state)
         # Never wait for inference while holding the life-state lock.
+        persona = await self._persona_text(session_id)
+        if not await self._matter_context_current(session_id, world, state_key, persona):
+            return
         if review:
-            await self._review_matter_stage(session_id, snapshot)
+            await self._review_matter_stage(session_id, snapshot, world=world, state_key=state_key, persona=persona)
             return
         if not candidates:
             raw = None
@@ -296,12 +303,14 @@ class MattersMixin:
                     '格式：{"motivation":"一句动机","steps":[{"text":"具体下一步","action":"候选ID",'
                     '"node":"候选地点","minutes":20,"day_offset":0}],"blocked":""}。最多6步，每步5到60分钟。'
                     "day_offset是从今天起经过几天才适合做，可跨多日，不要为填满日程而强行赶完。",
-                    json.dumps({"persona": (await self._persona_text(session_id))[:6000],
+                    json.dumps({"persona": persona[:6000],
                                 "matter": snapshot, "available": candidates}, ensure_ascii=False))
         payload = extract_json_object(raw or "") or {}
+        if not await self._matter_context_current(session_id, world, state_key, persona):
+            return
         async with self.session_state(session_id) as state:
             item = matters.find(state, snapshot["id"])
-            if (not self.is_enabled(session_id) or not self.world.limits.life_matter_enabled or item is None
+            if (not await self._matter_context_current(session_id, world, state_key, persona) or item is None
                     or item["revision"] != snapshot["revision"] or item["status"] in matters.CLOSED | {"paused"}):
                 return  # Human edit, interruption, or newer result wins.
             allowed = {(r["action"], r["node"]) for r in self._matter_actions(state)}
@@ -334,19 +343,27 @@ class MattersMixin:
                 matters.history(item, "blocked", item["obstacle"], now)
             matters.sync(state)
 
-    async def _review_matter_stage(self, session_id: str, snapshot: dict) -> None:
+    async def _matter_context_current(self, session_id, world, state_key, persona) -> bool:
+        current_persona = await self._persona_text(session_id)
+        return (self.world is world and self.state_key(session_id) == state_key
+                and self.is_enabled(session_id) and self.world.limits.life_matter_enabled
+                and current_persona == persona)
+
+    async def _review_matter_stage(self, session_id: str, snapshot: dict, *, world, state_key, persona) -> None:
         with model_context("life_matter", f"核对生活事项 {snapshot['id']} 的实际阶段结果", session_id):
             raw = await self._ask_judge(session_id,
                 "根据事项目标和实际动作收据，判断整个目标是否已达成，只输出JSON。"
                 '格式：{"outcome":"completed|continue|blocked","reason":""}。'
                 "只能证明收据中的世界内活动；读资料不能证明修好了物品或产出了文件。"
                 "可以继续则continue，能力不足则blocked，已有依据确实覆盖整个目标才completed。不要编造新经历。",
-                json.dumps(snapshot, ensure_ascii=False))
+                json.dumps({"persona": persona[:6000], "matter": snapshot}, ensure_ascii=False))
         result = extract_json_object(raw or "") or {}
+        if not await self._matter_context_current(session_id, world, state_key, persona):
+            return
         async with self.session_state(session_id) as state:
             item = matters.find(state, snapshot["id"])
             if (not item or item["revision"] != snapshot["revision"] or item["status"] in matters.CLOSED | {"paused"}
-                    or not self.is_enabled(session_id) or not self.world.limits.life_matter_enabled):
+                    or not await self._matter_context_current(session_id, world, state_key, persona)):
                 return
             reason = str(result.get("reason") or "尚未取得可核对的目标结果")[:300]
             outcome = result.get("outcome")
@@ -393,20 +410,50 @@ class MattersMixin:
         await self._apply_plan(state, self.node(state.node_id), outcome, plan)
         await self._tick_plan(state, self.node(state.node_id), outcome, depth=0)
 
+    def settle_life_practice(self, state, action: dict, *, at: float | None = None) -> None:
+        """Record actual online effort once, even if the action never reaches completion."""
+        definition = self.world.action_map().get(str(action.get("type") or ""))
+        elapsed = max(0, int(action.get("elapsed_ticks") or 0))
+        accounted = max(0, int(action.get("practice_accounted_ticks") or 0))
+        if (not definition or definition.id == "walk_to" or definition.category != "continuous" or definition.llm_level != "template"
+                or definition.target_type != "none" or life_role(definition) not in {"interest", "explore"}
+                or definition.tool_list() or definition.trigger_command or definition.on_complete.trigger not in {"none", "llm_followup"}
+                or elapsed <= accounted or elapsed * self.tick_seconds < 60):
+            return
+        end = float(self._now() if at is None else at)
+        start = end - (elapsed - accounted) * self.tick_seconds
+        interest = state.life_interests.setdefault(definition.id, {"label": definition.name, "sessions": 0, "minutes": 0, "days": []})
+        if not action.get("practice_id"):
+            action["practice_id"] = uuid4().hex
+            interest["sessions"] = int(interest.get("sessions", 0)) + 1
+        interest.update(label=definition.name, minutes=float(interest.get("minutes", 0)) + (end - start) / 60, last_at=end)
+        episodes = interest.setdefault("episodes", [])
+        days = set(interest.get("days", []))
+        node_id = str(action.get("node_id") or state.node_id)
+        while start < end:
+            local = datetime.fromtimestamp(start)
+            boundary_hour = next((hour for hour in (5, 11, 18, 23, 24) if hour > local.hour), 24)
+            boundary = (local.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(hours=boundary_hour)).timestamp()
+            stop = min(end, boundary)
+            day = self._today_key(start)
+            period = "早晨" if 5 <= local.hour < 11 else "白天" if 11 <= local.hour < 18 else "晚间" if 18 <= local.hour < 23 else "夜间"
+            episode = next((row for row in reversed(episodes) if row.get("practice_id") == action["practice_id"]
+                            and row.get("day") == day and row.get("period") == period and row.get("node") == node_id), None)
+            if episode is None:
+                episode = {"practice_id": action["practice_id"], "day": day, "period": period,
+                           "node": node_id, "action": definition.id, "minutes": 0}
+                episodes.append(episode)
+            episode.update(at=stop, minutes=episode["minutes"] + (stop - start) / 60)
+            days.add(day)
+            start = stop
+        interest["days"], interest["episodes"] = sorted(days)[-30:], episodes[-30:]
+        action["practice_accounted_ticks"] = elapsed
+        state.life_interests = dict(sorted(state.life_interests.items(), key=lambda pair: pair[1].get("last_at", 0))[-40:])
+
     def _record_matter_action(self, state, action: dict) -> None:
+        self.settle_life_practice(state, action)
         definition = self.world.action_map().get(str(action.get("type") or ""))
         minutes = max(0, int(action.get("elapsed_ticks") or 0) * self.tick_seconds / 60)
-        if (definition and definition.category == "continuous" and definition.llm_level == "template"
-                and definition.target_type == "none" and life_role(definition) in {"interest", "explore"} and minutes >= 1):
-            interest = state.life_interests.setdefault(definition.id, {"label": definition.name, "sessions": 0, "minutes": 0, "days": []})
-            interest.update(sessions=interest["sessions"] + 1, minutes=interest["minutes"] + minutes, last_at=self._now())
-            interest["days"] = sorted(set([*interest.get("days", []), self._today_key(self._now())]))[-30:]
-            # Receipts describe practiced circumstances, not a rewritten preference or personality.
-            hour = self.local_now().hour
-            period = "早晨" if 5 <= hour < 11 else "白天" if 11 <= hour < 18 else "晚间" if 18 <= hour < 23 else "夜间"
-            interest["episodes"] = [*interest.get("episodes", []), {"at": self._now(), "period": period,
-                "day": self._today_key(self._now()), "minutes": minutes, "node": state.node_id, "action": definition.id}][-30:]
-            state.life_interests = dict(sorted(state.life_interests.items(), key=lambda pair: pair[1].get("last_at", 0))[-40:])
         matter_id, step_id = action.get("matter_id"), action.get("matter_step_id")
         if not matter_id or action.get("type") == "walk_to":
             return
