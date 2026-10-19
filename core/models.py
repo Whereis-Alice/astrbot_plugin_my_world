@@ -876,6 +876,10 @@ class LifeExecutionConfig(Permissive):
     max_steps: int = Field(default=8, ge=1, le=30)
     timeout_seconds: int = Field(default=300, ge=30, le=1800)
     tool_timeout_seconds: int = Field(default=90, ge=5, le=300)
+    max_sandboxes: int = Field(default=1, ge=1, le=8)
+    """Global limit for My World's sandbox slots, independent of normal QQ tools."""
+    idle_release_seconds: int = Field(default=300, ge=0, le=86400)
+    """Release disposable project environments after inactivity; 0 disables timed release."""
     trusted_tools: dict[str, str] = Field(default_factory=dict)
     """Explicitly trusted host/plugin tools, keyed by name with their schema fingerprint."""
 
@@ -883,7 +887,7 @@ class LifeExecutionConfig(Permissive):
 class Limits(Permissive):
     background_daily_calls: int = Field(default=120, ge=0, le=10000)
     background_daily_tokens: int = Field(default=0, ge=0, le=100000000)
-    background_concurrency: int = Field(default=3, ge=1, le=12)
+    background_concurrency: int = Field(default=1, ge=1, le=12)
     life_matter_enabled: bool = True
     life_matter_self_start: bool = True
     life_matter_active_max: int = Field(default=6, ge=1, le=20)

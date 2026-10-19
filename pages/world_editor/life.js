@@ -229,7 +229,7 @@ export function openLifeSettings({world, execution = {}, el, openCustomDialog, m
     for (const [key, label, fallback, min, max] of [
       ["life_matter_active_max", "活跃事项上限", 6, 1, 20], ["life_matter_daily_minutes", "每件事每天最多投入（分钟）", 90, 5, 480],
       ["life_matter_interval_minutes", "再次推进前的间隔（分钟）", 60, 5, 1440], ["background_daily_calls", "每天后台调用预算", 120, 0, 10000],
-      ["background_daily_tokens", "每天后台 token 预算", 0, 0, 100000000], ["background_concurrency", "同时运行的后台模型请求", 3, 1, 12]]) {
+      ["background_daily_tokens", "每天后台 token 预算", 0, 0, 100000000], ["background_concurrency", "同时运行的后台模型请求", 1, 1, 12]]) {
       const wrap = el("label", "field"), input = el("input"); input.type = "number"; input.min = min; input.max = max; input.value = limits[key] ?? fallback;
       wrap.append(el("span", "", label), input); body.append(wrap); controls.push(() => { if (!input.checkValidity()) throw new Error(`${label}超出范围`); limits[key] = Number(input.value); });
     }
@@ -244,10 +244,11 @@ export function openLifeSettings({world, execution = {}, el, openCustomDialog, m
     for (const [value, label] of [["inherit", "沿用 AstrBot 沙盒服务设置"], ["shipyard_neo", "Shipyard Neo"], ["shipyard", "Shipyard"], ["boxlite", "BoxLite（需要宿主安装支持）"], ["cua", "CUA 独立电脑沙盒"]]) sandbox.add(new Option(label, value));
     sandbox.value = life.sandbox || "inherit"; body.append(sandbox);
     controls.push(() => { life.enabled = enabled.checked; life.sandbox = sandbox.value; });
-    for (const [key, label, fallback, min, max] of [["max_steps", "每次原生 Agent 最多轮数", 8, 1, 30], ["timeout_seconds", "每次生活执行最长等待（秒）", 300, 30, 1800], ["tool_timeout_seconds", "单个工具最长等待（秒）", 90, 5, 300]]) {
+    for (const [key, label, fallback, min, max] of [["max_steps", "每次原生 Agent 最多轮数", 8, 1, 30], ["timeout_seconds", "每次生活执行最长等待（秒）", 300, 30, 1800], ["tool_timeout_seconds", "单个工具最长等待（秒）", 90, 5, 300], ["max_sandboxes", "生活沙盒总上限（以全局设置为准）", 1, 1, 8], ["idle_release_seconds", "生活沙盒空闲回收（秒，0 关闭）", 300, 0, 86400]]) {
       const wrap = el("label", "field"), input = el("input"); input.type = "number"; input.min = min; input.max = max; input.value = life[key] ?? fallback;
       wrap.append(el("span", "", label), input); body.append(wrap); controls.push(() => { if (!input.checkValidity()) throw new Error(`${label}超出范围`); life[key] = Number(input.value); });
     }
+    body.append(el("p", "muted", "默认只保留一个生活环境，空闲五分钟后回收；需要腾出名额时优先回收闲置环境。回收可能丢失临时文件，后续会先检查再继续。重要产物请另行保存。旧 Shipyard 还依赖服务端 TTL，不能保证立即释放内存。"));
     body.append(el("p", "muted", "QQ 继续使用原来的电脑配置。生活始终创建独立沙盒，连接失败不会转用服务器 Shell。沙盒服务应避免挂载服务器业务目录或注入无关凭据。"));
     const toolSection = el("details", "life-tool-settings"); toolSection.append(el("summary", "", "生活可用工具与宿主授权"));
     toolSection.append(el("p", "muted", "原生电脑工具在沙盒内执行。其他插件和 MCP 工具仍在宿主或外部服务执行；勾选表示信任其真实权限，无法通过生活沙盒约束它。只授权已经了解的工具。工具定义变化会自动撤销旧授权。"));

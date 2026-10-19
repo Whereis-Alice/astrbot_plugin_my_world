@@ -40,6 +40,12 @@ class SemanticMemory:
         return session, persona, revision(query), config.semantic_endpoint, config.semantic_model, mode or self.memory.world.memory_scope_mode, config.automatic_recall if automatic else "explicit"
 
     def cached(self, session: str, persona: str, query: str, *, mode: str = "", automatic: bool = False) -> dict[int, float]:
+        now = time.time()
+        for old, at in list(self.score_times.items()):
+            if now - at > 300:
+                self.scores.pop(old, None)
+                self.score_versions.pop(old, None)
+                self.score_times.pop(old, None)
         key = self._key(session, persona, query, mode, automatic=automatic)
         scores = self.scores.get(key, {})
         if not scores or time.time() - self.score_times.get(key, 0) > 300:
@@ -116,9 +122,18 @@ class SemanticMemory:
                 if not candidates:
                     return
                 model_key = revision(config.semantic_endpoint + "|" + config.semantic_model)
-                known = {int(row["memory_id"]): dict(row) for row in self.memory.db._query(
-                    "SELECT memory_id,revision,vector FROM memory_vector WHERE model_key=?", (model_key,))}
-                missing = [row for row in candidates if row["id"] not in known or known[row["id"]]["revision"] != revision(row["content"])]
+                ids = [row["id"] for row in candidates]
+                known = {}
+                # Read revisions only, and only for the already authorised
+                # candidates. A large vector library must not be loaded per query.
+                for start in range(0, len(ids), 128):
+                    batch = ids[start:start+128]
+                    marks = ",".join("?" for _ in batch)
+                    known.update({int(row["memory_id"]): row["revision"] for row in self.memory.db._query(
+                        f"SELECT memory_id,revision FROM memory_vector WHERE model_key=? AND memory_id IN ({marks})",
+                        (model_key, *batch))})
+                versions = {row["id"]: revision(row["content"]) for row in candidates}
+                missing = [row for row in candidates if known.get(row["id"]) != versions[row["id"]]]
                 # Bounded rebuild each call; lexical recall continues during a larger rebuild.
                 missing = missing[:32]
                 with model_context("embedding", "按当前会话范围召回记忆并补充可重建的语义索引", session):
@@ -130,10 +145,22 @@ class SemanticMemory:
                         self.memory.db._execute("INSERT INTO memory_vector(memory_id,model_key,revision,vector) VALUES(?,?,?,?) "
                             "ON CONFLICT(memory_id,model_key) DO UPDATE SET revision=excluded.revision,vector=excluded.vector",
                             (row["id"], model_key, digest, json.dumps(vector)))
-                        known[row["id"]] = {"revision": digest, "vector": json.dumps(vector)}
-                self.scores[key] = {row["id"]: cosine(query_vector, json.loads(known[row["id"]]["vector"])) for row in candidates
-                    if row["id"] in known and known[row["id"]]["revision"] == revision(row["content"])}
-                self.scores = dict(list(self.scores.items())[-64:])
+                del vectors
+                scores = {}
+                # Read at most sixteen encoded vectors per batch. Keep
+                # only scalar similarities in the short-lived query cache.
+                for start in range(0, len(ids), 16):
+                    batch = ids[start:start+16]
+                    marks = ",".join("?" for _ in batch)
+                    rows = self.memory.db._query(
+                        f"SELECT memory_id,revision,vector FROM memory_vector WHERE model_key=? AND memory_id IN ({marks})",
+                        (model_key, *batch))
+                    for row in rows:
+                        if row["revision"] == versions[row["memory_id"]]:
+                            scores[row["memory_id"]] = cosine(query_vector, json.loads(row["vector"]))
+                self.scores.pop(key, None)
+                self.scores[key] = scores
+                self.scores = dict(list(self.scores.items())[-16:])
                 self.score_versions[key] = {row["id"]: revision(row["content"]) for row in candidates}
                 self.score_times[key] = time.time()
                 self.score_versions = {k: v for k, v in self.score_versions.items() if k in self.scores}
@@ -144,3 +171,6 @@ class SemanticMemory:
             except Exception:
                 self.status = "嵌入暂不可用，已使用关键词召回"
                 self.retry_at = time.time() + 60
+            finally:
+                if self.locks.get(scope) is lock:
+                    self.locks.pop(scope, None)

@@ -5,7 +5,7 @@ import json
 import unittest
 
 from core import life_matters as matters
-from core.life_execution import LifeExecutionResult, block, capability_key
+from core.life_execution import LifeExecutionResult, agent_matter_context, block, capability_key
 from core.relationship import interaction_trend
 from tests import test_engine as fixture
 
@@ -35,6 +35,21 @@ class Executor:
         if self.error:
             raise self.error
         return self.result
+
+
+class ExecutionContextTests(unittest.TestCase):
+    def test_large_history_stays_in_ledger_while_prompt_keeps_recent_receipts(self):
+        matter = {"id": "lm_script", "text": "写脚本后等待真实素材", "steps": [
+            {"id": "one", "text": "已完成的写入", "status": "done", "receipt": {"tool_receipts": ["x"*20000]}}
+        ], "executions": [{"id": str(i), "summary": "历史依据", "events": [
+            {"kind": "tool_end", "tool": "shell", "ok": True, "result": "x"*600} for _ in range(120)]
+        } for i in range(12)]}
+        original = copy.deepcopy(matter)
+        context = agent_matter_context(matter)
+        self.assertLess(len(json.dumps(context)), 20000)
+        self.assertEqual(context["steps"][0]["status"], "done")
+        self.assertEqual([row["id"] for row in context["recent_executions"]], ["10", "11"])
+        self.assertEqual(matter, original)
 
 
 class ExecutionTests(unittest.IsolatedAsyncioTestCase):

@@ -37,6 +37,28 @@ class LifeExecutor(Protocol):
                       permitted: Callable[[], Awaitable[bool]]) -> LifeExecutionResult: ...
 
 
+def agent_matter_context(matter: dict) -> dict:
+    """Keep the durable ledger in storage, rather than resending it every step."""
+    result = {key: str(matter[key])[:1000] for key in
+              ("id", "text", "kind", "motivation", "who", "next_step", "obstacle", "recovery_condition")
+              if key in matter}
+    result["steps"] = [{key: step[key] for key in
+                        ("id", "text", "action", "node", "minutes", "status", "finished_at", "not_before")
+                        if key in step} for step in matter.get("steps", [])[:12]]
+    result["artifacts"] = [{key: row[key] for key in
+                            ("path", "scope", "verified_at", "preview_sha256", "verification") if key in row}
+                            for row in matter.get("artifacts", [])[-8:]]
+    result["recent_executions"] = []
+    for row in matter.get("executions", [])[-2:]:
+        receipt = {key: row[key] for key in ("id", "status", "at", "ended_at") if key in row}
+        receipt.update(summary=str(row.get("summary") or "")[:500], error=str(row.get("error") or "")[:300])
+        receipt["tool_results"] = [{"tool": event.get("tool", ""), "ok": event.get("ok"),
+                                   "result": str(event.get("result") or "")[:600]}
+                                  for event in row.get("events", []) if event.get("kind") == "tool_end"][-8:]
+        result["recent_executions"].append(receipt)
+    return result
+
+
 def block(item: dict, *, kind: str, reason: str, now: float, condition: str = "", key: str = "") -> None:
     """Conditions wait for change; transport failures retry with bounded backoff."""
     count = int(item.get("failure_count") or 0) + 1 if kind == "transient" else 0

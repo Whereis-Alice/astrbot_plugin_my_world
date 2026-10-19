@@ -47,7 +47,12 @@ async def main():
             files[path] = "# SYNTHETIC FIXTURE ONLY\nprint('3 synthetic tests passed')\n"
             return {"success": True, "exit_code": 0, "stdout": "3 synthetic tests passed", "stderr": ""}
 
-    sandbox = types.SimpleNamespace(fs=FS(), shell=Shell())
+    closed = []
+
+    async def shutdown(*, delete_sandbox=False):
+        closed.append(delete_sandbox)
+
+    sandbox = types.SimpleNamespace(fs=FS(), shell=Shell(), shutdown=shutdown)
 
     async def get_booter(context, session_id):
         cfg = context.get_config(umo=session_id)
@@ -55,6 +60,8 @@ async def main():
         assert session_id.startswith("my_world_life:")
         assert cfg["provider_settings"]["computer_use_require_admin"] is False
         sessions.append(session_id)
+        from astrbot.core.computer.computer_client import session_booter
+        session_booter[session_id] = sandbox
         return sandbox
 
     unsafe = FunctionTool(name="host_write", description="untrusted host write", parameters={"type": "object", "properties": {}})
@@ -174,12 +181,13 @@ async def main():
     assert {name: tool.active for name, tool in manager.native.items()} == native_before
     assert all(s == sessions[0] for s in sessions)
     # A sandbox that never finishes startup must not occupy a life worker forever.
-    entered, stopped = asyncio.Event(), asyncio.Event()
+    entered, stopped, finish_boot = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
     async def stalled_booter(*args, **kwargs):
         entered.set()
         try:
-            await asyncio.Future()
+            await finish_boot.wait()
+            return await get_booter(*args, **kwargs)
         finally:
             stopped.set()
 
@@ -190,10 +198,16 @@ async def main():
             await agent.execute(session_id="qq:GroupMessage:42", owner="character", matter={"id": "lm_stall"},
                 step={"text": "检查环境"}, persona="原有人设不变", run_id="le_stall", record=record, permitted=permitted)
         except TimeoutError:
-            assert entered.is_set() and stopped.is_set()
+            assert entered.is_set() and not stopped.is_set()
         else:
             raise AssertionError("Sandbox startup escaped the life execution timeout")
-    print("PASS: native Agent + native shell tool; isolated session/config; no host file tools; 2 per-request usage records; verified synthetic artifact; startup timeout; QQ config unchanged")
+        # The native boot continues under its occupied slot, then gets disposed.
+        # Cancelling get_booter itself could orphan a VM that is still booting.
+        finish_boot.set()
+        await asyncio.gather(*agent.sandboxes._cleanup_tasks)
+    await agent.close()
+    assert stopped.is_set() and closed and all(closed)
+    print("PASS: native Agent + native shell tool; isolated session/config; no host file tools; 2 per-request usage records; verified synthetic artifact; startup timeout and late cleanup; QQ config unchanged")
 
 
 if __name__ == "__main__":

@@ -609,6 +609,9 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
                 pass
         self._reflection_tasks.clear()
         await self.engine.close_background()
+        close_life = getattr(self.engine.life_executor, "close", None)
+        if callable(close_life):
+            await close_life()
         unregister_profile_tools(self)
         try:
             await self.db.close()

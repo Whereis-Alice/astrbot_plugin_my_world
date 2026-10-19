@@ -356,6 +356,43 @@ class EvidenceAndSemanticTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("关键词", self.memory.semantic.status)
         self.assertEqual(len(self.db.query_memories(session_id="group")), 1)
 
+    async def test_semantic_large_library_only_reads_scoped_vectors_in_small_batches(self):
+        from core.semantic_memory import revision
+        self.world.memory.semantic_enabled = True
+        self.world.memory.semantic_endpoint = "https://example.invalid/v1"
+        self.world.memory.semantic_model = "test-embedding"
+        model = revision(self.world.memory.semantic_endpoint+"|"+self.world.memory.semantic_model)
+        scoped = []
+        with self.db.atomic():
+            for i in range(104):
+                content = f"synthetic life record {i}"
+                mid = self.db.add_memory(session_id="group" if i < 40 else "private", persona_id="p",
+                    scope="group", node_id="study", content=content)
+                if i < 40:
+                    scoped.append(mid)
+                self.db._execute("INSERT INTO memory_vector(memory_id,model_key,revision,vector) VALUES(?,?,?,?)",
+                    (mid, model, revision(content), json.dumps([1., 0.] if i < 40 else [999.]*4096)))
+        queries = []
+        original = self.db._query
+
+        def observed(sql, params=()):
+            rows = original(sql, params)
+            if "FROM memory_vector" in sql:
+                self.assertIn("memory_id IN", sql)
+                self.assertTrue({row["memory_id"] for row in rows}.issubset(scoped))
+                if ",vector" in sql:
+                    queries.append(len(rows))
+                    self.assertLessEqual(len(rows), 16)
+            return rows
+
+        self.memory.semantic.embed = AsyncMock(return_value=[[1., 0.]])
+        with patch.object(self.db, "_query", side_effect=observed):
+            await self.memory.semantic.prepare("group", "p", "看过的风景")
+        self.assertEqual(sum(queries), 40)
+        self.assertEqual(set(self.memory.semantic.cached("group", "p", "看过的风景")), set(scoped))
+        self.memory.semantic.embed.assert_awaited_once_with(["看过的风景"])
+        self.assertEqual(self.memory.semantic.locks, {})
+
     async def test_automatic_conflict_update_keeps_original_and_revision(self):
         args = dict(session_id="group", persona_id="p", node_id="study")
         mid = self.memory.remember(**args, content="我喜欢下雨")

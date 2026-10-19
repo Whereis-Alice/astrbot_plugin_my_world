@@ -14,10 +14,11 @@ from pathlib import PurePosixPath
 from astrbot.api.star import Context
 
 from ..core.json_actions import extract_json_object
-from ..core.life_execution import LifeExecutionResult, fingerprint
+from ..core.life_execution import LifeExecutionResult, agent_matter_context, fingerprint
 from ..core.llm_usage import record_llm_usage
 from ..core.model_call_runtime import safe_error, save_call
 from ..core.model_calls import model_context
+from .life_sandbox import LifeSandboxPool
 
 
 class LifeContext(Context):
@@ -53,6 +54,12 @@ def isolated_config(host_config: dict, execution) -> dict:
     # Service authorisation applies ONLY to this isolated sandbox context.
     # The event remains a member and never acquires a real user's admin identity.
     provider["computer_use_require_admin"] = False
+    if execution.idle_release_seconds:
+        # Legacy Shipyard's shutdown is a no-op, so bound its service lease too.
+        # This is a TTL, not a guarantee that the service frees RAM immediately.
+        for name in ("shipyard_ttl", "shipyard_neo_ttl", "cua_ttl"):
+            ttl = int(sandbox.get(name) or 3600)
+            sandbox[name] = min(ttl, execution.timeout_seconds + execution.idle_release_seconds)
     return config
 
 
@@ -86,6 +93,10 @@ def _host_tool_block(tool) -> str:
 class AstrBotLifeAgent:
     def __init__(self, plugin):
         self.plugin = plugin
+        self.sandboxes = LifeSandboxPool(logger=getattr(plugin, "logger", None))
+
+    async def close(self):
+        await self.sandboxes.close()
 
     def _permission_scope(self, session_id):
         # Shared lives have a stable configuration owner. A tick arriving from
@@ -166,16 +177,10 @@ class AstrBotLifeAgent:
                                        persona=persona, run_id=run_id, record=record, permitted=permitted)
 
     async def _execute(self, *, session_id, owner, matter, step, persona, run_id, record, permitted):
-        from astrbot.core.agent.hooks import BaseAgentRunHooks
-        from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
-        from astrbot.core.astr_agent_context import AgentContextWrapper, AstrAgentContext
-        from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
-        from astrbot.core.computer.computer_client import get_booter
         from astrbot.core.platform.astr_message_event import AstrMessageEvent
         from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
         from astrbot.core.platform.message_type import MessageType
         from astrbot.core.platform.platform_metadata import PlatformMetadata
-        from astrbot.core.provider.entities import ProviderRequest
 
         cfg, config = self._configuration(session_id)
         booter_type = config["provider_settings"]["sandbox"].get("booter", "shipyard_neo")
@@ -200,8 +205,22 @@ class AstrBotLifeAgent:
         context = LifeContext(self.plugin.context, config)
         if not await permitted():
             return LifeExecutionResult(outcome="interrupted", summary="生活条件已变化，未开始执行")
-        sandbox = await get_booter(context, event.unified_msg_origin)
-        await record({"kind": "environment", "runtime": "sandbox", "session": event.unified_msg_origin, "booter": booter_type})
+        global_world = getattr(self.plugin.engine, "_base_runtime", {}).get("world") or self.plugin.engine.world
+        async with self.sandboxes.lease(event.unified_msg_origin, context,
+                maximum=global_world.life_execution.max_sandboxes, idle_seconds=cfg.idle_release_seconds) as sandbox:
+            await record({"kind": "environment", "runtime": "sandbox", "session": event.unified_msg_origin, "booter": booter_type})
+            return await self._run_agent(session_id=session_id, matter=matter, step=step, persona=persona,
+                run_id=run_id, record=record, permitted=permitted, cfg=cfg, tools=tools,
+                event=event, context=context, sandbox=sandbox)
+
+    async def _run_agent(self, *, session_id, matter, step, persona, run_id, record, permitted,
+                         cfg, tools, event, context, sandbox):
+        from astrbot.core.agent.hooks import BaseAgentRunHooks
+        from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
+        from astrbot.core.astr_agent_context import AgentContextWrapper, AstrAgentContext
+        from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
+        from astrbot.core.provider.entities import ProviderRequest
+
         plugin = self.plugin
         provider_id = plugin.llm_provider_id or await plugin.context.get_current_chat_provider_id(session_id)
         provider = await plugin.context.provider_manager.get_provider_by_id(provider_id)
@@ -295,7 +314,7 @@ class AstrBotLifeAgent:
                   '最后输出JSON：{"outcome":"step_done|waiting|blocked","summary":"真实结果",'
                   '"artifacts":["沙盒相对文件路径"],"obstacle":"","condition":"继续所需条件"}。'
                   "step_done仅表示这一小步，不表示整个项目完成；缺少真实素材时保留其余待办。")
-        request = ProviderRequest(prompt=json.dumps({"matter": matter, "step": step, "workspace": workspace}, ensure_ascii=False),
+        request = ProviderRequest(prompt=json.dumps({"matter": agent_matter_context(matter), "step": step, "workspace": workspace}, ensure_ascii=False),
                                   system_prompt=system, contexts=[], func_tool=tools)
         request.session_id = event.unified_msg_origin
         token = plugin.set_self_initiated()
