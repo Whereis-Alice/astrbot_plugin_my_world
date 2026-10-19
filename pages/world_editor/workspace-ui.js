@@ -84,6 +84,13 @@ export function initialiseWorkspace() {
       if (!menu.contains(event.target)) menu.open = false;
     });
   });
+  // Let the native picker consume Escape before surrounding menus or dialogs.
+  // Propagation stops here; its default close action still runs.
+  document.addEventListener("keydown", event => {
+    if (event.key !== "Escape") return;
+    const select = event.target.closest?.("select");
+    if (select && CSS.supports("selector(select:open)") && select.matches(":open")) event.stopPropagation();
+  }, true);
   document.addEventListener("keydown", event => {
     if (event.key !== "Escape") return;
     for (const menu of document.querySelectorAll(`${selector.split(", ").map(item => `${item}[open]`).join(", ")}`)) {

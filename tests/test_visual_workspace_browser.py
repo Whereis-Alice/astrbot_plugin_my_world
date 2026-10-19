@@ -120,3 +120,68 @@ class VisualWorkspaceTests(unittest.TestCase):
                 self.host.screenshot(path=str(self.shots / "atelier-theme-picker-mobile.png"), animations="disabled")
                 self.page.get_by_label("关闭外观设置").click()
         self.assertEqual(self.errors, [])
+
+    def test_open_session_picker_themes_long_labels_and_real_selection(self):
+        self.install_console()
+        session = self.page.locator("#status-session")
+        self.page.evaluate('''() => {
+          window.pickerReads = [];
+          const read = AstrBotPluginPage.apiGet;
+          AstrBotPluginPage.apiGet = (url, params) => {
+            if (url === 'state') pickerReads.push(params.session);
+            return read(url, params);
+          };
+          const select = document.getElementById('status-session');
+          select.options[1].textContent = '朋友的小群 · 一起讨论星空与旅行的很长很长的群名称 · 2002';
+          for (let index = 0; index < 24; index++) select.add(new Option(`群聊 · ${3000+index}`, `test:GroupMessage:${3000+index}`));
+        }''')
+        if not self.page.evaluate("CSS.supports('appearance', 'base-select')"):
+            self.skipTest("This browser uses the native picker fallback")
+        for palette in ("nocturne", "aurora", "rose", "cloud", "sand", "jade"):
+            self.appearance(palette)
+            original = session.input_value()
+            session.click()
+            self.assertTrue(session.evaluate("node => node.matches(':open')"))
+            styles = session.evaluate('''node => {
+              const picker = getComputedStyle(node, '::picker(select)');
+              return {height: parseFloat(picker.height), background: picker.backgroundColor,
+                text: picker.color, expectedText: getComputedStyle(node).color};
+            }''')
+            self.assertLessEqual(styles["height"], 360)
+            self.assertNotEqual(styles["background"], "rgba(0, 0, 0, 0)")
+            self.assertEqual(styles["text"], styles["expectedText"])
+            self.host.screenshot(path=str(self.shots / f"session-picker-{palette}.png"), animations="disabled")
+            session.press("Escape")
+            self.assertEqual(session.input_value(), original)
+        self.assertEqual(self.page.evaluate("pickerReads"), [])
+        session.click()
+        session.locator("option").nth(1).click()
+        expect(session).to_have_value("aiocqhttp:GroupMessage:2002")
+        self.assertIn("aiocqhttp:GroupMessage:2002", self.page.evaluate("pickerReads"))
+        self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"))
+        session.click()
+        self.host.keyboard.press("Home")
+        self.host.keyboard.press("Enter")
+        expect(session).to_have_value("aiocqhttp:GroupMessage:1001")
+        self.assertIn("aiocqhttp:GroupMessage:1001", self.page.evaluate("pickerReads"))
+        self.host.set_viewport_size({"width": 390, "height": 844})
+        self.page.locator(".topbar-context > summary").click()
+        menu = self.page.locator(".topbar-context .command-menu-body").bounding_box()
+        self.assertGreaterEqual(menu["x"], 10)
+        self.assertLessEqual(menu["x"] + menu["width"], 380)
+        session.click()
+        self.host.screenshot(path=str(self.shots / "session-picker-mobile.png"), animations="disabled")
+        label = session.locator("option").nth(1).bounding_box()
+        self.assertGreaterEqual(label["x"], 0)
+        self.assertLessEqual(label["x"] + label["width"], 390)
+        self.assertGreater(label["height"], 32)
+        session.press("Escape")
+        self.assertTrue(self.page.locator(".topbar-context").evaluate("node => node.open"))
+        self.assertFalse(session.evaluate("node => node.matches(':open')"))
+        session.click()
+        session.locator("option").nth(1).click()
+        self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"))
+        self.host.screenshot(path=str(self.shots / "session-picker-mobile-selected.png"), animations="disabled")
+        self.host.keyboard.press("Escape")
+        self.assertFalse(self.page.locator(".topbar-context").evaluate("node => node.open"))
+        self.assertEqual(self.errors, [])

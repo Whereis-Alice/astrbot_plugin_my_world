@@ -68,6 +68,36 @@ button.primary {
 button.primary:hover { filter: brightness(1.09); box-shadow: 0 4px 22px -10px var(--accent); }
 button.ghost, .pill, .seg { background: color-mix(in srgb, var(--panel) 65%, transparent); }
 input:not([type="checkbox"]):not([type="range"]), select, textarea { background-color: color-mix(in srgb, var(--bg-inset) 68%, transparent); border-color: var(--line-strong); border-radius: 9px; }
+/* Native popups need an opaque surface: the closed control's translucent
+   background otherwise falls back to an unrelated system grey on Windows. */
+select option, select optgroup { color: var(--text); background-color: var(--panel); }
+select option:disabled, select optgroup:disabled { color: var(--muted); }
+@supports (appearance: base-select) and selector(select::picker(select)) {
+  /* Keep the actual select, its keyboard navigation and change events.
+     Multiple selections and visible listboxes retain their native layout. */
+  select:not([multiple]):not([size]),
+  select:not([multiple]):not([size])::picker(select) { appearance: base-select; }
+  select:not([multiple]):not([size]) { display: inline-grid; grid-template-columns: minmax(0, 1fr) 20px; background-image: none; padding-inline: 10px; align-items: center; white-space: nowrap; overflow: hidden; }
+  select:not([multiple]):not([size])::picker-icon { position: relative; z-index: 1; width: 20px; height: 100%; display: grid; place-content: center end; color: var(--muted); font-size: 10px; background: linear-gradient(90deg, transparent, var(--bg-inset) 60%); }
+  select:not([multiple]):not([size]):open::picker-icon { rotate: 180deg; }
+  select:not([multiple]):not([size])::picker(select) {
+    color: var(--text); font: inherit; font-size: 12px; line-height: 1.5;
+    background: linear-gradient(145deg, var(--surface-highlight), transparent 60%), var(--panel);
+    box-sizing: border-box; border: 1px solid var(--line-strong); border-radius: 12px; padding: 5px;
+    margin-top: 6px; box-shadow: var(--shadow-3); max-height: min(360px, 60dvh);
+    width: max-content; min-width: anchor-size(width); max-width: min(440px, calc(100vw - 24px)); overflow: auto;
+  }
+  select:not([multiple]):not([size]) option {
+    min-height: 32px; padding: 7px 10px; border-radius: 7px; gap: 9px;
+    white-space: normal; overflow-wrap: anywhere; background: transparent;
+  }
+  select:not([multiple]):not([size]) option:checked { color: var(--accent-ink); background: var(--accent-soft); font-weight: 600; }
+  select:not([multiple]):not([size]) option:not(:disabled):is(:hover, :focus) { background: color-mix(in srgb, var(--accent) 16%, var(--panel)); color: var(--text); outline: none; }
+  select:not([multiple]):not([size]) option::checkmark { color: var(--accent-ink); }
+  @media (max-width: 760px) {
+    select:not([multiple]):not([size])::picker(select) { left: 12px; right: 12px; width: auto; min-width: 0; max-width: none; }
+  }
+}
 input::placeholder, textarea::placeholder { color: var(--muted); opacity: .9; }
 .sidebar {
   width: 190px; flex-basis: 190px; padding: 16px 12px 12px; gap: 18px;
@@ -274,10 +304,10 @@ main:has(:is(#tab-contacts, #tab-relationships).active) { padding: 13px 19px 12p
   .sidebar-foot { display: none; }
   .topbar, .content:has(#tab-contacts.active) > .topbar { min-height: 45px; padding: 6px 11px; gap: 6px; }
   .topbar-left { gap: 7px; flex-wrap: wrap; }
-  .topbar-context { display: block; }
+  .topbar-context { display: block; position: static; }
   .content:has(:is(#tab-contacts, #tab-relationships).active) .topbar-context { display: none; }
   .topbar-context > summary { font-size: 10px; padding: 5px 7px; }
-  .topbar-context .command-menu-body { width: min(290px, calc(100vw - 24px)); min-width: 0; right: 0; display: grid; gap: 13px; }
+  .topbar-context .command-menu-body { width: min(290px, calc(100vw - 24px)); min-width: 0; right: 11px; display: grid; gap: 13px; }
   .topbar-context .field { display: grid; grid-template-columns: 46px 1fr; gap: 10px; }
   .topbar-context .field > span { display: block; font-size: 11px; }
   .topbar-context .field select { width: 100%; max-width: 100%; font-size: 12px; height: 32px; }

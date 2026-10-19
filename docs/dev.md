@@ -49,6 +49,8 @@ python -m pytest tests/test_contacts_browser.py -q  # 需要 Playwright + Chromi
 
 界面的主题与材质集中在 `atelier.css`，六套本机外观由 `appearance.js` 管理，工作区的次要操作菜单由 `workspace-ui.js` 初始化。`data-theme` 保留深浅语义，`data-palette` 指定配色；不要在组件里为每个主题复制颜色。可用 `python -m pytest tests/test_visual_workspace_browser.py -q` 验证六套主题、键盘关闭与恢复、文字对比度，以及十五个模块在四种屏幕宽度下的布局；合成截图输出到 `.pytest_cache/generation-ui/`。
 
+单选框通过 `@supports` 渐进使用 `appearance: base-select` 和 `::picker(select)`，保留原生的值、键盘操作和 `change` 事件；不支持时使用原生菜单及明确的选项配色。多选和带 `size` 的列表不启用弹出面板样式。
+
 ## 两个版本开关
 
 - `reply_mode=inject`（默认）：只注入；`takeover` 是旧版接管（自己调模型自己发），
