@@ -4,7 +4,11 @@ export function mountLifeWorkspace({root, el, onView, onSave}) {
   const header = el("div", "life-workspace-head"), title = el("div");
   title.append(el("span", "people-eyebrow", "日子在继续"), el("h2", "", "她的生活"));
   const nav = el("div", "life-view-nav"); nav.setAttribute("role", "tablist"); nav.setAttribute("aria-label", "生活视图");
-  header.append(title, nav);
+  const actions = el("div", "life-workspace-actions");
+  const devices = el("button", "ghost small life-device-button", "手机与电脑");
+  devices.type = "button"; devices.id = "life-browse-settings";
+  devices.title = "设置安静翻消息：设备、会话来源与读取量";
+  actions.append(nav, devices); header.append(title, actions);
   const today = el("div", "life-view life-today"); today.id = "life-view-today";
   const concerns = el("div", "life-view life-concerns"); concerns.id = "life-view-concerns";
   concerns.append($("life-toolbar" ) || root.querySelector(".life-toolbar"), $("life-grid"));

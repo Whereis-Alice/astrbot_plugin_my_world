@@ -366,6 +366,8 @@ class RelationsMixin:
                 now=self._now(),
                 keep=self.chat_history_limit(),
                 images=ctx.chat_images,
+                raw_text=ctx.raw_text or ("" if ctx.has_images or ctx.chat_images else None),
+                has_images=ctx.has_images,
                 origin=ctx.session_id,
                 at=ctx.at_targets,
                 reply_to=ctx.reply_to,

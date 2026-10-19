@@ -1222,6 +1222,8 @@ class ReplyMixin:
                 user_id=ctx.user_id or "unknown",
                 name=ctx.user_name,
                 text=ctx.text,
+                raw_text=ctx.raw_text or ("" if ctx.has_images or ctx.chat_images else None),
+                has_images=ctx.has_images,
                 now=now,
                 keep=self.chat_history_limit(),
                 images=ctx.chat_images,

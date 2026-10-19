@@ -269,6 +269,9 @@ class MessageContext:
     event_id: str = ""
     """平台不给 message_id 时，由监听侧生成、存在 event extra 里的稳定内部 id。"""
 
+    has_images: bool = False
+    """原消息含图片，即使没有可用图片地址也保留占位。"""
+
     @property
     def event_key(self) -> str:
         """这条消息的事件身份键（两样 id 都没有时是空串）。"""

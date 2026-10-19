@@ -520,7 +520,11 @@ class GroupChatMixin:
     # ---------------- 群聊上下文：有限消息窗口 ----------------
 
     def chat_history_limit(self) -> int:
-        return max(20, int(self.world.context.chat_history_max))
+        keep = max(20, int(self.world.context.chat_history_max))
+        # Reuse the bounded short-term archive; ordinary prompt views keep their own limits.
+        if self.world.chat_browse.enabled:
+            keep = max(keep, self.world.chat_browse.max_messages)
+        return keep
 
     async def clear_chat_context(self, session_id: str) -> dict[str, Any]:
         """清空本会话的近期消息与话题备忘，不改生活记忆和人物资料。

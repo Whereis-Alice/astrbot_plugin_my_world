@@ -27,13 +27,10 @@ class ChatBrowseBrowserTests(unittest.TestCase):
         expect(self.page.locator('#app')).to_be_visible()
         self.install_console()
         self.page.locator('button[data-tab="life"]').click()
-        self.page.locator('[data-life-view="concerns"][role="tab"]').click()
 
     def settings(self):
-        if self.page.locator('#life-tools').get_attribute('open') is None:
-            self.page.locator('#life-tools summary').click()
-        self.page.locator('#life-settings').click()
-        self.page.locator('.browse-settings > summary').click()
+        self.page.get_by_role('button', name='手机与电脑', exact=True).click()
+        expect(self.page.locator('#dialog-title')).to_have_text('手机与电脑')
 
     def test_devices_source_range_and_budget_save_together(self):
         self.page.evaluate("""() => {
@@ -55,7 +52,8 @@ class ChatBrowseBrowserTests(unittest.TestCase):
         sources.first.check()
         source = sources.first.input_value()
         self.page.get_by_label('每天最多浏览次数', exact=True).fill('2')
-        self.page.locator('.browse-advanced summary').click()
+        expect(self.page.get_by_label('每次最多读取条数', exact=True)).to_have_value('500')
+        self.page.get_by_label('每次最多读取条数', exact=True).fill('1000')
         self.page.get_by_label('每次正文最多字数', exact=True).fill('1800')
         self.page.get_by_role('button', name='应用设置', exact=True).click()
         self.page.locator('#save').click()
@@ -65,6 +63,7 @@ class ChatBrowseBrowserTests(unittest.TestCase):
         self.assertEqual(config['computer_nodes'], [computer])
         self.assertEqual(config['sessions'], [source])
         self.assertEqual((config['daily_max'], config['max_chars']), (2, 1800))
+        self.assertEqual(config['max_messages'], 1000)
         self.assertEqual(self.errors, [])
 
     def test_cancel_keeps_original_device_settings(self):
@@ -102,12 +101,31 @@ class ChatBrowseBrowserTests(unittest.TestCase):
         self.assertEqual(self.errors, [])
 
     def test_settings_dark_light_and_phone_fit_dialog(self):
-        self.settings()
-        for width,height,palette in [(1440,1000,'nocturne'), (390,844,'cloud')]:
+        for width,height,palette in [(1440,1000,'nocturne'), (390,844,'nocturne'), (1440,1000,'cloud'), (390,844,'cloud')]:
             self.host.set_viewport_size({'width':width,'height':height})
             self.page.evaluate("p=>{document.documentElement.dataset.palette=p;document.documentElement.dataset.theme=p==='cloud'?'light':'dark'}", palette)
-            self.page.locator('.browse-settings > summary').scroll_into_view_if_needed()
+            self.host.screenshot(path=str(self.shots/f'browse-entry-{palette}-{width}.png'))
+            self.settings()
+            expect(self.page.get_by_label('每次最多读取条数', exact=True)).to_have_value('500')
             self.assertTrue(self.page.locator('#dialog').evaluate('(e)=>e.scrollWidth<=e.clientWidth+1'))
             self.assertTrue(self.page.locator('#dialog').evaluate('(e)=>{const r=e.getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight+1}'))
             self.host.screenshot(path=str(self.shots/f'browse-settings-{palette}-{width}.png'))
+            self.page.locator('#dialog-cancel').click()
+        self.assertEqual(self.errors, [])
+
+    def test_entry_is_available_in_every_life_view_and_restore_only_changes_reading(self):
+        for view in ('today', 'concerns', 'experiences'):
+            self.page.locator(f'[data-life-view="{view}"][role="tab"]').click()
+            self.settings()
+            self.page.locator('#dialog-cancel').click()
+        self.settings()
+        self.page.get_by_label('每天最多浏览次数', exact=True).fill('2')
+        self.page.get_by_label('每次最多读取条数', exact=True).fill('1001')
+        self.page.locator('#dialog-ok').click()
+        expect(self.page.locator('#dialog-error')).to_contain_text('1–1000')
+        self.page.get_by_role('button', name='恢复推荐量', exact=True).click()
+        expect(self.page.get_by_label('每次最多读取条数', exact=True)).to_have_value('500')
+        expect(self.page.get_by_label('每次正文最多字数', exact=True)).to_have_value('60000')
+        expect(self.page.get_by_label('消息范围（小时）', exact=True)).to_have_value('12')
+        expect(self.page.get_by_label('每天最多浏览次数', exact=True)).to_have_value('2')
         self.assertEqual(self.errors, [])

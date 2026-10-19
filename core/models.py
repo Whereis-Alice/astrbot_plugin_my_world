@@ -2275,9 +2275,9 @@ class ChatBrowseConfig(Permissive):
     sessions: list[str] = Field(default_factory=list, max_length=100)
     cooldown_minutes: int = Field(default=120, ge=30, le=1440)
     daily_max: int = Field(default=3, ge=1, le=12)
-    window_hours: int = Field(default=6, ge=1, le=24)
-    max_messages: int = Field(default=20, ge=1, le=40)
-    max_chars: int = Field(default=3000, ge=300, le=6000)
+    window_hours: int = Field(default=12, ge=1, le=24)
+    max_messages: int = Field(default=500, ge=1, le=1000)
+    max_chars: int = Field(default=60000, ge=300, le=120000)
     remember_meaningful: bool = True
 
 
@@ -3041,6 +3041,14 @@ def normalize_legacy_keys(data: dict[str, Any]) -> dict[str, Any]:
             continue
         if current in old_values:
             result = {**result, section: {**block, key: new_value}}
+    # Only upgrade the complete old reading preset; keep a customized window intact.
+    browse = result.get("chat_browse")
+    if isinstance(browse, dict) and all(
+        browse.get(key, old) == old
+        for key, old in (("window_hours", 6), ("max_messages", 20), ("max_chars", 3000))
+    ):
+        result = {**result, "chat_browse": {**browse, "window_hours": 12,
+                                          "max_messages": 500, "max_chars": 60000}}
     # 区域：老配置没有 zones 时，建一个默认区域，把已有节点全放进去
     zones = result.get("zones")
     if not isinstance(zones, list) or not zones:

@@ -4,6 +4,7 @@ import { createRelationshipsPage } from "./relationships.js";
 import { createModelCallsPage } from "./model-calls.js";
 import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js";
 import { mountLifeWorkspace } from "./life-workspace.js";
+import { openBrowseSettings } from "./browse-settings.js";
 import { personAvatar, personColor, bindPeopleSort } from "./people-ui.js";
 import { openRelationshipRulesEditor } from "./relationship-rules.js";
 import { applyDetailedLevels, DETAILED_LEVELS } from "./relationship-preset.js";
@@ -20870,7 +20871,9 @@ const lifePage = createLifePage({root: $("tab-life"), apiGet, apiPost, el, toast
   workspace: lifeWorkspace,
   onData: data => { ui.lifeData = data; },
   getSession: () => $("status-session").value,
-  openSettings: () => openLifeSettings({world: ui.config.world, sessions: (ui.sessions || []).map(item => ({...item, label: contactSessionLabel(item)})), el, openCustomDialog, markDirty}),
+  openSettings: () => openLifeSettings({world: ui.config.world, el, openCustomDialog, markDirty}),
+  openBrowseSettings: () => openBrowseSettings({world: ui.config.world, sessions: (ui.sessions || []).map(item => ({...item, label: contactSessionLabel(item)})),
+    scopeLabel: $("config-scope").selectedOptions[0]?.textContent || "全局默认", el, openCustomDialog, markDirty}),
   openCalls: id => { showTab("model-calls"); const input = $("calls-search"); if (input) { input.value = id; input.dispatchEvent(new Event("input")); } },
   openMemories: text => { showTab("memories"); const input = $("memory-keyword"); if (input) { input.value = text; $("memory-search").click(); } },
 });

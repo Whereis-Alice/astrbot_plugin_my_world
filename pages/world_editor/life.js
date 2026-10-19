@@ -1,5 +1,4 @@
 /** A reading-first life board for activities in the character's world. */
-import { browseSettings } from "./browse-settings.js";
 const CLOSED = new Set(["completed", "abandoned", "expired"]);
 const STATUS = {active: "待继续", working: "正在推进", waiting: "等合适的时候", blocked: "遇到了阻碍", paused: "暂时放下", completed: "已经完成", abandoned: "决定放下", expired: "念头淡去了"};
 const KIND = {project: "个人项目", promise: "与人的约定", idea: "一时的念头"};
@@ -7,7 +6,7 @@ const TIME = value => value ? new Date(value * 1000).toLocaleString("zh-CN", {mo
 const PROGRESS = item => item.steps?.length ? `已进行 ${item.steps.filter(s => s.status === "done").length}/${item.steps.length} 步` : "尚待安排";
 const STATE = item => ({evidence: "等待约定兑现", transient: "稍后再想"}[item.blocker] || STATUS[item.status] || item.status);
 
-export function createLifePage({root, apiGet, apiPost, el, getSession, toast, openCalls, openMemories, openSettings, workspace, onData}) {
+export function createLifePage({root, apiGet, apiPost, el, getSession, toast, openCalls, openMemories, openSettings, openBrowseSettings, workspace, onData}) {
   const $ = id => root.querySelector(`#${id}`);
   let data = {}, filter = "active", sort = "recent", request = 0, selected = null, opener = null;
   let drawerSession = "", drawerRevision = 0;
@@ -170,6 +169,7 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
   });
   $("life-refresh").addEventListener("click", () => { $("life-tools").removeAttribute("open"); reload(); }); $("life-add").addEventListener("click", () => form());
   $("life-settings").addEventListener("click", () => { $("life-tools").removeAttribute("open"); openSettings(); });
+  $("life-browse-settings").addEventListener("click", () => openBrowseSettings());
   $("life-collection").addEventListener("click", event => {
     $("life-tools").removeAttribute("open");
     selected = null; opener = event.currentTarget; body.replaceChildren(); $("life-drawer-title").textContent = "日子留下的东西";
@@ -214,13 +214,10 @@ export function renderLifeFocus(container, data, {el, open}) {
   }
 }
 
-export function openLifeSettings({world, sessions = [], el, openCustomDialog, markDirty}) {
+export function openLifeSettings({world, el, openCustomDialog, markDirty}) {
   const limits = {...world.limits}, memory = {...world.memory};
-  let browse;
   const controls = [];
   openCustomDialog({title: "生活的节奏与后台预算", confirmText: "应用设置", hint: "应用后使用顶栏「保存」写入配置。0 表示不设对应预算上限。", build: body => {
-    const readBrowse = browseSettings({world, sessions, el, body});
-    controls.push(() => {browse = readBrowse();});
     for (const [key, label, fallback, min, max] of [
       ["life_matter_active_max", "活跃事项上限", 6, 1, 20], ["life_matter_daily_minutes", "每件事每天最多投入（分钟）", 90, 5, 480],
       ["life_matter_interval_minutes", "再次推进前的间隔（分钟）", 60, 5, 1440], ["background_daily_calls", "每天后台调用预算", 120, 0, 10000],
@@ -236,5 +233,5 @@ export function openLifeSettings({world, sessions = [], el, openCustomDialog, ma
     for (const [key, label] of [["semantic_endpoint", "嵌入服务 API 基址（含 /v1）"], ["semantic_model", "嵌入模型名称"], ["semantic_api_key_env", "保存 API Key 的服务器环境变量名"]]) {
       const wrap = el("label", "field"), input = el("input"); input.value = memory[key] || ""; wrap.append(el("span", "", label), input); body.append(wrap); controls.push(() => { memory[key] = input.value.trim(); });
     }
-  }, onSubmit: () => { controls.forEach(read => read()); world.limits = limits; world.memory = memory; world.chat_browse = browse; markDirty(); return true; }});
+  }, onSubmit: () => { controls.forEach(read => read()); world.limits = limits; world.memory = memory; markDirty(); return true; }});
 }

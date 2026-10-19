@@ -2,6 +2,23 @@
 from __future__ import annotations
 
 from .evidence import split_external_memory
+from .state import split_annotation
+
+
+def reading_text(row: dict) -> str:
+    """Only the sender's text and an image marker; never attachment data or captions."""
+    image = bool(row.get("has_images") or row.get("images"))
+    if "reading_text" in row:
+        text = str(row["reading_text"] or "")
+    elif image:
+        # Older image rows have no proven raw text; their body can contain vision reports.
+        text = ""
+    else:
+        text = split_annotation(str(row.get("text") or ""))[0]
+    text = split_external_memory(text)[0].strip()
+    if image:
+        text = f"{text}\n「图片」".strip()
+    return text[:1000]
 
 
 def reading_view(state, session: str, config, now: float) -> list[dict]:
@@ -13,7 +30,7 @@ def reading_view(state, session: str, config, now: float) -> list[dict]:
                 or int(row.get("seq") or 0) <= cursor
                 or not 0 <= now - float(row.get("at") or 0) <= config.window_hours * 3600):
             continue
-        text = split_external_memory(str(row.get("text") or ""))[0].strip()
+        text = reading_text(row)
         if text:
             rows.append({"seq": int(row["seq"]), "at": float(row["at"]),
                          "name": str(row.get("name") or row.get("user_id") or "")[:40],

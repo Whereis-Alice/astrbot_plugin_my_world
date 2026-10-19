@@ -7,7 +7,8 @@ from unittest.mock import AsyncMock, Mock
 
 from core.chat_browse import feeling_context, reading_view
 from core.json_actions import PlannedAction
-from core.models import ActionDef, ChatBrowseConfig
+from core.models import ActionDef, ChatBrowseConfig, normalize_legacy_keys
+from core.engine.models import MessageContext
 from core.ports import LLMReply
 from core.state import WorldState
 from tests import test_engine as fixture
@@ -65,7 +66,8 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
         for i in range(30):
             self.note(state, f"{i}:" + "花" * 400)
         state.chat_replied_seq = 999
-        rows = reading_view(state, S, ChatBrowseConfig(), self.clock.now())
+        config = ChatBrowseConfig(max_messages=20, max_chars=3000)
+        rows = reading_view(state, S, config, self.clock.now())
         self.assertLessEqual(len(rows), 20)
         self.assertLessEqual(sum(len(row["text"]) for row in rows), 3000)
         self.assertEqual(rows[-1]["seq"], state.chat_seq)
@@ -82,11 +84,95 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_external_memory_and_media_refs_are_not_read_as_new_messages(self):
         state = WorldState(S)
-        self.note(state, "<Anamnesis-Memory>旧聊天秘密</Anamnesis-Memory>现在窗边有花", images=["file:///private/media.png"])
+        self.note(state, "<Anamnesis-Memory>旧聊天秘密</Anamnesis-Memory>现在窗边有花", images=["file:///private/media.png"], raw_text="<Anamnesis-Memory>旧聊天秘密</Anamnesis-Memory>现在窗边有花")
         self.note(state, "<RAG-Faiss-Memory>只有旧回忆</RAG-Faiss-Memory>")
         rows = reading_view(state, S, ChatBrowseConfig(), self.clock.now())
-        self.assertEqual([row["text"] for row in rows], ["现在窗边有花"])
+        self.assertEqual([row["text"] for row in rows], ["现在窗边有花\n「图片」"])
         self.assertNotIn("private", json.dumps(rows))
+
+    async def test_large_reading_window_really_retains_and_reads_500_or_1000_messages(self):
+        for count in (500, 1000):
+            with self.subTest(count=count):
+                self.configure(max_messages=count)
+                self.engine.world.context.chat_history_max = 20
+                state = WorldState(S)
+                for i in range(count + 10):
+                    state.note_chat(user_id=str(i % 5), name="小明", text=f"第{i}条：今天聊起窗边的花",
+                        now=self.clock.now() - 7 * 3600, origin=S, keep=self.engine.chat_history_limit())
+                view = reading_view(state, S, self.engine.world.chat_browse, self.clock.now())
+                self.assertEqual(len(state.recent_chat), count)
+                self.assertEqual(len(view), count)
+                self.assertEqual((view[0]["seq"], view[-1]["seq"]), (11, count + 10))
+                self.assertLessEqual(sum(len(row["text"]) for row in view), 60000)
+                # Reading cache capacity does not enlarge the normal chat prompt view.
+                self.engine.world.context.chat_lines = 4
+                self.engine.world.decider.chat_window_minutes = 720
+                self.assertEqual(len(self.engine.chat_window(state, S)), 4)
+        self.configure(enabled=False)
+        self.engine.world.context.chat_history_max = 20
+        self.assertEqual(self.engine.chat_history_limit(), 20)
+
+    async def test_new_defaults_upgrade_the_old_preset_and_preserve_custom_reading(self):
+        config = ChatBrowseConfig()
+        self.assertEqual((config.window_hours, config.max_messages, config.max_chars), (12, 500, 60000))
+        old = {"enabled": True, "phone": True, "window_hours": 6, "max_messages": 20,
+               "max_chars": 3000, "daily_max": 2, "cooldown_minutes": 180}
+        updated = normalize_legacy_keys({"chat_browse": old})["chat_browse"]
+        self.assertEqual((updated["window_hours"], updated["max_messages"], updated["max_chars"]), (12, 500, 60000))
+        self.assertEqual((updated["enabled"], updated["daily_max"], updated["cooldown_minutes"]), (True, 2, 180))
+        self.assertEqual(old["max_messages"], 20)
+        for changes in ({"max_messages": 35}, {"max_chars": 4500}, {"window_hours": 8}):
+            custom = {**old, **changes}
+            self.assertEqual(normalize_legacy_keys({"chat_browse": custom})["chat_browse"], custom)
+        with self.assertRaises(ValueError):
+            ChatBrowseConfig(max_messages=1001)
+
+    async def test_image_reading_keeps_only_real_text_and_a_placeholder(self):
+        self.configure()
+        async with self.engine.session_state(S) as state:
+            self.engine._note_presence(state, MessageContext(session_id=S, user_id="42", user_name="小明",
+                text="看看今天的花\n［图像转述：秘密画面描述］", raw_text="看看今天的花",
+                has_images=True, chat_images=["file:///private/picture.png"], message_id="image-with-text"))
+            state.recent_chat[-1]["captions"] = {"file:///private/picture.png": "不能读出的详细描述"}
+            self.engine._note_presence(state, MessageContext(session_id=S, user_id="43", user_name="小红",
+                text="［图片转述：另一个秘密］", raw_text="", has_images=True, message_id="image-only"))
+            state.note_chat(user_id="44", name="小李", text="旧版的识图描述，来源已无法确认",
+                images=["https://private/image"], now=self.clock.now(), origin=S, keep=500, message_id="legacy")
+            rows = reading_view(state, S, self.engine.world.chat_browse, self.clock.now())
+            self.assertEqual([row["text"] for row in rows], ["看看今天的花\n「图片」", "「图片」", "「图片」"])
+            packed = json.dumps(rows, ensure_ascii=False)
+            for forbidden in ("秘密", "private", "详细描述", "识图描述", "captions", "images"):
+                self.assertNotIn(forbidden, packed)
+            restored = WorldState.from_payload(state.to_payload(), S)
+            self.assertEqual(reading_view(restored, S, self.engine.world.chat_browse, self.clock.now()), rows)
+            self.assertTrue(self.engine.start_chat_browse(state, "browse_phone"))
+            self.assertTrue(self.engine._browse_valid(state, state.current_action))
+
+    async def test_image_only_with_no_resolvable_reference_is_still_visible(self):
+        state = WorldState(S)
+        state.note_chat(user_id="42", name="小明", text="", has_images=True,
+                        now=self.clock.now(), origin=S)
+        view = reading_view(state, S, ChatBrowseConfig(), self.clock.now())
+        self.assertEqual([row["text"] for row in view], ["「图片」"])
+
+    async def test_normal_cache_rollover_preserves_reading_but_manual_clear_cancels_it(self):
+        for clear in (False, True):
+            with self.subTest(clear=clear):
+                action = await self.prepare()
+                async def incoming(*args, **kwargs):
+                    async with self.engine.session_state(S) as state:
+                        for i in range(510):
+                            state.note_chat(user_id="43", name="小红", text=f"新消息{i}",
+                                now=self.clock.now(), origin=S, keep=500)
+                        self.assertTrue(self.engine._browse_valid(state, action))
+                    if clear:
+                        await self.engine.clear_chat_context(S)
+                    return json.dumps({"inner": "翻过的消息让我想起窗边的花", "source_seqs": [action["browse_rows"][0]["seq"]]})
+                self.engine._ask_judge = AsyncMock(side_effect=incoming)
+                await self.engine._complete_chat_browse(S, action["id"])
+                async with self.engine.session_state(S) as state:
+                    self.assertEqual(any(row["content"] == "翻过的消息让我想起窗边的花" for row in state.thoughts), not clear)
+                    state.chat_browsing, state.recent_chat, state.thoughts = {}, [], []
 
     async def test_shared_group_source_whitelist_and_computer_location(self):
         self.add_group(sessions=[S, G, P])

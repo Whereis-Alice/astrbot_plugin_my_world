@@ -214,6 +214,32 @@ class DialogueInjectTests(unittest.TestCase):
         self.assertIn("<worldtree_persona>", req.system_prompt)
         plugin.db.raw.close()
 
+    def test_native_image_chat_keeps_vision_but_quiet_reading_only_gets_a_marker(self):
+        from core.chat_browse import reading_view
+        from core.models import ChatBrowseConfig
+
+        session = "aiocqhttp:GroupMessage:inject-reading-image"
+        plugin, _context = self._plugin(session)
+        event = Event("看看今天的花", session=session)
+        picture = type("Image", (), {"url": "https://img/private-picture.jpg", "file": ""})()
+        event.message_obj.message.append(picture)
+        req = Request("看看今天的花\n图片转述：只有原生聊天能看到的画面")
+        req.image_urls = [picture.url]
+        async def native_images(*args, **kwargs):
+            return [picture.url], {}, ["详细识图内容"]
+        plugin._reply_images = native_images
+        async def scenario():
+            await plugin.on_llm_request(event, req)
+            state = await plugin.engine.load_state(session)
+            return reading_view(state, session, ChatBrowseConfig(), plugin.engine._now())
+        try:
+            rows = asyncio.run(scenario())
+            self.assertEqual([row["text"] for row in rows], ["看看今天的花\n「图片」"])
+            self.assertEqual(req.image_urls, [picture.url])
+            self.assertFalse(event.is_stopped())
+        finally:
+            plugin.db.raw.close()
+
     def test_anamnesis_temporary_memory_and_tool_history_survive_injection(self):
         session = "aiocqhttp:GroupMessage:inject-memory"
         plugin, _context = self._plugin(session)

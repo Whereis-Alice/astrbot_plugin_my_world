@@ -1319,6 +1319,8 @@ class WorldState:
         is_self: bool = False,
         internal: bool = False,
         images: Any = None,
+        raw_text: str | None = None,
+        has_images: bool = False,
         origin: str = "",
         at: Any = None,
         reply_to: Any = None,
@@ -1345,6 +1347,10 @@ class WorldState:
         """
 
         clean = (text or "").strip()
+        if not clean and (has_images or images):
+            clean = "「图片」"
+            if raw_text is None:
+                raw_text = ""
         if not clean:
             return None
         # 同一条消息可能同时经过"旁观监听"和"LLM 请求"两个钩子，去重避免上下文里重复出现。
@@ -1437,6 +1443,13 @@ class WorldState:
         refs = _chat_image_refs(images)
         if refs:
             item["images"] = refs
+        if has_images or refs:
+            item["has_images"] = True
+        if raw_text is not None:
+            reading = str(raw_text).strip()[:_CHAT_TEXT_CHARS]
+            if reading != kept or has_images or refs:
+                # Keep only the actual message text for quiet reading, never vision annotations.
+                item["reading_text"] = reading
         # 事件身份留一份：渲染和「这轮要回的那批」排除历史里的同一条时按它认，
         # 不再靠正文（正文一样的两条是两件事）。
         if key:
@@ -1472,6 +1485,13 @@ class WorldState:
             kept_ids.update(id(entry) for entry in items[-keep:])
         if not dropped:
             return []
+        action = self.current_action or {}
+        if action.get("type") in {"browse_phone", "browse_computer"}:
+            source = action.get("browse_session")
+            trimmed = [int(item.get("seq") or 0) for item in dropped
+                       if str(item.get("origin") or self.session_id) == source]
+            if trimmed:
+                action["browse_trimmed_until"] = max(int(action.get("browse_trimmed_until") or 0), *trimmed)
         dropped.sort(key=lambda entry: int(entry.get("seq") or 0))
         self.recent_chat = [item for item in self.recent_chat if id(item) in kept_ids]
         return dropped
