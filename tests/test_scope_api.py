@@ -49,6 +49,16 @@ class ScopeApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(global_data["world"]["name"], "Local")
         self.assertEqual(self.plugin.engine.config_scope_id, "")
 
+    async def test_session_names_are_display_metadata_without_config_writes(self):
+        before = self.plugin.store.raw_sessions()
+        self.plugin.engine.note_session_name(self.session, "  日常聊天  ")
+        self.plugin.engine.note_session_name("test:GroupMessage:unknown", "不在白名单")
+        result = await self.call("config")
+        self.assertEqual(result["status_code"], 200)
+        self.assertEqual(result["data"]["session_names"], {self.session: "日常聊天"})
+        self.assertNotIn("group_name", result["data"]["sessions"]["sessions"][0])
+        self.assertEqual(self.plugin.store.raw_sessions(), before)
+
     async def test_global_pause_does_not_change_schedule_or_event_settings(self):
         before = self.plugin.engine.world.events.model_dump(mode="json")
         result = await self.call("config/proactive", method="POST", config_scope=self.session, enabled=False)

@@ -87,8 +87,14 @@ class ContactsBrowserTests(unittest.TestCase):
         payload = build_payload()
         payload["config"]["sessions"]["sessions"] = [
             {"session_id": "aiocqhttp:GroupMessage:1001", "enabled": True, "note": "日常聊天"},
-            {"session_id": "aiocqhttp:GroupMessage:2002", "enabled": True, "note": "另一个群"},
+            {"session_id": "aiocqhttp:GroupMessage:2002", "enabled": True},
+            {"session_id": "aiocqhttp:GroupMessage:3003", "enabled": True},
+            {"session_id": "aiocqhttp:FriendMessage:4004", "type": "private", "enabled": True},
         ]
+        payload["config"]["session_names"] = {
+            "aiocqhttp:GroupMessage:1001": "平台上的群名",
+            "aiocqhttp:GroupMessage:2002": "另一个群",
+        }
         script = BRIDGE_JS.replace("__PAYLOAD__", json.dumps(payload, ensure_ascii=False))
         self.context.add_init_script(script=script + CONTACTS_BRIDGE)
         self.host = self.context.new_page()
@@ -110,6 +116,20 @@ class ContactsBrowserTests(unittest.TestCase):
     def open_person(self, uid="10001"):
         self.page.locator(f'[data-user="{uid}"]').click()
         expect(self.page.locator(".weaver-field-row")).to_have_count(27)
+
+    def test_session_picker_shows_names_and_numbers_while_preserving_identity(self):
+        picker = self.page.locator("#contacts-session")
+        self.assertEqual(picker.locator("option").all_text_contents(), [
+            "日常聊天 · 1001", "另一个群 · 2002", "群聊 · 3003", "私聊 · 4004",
+        ])
+        picker.select_option("aiocqhttp:GroupMessage:2002")
+        expect(picker).to_have_attribute("title", "另一个群 · 2002")
+        self.open_person()
+        self.assertEqual(self.page.evaluate("contactCalls.at(-1).session"), "aiocqhttp:GroupMessage:2002")
+        self.page.locator("#contacts-back").click()
+        self.host.set_viewport_size({"width": 390, "height": 844})
+        self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
+        self.assertEqual(self.errors, [])
 
     def test_card_gallery_and_fixed_dossier_headers_at_short_height(self):
         for height in (870, 640):

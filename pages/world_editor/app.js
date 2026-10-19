@@ -4134,6 +4134,7 @@ function bindButtons() {
   });
   if ($("contacts-session")) {
     $("contacts-session").addEventListener("change", () => {
+      $("contacts-session").title = $("contacts-session").selectedOptions[0]?.textContent || "";
       ui.contactUser = "";
       setContactsView(ui.contactsView);
     });
@@ -4835,6 +4836,17 @@ async function nicknameAction(action) {
   }
 }
 
+function contactSessionLabel(session) {
+  const key = String(session.session_id || "");
+  const parts = key.split(":");
+  const number = parts.slice(2).join(":") || key;
+  const privateChat = session.type === "private" || parts[1] === "FriendMessage";
+  const clean = value => String(value || "").trim();
+  const name = clean(session.note) || clean(ui.config.session_names?.[key]) || clean(session.group_name);
+  if (privateChat) return `私聊 · ${name ? name + " · " : ""}${number}`;
+  return `${name || "群聊"} · ${number}`;
+}
+
 function renderSessionSelects() {
   const options = scopeOptions();
   [
@@ -4856,12 +4868,13 @@ function renderSessionSelects() {
       return;
     }
     const choices = id === "contacts-session"
-      ? ui.sessions.map(item => ({value: item.session_id, label: item.note || item.session_id}))
+      ? ui.sessions.map(item => ({value: item.session_id, label: contactSessionLabel(item)}))
       : options;
     choices.forEach((item) => select.appendChild(option(item.value, item.label)));
     select.value = choices.some((item) => item.value === previous)
       ? previous
       : choices[0]?.value || "";
+    if (id === "contacts-session") select.title = select.selectedOptions[0]?.textContent || "";
   });
 }
 
@@ -20896,6 +20909,7 @@ const relationshipsPage = createRelationshipsPage({
   confirm: confirmDialog, openRules: openRelationshipRules,
   openContact: async (uid, session) => {
     $("contacts-session").value = session;
+    $("contacts-session").title = $("contacts-session").selectedOptions[0]?.textContent || "";
     showTab("contacts");
     await loadContacts();
     await contactWorkbench.select(uid);

@@ -14,6 +14,7 @@
 .topbar #theme-toggle { min-width: 0; }
 .topbar #save-state { max-width: 100px; font-size: 11px; }
 .topbar .field-contacts-session { display: none; }
+.topbar .field-contacts-session select { width: clamp(120px, 25vw, 360px); max-width: 360px; text-overflow: ellipsis; }
 .content:has(#tab-contacts.active) .field-contacts-session { display: flex; }
 .content:has(#tab-contacts.active) .field-session { display: none; }
 .workbench-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; min-height: 42px; }

@@ -2226,6 +2226,12 @@ class WebApiMixin:
                 "world": world,
                 "schedules": schedules,
                 "sessions": sessions,
+                # 展示元数据独立于可保存的会话配置，避免群名往返写入 sessions.json。
+                "session_names": {
+                    item.session_id: name
+                    for item in self.engine.sessions.sessions
+                    if (name := self.engine.session_group_name(item.session_id))
+                },
                 "warnings": self.engine.load_warnings,
                 # 模型槽位当前用的是哪个（向导里做"模型配了吗"的检查用；只有 id，没有 key）
                 "providers": self._provider_slots(),
