@@ -513,9 +513,9 @@ class Decider:
         from .life import life_role
         if state.energy < .4 or state.boredom <= .45:
             return None
-        from .life_matters import stable_interests
-        preferred = {item["action"] for item in stable_interests(state)}
-        for action in sorted(self.world.actions, key=lambda a: a.id not in preferred):
+        from .life_matters import routine_hints
+        preferred = {item["action"]: item["weight"] for item in routine_hints(state, now=self._now())}
+        for action in sorted(self.world.actions, key=lambda a: -preferred.get(a.id, 0)):
             if (not action.enabled or action.idle or action.llm_level != "template"
                     or action.target_type != "none" or life_role(action) not in {"interest", "explore"}):
                 continue

@@ -10,6 +10,7 @@ from typing import Any
 
 from ..llm_usage import collect_llm_usage
 from ..model_calls import call_context
+from .life_inference import LIFE_WORK, released_life_lock
 
 CRITICAL_TICK = ContextVar("world_critical_tick", default=False)
 
@@ -81,6 +82,11 @@ class BackgroundMixin:
     async def close_background(self) -> None:
         self._background_closed = True
         tasks = list(getattr(self, "_background_jobs", {}).values())
+        tasks += list(getattr(self, "_life_clock_jobs", {}).values()) + list(getattr(self, "_life_delivery_jobs", set()))
+        if getattr(self, "_schedule_delivery_job", None):
+            tasks.append(self._schedule_delivery_job)
+        if getattr(self, "_schedule_model_job", None):
+            tasks.append(self._schedule_model_job)
         for task in tasks:
             task.cancel()
         if tasks:
@@ -90,7 +96,7 @@ class BackgroundMixin:
         from ..ports import LLMReply
         context = call_context()
         purpose = str(context.get("purpose") or "other")
-        interactive = purpose in {"reply", "chat", "action", "tool_params", "followup"} and not CRITICAL_TICK.get()
+        interactive = purpose in {"reply", "chat", "action", "tool_params", "followup"} and not CRITICAL_TICK.get() and not LIFE_WORK.get()
         if interactive:
             async with asyncio.timeout(self.world.limits.background_llm_timeout_seconds):
                 return await channel.generate(**kwargs)
@@ -119,9 +125,10 @@ class BackgroundMixin:
             admitted = True
             with collect_llm_usage(propagate=True) as usage:
                 # Tick never spends a full provider timeout holding a character lock.
-                timeout = min(2, self.world.limits.background_llm_timeout_seconds) if CRITICAL_TICK.get() else self.world.limits.background_llm_timeout_seconds
-                async with asyncio.timeout(timeout):
-                    reply = await channel.generate(**kwargs)
+                timeout = min(2, self.world.limits.background_llm_timeout_seconds) if CRITICAL_TICK.get() and not LIFE_WORK.get() else self.world.limits.background_llm_timeout_seconds
+                async with released_life_lock(self):
+                    async with asyncio.timeout(timeout):
+                        reply = await channel.generate(**kwargs)
             if reply is None or not getattr(reply, "ok", True):
                 raise RuntimeError("后台模型未返回有效内容")
             failures.pop(failure_key, None)

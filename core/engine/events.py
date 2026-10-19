@@ -938,6 +938,10 @@ class EventsMixin:
     ) -> None:
         """一步事件：她抉择 →（求助 or 判定）→ 结算。"""
 
+        if not (self._is_asleep(state) and self.world.events.in_sleep):
+            admission = self.admit_life(state, "event", critical=self._thread_critical(thread))
+            if not admission["allow"]:
+                return
         options = self._render_options(state, package)
         scene_note = ""
         if recap:
@@ -1283,6 +1287,7 @@ class EventsMixin:
             suggestions=suggestions,
             thread=thread,
         )
+        self.link_event_matter(state, thread, settlement.life_matter)
         delta, spent = clamp_ability_delta(
             settlement.ability_delta,
             spent_today=state.ability_spent_today,
@@ -1654,6 +1659,13 @@ class EventsMixin:
         )
         raw = None
         if bool(getattr(config, "enabled", True)):
+            from ..life_matters import context_block
+            prompt += "\n# 原有人设（始终优先）\n" + (await self._persona_text(state.session_id))[:6000]
+            prompt += "\n" + context_block(state, session_id=state.session_id, now=self._now())
+            system += ('\n可选字段 life_matter：仅当这次经历确实让她想在以后持续做一件符合人设的小事时，'
+                       '提供 {"text":"想做什么","reason":"这次经历为什么引出它","matter_id":"已有事项ID或空"}。'
+                       '关联已有事项时只填有效ID及reason；没有必要就省略。'
+                       '普通经历可以自然结束，不要把每件事变成待办；不得凭此建立对现实用户的新承诺、关系或身世。')
             raw = await self._ask_event(state.session_id, system, prompt)
             self._count_tool_param(state)
         settlement = parse_settlement(raw or "") if raw else None

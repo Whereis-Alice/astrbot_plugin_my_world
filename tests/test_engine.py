@@ -102,6 +102,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             tick_seconds=60.0,
             decider_interval=0.0,
         )
+        self.addAsyncCleanup(self.engine.close_background)
         self.assertEqual(self.engine.load_warnings, [])
 
         # 内置的搜索 / 查天气动作不再自带默认工具（现在由用户自己挑）。
@@ -11127,7 +11128,10 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.clock.set_struct(datetime(2026, 9, 15, 12, 0))
-        outcome = self.schedule_outcome(await self.engine.tick(), "only_private")
+        outcomes = await self.engine.tick()
+        if self.engine._schedule_delivery_job:
+            await self.engine._schedule_delivery_job
+        outcome = self.schedule_outcome([*outcomes, *self.engine._schedule_model_job.result()], "only_private")
 
         self.assertEqual(outcome.session_id, PRIVATE_SESSION)
         self.assertEqual(outcome.broadcast_targets, [])
@@ -11166,6 +11170,9 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         try:
             self.clock.set_struct(datetime(2026, 9, 15, 12, 0))
             outcomes = await self.engine.tick()
+            await self.engine._schedule_delivery_job
+            if not any('日程 both_chats' in note for row in outcomes for note in row.notes):
+                outcomes += self.engine._schedule_model_job.result()
         finally:
             self.engine._run_chain = original
         outcome = self.schedule_outcome(outcomes, "both_chats")

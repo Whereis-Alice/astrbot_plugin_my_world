@@ -15,12 +15,14 @@ from ..planner import (
 from ..state import STATE_DROWSY, WorldState
 from .models import TickOutcome
 from .util import _clip_text
+from .life_inference import life_work
 
 
 class AutonomyMixin:
     # ================= 自主行为 =================
 
     @session_scoped
+    @life_work()
     async def maybe_decide(
         self, session_id: str, *, force: bool = False
     ) -> TickOutcome | None:
@@ -47,6 +49,7 @@ class AutonomyMixin:
         async with self.session_state(session_id) as state:
             echo_marker = await self._event_marker(state)
             node = self.node(state.node_id) or self.node(self.default_node_id())
+            self.resume_life(state)
             if state.current_action is not None or active_plan(state) is not None:
                 return None
             if state.is_sleeping or state.state == STATE_DROWSY:

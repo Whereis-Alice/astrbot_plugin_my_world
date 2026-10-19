@@ -3,6 +3,7 @@ import { createSocialLearning } from "./social-learning.js";
 import { createRelationshipsPage } from "./relationships.js";
 import { createModelCallsPage } from "./model-calls.js";
 import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js";
+import { mountLifeWorkspace } from "./life-workspace.js";
 import { personAvatar, personColor, bindPeopleSort } from "./people-ui.js";
 import { openRelationshipRulesEditor } from "./relationship-rules.js";
 import { applyDetailedLevels, DETAILED_LEVELS } from "./relationship-preset.js";
@@ -1891,6 +1892,7 @@ function selectField(label, value, choices, onChange, opts = {}) {
   if (opts.adv) wrapper.dataset.adv = "1";
   wrapper.appendChild(fieldHead(label, opts.hint));
   const node = document.createElement("select");
+  node.setAttribute("aria-label", label);
   choices.forEach((choice) => {
     const [choiceValue, choiceLabel] =
       typeof choice === "object" ? [choice.key, choice.label] : choice;
@@ -3427,6 +3429,7 @@ function configFingerprint() {
 
 function currentConfigBlock() {
   const tab = document.querySelector("#tabs button.active")?.dataset.tab;
+  if (tab === "life") return document.querySelector(".life-manager[open] #tab-schedules") ? "schedules" : "settings";
   return ["events", "memories"].includes(tab) ? "settings" : CONFIG_BLOCKS[tab] ? tab : "";
 }
 
@@ -3894,6 +3897,12 @@ function setScopePanelOpen(open) {
 }
 
 function showTab(name, button) {
+  const openLifeSchedules = name === "schedules";
+  const lifeDestination = {events: "experiences", schedules: "today"}[name];
+  if (lifeDestination) {
+    lifePage.select(lifeDestination);
+    name = "life"; button = null;
+  }
   const target = button || document.querySelector(`#tabs button[data-tab="${name}"]`);
   document.querySelectorAll("#tabs button").forEach((item) => {
     item.classList.toggle("active", item === target);
@@ -3917,6 +3926,8 @@ function showTab(name, button) {
   if (name === "logs") loadLogs();
   if (name === "model-calls") modelCallsPage.reload();
   if (name === "life") lifePage.reload();
+  else for (const manager of document.querySelectorAll('.life-manager[open]')) manager.close();
+  if (openLifeSchedules) lifePage.openSchedules();
   if (name === "schedules") loadScheduleHistory();
   if (name === "ticks") loadTicks();
   if (name === "map") {
@@ -7003,9 +7014,12 @@ async function loadEvents() {
     return;
   }
   try {
-    ui.events = await apiGet("events", { session: sessionId });
+    const data = await apiGet("events", { session: sessionId });
+    if ($("status-session").value !== sessionId) return;
+    ui.events = data;
     renderEventsPanel();
   } catch (error) {
+    if ($("status-session").value !== sessionId) return;
     box.textContent = `读取事件失败：${error.message || error}`;
   }
 }
@@ -13559,7 +13573,7 @@ function renderScheduleList() {
         "meta",
         [
           weekday,
-          stepNames || "（没有动作）",
+          schedule.matter_id ? "接续已有牵挂 · 共用进度" : stepNames || "（没有动作）",
           schedule.auto_travel ? "自动先走过去" : "",
           schedule.once && schedule.date ? `日期 ${schedule.date}` : "",
           `落点：${scheduleScopeNames(schedule)}`,
@@ -13761,14 +13775,14 @@ async function runScheduleNow(schedule) {
     toast("当前查看会话与日程编辑范围不同，请先选择对应会话，避免执行另一套日程。");
     return;
   }
-  const chain =
+  const chain = schedule.matter_id ? "接续已有牵挂，共用原有进度" :
     (schedule.action_chain || []).map((step) => step.type).join(" → ") || "（没有动作）";
   const ok = await confirmDialog({
     title: "立即执行这条日程？",
     message:
       `会在「${sessionId}」里马上跑一遍：\n${schedule.time} ${schedule.id}：${chain}\n\n` +
       "忽略时间和星期（触发条件也一并忽略），也不会影响它今天到点的正常触发。" +
-      "如果她正在忙别的，新安排会排队。",
+      "有效的手动安排可以中断当前活动，并保存可接续的进度；事项仍遵守自身的条件与每日额度。",
     confirmText: "立即执行",
   });
   if (!ok) return;
@@ -13865,6 +13879,11 @@ function renderScheduleForm() {
     );
   }
   form.appendChild(checkboxField("启用", schedule.enabled !== false, (value) => (schedule.enabled = value)));
+  const lifeItems = ui.lifeData?.session === $("status-session").value ? ui.lifeData.items || [] : [];
+  const linkedChoices = [{key: "", label: "日常安排（使用下方动作链）"}, ...lifeItems.filter(item => !["completed", "abandoned", "expired"].includes(item.status)).map(item => ({key: item.id, label: item.text}))];
+  if (schedule.matter_id && !linkedChoices.some(item => item.key === schedule.matter_id)) linkedChoices.push({key: schedule.matter_id, label: "原有关联事项（当前范围不可用）"});
+  form.appendChild(selectField("到点做什么", schedule.matter_id || "", linkedChoices, value => { schedule.matter_id = value; markDirty(); renderScheduleForm(); },
+    {hint: "可接续已有牵挂，共用进度；普通吃饭、散步等仍可独立使用动作链。也可以直接在牵挂详情里安排时间。"}));
 
   const conditionBox = el("div", "subsection");
   const conditionTitle = el("div", "sub-title");
@@ -13959,7 +13978,8 @@ function renderScheduleForm() {
     ),
   );
 
-  form.appendChild(
+  if (schedule.matter_id) form.appendChild(el("p", "hint-line", "到点继续这件牵挂的下一小步，沿用原有投入与进度。下方独立动作链暂不执行；切回日常安排后可继续编辑。"));
+  else form.appendChild(
     chainEditor(
       schedule.action_chain,
       (chain) => {
@@ -15600,6 +15620,10 @@ function renderContactDetail(data) {
       evidence.appendChild(el("p", "muted", item.evidence));
       row.appendChild(evidence);
     }
+    if (item.status === "candidate") {
+      const accept = el("button", "ghost tiny", "核对后采用"); accept.dataset.act = "fact-resolve";
+      accept.dataset.id = item.id; accept.dataset.updatedAt = item.updated_at; row.append(accept);
+    }
     if (item.last_confirmed_at) {
       row.appendChild(
         el("span", "muted", `｜${formatStamp(item.last_confirmed_at)}`),
@@ -15904,6 +15928,8 @@ async function contactAction(node) {
         kind,
         text: input.value.trim(),
       });
+    } else if (act === "fact-resolve") {
+      await apiPost("profile/fact", {session, user_id: userId, action: "resolve", id: node.dataset.id, updated_at: Number(node.dataset.updatedAt)});
     } else if (act === "fact-pin") {
       await apiPost("profile/fact", {
         session,
@@ -20615,7 +20641,7 @@ async function openMemoryDetail(memory) {
       }
       for (const revision of evidence.revisions || []) {
         const detail = el("details", "memory-revision"), title = el("summary", "muted", `${revision.manual ? "人工修订" : "后续记录更新"} · ${memoryStamp(revision.at)}`);
-        detail.append(title, el("p", "sample-item-text", `修改前：${revision.before?.content || "（空）"}`), el("p", "sample-item-text", `修改后：${revision.after?.content || "（空）"}`)); body.append(detail);
+        detail.append(title, el("p", "muted", revision.reason || "依据后续记录更新"), el("p", "sample-item-text", `修改前：${revision.before?.content || "（空）"}`), el("p", "sample-item-text", `修改后：${revision.after?.content || "（空）"}`)); body.append(detail);
       }
       rows.forEach(([label, text]) => {
         const field = el("div", "field");
@@ -20817,13 +20843,30 @@ const socialLearning = createSocialLearning({apiGet, apiPost, el, toast,
 $("memory-vocabulary").addEventListener("click", () => socialLearning.openVocabulary($("memory-session").value));
 $("calls-decisions").addEventListener("click", () => socialLearning.openDecisions($("calls-session").value));
 const modelCallsPage = createModelCallsPage({root: $("tab-model-calls"), apiGet, el, openDecisions: socialLearning.openDecisions});
+const lifeWorkspace = mountLifeWorkspace({root: $("tab-life"), el, onSave: saveAll, onView: view => {
+  if (view === "experiences") {
+    loadEvents();
+  }
+  if (view === "today" || view === "schedules") loadScheduleHistory();
+  renderConfigScope();
+  if (view === "schedules") {
+    const session = $("status-session").value;
+    if (session) apiGet("life", {session}).then(data => { if ($("status-session").value !== session) return; ui.lifeData = data; renderScheduleForm(); }).catch(error => toast(error.message));
+  }
+}});
 const lifePage = createLifePage({root: $("tab-life"), apiGet, apiPost, el, toast,
+  workspace: lifeWorkspace,
+  onData: data => { ui.lifeData = data; },
   getSession: () => $("status-session").value,
   openSettings: () => openLifeSettings({world: ui.config.world, el, openCustomDialog, markDirty}),
   openCalls: id => { showTab("model-calls"); const input = $("calls-search"); if (input) { input.value = id; input.dispatchEvent(new Event("input")); } },
   openMemories: text => { showTab("memories"); const input = $("memory-keyword"); if (input) { input.value = text; $("memory-search").click(); } },
 });
-$("status-session").addEventListener("change", () => { if ($("tab-life").classList.contains("active")) lifePage.reload(); });
+$("status-session").addEventListener("change", () => {
+  if (!$("tab-life").classList.contains("active")) return;
+  lifePage.reload();
+  if ($("tab-life").dataset.lifeView === "experiences") lifeWorkspace.select("experiences");
+});
 $("log-model-calls").addEventListener("click", () => showTab("model-calls"));
 
 async function openRelationshipRules() {

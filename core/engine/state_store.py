@@ -24,6 +24,7 @@ from ..state import (
     WorldState,
 )
 from .util import _as_float
+from .life_inference import STATE_LEASE
 
 
 class StateStoreMixin:
@@ -167,10 +168,17 @@ class StateStoreMixin:
             migrate_plan(state, now=self._now(), tick_seconds=self.tick_seconds)
             ensure(state, self._now())
             self._sync_sleep_rhythm_mode(state)
+            token = STATE_LEASE.set({"owner": asyncio.current_task(), "state": state,
+                                     "lock": self.lock(key), "origin": session_id, "released": False,
+                                     "persona": await self._persona_text(session_id)})
             try:
                 yield state
             finally:
-                await self.save_state(state)
+                try:
+                    if (STATE_LEASE.get() or {}).get("save", True):
+                        await self.save_state(state)
+                finally:
+                    STATE_LEASE.reset(token)
 
 
     # ---------------- 数值历史（给编辑器画曲线） ----------------

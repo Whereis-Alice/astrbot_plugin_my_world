@@ -78,6 +78,7 @@ class LifeApiMixin:
             async with self.engine.session_state(session_id) as state:
                 items = [item for item in ensure(state, self.engine._now()) if visible(item, session_id)]
                 result = copy.deepcopy({"session": session_id, "items": items,
+                    **self.engine.life_overview(state, session_id),
                     "activity": self.engine.activity_view(state), "reason": (state.current_plan or {}).get("reason", ""),
                     "choice": self.engine.life_choice(state),
                     "recovery": state.life_recovery, "interests": state.life_interests,
@@ -117,6 +118,17 @@ class LifeApiMixin:
                             raise ValueError("当前会话内找不到这件事项")
                         if "revision" in payload and int(payload["revision"]) != int(item.get("revision", 0)):
                             raise ValueError("事项已有新进展，请刷新后再调整")
+                        if operation == "appointment":
+                            day = str(payload.get("date") or "")
+                            from datetime import date
+                            if not day or date.fromisoformat(day) < self.engine.local_now().date():
+                                raise ValueError("请选择今天或将来的日期")
+                            ok, note = await self.engine.schedule_add({"id": "life_" + item["id"] + "_" + day.replace("-", "") + "_" + str(payload.get("time") or "").replace(":", ""),
+                                "time": payload.get("time"), "date": day, "once": True, "matter_id": item["id"],
+                                "note": item["text"], "sessions": [session_id]}, session_id=session_id)
+                            if not ok:
+                                raise ValueError(note)
+                            return json_response({"ok": True, "note": note})
                         resume_at = float(payload.get("resume_at") or 0)
                         if operation == "postpone" and (not math.isfinite(resume_at) or resume_at <= self.engine._now()):
                             raise ValueError("请选择将来的时间")

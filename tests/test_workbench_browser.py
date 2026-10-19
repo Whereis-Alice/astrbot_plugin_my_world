@@ -365,7 +365,9 @@ class WorkbenchBrowserTests(unittest.TestCase):
 
     def test_event_policy_validates_weights_and_saves_the_new_switch(self):
         self.capture_writes()
-        self.page.locator('button[data-tab="events"]').click()
+        self.page.locator('button[data-tab="life"]').click()
+        self.page.locator('[data-life-view="experiences"][role="tab"]').click()
+        self.page.get_by_role('button', name='投递与事件设置…', exact=True).click()
         self.page.locator('#event-auto').click()
         expect(self.page.locator('#dialog-title')).to_have_text('自动生成事件')
         for key in ['daily', 'good', 'bad', 'annoying', 'strange']:
@@ -377,7 +379,7 @@ class WorkbenchBrowserTests(unittest.TestCase):
         self.page.locator('[data-dialog-key="max_per_day"]').fill('4')
         self.page.locator('#dialog-ok').click()
         expect(self.page.locator('#dialog')).to_be_hidden()
-        self.page.locator('#save').click()
+        self.page.locator('.life-manager[open] .life-manager-save').click()
         self.page.wait_for_function('policyWrites.length > 0')
         policy = self.page.evaluate('policyWrites.at(-1).events.auto')
         self.assertFalse(policy['enabled'])
@@ -459,7 +461,9 @@ class WorkbenchBrowserTests(unittest.TestCase):
           const original = AstrBotPluginPage.apiGet;
           AstrBotPluginPage.apiGet = (endpoint, params) => endpoint === 'logs' ? Promise.resolve(logs) : original(endpoint, params);
         }""", logs)
-        self.page.locator('button[data-tab="schedules"]').click()
+        self.page.locator('button[data-tab="life"]').click()
+        self.page.locator('[data-life-view="today"][role="tab"]').click()
+        self.page.get_by_role('button', name='编辑日程 ↗', exact=True).click()
         self.page.locator('#schedule-session').evaluate("node => {node.add(new Option('测试', 's')); node.value='s'; node.dispatchEvent(new Event('change'));}")
         expect(self.page.locator('.schedule-run-row')).to_have_count(6)
         self.page.locator('.schedule-run-head').first.click()

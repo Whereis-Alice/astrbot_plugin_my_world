@@ -136,7 +136,17 @@ class GenerationBrowserTests(unittest.TestCase):
         expect(self.page.locator("#app")).to_be_visible()
 
     def open_generator(self, tab="map", button="zone-generate"):
-        self.page.locator(f'button[data-tab="{tab}"]').click()
+        manager = self.page.locator('.life-manager[open]')
+        if manager.count():
+            manager.get_by_role('button', name='完成 ×', exact=True).click()
+        if tab in {"schedules", "events"}:
+            self.page.locator('button[data-tab="life"]').click()
+            view = "today" if tab == "schedules" else "experiences"
+            self.page.locator(f'[data-life-view="{view}"][role="tab"]').click()
+            label = "编辑日程 ↗" if tab == "schedules" else "投递与事件设置…"
+            self.page.get_by_role('button', name=label, exact=True).click()
+        else:
+            self.page.locator(f'button[data-tab="{tab}"]').click()
         trigger = self.page.locator(f"#{button}")
         menu = trigger.locator("xpath=ancestor::details[1]")
         if menu.count() and not trigger.is_visible():
@@ -237,7 +247,9 @@ class GenerationBrowserTests(unittest.TestCase):
         expect(self.page.locator(".thought-row")).to_have_count(45)
         self.host.screenshot(path=str(self.shots / "thoughts-detailed.png"))
 
-        self.page.locator('button[data-tab="schedules"]').click()
+        self.page.locator('button[data-tab="life"]').click()
+        self.page.locator('[data-life-view="today"][role="tab"]').click()
+        self.page.get_by_role('button', name='编辑日程 ↗', exact=True).click()
         expect(self.page.locator(".schedule-run-row")).to_have_count(1)
         expect(self.page.locator(".schedule-run-head")).to_contain_text("本轮启动")
         self.page.locator(".schedule-run-head").click()
@@ -313,7 +325,8 @@ class GenerationBrowserTests(unittest.TestCase):
               select.value = "s";
             }"""
         )
-        self.page.locator('button[data-tab="events"]').click()
+        self.page.locator('button[data-tab="life"]').click()
+        self.page.locator('[data-life-view="experiences"][role="tab"]').click()
         expect(self.page.locator("#event-history")).to_be_enabled()
         self.page.locator("#event-history").click()
         expect(self.page.locator(".event-history-row")).to_have_count(1)

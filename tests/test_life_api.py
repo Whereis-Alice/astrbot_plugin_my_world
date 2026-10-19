@@ -49,3 +49,19 @@ class LifeApiTests(unittest.IsolatedAsyncioTestCase):
         self.plugin._guard = lambda payload=None: {"status_code":403}
         result = await self.call("life/update", method="POST", session=self.session, operation="create", text="不应写入")
         self.assertEqual(result["status_code"], 403)
+
+    async def test_appointment_keeps_one_matter_and_is_visible_in_today(self):
+        engine = self.plugin.engine
+        response = await self.call("life/update", method="POST", session=self.session, operation="create", text="每天慢慢练一首曲子")
+        item = response["data"]["item"]
+        day = engine.local_now().date().isoformat()
+        response = await self.call("life/update", method="POST", session=self.session, operation="appointment", id=item["id"],
+            revision=item.get("revision", 0), date=day, time="23:59")
+        self.assertEqual(response["status_code"], 200, response)
+        data = (await self.call("life", session=self.session))["data"]
+        self.assertEqual(len(data["items"]), 1)
+        appointment = next(row for row in data["agenda"] if row["matter_id"] == item["id"])
+        self.assertEqual(appointment["time"], "23:59")
+        self.assertEqual(appointment["title"], item["text"])
+        self.assertEqual((await self.call("life/update", method="POST", session=self.session, operation="appointment", id=item["id"],
+            revision=-1, date=day, time="23:50"))["status_code"], 400)

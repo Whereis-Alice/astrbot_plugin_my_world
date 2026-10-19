@@ -2648,7 +2648,9 @@ class ScheduleDef(Permissive):
     """一次性日程指定的日期（``YYYY-MM-DD``）。空着表示「下一次到点就跑」。"""
 
     note: str = ""
-    """这条日程为什么排的（前因后果）。到点触发时带给主人格，免得忘了当初要干嘛。"""
+    """这条日程的前因后果，到点时带入生活上下文。"""
+    matter_id: str = ""
+    """可选：到点接续同一生活的已有事项，不另执行一份重复动作链。"""
 
     @field_validator("time")
     @classmethod
@@ -3600,7 +3602,7 @@ def parse_schedules(data: dict[str, Any]) -> tuple[SchedulesConfig, list[str]]:
             schedule.days = [d for d in schedule.days if d in valid_days]
         if not schedule.days:
             schedule.days = sorted(valid_days)
-        if not schedule.action_chain:
+        if not schedule.action_chain and not schedule.matter_id:
             warnings.append(f"日程 {schedule_id} 没有动作，已禁用")
             schedule.enabled = False
         kept.append(schedule)

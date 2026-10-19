@@ -102,6 +102,14 @@ export function createSocialLearning({apiGet, apiPost, el, toast, sessions = () 
       resume.disabled = !detail.manual;
       resume.onclick = async () => { resume.disabled = true; await write(session,
         {operation: "resume", user_id: user, revision: detail.revision}, active, reload); if (active()) resume.disabled = !detail.manual; };
+      const describe = value => Array.isArray(value) ? value.map(row => row.text || "").join("；") || "没有沿用的习惯" : value?.text || "（空）";
+      for (const change of detail.changes || []) {
+        const box = card(change.kind === "fact_conflict" ? "资料冲突与更新" : "相处方式为何改变", change.reason, time(change.at));
+        box.append(el("p", "learning-quote", `原先：${describe(change.before)}`), el("p", "learning-quote", `现在：${describe(change.after)}`));
+        const sources = el("details"); sources.append(el("summary", "", "查看纠正依据"));
+        for (const row of change.evidence || []) sources.append(el("p", "learning-quote", typeof row === "string" ? row : `${row.reason || "本批直接互动"} · 记录 ${(row.source_ids || []).join("、")}`));
+        box.append(sources); body.append(box);
+      }
       for (const item of detail.history || []) {
         const box = card(item.delta ? `互动评价 ${item.delta > 0 ? "+" : ""}${item.delta}` : "中性互动", item.reason, time(item.at));
         for (const source of item.evidence || []) box.append(el("p", "learning-quote", `${source.name || source.user_id}：${source.text}`));

@@ -167,7 +167,10 @@ class SocialMixin:
                         session,
                         "根据实际互动归纳最多三条温和的相处习惯。基础人设不可改写；不得授予身份、亲密权限、强制服从、"
                         "永久性格结论或对用户动机的猜测。证据不足可保持不变。只输出 JSON："
-                        '{"habits":[{"text":"具体相处方式","source_ids":[本批评价的整数ID]}]}。保留旧习惯时保留其原有 source_ids。',
+                        '{"habits":[{"text":"具体相处方式","source_ids":[本批评价的整数ID]}],'
+                        '"retire":[{"text":"需要作废的旧习惯原文","reason":"被什么新事实纠正","source_ids":[本批评价ID]}]}。'
+                        '保留旧习惯时保留原有source_ids。删改旧习惯必须提供retire及本批反证；'
+                        '单次冷淡、玩笑和反复提及不能直接推翻长期结论，明确纠正或持续变化才可作废。',
                         json.dumps(
                             {
                                 "persona": persona[:6000],
@@ -197,6 +200,18 @@ class SocialMixin:
                         habits.append({"text": clean(habit["text"], 80), "source_ids": ids[:10]})
                 if payload["habits"] and not habits:
                     continue
+                retired = []
+                fresh_ids = {r["id"] for r in fresh}
+                for row in payload.get("retire", []) if isinstance(payload.get("retire"), list) else []:
+                    if (isinstance(row, dict) and clean(row.get("reason"), 200)
+                            and isinstance(row.get("source_ids"), list)
+                            and any(isinstance(i, int) and not isinstance(i, bool) and i in fresh_ids for i in row["source_ids"])):
+                        retired.append({"text": clean(row.get("text"), 80), "reason": clean(row["reason"], 200),
+                                        "source_ids": [i for i in row["source_ids"] if isinstance(i, int) and not isinstance(i, bool) and i in fresh_ids]})
+                removed = {row["text"] for row in retired}
+                preserved = [h for h in detail["habits"] if h["text"] not in removed]
+                # Unexplained omission is not evidence that an old habit became false.
+                habits = [*preserved, *[h for h in habits if h["text"] not in {p["text"] for p in preserved} and h["text"] not in removed]][:3]
                 if await self._persona_text(session) != persona:
                     continue
                 with self.config_scope(session):
@@ -207,5 +222,7 @@ class SocialMixin:
                     ):
                         continue
                     self.db.raw.save_interaction_style(
-                        session, uid, habits, revision=detail["revision"], through=through
+                        session, uid, habits, revision=detail["revision"], through=through,
+                        reason="；".join(row["reason"] for row in retired) or "根据新的直接互动归纳，原有人设优先",
+                        evidence=retired or [{"source_ids": [r["id"] for r in fresh]}]
                     )

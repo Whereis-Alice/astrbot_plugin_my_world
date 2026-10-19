@@ -141,18 +141,21 @@ class EvidenceStoreMixin:
         revisions = self._query("SELECT before_payload,after_payload,at,manual FROM memory_revision WHERE memory_id=? ORDER BY id DESC LIMIT 20", (memory_id,))
         return {"sources": [{**json.loads(row["snapshot"]), "eligible": bool(row["eligible"])} for row in rows],
                 "revisions": [{"before": json.loads(row["before_payload"]), "after": json.loads(row["after_payload"]),
-                               "at": row["at"], "manual": bool(row["manual"])} for row in revisions]}
+                               "at": row["at"], "manual": bool(row["manual"]),
+                               "reason": json.loads(row["after_payload"]).get("_revision_reason", "管理员修订" if row["manual"] else "依据后续生活记录更新")}
+                              for row in revisions]}
 
 
 
 
 
-    def revise_memory(self, memory_id: int, fields: dict, *, manual: bool = True) -> None:
+    def revise_memory(self, memory_id: int, fields: dict, *, manual: bool = True, reason: str = "") -> None:
         with self.atomic():
             old = [self._memory_row(row) for row in self._query("SELECT * FROM node_memory WHERE " + LIFE_SQL + " AND id=?", (memory_id,))]
             if not old:
                 return
             self._execute("INSERT INTO memory_revision(memory_id,before_payload,after_payload,at,manual) VALUES(?,?,?,?,?)",
-                          (memory_id, json.dumps(old[0], ensure_ascii=False), json.dumps({**old[0], **fields}, ensure_ascii=False), time.time(), int(manual)))
+                          (memory_id, json.dumps(old[0], ensure_ascii=False), json.dumps({**old[0], **fields, "_revision_reason": str(reason)[:300]}, ensure_ascii=False), time.time(), int(manual)))
+            self._execute("DELETE FROM memory_revision WHERE memory_id=? AND id NOT IN (SELECT id FROM memory_revision WHERE memory_id=? ORDER BY id DESC LIMIT 40)", (memory_id, memory_id))
             self.update_memory(memory_id, **fields)
             self._execute("DELETE FROM memory_vector WHERE memory_id=?", (memory_id,))

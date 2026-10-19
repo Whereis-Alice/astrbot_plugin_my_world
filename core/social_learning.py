@@ -30,6 +30,11 @@ CREATE TABLE IF NOT EXISTS decision_trace (
  stage TEXT NOT NULL, status TEXT NOT NULL, reason TEXT NOT NULL, details TEXT NOT NULL,
  at REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_decision_session ON decision_trace(session_id,at DESC,id DESC);
+CREATE TABLE IF NOT EXISTS learning_change (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, user_id TEXT NOT NULL,
+ kind TEXT NOT NULL, before_text TEXT NOT NULL, after_text TEXT NOT NULL,
+ reason TEXT NOT NULL, evidence TEXT NOT NULL, at REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_learning_person ON learning_change(session_id,user_id,id DESC);
 """
 
 
@@ -100,7 +105,22 @@ class SocialStoreMixin:
         return {
             **style,
             "history": [{**dict(row), "evidence": json.loads(row["evidence"])} for row in history],
+            "changes": self.learning_changes(session, user),
         }
+
+    def record_learning_change(self, session: str, user: str, kind: str, before: Any, after: Any,
+                               reason: str, evidence: Any = None) -> None:
+        self._execute("INSERT INTO learning_change(session_id,user_id,kind,before_text,after_text,reason,evidence,at) VALUES(?,?,?,?,?,?,?,?)",
+                      (session, user, kind, json.dumps(before, ensure_ascii=False), json.dumps(after, ensure_ascii=False),
+                       clean(reason, 300), json.dumps(evidence or [], ensure_ascii=False), time.time()))
+        self._execute("DELETE FROM learning_change WHERE session_id=? AND user_id=? AND id NOT IN "
+                      "(SELECT id FROM learning_change WHERE session_id=? AND user_id=? ORDER BY id DESC LIMIT 40)",
+                      (session, user, session, user))
+
+    def learning_changes(self, session: str, user: str) -> list[dict]:
+        return [{**dict(row), "before": json.loads(row["before_text"]), "after": json.loads(row["after_text"]),
+                 "evidence": json.loads(row["evidence"])} for row in self._query(
+                     "SELECT * FROM learning_change WHERE session_id=? AND user_id=? ORDER BY id DESC LIMIT 40", (session, user))]
 
     def pending_interaction_styles(self, session: str, now: float) -> list[dict]:
         return [
@@ -134,6 +154,8 @@ class SocialStoreMixin:
         revision: int,
         through: int = 0,
         manual: bool = False,
+        reason: str = "",
+        evidence: list | None = None,
     ) -> bool:
         with self.atomic():
             old = self.interaction_detail(session, user)
@@ -153,6 +175,9 @@ class SocialStoreMixin:
                 ),
             )
             self._prune_interactions(session, user)
+            if old["habits"] != habits[:3] or manual:
+                self.record_learning_change(session, user, "habits", old["habits"], habits[:3],
+                                            reason or ("管理员修正，暂停自动归纳" if manual else "根据新的直接互动更新相处方式"), evidence)
             return True
 
     def _prune_interactions(self, session: str, user: str) -> None:
@@ -285,5 +310,5 @@ class SocialStoreMixin:
         ]
 
     def delete_social_person(self, session: str, user: str) -> None:
-        for table in ("interaction_evaluation", "interaction_style", "interaction_source_receipt"):
+        for table in ("interaction_evaluation", "interaction_style", "interaction_source_receipt", "learning_change"):
             self._execute(f"DELETE FROM {table} WHERE session_id=? AND user_id=?", (session, user))

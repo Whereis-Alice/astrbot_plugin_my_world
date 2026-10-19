@@ -242,10 +242,9 @@ class SleepRhythmMixin:
                 return
             if not force or current.get("type") == "walk_to":
                 return
-            self.pause_matter_action(state, current)
-            state.current_action = None
-            state.current_plan = None
-            state.state = STATE_IDLE
+            choice = self.admit_life(state, "rest", force=force)
+            if not choice["allow"]:
+                return
             await self._log_event(state, "interrupt", {"action": current.get("type"), "note": "过劳保护，结束当前事情去休息"})
         steps = []
         if state.node_id != target:

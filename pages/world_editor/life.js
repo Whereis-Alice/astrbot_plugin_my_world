@@ -6,7 +6,7 @@ const TIME = value => value ? new Date(value * 1000).toLocaleString("zh-CN", {mo
 const PROGRESS = item => item.steps?.length ? `已进行 ${item.steps.filter(s => s.status === "done").length}/${item.steps.length} 步` : "尚待安排";
 const STATE = item => ({evidence: "等待约定兑现", transient: "稍后再想"}[item.blocker] || STATUS[item.status] || item.status);
 
-export function createLifePage({root, apiGet, apiPost, el, getSession, toast, openCalls, openMemories, openSettings}) {
+export function createLifePage({root, apiGet, apiPost, el, getSession, toast, openCalls, openMemories, openSettings, workspace, onData}) {
   const $ = id => root.querySelector(`#${id}`);
   let data = {}, filter = "active", sort = "recent", request = 0, selected = null, opener = null;
   let drawerSession = "", drawerRevision = 0;
@@ -25,6 +25,9 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
     outer.setAttribute("aria-valuemin", "0"); outer.setAttribute("aria-valuemax", "100"); inner.style.width = `${progress}%`; outer.append(inner); return outer;
   }
   function render() {
+    workspace?.render(data, (id, source) => {
+      const item = (data.items || []).find(row => row.id === id); if (item) open(item, source);
+    });
     const items = data.items || [], active = items.filter(item => !CLOSED.has(item.status));
     $("life-count").textContent = `${active.length} 件牵挂 · ${items.filter(item => item.status === "completed").length} 件完成`;
     $("life-now-title").textContent = data.activity?.label || "自由休息";
@@ -65,7 +68,7 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
     try {
       const response = await apiGet("life", {session});
       if (revision !== request || getSession() !== session) return;
-      data = response; render();
+      data = response; onData?.(data); render();
     } catch (error) { if (revision === request) { grid.replaceChildren(el("div", "life-empty", `读取失败：${error.message}`)); } }
   }
   async function mutate(operation, values = {}) {
@@ -92,6 +95,7 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
     if (item.obstacle) body.append(line("阻碍", item.obstacle));
     if (item.recovery_condition) body.append(line("怎样继续", item.recovery_condition));
     if (item.resume_at) body.append(line("适合继续的时间", TIME(item.resume_at)));
+    if (item.origin_event || item.event_links?.length) body.append(line("从经历里留下的牵挂", (data.experiences || []).filter(row => row.id === item.origin_event || item.event_links?.includes(row.id)).map(row => row.title).join("、") || "关联经历保存在生活记录中"));
     if (item.result) body.append(line("留下的结果", item.result));
     const steps = el("ol", "life-steps");
     for (const step of item.steps || []) {
@@ -109,7 +113,7 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
     const actions = el("div", "life-drawer-actions");
     if (!CLOSED.has(item.status)) {
       actions.append(button(item.status === "paused" ? "继续这件事" : "暂时放下", () => mutate(item.status === "paused" ? "resume" : "pause")),
-        button("晚一点继续", () => defer(item)), button("编辑", () => form(item)), button("确认结果…", () => outcome(item)));
+        button("晚一点继续", () => defer(item)), button("安排时间…", () => appointment(item)), button("编辑", () => form(item)), button("确认结果…", () => outcome(item)));
     }
     actions.append(button("相关模型调用 ↗", () => { drawer.close(); openCalls(item.id); }), button("相关记忆 ↗", () => { drawer.close(); openMemories(item.text); }));
     body.append(actions, el("small", "muted life-id", item.id));
@@ -139,6 +143,12 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
       if (!Number.isFinite(stamp) || stamp <= Date.now() / 1000) { toast("请选择将来的时间"); return; }
       mutate("postpone", {resume_at: stamp, reason: reason.input.value});
     }, "primary"));
+  }
+  function appointment(item) {
+    drawerRevision++; body.replaceChildren(); $("life-drawer-title").textContent = "给这件牵挂留一点时间";
+    const date = field("哪一天", data.day || new Date().toLocaleDateString("sv-SE"), "date"), time = field("几点开始", "20:00", "time");
+    body.append(line("接着做", item.text), date.wrap, time.wrap, el("p", "muted", "日程到点时接续同一件事项，共用已有进度。困了、遇上重要事件或条件不足时可以暂缓。"),
+      button("保存到日程", () => { if (!date.input.value || !time.input.value) { toast("请填写日期和时间"); return; } mutate("appointment", {date: date.input.value, time: time.input.value}); }, "primary"));
   }
   function outcome(item) {
     drawerRevision++;
@@ -186,7 +196,7 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
   $("life-filter").addEventListener("change", event => { filter = event.target.value; render(); });
   $("life-sort").addEventListener("change", event => { sort = event.target.value; render(); });
   $("life-search").addEventListener("input", render);
-  return {reload};
+  return {reload, select: view => workspace?.select(view), openSchedules: () => workspace?.openSchedules()};
 }
 
 export function renderLifeFocus(container, data, {el, open}) {

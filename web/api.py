@@ -1504,7 +1504,7 @@ class WebApiMixin(LifeApiMixin):
             return error_response("缺少参数")
         db = store.db
         group_id = store.group_key(session_id)
-        if action in {"update", "delete"}:
+        if action in {"update", "delete", "resolve"}:
             try:
                 fact_id = int(payload.get("id") or 0)
             except (ValueError, TypeError):
@@ -1513,7 +1513,14 @@ class WebApiMixin(LifeApiMixin):
             if (row is None or str(row.get("group_id")) != group_id
                     or str(row.get("user_id")) != user_id):
                 return error_response("当前联系人没有这条经历")
-        if action == "add":
+        if action == "resolve":
+            try:
+                expected = float(payload.get("updated_at", -1))
+            except (TypeError, ValueError):
+                return error_response("资料已变化，请刷新后重试")
+            if not store.resolve_fact(session_id, user_id, fact_id, expected=expected):
+                return error_response("资料已变化或无需核对，请刷新后重试")
+        elif action == "add":
             result = store.note_fact(
                 session_id,
                 user_id,

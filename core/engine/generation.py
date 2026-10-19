@@ -1215,6 +1215,8 @@ class GenerationMixin:
         if mode not in CANCEL_MODES:
             return ""
 
+        state.life_resume = {}
+
         action = state.current_action if isinstance(state.current_action, dict) else None
         had_plan = isinstance(state.current_plan, dict) and bool(
             state.current_plan.get("steps")

@@ -42,6 +42,7 @@ class LifeBrowserTests(unittest.TestCase):
           };
         }""", snapshot)
         self.page.locator('button[data-tab="life"]').click()
+        self.page.locator('[data-life-view="concerns"][role="tab"]').click()
         expect(self.page.locator('.life-card')).to_have_count(3)
 
     def test_filter_sort_drawer_and_management(self):

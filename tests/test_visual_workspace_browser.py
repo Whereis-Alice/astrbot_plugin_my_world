@@ -90,7 +90,7 @@ class VisualWorkspaceTests(unittest.TestCase):
         self.install_console()
         for width, height in [(1600, 900), (1024, 768), (390, 844), (360, 780)]:
             self.host.set_viewport_size({"width": width, "height": height})
-            for tab in ("status", "thoughts", "events", "contacts", "relationships", "memories", "logs", "ticks", "debug", "map", "actions", "schedules", "sessions", "settings", "presets"):
+            for tab in ("status", "life", "thoughts", "contacts", "relationships", "memories", "logs", "ticks", "debug", "map", "actions", "sessions", "settings", "presets"):
                 self.page.locator(f'#tabs [data-tab="{tab}"]').click()
                 expect(self.page.locator(f"#tab-{tab}")).to_be_visible()
                 self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), f"Overflow: {tab} {width}")

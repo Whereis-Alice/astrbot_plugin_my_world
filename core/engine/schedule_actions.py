@@ -347,7 +347,16 @@ class ScheduleActionsMixin:
                 if step.get(key):
                     item[key] = step[key]
             chain.append(item)
-        if not chain:
+        matter_id = str(payload.get("matter_id") or "")
+        if matter_id:
+            from .. import life_matters as matters
+            from .life_inference import STATE_LEASE
+            lease = STATE_LEASE.get()
+            state = lease["state"] if lease and lease.get("origin") == session_id else await self.load_state(session_id, cold_start=False)
+            matter = matters.find(state, matter_id)
+            if not matter or not matters.visible(matter, session_id):
+                return False, "找不到这个会话可见的生活事项"
+        if not chain and not matter_id:
             return False, "日程里至少要有一个动作"
         if len(chain) > max(1, int(self.world.limits.max_action_chain_depth) + 2):
             return False, "日程里的动作太多了，拆成两条吧"
@@ -384,6 +393,7 @@ class ScheduleActionsMixin:
                 "once": once,
                 "date": date_text if once else "",
                 "note": note,
+                "matter_id": matter_id,
                 "auto_travel": bool(payload.get("auto_travel", True)),
                 "conditions": dict(payload.get("conditions") or {}),
                 "sessions": landed,

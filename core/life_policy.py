@@ -47,3 +47,23 @@ def choose_life(
                 kind="matter", reason="有适合接续的生活事项，在原有人设和当前条件下继续一小步"
             )
     return choice
+
+
+def admit_life(state, kind: str, *, critical: bool = False, force: bool = False) -> dict:
+    """One interruption policy for events, appointments, rest and free activity."""
+    current = state.current_action or {}
+    resting = state.is_sleeping or state.state == "drowsy"
+    busy = bool(current or state.current_plan)
+    if resting and not force:
+        return {"allow": False, "interrupt": False, "reason": "正在休息，醒来后再安排"}
+    if kind == "event" and not critical and busy:
+        return {"allow": True, "interrupt": False, "reason": "普通经历随当前生活发生，保留手上的事情"}
+    if busy and kind in {"matter", "free"}:
+        return {"allow": False, "interrupt": False, "reason": "先接续已经开始的事情"}
+    if busy and kind == "rest" and not force:
+        return {"allow": False, "interrupt": False, "reason": "先收尾这一小步，再去休息"}
+    if busy and current.get("type") == "walk_to" and kind == "rest":
+        return {"allow": False, "interrupt": False, "reason": "先走完这一段路，再去休息"}
+    return {"allow": True, "interrupt": busy and (force or critical or kind == "schedule"),
+            "reason": {"event": "眼前的重要事件先处理", "schedule": "到约好的时间了，保存进度后赴约",
+                       "rest": "需要休息，保存进度后再继续"}.get(kind, "有空闲，可以继续一小步")}

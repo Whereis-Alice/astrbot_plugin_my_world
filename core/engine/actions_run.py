@@ -34,6 +34,7 @@ from ..state import (
     WorldState,
 )
 from .models import TickOutcome
+from .life_inference import locked_life_work
 from .util import (
     _clip_log,
     _guess_duration_seconds,
@@ -462,6 +463,8 @@ class ActionsRunMixin:
                     return
             # 正在做的事被顶掉时留个痕迹：以前是"无声替换"，
             # 日志里既看不到她原本在干什么，心情上也没有任何反应。
+            if outcome.speech_kind == "schedule" and not from_plan:
+                self.suspend_life(state, reason="到约好的时间了，保存进度后赴约", source="schedule")
             if definition.during.state:
                 state.state = definition.during.state
             if state.current_action and str(state.current_action.get("type")) in {"sleep", "nap"}:
@@ -948,6 +951,7 @@ class ActionsRunMixin:
         return result
 
     @speech_origin("schedule")
+    @locked_life_work
     async def _run_chain(
         self,
         state: WorldState,

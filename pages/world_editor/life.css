@@ -1,4 +1,71 @@
 /* Personal life: quiet editorial hierarchy on the shared six-theme surface system. */
+#tab-life.active { overflow: auto; padding-bottom: 20px; }
+.life-workspace-head { display: flex; justify-content: space-between; align-items: center; gap: 18px; flex: 0 0 auto; }
+.life-workspace-head h2 { margin: 4px 0 0; font-size: 24px; font-weight: 550; letter-spacing: -.7px; }
+.life-view-nav { display: flex; gap: 4px; padding: 4px; border: 1px solid var(--line-strong); border-radius: 13px; background: color-mix(in srgb, var(--panel) 72%, transparent); backdrop-filter: blur(14px); }
+.life-view-button { border: 1px solid transparent; border-radius: 9px; padding: 8px 23px; color: var(--muted); background: transparent; font-size: 12px; }
+.life-view-button[aria-selected="true"] { color: var(--accent-ink); border-color: var(--accent-ring); background: linear-gradient(135deg, var(--accent-soft), var(--surface-highlight)); box-shadow: var(--glow-soft); }
+.life-view-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.life-view { display: flex; flex-direction: column; gap: 16px; min-height: 0; flex: 0 0 auto; }
+.life-view[hidden] { display: none !important; }
+.life-overview-grid { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(250px, .85fr); gap: 16px; }
+.life-day-card { min-width: 0; border: 1px solid var(--line-strong); border-radius: 17px; padding: 21px; box-shadow: var(--card-shadow); background: linear-gradient(150deg, var(--surface-highlight), transparent 60%), var(--panel); }
+.life-context-card { background: radial-gradient(ellipse at 90% 5%, var(--accent-soft), transparent 68%), var(--panel); }
+.life-section-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 15px; }
+.life-section-head h3 { margin: 0; font-size: 14px; font-weight: 550; letter-spacing: .1px; }
+.life-agenda { display: flex; flex-direction: column; gap: 3px; }
+.life-agenda-row { display: grid; grid-template-columns: 55px minmax(0, 1fr) auto; align-items: center; gap: 15px; width: 100%; height: auto; padding: 15px 0; text-align: left; white-space: normal; color: var(--text); background: transparent; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; }
+.life-agenda-row:last-child { border-bottom: 0; }
+.life-agenda-row:hover { background: var(--accent-soft); border-radius: 9px; }
+.life-agenda-row time { font: 500 17px ui-monospace, monospace; color: var(--accent-ink); letter-spacing: -.8px; }
+.life-agenda-row strong { display: block; font-size: 13px; line-height: 1.6; font-weight: 500; overflow-wrap: anywhere; }
+.life-agenda-row small { display: block; margin-top: 5px; font-size: 10px; }
+.life-agenda-row.is-past, .life-agenda-row.is-cancelled { opacity: .65; }
+.life-agenda-row.is-delayed .life-badge { background: var(--warn-soft); color: var(--warn-text); border-color: transparent; }
+.life-soft-empty { margin: 0; padding: 20px 0; color: var(--muted); font-size: 12px; line-height: 1.9; }
+.life-rhythm { padding: 13px 0; border-bottom: 1px solid var(--line); }
+.life-rhythm:first-child { padding-top: 2px; }
+.life-rhythm summary { font-size: 13px; color: var(--accent-ink); cursor: pointer; }
+.life-rhythm p, .life-resume-note { font-size: 11px; color: var(--text-2); line-height: 1.9; }
+.life-rhythm small { display: block; line-height: 1.9; font-size: 10px; }
+.life-recent-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 13px; }
+.life-experience-card { position: relative; display: flex; flex-direction: column; align-items: stretch; gap: 12px; height: auto; min-height: 165px; padding: 20px; text-align: left; white-space: normal; border: 1px solid var(--line-strong); border-radius: 16px; color: var(--text); background: radial-gradient(ellipse at 100% 0, var(--accent-soft), transparent 80%), var(--panel); box-shadow: var(--card-shadow); }
+.life-experience-card h3 { margin: 0; font-size: 16px; font-weight: 500; line-height: 1.6; }
+.life-experience-card p { margin: 0; font-size: 12px; font-weight: 400; line-height: 1.8; color: var(--text-2); }
+.life-linked-label { margin-top: auto; font-size: 10px; color: var(--accent-ink); }
+.life-explanation { color: var(--muted); font-size: 11px; line-height: 1.9; flex: 0 0 auto; }
+.life-explanation summary { cursor: pointer; }
+.life-explanation p { max-width: 85ch; }
+.life-manager { position: fixed; z-index: 80; inset: 5dvh 0; width: min(1280px, 95vw); height: 90dvh; max-height: 94dvh; padding: 0; border: 1px solid var(--line-strong); border-radius: 20px; color: var(--text); background: var(--panel); box-shadow: var(--shadow-3); overflow: auto; }
+.life-manager-backdrop { position: fixed; inset: 0; z-index: 79; background: var(--scrim); backdrop-filter: blur(7px); }
+.life-manager-backdrop[hidden] { display: none; }
+.life-manager-save { margin-left: auto; }
+.life-manager-scope { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 20px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--surface-highlight); }
+.life-manager-scope .field-scope { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.life-manager-scope select { width: min(270px, 65vw); }
+.life-manager-scope #save-state { margin-left: auto; }
+.life-manager::backdrop { background: var(--scrim); backdrop-filter: blur(7px); }
+.life-manager-body { padding: 20px; }
+.life-manager-body > section { min-height: 0; }
+.life-manager-body .page-head { padding: 0 0 15px; }
+.life-experiences .card { margin: 0; }
+.life-experiences .event-panel { grid-template-columns: minmax(0, 1fr) minmax(220px, .4fr); }
+@media (max-width: 900px) {
+  .life-overview-grid { grid-template-columns: minmax(0, 1fr); }
+  .life-recent-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
+}
+@media (max-width: 600px) {
+  .life-workspace-head { gap: 10px; }
+  .life-workspace-head h2 { font-size: 20px; }
+  .life-workspace-head .people-eyebrow { font-size: 8px; }
+  .life-view-button { padding: 7px 13px; }
+  .life-day-card { padding: 16px; }
+  .life-agenda-row { gap: 10px; grid-template-columns: 44px minmax(0, 1fr) auto; }
+  .life-agenda-row time { font-size: 15px; }
+  .life-experiences .event-panel { grid-template-columns: minmax(0, 1fr); }
+  .life-manager { inset: 0; width: 100%; max-width: 100%; height: 100dvh; max-height: 100dvh; margin: 0; border-radius: 0; }
+  .life-manager-body { padding: 14px; }
+}
 #tab-life.active { display: flex; flex-direction: column; gap: 16px; min-height: 0; }
 .life-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 0 0 auto; }
 .life-toolbar strong { font-size: 15px; margin-right: 5px; }

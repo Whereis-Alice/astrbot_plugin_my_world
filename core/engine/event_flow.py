@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ..model_calls import model_operation
+from .life_inference import locked_life_work
 
 from typing import Any
 from ..events import (
@@ -108,6 +109,7 @@ class EventFlowMixin:
         items = [item for item in items if item]
         return "\n".join(f"- {_clip_text(item, 200)}" for item in items[-6:])
 
+    @locked_life_work
     async def _run_event_action(
         self,
         state: WorldState,

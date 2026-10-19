@@ -47,7 +47,18 @@ python -m pytest tests/test_contacts_browser.py -q  # 需要 Playwright + Chromi
 通讯录的加载和切换状态在 `pages/world_editor/contact-workbench.js`，布局在 `contacts.css`。
 它通过依赖注入复用编辑器的 API 与字段编辑入口，不依赖打包器。浏览器回归使用合成资料，覆盖长详情、66 人列表、短视口、手机布局、异步请求竞态与侧栏图标。
 
-界面的主题与材质集中在 `atelier.css`，六套本机外观由 `appearance.js` 管理，工作区的次要操作菜单由 `workspace-ui.js` 初始化。`data-theme` 保留深浅语义，`data-palette` 指定配色；不要在组件里为每个主题复制颜色。可用 `python -m pytest tests/test_visual_workspace_browser.py -q` 验证六套主题、键盘关闭与恢复、文字对比度，以及十五个模块在四种屏幕宽度下的布局；合成截图输出到 `.pytest_cache/generation-ui/`。
+生活工作区由 `pages/world_editor/life-workspace.js` 组织今日、牵挂与经历，复用原有日程和事件编辑器。`core/engine/life_control.py` 负责共同取舍、中断续作及事件关联，`life_inference.py` 负责生活决策的锁外等待与结果核对；聊天 Agent 不进入这条等待路径。
+
+验证统一入口、跨模块接续、并发状态保护与六种主题布局：
+
+```powershell
+python -m pytest tests/test_life_unification.py tests/test_life_api.py -q
+python -m pytest tests/test_life_workspace_browser.py tests/test_visual_workspace_browser.py -q
+```
+
+浏览器验收需要 Playwright 与 Chromium，使用临时数据库和合成数据，覆盖桌面、手机、管理抽屉、配置范围、生成、保存与关联跳转。
+
+界面的主题与材质集中在 `atelier.css`，六套本机外观由 `appearance.js` 管理，工作区的次要操作菜单由 `workspace-ui.js` 初始化。`data-theme` 保留深浅语义，`data-palette` 指定配色；不要在组件里为每个主题复制颜色。可用 `python -m pytest tests/test_visual_workspace_browser.py -q` 验证六套主题、键盘关闭与恢复、文字对比度，以及各模块在四种屏幕宽度下的布局；合成截图输出到 `.pytest_cache/generation-ui/`。
 
 单选框通过 `@supports` 渐进使用 `appearance: base-select` 和 `::picker(select)`，保留原生的值、键盘操作和 `change` 事件；不支持时使用原生菜单及明确的选项配色。多选和带 `size` 的列表不启用弹出面板样式。
 

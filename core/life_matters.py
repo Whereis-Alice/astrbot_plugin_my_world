@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
+from datetime import date
 from typing import Any
 from uuid import uuid4
 
@@ -22,18 +23,39 @@ def routine_hints(state, *, now: float = 0) -> list[dict]:
     """Repeated, dated circumstances are context, never a new identity or taste."""
     hints = []
     for item in stable_interests(state, now=now):
-        periods = {}
+        periods, weekdays, recent = {}, {}, []
         for episode in item.get("episodes", []):
             if not isinstance(episode, dict) or not episode.get("day") or not episode.get("period"):
                 continue
             if now and episode.get("at") and now - episode["at"] > 30 * 86400:
                 continue
             periods.setdefault(episode["period"], set()).add(episode["day"])
+            try:
+                weekday = date.fromisoformat(episode["day"]).weekday()
+            except (TypeError, ValueError):
+                continue
+            weekdays.setdefault(weekday, set()).add(episode["day"])
+            recent.append(episode)
         if periods:
-            period, days = max(periods.items(), key=lambda pair: len(pair[1]))
+            weights = {}
+            for row in recent:
+                age = max(0, now - float(row.get("at") or now)) / 86400 if now else 0
+                key = (row["period"], row["day"])
+                weights[key] = max(weights.get(key, 0), 2 ** (-age / 7))
+            qualified = [(period, days) for period, days in periods.items() if len(days) >= 3]
+            if not qualified:
+                continue
+            period, days = max(qualified, key=lambda pair: sum(weights.get((pair[0], day), 0) for day in pair[1]))
             if len(days) >= 3:
-                hints.append({"action": item["action"], "label": item["label"], "period": period, "days": sorted(days)})
-    return hints[:4]
+                # Each date counts once; repeated ticks cannot manufacture a habit.
+                score = round(sum(weights.get((period, day), 0) for day in days), 3)
+                weekly = [{"weekday": key, "days": sorted(values)} for key, values in weekdays.items() if len(values) >= 3]
+                last = max((float(row.get("at") or 0) for row in recent), default=0)
+                hints.append({"action": item["action"], "label": item["label"], "period": period,
+                              "days": sorted(days), "weekdays": weekly, "weight": score, "last_at": last,
+                              "evidence": [{k: row.get(k) for k in ("day", "period", "node", "minutes")} for row in recent[-6:]],
+                              "explanation": f"{len(days)}个不同日期曾在{period}{item['label']}；近期日期权重更高，约每周减半；只是可选的生活节奏"})
+    return sorted(hints, key=lambda row: (-row["weight"], -row["last_at"], row["action"]))[:4]
 
 
 def history(item: dict, kind: str, text: str, now: float, **evidence: Any) -> None:
@@ -191,7 +213,7 @@ def context_block(state, *, session_id: str, user_id: str = "", now: float = 0) 
     routines = routine_hints(state, now=now)
     if routines:
         block += "\n# 可参考的生活节奏\n以下是实际重复发生的时段，只在符合人设、困意和日程时作为轻微倾向；不能推断她喜欢或讨厌什么。\n" + "\n".join(
-            f"- {item['label']}曾在{len(item['days'])}个日期的{item['period']}进行，可以考虑沿用，也可以换一种安排。" for item in routines)
+            f"- {item['explanation']}。可以沿用，也可以改变，不必排满时间。" for item in routines)
     artifacts = [item for item in state.life_artifacts.values() if item.get("session") == session_id][-3:]
     if artifacts:
         block += "\n# 已留下的生活阶段记录\n这些活动和模拟成果只属于角色世界，不代表操作了现实文件、完成真实测试、寄送或向聊天发送成功。\n" + "\n".join(

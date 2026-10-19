@@ -453,6 +453,7 @@ class EventEngineTest(unittest.IsolatedAsyncioTestCase):
             tick_seconds=60.0,
             decider_interval=0.0,
         )
+        self.addAsyncCleanup(self.engine.close_background)
         self.engine.rng = FakeRandom([0.0, 0.0, 0.4, 0.9, 0.3, 0.7])
         # 让"要不要问大模型安排计划"永远不中，tick 里就不会冒出计划调用
         self.engine.decider.rng = FakeRandom([1.0])
@@ -988,6 +989,7 @@ class EventEngineTest(unittest.IsolatedAsyncioTestCase):
 
         self.clock.advance(120)
         await self.engine.tick()
+        await asyncio.gather(*getattr(self.engine, "_life_delivery_jobs", set()))
         state = await self.get_state()
         self.assertGreaterEqual(len(state.event_threads[0]["steps"]), 2)
 

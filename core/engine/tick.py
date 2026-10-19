@@ -7,6 +7,7 @@ from ..model_calls import model_operation
 import asyncio
 from typing import Any
 from .background import CRITICAL_TICK
+from .life_inference import life_work
 from ..config_scope import session_scoped
 from ..json_actions import (
     PlannedAction,
@@ -51,6 +52,13 @@ class TickMixin:
         # 同一个她只推一次：组里的几个群 / 私聊共用一份状态，
         # 按会话各推一遍等于她的时间、精力、事件频率乘以会话数。
         async def advance_one(session_id):
+            cycles = getattr(self, "_life_clock_jobs", None)
+            if cycles is None:
+                cycles = self._life_clock_jobs = {}
+            key = self.state_key(session_id)
+            pending = cycles.get(key)
+            if pending and not pending.done():
+                return await self._tick_while_thinking(session_id)
             if self.is_busy(session_id):
                 lock = self.lock(self.state_key(session_id))
                 try:
@@ -61,7 +69,29 @@ class TickMixin:
                     lock.release()
             token = CRITICAL_TICK.set(True)
             try:
-                return await self._tick_session(session_id)
+                task = asyncio.create_task(self._tick_session(session_id), name="my_world:life_clock:" + key)
+                cycles[key] = task
+                done, _ = await asyncio.wait({task}, timeout=.15)
+                if done:
+                    cycles.pop(key, None)
+                    return task.result()
+                async def finish():
+                    try:
+                        result = await task
+                        if result is not None:
+                            self._queue_life_summary(result)
+                            await self._deliver(result)
+                            self._record_tick([result])
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        self._log("warning", f"生活后台收尾失败：{type(exc).__name__}")
+                    finally:
+                        if cycles.get(key) is task:
+                            cycles.pop(key, None)
+                collector = asyncio.create_task(finish(), name="my_world:life_delivery:" + key)
+                self._life_delivery_jobs = {t for t in getattr(self, "_life_delivery_jobs", set()) if not t.done()} | {collector}
+                return None
             except Exception as exc:
                 self._log("warning", f"tick 失败 session={session_id}: {exc}")
                 return None
@@ -76,21 +106,66 @@ class TickMixin:
             self.queue_background("life_seed:" + self.state_key(session_id), lambda sid=session_id: self.seed_life_matter(sid))
         for session_id in [row.session_id for row in outcomes if row.summary.get("matters_pending")]:
             self.queue_background("matter:" + self.state_key(session_id), lambda sid=session_id: self.advance_life_matters(sid))
-        schedule_token = CRITICAL_TICK.set(True)
-        try:
-            outcomes.extend(await self.run_schedules())
-        except Exception as exc:
-            self._log("warning", f"日程检查失败: {exc}")
-        finally:
-            CRITICAL_TICK.reset(schedule_token)
+        if not getattr(self, "_schedule_delivery_job", None) or self._schedule_delivery_job.done():
+            schedule_job = asyncio.create_task(self.run_schedules(), name="my_world:schedules")
+            self._schedule_model_job = schedule_job
+            async def finish_schedules():
+                try:
+                    rows = await schedule_job
+                    for row in rows:
+                        await self._deliver(row)
+                    if rows:
+                        self._record_tick(rows)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self._log("warning", f"日程后台失败：{type(exc).__name__}")
+            self._schedule_delivery_job = asyncio.create_task(finish_schedules(), name="my_world:schedule_delivery")
+            # Fast local work still appears in this tick's result for the editor.
+            done, _ = await asyncio.wait({self._schedule_delivery_job}, timeout=.15)
+            if done and not schedule_job.cancelled() and schedule_job.exception() is None:
+                # Already delivered by the collector; do not deliver twice below.
+                schedule_rows = schedule_job.result()
+            else:
+                schedule_rows = []
+        else:
+            schedule_rows = []
         for session_id in self.tick_session_ids():
             self.queue_background("social:" + self.state_key(session_id), lambda sid=session_id: self.maintain_social_learning(sid))
         for outcome in outcomes:
             await self._deliver(outcome)
         self._record_tick(outcomes)
-        return outcomes
+        return [*outcomes, *schedule_rows]
+
+    def _queue_life_summary(self, outcome: TickOutcome) -> None:
+        sid, summary = outcome.session_id, outcome.summary
+        for flag, key, work in [
+            ("sleep_review_due", "memory:", lambda: self.consolidate_session(sid, automatic=True)),
+            ("life_seed_due", "life_seed:", lambda: self.seed_life_matter(sid)),
+            ("matters_pending", "matter:", lambda: self.advance_life_matters(sid)),
+        ]:
+            if summary.get(flag):
+                self.queue_background(key + self.state_key(sid), work)
 
     @session_scoped
+    async def _tick_while_thinking(self, session_id: str) -> TickOutcome | None:
+        """Only the basic clock and online action time advance during slow inference."""
+        if self.is_busy(session_id):
+            return None
+        async with self.session_state(session_id) as state:
+            elapsed = self.reconcile_life_time(state)
+            state.world_time += 1
+            action = state.current_action
+            if action and not action.pop("offline_tick_settled", False):
+                action["elapsed_ticks"] = min(int(action.get("duration_ticks", 1)), int(action.get("elapsed_ticks", 0)) + 1)
+            self.dynamics.tick(state, node=self.node(state.node_id), elapsed_seconds=elapsed, world=self.world, now=self._now())
+            state.mood = self.dynamics.derive_mood(state)
+            await self._record_history(state, self.node(state.node_id))
+            return TickOutcome(session_id=session_id, notes=["后台仍在思考，基本生活时钟继续推进"],
+                               summary={"world_time": state.world_time, "thinking": True})
+
+    @session_scoped
+    @life_work()
     @model_operation("tick", "生活时钟推进")
     async def _tick_session(self, session_id: str) -> TickOutcome | None:
         outcome = TickOutcome(session_id=session_id)
@@ -131,6 +206,7 @@ class TickMixin:
             await self._tick_continuous(state, node, outcome)
 
             # 2) 计划推进（无 LLM）
+            self.resume_life(state)
             await self._tick_plan(state, node, outcome, depth=0)
 
             # 2.6) 临睡期：安静够了（或拖太久了）就真的去睡；否则这一轮什么都不做

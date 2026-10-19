@@ -227,6 +227,8 @@ class MemoryEngine:
             memory_type=memory_type, scope=scope,
         )
         if conflict is not None:
+            if conflict.get("pinned") and not pinned:
+                return int(conflict["id"])
             if policy == "skip_conflict":
                 return None
             if policy == "highest_weight" and float(conflict["weight"]) > float(weight):
@@ -237,7 +239,8 @@ class MemoryEngine:
                       "participants": json.dumps(participants or related_users, ensure_ascii=False),
                       "keywords": json.dumps(keywords or [], ensure_ascii=False),
                       "created_at": time.time(), "next_review_at": float(next_review_at or 0), "pinned": bool(pinned)}
-            self.db.revise_memory(int(conflict["id"]), fields, manual=False)
+            self.db.revise_memory(int(conflict["id"]), fields, manual=False,
+                                  reason=f"同一范围出现重复或相反的生活记录，按{policy}策略更新；旧内容保留在修订记录中")
             return int(conflict["id"])
 
         self._enforce_limit(session_id=session_id, persona_id=persona_id)

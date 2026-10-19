@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 import time
 from typing import Any
 from ..config_scope import session_scoped
@@ -91,21 +91,28 @@ class SnapshotMixin:
         for item in items:
             if not item.enabled:
                 continue
-            sessions = list(item.sessions or [])
-            if sessions and session_id not in sessions:
+            if not self.schedule_in_scope(item, session_id):
                 continue
             try:
                 hour, minute = (int(part) for part in str(item.time).split(":")[:2])
             except (TypeError, ValueError):
                 continue
-            for offset in range(0, 8):
+            offsets = range(0, 8)
+            if item.once and item.date:
+                try:
+                    offsets = [(date.fromisoformat(item.date) - now.date()).days]
+                except ValueError:
+                    continue
+            for offset in offsets:
                 moment = (now + timedelta(days=offset)).replace(
                     hour=hour, minute=minute, second=0, microsecond=0
                 )
                 if moment <= now:
                     continue
+                if item.once and item.date and moment.date().isoformat() != item.date:
+                    continue
                 weekday = self.WEEKDAY_KEYS[moment.weekday()]
-                if item.days and weekday not in item.days:
+                if not item.once and item.days and weekday not in item.days:
                     continue
                 minutes = max(0, int(round((moment - now).total_seconds() / 60)))
                 if best is None or minutes < int(best["in_minutes"]):
@@ -120,7 +127,7 @@ class SnapshotMixin:
                         "time": item.time,
                         "in_minutes": minutes,
                         "weekday": WEEKDAY_NAMES[moment.weekday()],
-                        "actions": " → ".join(names),
+                        "actions": "接续已有牵挂" if item.matter_id else " → ".join(names),
                         "auto_travel": bool(item.auto_travel),
                     }
                 break

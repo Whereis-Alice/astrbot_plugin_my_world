@@ -113,6 +113,7 @@ from .recall import RecallMixin
 from .cuddle import CuddleMixin
 from .relations import RelationsMixin
 from .matters import MattersMixin
+from .life_control import LifeControlMixin
 from .background import BackgroundMixin
 from .tools import ToolsMixin
 from .schedule import ScheduleMixin
@@ -231,6 +232,7 @@ class MyWorldEngine(
     CuddleMixin,
     RelationsMixin,
     MattersMixin,
+    LifeControlMixin,
     BackgroundMixin,
     ToolsMixin,
     ScheduleMixin,

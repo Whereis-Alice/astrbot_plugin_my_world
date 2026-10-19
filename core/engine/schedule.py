@@ -19,6 +19,7 @@ from ..state import STATE_DROWSY, WorldState
 from ..timeline import render_event
 from .models import TickOutcome
 from .util import _clip_text
+from .life_inference import life_work
 
 
 class ScheduleMixin:
@@ -443,10 +444,12 @@ class ScheduleMixin:
             until = float(record.get("until") or 0.0)
         except (TypeError, ValueError):
             return False
-        return cursor < until <= seconds
+        return bool(until > 0 and until <= seconds and not record.get("cancelled"))
 
     def _delay_slot(self, state: WorldState, schedule: Any) -> str:
-        return str(self._schedule_delay_record(state, schedule.id).get("slot") or "")
+        record = self._schedule_delay_record(state, schedule.id)
+        until = float(record.get("until") or 0)
+        return f"{schedule.time}@{int(until)}" if until else str(record.get("slot") or schedule.time)
 
     def _delay_exhausted(self, state: WorldState, schedule: Any, day_key: str) -> bool:
         """推迟到顶了没有：次数或总时长任一超了就得执行。"""
@@ -496,6 +499,12 @@ class ScheduleMixin:
         """日程到点时的闸门：返回 ``("do"|"delay"|"cancel", 说明)``。"""
 
         config = self.world.events
+        if state.is_sleeping or (state.state == "drowsy" and self.world.sleep.mode != "fixed"):
+            return "delay", "正在休息，醒来后再安排"
+        thread = self._active_thread(state)
+        day_key = self.local_now().strftime("%Y-%m-%d")
+        if self._thread_critical(thread) and not self._delay_exhausted(state, schedule, day_key):
+            return "delay", "她手上这件危险或重要的事还没完，先让路"
         if not bool(getattr(config, "schedule_gate", True)):
             return "do", ""
         kind = self._schedule_gate_kind(schedule)
@@ -547,18 +556,28 @@ class ScheduleMixin:
 
     @model_operation("schedule", "定时检查到日程执行时机")
     async def run_schedules(self) -> list[TickOutcome]:
-        """检查并触发到点的日程。
+        """Each life checks independently; retire shared one-offs after all scopes."""
+        import asyncio
+        once_done: set[tuple[str, str]] = set()
+        signature = self._schedule_signature
+        results = await asyncio.gather(*(self._run_schedule_scope(sid, once_done) for sid in self.tick_session_ids()))
+        # A reload during inference owns a fresh cursor reset. Do not consume it
+        # or remove a new appointment that happens to reuse an old schedule ID.
+        if self._schedule_signature is signature:
+            self._schedule_reset_pending = False
+            for owner, schedule_id in once_done:
+                with self.config_scope(owner):
+                    self._drop_schedule(schedule_id)
+        return [row for result in results for row in result]
 
-        判定不是「当前这一分钟刚好等于配置时间」，而是「游标之后、现在之前」
-        这段时间里到点的都算——tick 被拖慢、整分钟被跳过时也能补上。
-        """
-
+    @session_scoped
+    @life_work([])
+    async def _run_schedule_scope(self, session_id: str, once_done: set) -> list[TickOutcome]:
         outcomes: list[TickOutcome] = []
         if self.schedules is None:
             return outcomes
-        once_done: set[tuple[str, str]] = set()
         # 她的一天只过一遍：同一个她（会话组）只检查一次日程
-        for session_id in self.tick_session_ids():
+        for session_id in [session_id]:
             if self.is_busy(session_id):
                 continue  # A delayed decision in one life must not stop the global clock.
             async with self.session_state(session_id) as state:
@@ -663,10 +682,11 @@ class ScheduleMixin:
                     )
                     if not claimed:
                         continue
-                    # 记下"这条日程上次什么时候真的跑了"：提示词里要写给她看
-                    last_map = dict(getattr(state, "schedule_last_fired", None) or {})
-                    last_map[str(schedule.id)] = float(self._now())
-                    state.schedule_last_fired = last_map
+                    # A saved checkpoint survives cancellation or a discarded slow
+                    # model result. It does not count as a completed appointment.
+                    checkpoint = self._schedule_delay_record(state, schedule.id)
+                    checkpoint.update(day=day_key, slot=slot, until=seconds + 60, cancelled=False)
+                    state.schedule_delays[schedule.id] = checkpoint
                     # 日程闸门：她正忙着处理一件事件时，睡觉/小睡/换地方要先问一句
                     choice, gate_note = await self._schedule_gate(
                         state, schedule, label=label
@@ -702,6 +722,33 @@ class ScheduleMixin:
                         chain, smart_note = await self._smart_chain(state, schedule)
                     if schedule.auto_travel:
                         chain = self.expand_chain_for_travel(state, chain)
+                    if schedule.matter_id:
+                        started = await self.run_matter_appointment(state, schedule, session=target)
+                        status = "started" if started else "waiting"
+                        outcome.notes.append("按日程接续已有生活事项" if started else "关联事项暂时不能继续，保留原有进度")
+                        if not started:
+                            self._delay_schedule(state, schedule, day_key, slot)
+                            if self._delay_exhausted(state, schedule, day_key):
+                                self._cancel_schedule(state, schedule, day_key)
+                        else:
+                            state.schedule_delays.pop(schedule.id, None)
+                            state.schedule_last_fired[schedule.id] = self._now()
+                            state.life_decision = {"kind": "schedule", "at": self._now(), "reason": "按日程接续已有牵挂"}
+                        await self._log_schedule_run(state, schedule, slot=slot, chain=[], marker=echo_marker,
+                                                     manual=False, smart_note="", notes=outcome.notes, status=status)
+                        outcomes.append(outcome)
+                        if schedule.once and started:
+                            session = self.session_config(self.config_scope_id)
+                            owner = self.config_scope_id if "schedules" in (getattr(session, "config_overrides", {}) or {}) else ""
+                            once_done.add((owner, schedule.id))
+                        continue
+                    admission = self.admit_life(state, "schedule", commit=False)
+                    if not admission["allow"]:
+                        if self._delay_exhausted(state, schedule, day_key):
+                            self._cancel_schedule(state, schedule, day_key)
+                        else:
+                            self._delay_schedule(state, schedule, day_key, slot)
+                        continue
                     # 「这条日程是干什么的」+ 完整动作链，一并带进这一轮的上下文：
                     # 她说话时才有背景（不然只知道自己"正在做某个动作"，
                     # 不知道为什么做、后面还要做什么）。
@@ -713,7 +760,14 @@ class ScheduleMixin:
                         brief.append("这条日程要做的事（按顺序）：" + " → ".join(chain_labels))
                     if brief:
                         state.event_digest = [*list(state.event_digest or []), *brief][-6:]
+                    # Once execution begins, never replay external effects after a
+                    # cancellation. The original claimed slot remains consumed.
+                    state.schedule_delays.pop(schedule.id, None)
+                    await self.save_state(state)
                     status = await self._run_chain(state, chain, outcome, depth=0)
+                    state.schedule_delays.pop(schedule.id, None)
+                    if status != "skipped":
+                        state.schedule_last_fired[schedule.id] = self._now()
                     outcome.notes.append(f"日程 {schedule.id} 已触发")
                     self._note_schedule_progress(state, chain_labels, status, outcome)
                     state.add_event(
@@ -739,14 +793,10 @@ class ScheduleMixin:
                         session = self.session_config(self.config_scope_id)
                         owner = self.config_scope_id if "schedules" in (getattr(session, "config_overrides", {}) or {}) else ""
                         once_done.add((owner, schedule.id))
-        # All inheriting sessions must see a shared one-off before it is retired.
-        for owner, schedule_id in once_done:
-            with self.config_scope(owner):
-                self._drop_schedule(schedule_id)
-        self._schedule_reset_pending = False
         return outcomes
 
     @session_scoped
+    @life_work({"ok": False, "reason": "生活或设置已变化，请刷新后重试"})
     @model_operation("schedule", "管理员手动执行日程")
     async def run_schedule_now(
         self, session_id: str, schedule_id: str, *, force: bool = True
@@ -793,12 +843,21 @@ class ScheduleMixin:
         async with self.session_state(session_id) as state:
             if not force and not self._conditions_ok(state, schedule.conditions):
                 reason = self._schedule_reason(state, schedule.conditions) or "条件不满足"
-                return {
-                    "ok": False,
-                    "reason": f"触发条件不满足：{reason}",
-                    "schedule_id": schedule.id,
-                }
+                return {"ok": False, "reason": f"触发条件不满足：{reason}", "schedule_id": schedule.id}
+            if schedule.matter_id:
+                marker = await self._event_marker(state)
+                started = await self.run_matter_appointment(state, schedule, session=outcome.session_id, force=force)
+                if started:
+                    state.schedule_last_fired[schedule.id] = self._now()
+                await self._log_schedule_run(state, schedule, slot=schedule.time, chain=[], marker=marker,
+                    manual=True, smart_note="", notes=["接续已有牵挂" if started else "事项条件尚未满足，保留原有进度"],
+                    status="started" if started else "waiting")
+                return {"ok": started, "schedule_id": schedule.id,
+                        "note": "按日程接续已有事项" if started else "关联事项尚未准备好，或正在休息；未重复执行动作链"}
             echo_marker = await self._event_marker(state)
+            admission = self.admit_life(state, "schedule", force=force, commit=False)
+            if not admission["allow"]:
+                return {"ok": False, "reason": admission["reason"], "schedule_id": schedule.id}
             chain = schedule.action_chain
             smart_note = ""
             if schedule.smart:

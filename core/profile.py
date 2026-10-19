@@ -79,6 +79,8 @@ def _same_fact(left: Any, right: Any) -> bool:
     短句（4 个字以下）不猜——猜错了就是把两件事合成一件，比多留一条更糟。
     """
 
+    if _conflicts(str(left or ""), str(right or "")):
+        return False
     a, b = _norm(left), _norm(right)
     if not a or not b:
         return False
@@ -463,63 +465,98 @@ class ProfileStore:
 
         if not self.enabled():
             return {"ok": False, "action": "skip", "reason": "画像功能关着"}
-        key, uid = self.group_key(session_id), str(user_id or "").strip()
-        body = " ".join(str(text or "").split())[:80]
-        if not key or not uid or not body:
-            return {"ok": False, "action": "skip", "reason": "没有内容"}
-        kind = str(kind or "other")
-        existing = self.db.list_user_facts(group_id=key, user_id=uid)
-        for item in existing:
-            if str(item.get("kind") or "") != kind:
-                continue
-            if _norm(item.get("text")) == _norm(body) or _same_fact(item.get("text"), body):
-                # 同一件事的另一种说法也合并：不然"他明天要去体检"能攒六条，
-                # 把「关于他 / 他喜欢 / 他的习惯」那几行的 6 个位置全挤掉。
-                old = str(item.get("text") or "")
-                self.db.update_user_fact(
-                    fact_id=int(item["id"]),
-                    status="active",
-                    # 留信息更全的那一版（新说的通常更长）
-                    text=body if len(body) > len(old) else None,
-                    pinned=True if pinned else None,
-                    confidence=max(float(item.get("confidence") or 0.0), float(confidence)),
-                    last_confirmed_at=time.time(),
-                )
-                return {"ok": True, "id": int(item["id"]), "action": "merge"}
-            if _conflicts(str(item.get("text") or ""), body):
-                self.db.update_user_fact(fact_id=int(item["id"]), status="past")
-                new_id = self.db.add_user_fact(
-                    group_id=key,
-                    user_id=uid,
-                    kind=kind,
-                    text=body,
-                    evidence=evidence,
-                    context=context,
-                    confidence=confidence,
-                    status=status,
-                    source_session=source_session,
-                    pinned=pinned,
-                    mentions=mentions,
-                )
-                return {"ok": True, "id": new_id, "action": "replace"}
-        new_id = self.db.add_user_fact(
-            group_id=key,
-            user_id=uid,
-            kind=kind,
-            text=body,
-            evidence=evidence,
-            context=context,
-            confidence=confidence,
-            status=status,
-            source_session=source_session,
-            pinned=pinned,
-            mentions=mentions,
-        )
-        return {"ok": True, "id": new_id, "action": "add"}
+        with self.db.atomic():
+            key, uid = self.group_key(session_id), str(user_id or "").strip()
+            body = " ".join(str(text or "").split())[:80]
+            if not key or not uid or not body:
+                return {"ok": False, "action": "skip", "reason": "没有内容"}
+            kind = str(kind or "other")
+            existing = self.db.list_user_facts(group_id=key, user_id=uid)
+            if not pinned and any(row.get("pinned") and row.get("kind") == kind and _conflicts(row["text"], body) for row in existing):
+                candidate = next((row for row in existing if row.get("status") == "candidate" and row.get("kind") == kind
+                                  and (_norm(row["text"]) == _norm(body) or _same_fact(row["text"], body))), None)
+                if candidate:
+                    self.db.update_user_fact(fact_id=candidate["id"], last_confirmed_at=time.time())
+                    return {"ok": True, "id": candidate["id"], "action": "candidate"}
+            for item in existing:
+                if str(item.get("kind") or "") != kind:
+                    continue
+                if not _conflicts(str(item.get("text") or ""), body) and (
+                        _norm(item.get("text")) == _norm(body) or _same_fact(item.get("text"), body)):
+                    # 同一件事的另一种说法也合并：不然"他明天要去体检"能攒六条，
+                    # 把「关于他 / 他喜欢 / 他的习惯」那几行的 6 个位置全挤掉。
+                    old = str(item.get("text") or "")
+                    self.db.update_user_fact(
+                        fact_id=int(item["id"]),
+                        status="active",
+                        # 留信息更全的那一版（新说的通常更长）
+                        text=body if len(body) > len(old) else None,
+                        pinned=True if pinned else None,
+                        confidence=max(float(item.get("confidence") or 0.0), float(confidence)),
+                        last_confirmed_at=time.time(),
+                    )
+                    return {"ok": True, "id": int(item["id"]), "action": "merge"}
+                if _conflicts(str(item.get("text") or ""), body):
+                    if item.get("pinned") and not pinned:
+                        new_id = self.db.add_user_fact(group_id=key, user_id=uid, kind=kind, text=body,
+                            evidence=evidence, context=context, confidence=confidence, status="candidate",
+                            source_session=source_session, mentions=mentions)
+                        self.db.record_learning_change(key, uid, "fact_conflict", {"id": item["id"], "text": item["text"]},
+                            {"id": new_id, "text": body, "status": "candidate"}, "新资料与固定事实冲突，保留固定内容，等待人工核对", [evidence])
+                        return {"ok": True, "id": new_id, "action": "candidate"}
+                    self.db.update_user_fact(fact_id=int(item["id"]), status="past")
+                    new_id = self.db.add_user_fact(
+                        group_id=key,
+                        user_id=uid,
+                        kind=kind,
+                        text=body,
+                        evidence=evidence,
+                        context=context,
+                        confidence=confidence,
+                        status=status,
+                        source_session=source_session,
+                        pinned=pinned,
+                        mentions=mentions,
+                    )
+                    self.db.record_learning_change(key, uid, "fact_conflict", {"id": item["id"], "text": item["text"]},
+                        {"id": new_id, "text": body, "status": status}, "新的直接资料与旧事实冲突，旧内容转为过往记录", [evidence])
+                    return {"ok": True, "id": new_id, "action": "replace"}
+            new_id = self.db.add_user_fact(
+                group_id=key,
+                user_id=uid,
+                kind=kind,
+                text=body,
+                evidence=evidence,
+                context=context,
+                confidence=confidence,
+                status=status,
+                source_session=source_session,
+                pinned=pinned,
+                mentions=mentions,
+            )
+            return {"ok": True, "id": new_id, "action": "add"}
 
     def facts(self, session_id: str, user_id: str, **kwargs: Any) -> list[dict[str, Any]]:
         key, uid = self.group_key(session_id), str(user_id or "")
         return self.db.list_user_facts(group_id=key, user_id=uid, **kwargs)
+
+    def resolve_fact(self, session_id: str, user_id: str, fact_id: int, *, expected: float) -> bool:
+        """An explicit human choice can settle a conflict without losing old evidence."""
+        key = self.group_key(session_id)
+        with self.db.atomic():
+            chosen = self.db.get_user_fact(fact_id=fact_id)
+            if (not chosen or chosen["group_id"] != key or chosen["user_id"] != user_id
+                    or float(chosen["updated_at"]) != expected or chosen["status"] != "candidate"):
+                return False
+            replaced = []
+            for old in self.db.list_user_facts(group_id=key, user_id=user_id, statuses=["active"]):
+                if old["kind"] == chosen["kind"] and _conflicts(old["text"], chosen["text"]):
+                    self.db.update_user_fact(fact_id=old["id"], status="past")
+                    replaced.append({"id": old["id"], "text": old["text"]})
+            self.db.update_user_fact(fact_id=fact_id, status="active", last_confirmed_at=time.time())
+            self.db.record_learning_change(key, user_id, "fact_conflict", replaced,
+                                          {"id": fact_id, "text": chosen["text"]}, "管理员核对后采用这条资料，旧依据保留", [chosen.get("evidence", "")])
+            return True
 
     def dedupe_facts(self, session_id: str, user_id: str) -> int:
         """把同一个人的同类事实里**重复的说法**合并掉，返回合并了几条。

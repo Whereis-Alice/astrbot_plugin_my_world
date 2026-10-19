@@ -759,6 +759,7 @@ class Settlement:
     state_delta: dict[str, float] = field(default_factory=dict)
     followup: str = ""
     memory: str = ""
+    life_matter: dict[str, str] = field(default_factory=dict)
     next_gap_minutes: float = 0.0
     """她自己决定"下一步隔多久再来"（分钟）。0 = 没给，用配置里的固定间隔。"""
 
@@ -797,6 +798,8 @@ def parse_settlement(text: str) -> Settlement | None:
         state_delta=state_delta,
         followup=followup,
         memory=memory,
+        life_matter={k: _as_text(v, 160 if k == "text" else 300) for k, v in payload.get("life_matter", {}).items()
+                     if k in {"text", "reason", "matter_id"}} if isinstance(payload.get("life_matter"), dict) else {},
         next_gap_minutes=min(next_gap, 360.0),
     )
 
