@@ -156,7 +156,7 @@ class Consolidator:
             )
             where = str(item.get("origin") or current_session or "")
             tag = "（她自己）" if item.get("is_self") else f"（QQ {uid}）" if uid else ""
-            rows.append(f"[{stamp}·{self._where(where, labels)}] {who}{tag}: {text}")
+            rows.append(f"[{stamp}·{self._where(where, labels)}·session={where}] {who}{tag}: {text}")
         return rows[-max(1, int(limit)) :]
 
     def _where(self, session_id: str, labels: dict[str, str]) -> str:
@@ -268,7 +268,6 @@ class Consolidator:
         stamp = float(now if now is not None else time.time())
         max_items = 12 if result.mode == "full" else 6
         records = list(chat_records or [])
-        known = self.known_ids(session_id, records)
         here = str(current_session or session_id or "")
         system, prompt = self.prompts.build_consolidate_prompt(
             persona_text=persona_text,
@@ -284,7 +283,8 @@ class Consolidator:
                 if result.mode == "full"
                 else []
             ),
-            profiles=self.profile_lines(session_id),
+            profiles=[f"[session={sid}] {line}" for sid in self._sessions_of(session_id)
+                      for line in self.profile_lines(sid)],
             pending=list(pending or []),
             date_text=time.strftime("%Y-%m-%d", time.localtime(stamp)),
             mode=result.mode,
@@ -309,12 +309,72 @@ class Consolidator:
             result.note = "整理模型没有给出可用的 JSON"
             return result
         result.ok = True
-        if result.mode == "nap":
-            self._apply_nap(session_id, payload, result, now=stamp, known=known)
-        else:
+        if result.mode != "nap":
             payload = {**payload, "relations": self._grounded_relations(payload, records, result)}
-            self._apply_full(session_id, payload, result, now=stamp, known=known)
+        scoped = self._scoped_profile_updates(session_id, payload, records, result)
+        for sid, local in scoped.items():
+            local_records = [row for row in records if str(row.get("origin") or session_id) == sid]
+            local_known = self.known_ids(sid, local_records)
+            if result.mode == "nap":
+                self._apply_nap(sid, local, result, now=stamp, known=local_known)
+            else:
+                self._apply_full(sid, local, result, now=stamp, known=local_known)
         return result
+
+    def _scoped_profile_updates(self, session_id, payload, records, result):
+        """Route social changes to their actual origin, never to all shared lives.
+
+        The model may see shared memories. That does not authorize changing the
+        same person's feelings in another conversation. Ambiguous changes wait.
+        """
+        sessions = set(self._sessions_of(session_id)) | {session_id}
+        origin_records = {sid: [row for row in records if str(row.get("origin") or session_id) == sid]
+                          for sid in sessions}
+        known = {sid: self.known_ids(sid, rows) for sid, rows in origin_records.items()}
+        local = {sid: {"facts": [], "relations": [], "affinity": [], "digests": {}} for sid in sessions}
+
+        def normalized(text):
+            return "".join(ch for ch in str(text or "").casefold() if ch.isalnum())
+
+        def destination(item):
+            uid = str(item.get("user_id") or "")
+            explicit = str(item.get("source_session") or "")
+            evidence = normalized(item.get("evidence"))
+            matches = {sid for sid, rows in origin_records.items() if any(
+                not row.get("is_self") and str(row.get("user_id")) == uid
+                and (not evidence or len(evidence) >= 4 and evidence in normalized(row.get("text")))
+                for row in rows)}
+            if explicit:
+                return explicit if explicit in sessions and uid in known[explicit] and (not matches or explicit in matches) else ""
+            if len(matches) == 1:
+                return next(iter(matches))
+            if not matches:
+                candidates = {sid for sid in sessions if uid in known[sid]}
+                if len(candidates) == 1:
+                    return next(iter(candidates))
+            return ""
+
+        for field in ("facts", "relations", "affinity"):
+            rows = self._rows(payload.get(field))
+            if field == "facts":
+                rows = rows[:MAX_FACTS_PER_RUN]
+            elif field == "relations":
+                rows = rows[:MAX_BONDS_PER_RUN]
+            for item in rows:
+                sid = destination(item)
+                if sid:
+                    local[sid][field].append(item)
+                else:
+                    result.skipped.append(f"材料里没这个人或会话来源不明确，未修改{field}：{item.get('user_id')}")
+        for uid, text in (payload.get("digests") or {}).items() if isinstance(payload.get("digests"), dict) else []:
+            sid = destination({"user_id": str(uid)})
+            if sid:
+                local[sid]["digests"][str(uid)] = text
+        # Shared memory processing and the dream run once, in the original life.
+        main = {**payload, **local.pop(session_id)}
+        local[session_id] = main
+        return {sid: part for sid, part in local.items() if sid == session_id
+                or any(part.get(field) for field in ("facts", "relations", "affinity", "digests"))}
 
     def _grounded_relations(
         self, payload: dict[str, Any], records: list[dict[str, Any]], result: ConsolidateResult
@@ -329,7 +389,9 @@ class Consolidator:
         for item in self._rows(payload.get("relations"))[:MAX_BONDS_PER_RUN]:
             uid = str(item.get("user_id") or "")
             bond = self.world.profile.bond_by_name(str(item.get("type") or ""))
-            candidate = grounded_relationship(item, records, exclusive=bool(
+            source = str(item.get("source_session") or "")
+            local_records = [row for row in records if str(row.get("origin") or "") == source] if source else records
+            candidate = grounded_relationship(item, local_records, exclusive=bool(
                 bond is not None and (self.profiles._unique_slot(bond.slot)
                                       or bond.name not in {stage.bond for stage in self.world.profile.friendship_stages}
                                       and not bond.negative)))
@@ -420,7 +482,7 @@ class Consolidator:
                 result.relations += 1
             else:
                 result.skipped.append(str(outcome.get("reason") or "关系没记下"))
-        result.digests = self._apply_digests(
+        result.digests += self._apply_digests(
             session_id, payload.get("digests"), known=known
         )
         for item in self._rows(payload.get("affinity")):
@@ -459,7 +521,7 @@ class Consolidator:
         for item in self._rows(payload.get("notes")):
             if self._write_memory(session_id, item, result, now=now):
                 result.memories += 1
-        result.digests = self._apply_digests(
+        result.digests += self._apply_digests(
             session_id, payload.get("digests"), known=known
         )
         result.dream = self._apply_dream(session_id, payload.get("dream"), now=now)

@@ -680,28 +680,27 @@ class GenerationBrowserTests(unittest.TestCase):
         )
         self.page.locator("#dialog-cancel").click()
 
-    def test_contacts_merge_relationship_and_profile_views(self):
+    def test_contact_gallery_keeps_profile_and_management_tools(self):
+        self.page.locator("#contacts-session").evaluate(
+            "node => node.add(new Option('日常聊天', 'aiocqhttp:GroupMessage:1001', true, true))")
         self.page.locator('button[data-tab="contacts"]').click()
-        expect(self.page.locator(".contacts-unified")).to_be_visible()
-        # 左侧目录：只留姓名 / QQ / 等级 / 统计 / 画像完整度，摘要不再堆进来
+        expect(self.page.locator(".contacts-gallery")).to_be_visible()
+        expect(self.page.locator("#contact-drawer")).to_be_hidden()
         expect(self.page.locator(".contacts-command-bar")).to_be_visible()
-        expect(self.page.locator(".contacts-directory-list")).to_have_css(
-            "overflow-y", "auto"
-        )
-        expect(self.page.locator("#contacts-detail")).to_have_css("overflow-y", "auto")
-        expect(self.page.locator(".contact-row")).to_have_count(1)
-        expect(self.page.locator(".contact-row")).to_contain_text("小鲸鱼")
-        expect(self.page.locator(".contact-row-digest")).to_have_count(0)
-        expect(self.page.locator(".contact-row-weaver-preview")).to_have_count(0)
+        expect(self.page.locator(".contact-card")).to_have_count(1)
+        expect(self.page.locator(".contact-card")).to_contain_text("小鲸鱼")
+        expect(self.page.locator(".contact-card")).to_contain_text("喜欢的话题")
         expect(self.page.locator(".contacts-management-menu")).to_be_hidden()
         self.page.locator(".contacts-management > summary").click()
         expect(self.page.locator(".contacts-management-menu")).to_be_visible()
         self.page.locator(".contacts-management > summary").click()
         expect(self.page.locator(".contacts-management-menu")).to_be_hidden()
-        self.page.locator(".contact-row").click()
+        self.page.locator(".contact-card").click()
+        expect(self.page.locator("#contact-drawer")).to_be_visible()
+        expect(self.page.locator("#contacts-detail")).to_have_css("overflow-y", "auto")
         expect(self.page.locator("#contacts-title")).to_have_text("小鲸鱼")
         expect(self.page.locator("#contacts-subtitle")).to_contain_text("她叫这个人")
-        expect(self.page.locator("#contacts-detail-affinity")).to_contain_text("好感 72")
+        expect(self.page.locator("#contacts-open-relationship")).to_be_visible()
 
         self.page.locator('[data-contact-detail-tab="profile"]').click()
         expect(self.page.locator(".contact-weaver-section")).to_be_visible()
@@ -710,11 +709,7 @@ class GenerationBrowserTests(unittest.TestCase):
         expect(self.page.locator("#contacts-detail")).to_contain_text("称呼与备注")
         self.host.screenshot(path=str(self.shots / "contacts-unified-profile.png"))
 
-        self.page.locator('[data-contact-detail-tab="relation"]').click()
-        expect(self.page.locator("#contacts-detail")).to_contain_text("关系")
-        expect(self.page.locator("#contacts-detail")).to_contain_text("好感度")
-
-        self.page.locator('[data-contact-detail-tab="profile"]').click()
+        expect(self.page.locator('[data-contact-detail-tab="relation"]')).to_have_count(0)
         expect(self.page.locator("#contacts-detail")).to_contain_text("共同经历与近况")
         expect(self.page.locator("#contacts-detail")).to_contain_text("喜欢热茶")
         expect(self.page.locator(".contact-records-section")).to_be_visible()
@@ -722,6 +717,8 @@ class GenerationBrowserTests(unittest.TestCase):
         expect(self.page.locator(".contact-record-row")).to_have_count(1)
         self.host.screenshot(path=str(self.shots / "contacts-unified-detail.png"))
 
+        self.page.locator("#contacts-back").click()
+        expect(self.page.locator(".contact-card")).to_be_focused()
         self.page.locator('[data-contacts-view="overview"]').click()
         expect(self.page.locator(".contacts-metric")).to_have_count(6)
         expect(self.page.locator("#contacts-overview")).to_contain_text("字段覆盖率")
@@ -737,17 +734,24 @@ class GenerationBrowserTests(unittest.TestCase):
 
     def test_contacts_workspace_fits_mobile(self):
         self.host.set_viewport_size({"width": 390, "height": 844})
+        self.page.locator("#contacts-session").evaluate(
+            "node => node.add(new Option('日常聊天', 'aiocqhttp:GroupMessage:1001', true, true))")
         self.page.locator('button[data-tab="contacts"]').click()
-        expect(self.page.locator(".contacts-unified")).to_be_visible()
-        expect(self.page.locator(".contact-row")).to_be_visible()
+        expect(self.page.locator(".contacts-gallery")).to_be_visible()
+        expect(self.page.locator(".contact-card")).to_be_visible()
         self.assertLessEqual(
             self.page.evaluate("document.documentElement.scrollWidth"),
             self.page.evaluate("document.documentElement.clientWidth") + 1,
         )
-        self.page.locator(".contact-row").click()
+        self.page.locator(".contact-card").click()
+        expect(self.page.locator("#contact-drawer")).to_be_visible()
         expect(self.page.locator("#contacts-detail-tabs")).to_be_visible()
         self.page.locator('[data-contact-detail-tab="profile"]').click()
         expect(self.page.locator(".contact-weaver-section")).to_be_visible()
+        self.assertLessEqual(
+            self.page.evaluate("document.documentElement.scrollWidth"),
+            self.page.evaluate("document.documentElement.clientWidth") + 1,
+        )
         self.host.screenshot(path=str(self.shots / "contacts-unified-mobile.png"))
         self.assertEqual(self.errors, [])
 

@@ -102,50 +102,47 @@ class ContactsBrowserTests(unittest.TestCase):
         self.page = self.host.frame(name="editor")
         expect(self.page.locator("#app")).to_be_visible()
         self.page.locator('button[data-tab="contacts"]').click()
-        expect(self.page.locator(".weaver-field-row")).to_have_count(27)
+        expect(self.page.locator(".contact-card")).to_have_count(66)
+        expect(self.page.locator("#contact-drawer")).to_be_hidden()
         if self.page.evaluate("document.documentElement.dataset.theme") != "dark":
             self.page.locator("#theme-toggle").click()
 
-    def test_fixed_headers_and_two_scroll_regions_at_short_height(self):
+    def open_person(self, uid="10001"):
+        self.page.locator(f'[data-user="{uid}"]').click()
+        expect(self.page.locator(".weaver-field-row")).to_have_count(27)
+
+    def test_card_gallery_and_fixed_dossier_headers_at_short_height(self):
         for height in (870, 640):
             self.host.set_viewport_size({"width": 1827, "height": height})
+            self.assertGreaterEqual(self.page.locator(".contact-card").first.bounding_box()["height"], 258)
+            self.assertTrue(self.page.locator("#contacts-list").evaluate("node => node.clientHeight > 200"))
+            self.open_person()
             tabs = self.page.locator("#contacts-detail-tabs")
             before = tabs.bounding_box()
             self.page.locator("#contacts-detail").evaluate("node => node.scrollTop = node.scrollHeight")
-            self.page.locator("#contacts-list").evaluate("node => node.scrollTop = node.scrollHeight")
-            self.assertEqual(tabs.bounding_box(), before)
-            self.assertTrue(self.page.locator("#contacts-list").evaluate("node => node.clientHeight > 200"))
-            self.page.locator('#contact-tab-relation').click()
-            expect(self.page.locator('[data-contact-page="relation"]')).to_be_visible()
-            self.page.locator('#contact-tab-profile').click()
-            expect(self.page.locator('.weaver-field-row').first).to_be_visible()
+            after = tabs.bounding_box()
+            self.assertEqual([after[k] for k in ("y", "height", "width")], [before[k] for k in ("y", "height", "width")])
             self.assertTrue(self.page.evaluate("document.documentElement.scrollHeight <= innerHeight + 1"))
+            self.page.locator("#contacts-back").click()
+            expect(self.page.locator('[data-user="10001"]')).to_be_focused()
         self.host.set_viewport_size({"width": 1827, "height": 870})
-        self.page.locator("#contacts-list").evaluate("node => node.scrollTop = 0")
         self.host.screenshot(path=str(self.shots / "contacts-desktop.png"))
         self.assertEqual(self.errors, [])
 
-    def test_relationship_explanations_and_history_fit_desktop_and_mobile(self):
-        self.page.locator('#contact-tab-relation').click()
-        overview = self.page.locator('.contact-relationship-overview')
-        expect(overview).to_contain_text('4 个不同日期')
-        expect(overview).to_contain_text('平常的距离')
-        expect(overview).to_contain_text('暂时比平常疏远')
-        history = self.page.locator('.contact-relationship-history')
-        history.locator('summary').click()
-        expect(history).to_contain_text('<img src=x')
-        self.assertEqual(history.locator('img').count(), 0)
-        for width, name in [(1827, 'desktop'), (390, 'mobile')]:
-            self.host.set_viewport_size({'width': width, 'height': 844})
-            if width == 390:
-                self.page.locator('[data-user="10002"]').click()
-                self.page.locator('#contact-tab-relation').click()
-                self.page.locator('.contact-relationship-history summary').click()
-            expect(overview).to_be_visible()
-            self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth <= innerWidth'))
-            self.assertTrue(overview.evaluate('node => node.scrollWidth <= node.clientWidth + 1'))
-            self.page.locator('#contacts-detail').evaluate('node => node.scrollTop = 0')
-            self.host.screenshot(path=str(self.shots / f'relationship-{name}.png'))
+    def test_directory_reads_only_on_demand_and_dossier_traps_focus(self):
+        self.assertEqual(self.page.evaluate("contactCalls"), [])
+        self.page.locator("#contacts-search").fill("10002")
+        expect(self.page.locator(".contact-card")).to_have_count(1)
+        self.assertEqual(self.page.evaluate("contactCalls"), [])
+        self.open_person("10002")
+        expect(self.page.locator("#contacts-open-relationship")).to_be_visible()
+        self.assertEqual(self.page.locator("#contact-tab-relation").count(), 0)
+        self.page.locator("#contacts-back").focus()
+        self.page.locator("#contacts-back").press("Shift+Tab")
+        self.assertTrue(self.page.locator("#contact-drawer").evaluate("node => node.contains(document.activeElement)"))
+        self.page.locator("#contact-drawer").press("Escape")
+        expect(self.page.locator("#contact-drawer")).to_be_hidden()
+        expect(self.page.locator('[data-user="10002"]')).to_be_focused()
         self.assertEqual(self.errors, [])
 
     def test_detailed_tiers_preserve_relationship_policy_and_remap_boundaries(self):
@@ -191,15 +188,18 @@ class ContactsBrowserTests(unittest.TestCase):
 
     def test_selection_and_session_responses_cannot_overwrite_newer_selection(self):
         self.page.evaluate("delayContacts = true")
-        self.page.locator('[data-user="10002"]').click()
-        self.page.locator('[data-user="10003"]').click()
+        self.page.evaluate("document.querySelector('[data-user=\"10002\"]').click()")
+        self.page.evaluate("document.querySelector('[data-user=\"10003\"]').click()")
         self.page.evaluate("contactPending[1].resolve()")
         expect(self.page.locator('#contacts-title')).to_have_text('朋友 10003')
         expect(self.page.locator('.weaver-field-row').first).to_contain_text('10003')
         self.page.evaluate("contactPending[0].resolve()")
         expect(self.page.locator('#contacts-subtitle')).to_contain_text('10003')
-        self.page.locator('[data-user="10004"]').click()
+        self.page.evaluate("document.querySelector('[data-user=\"10004\"]').click()")
+        self.page.locator('#contacts-back').click()
         self.page.locator('#contacts-session').select_option('aiocqhttp:GroupMessage:2002')
+        expect(self.page.locator('#contact-drawer')).to_be_hidden()
+        self.page.locator('[data-user="10001"]').click()
         self.page.wait_for_function('contactPending.length === 4')
         self.page.evaluate('contactPending[3].resolve()')
         expect(self.page.locator('#contacts-title')).to_have_text('朋友 10001')
@@ -219,6 +219,7 @@ class ContactsBrowserTests(unittest.TestCase):
         self.assertEqual(self.errors, [])
 
     def test_shared_field_operations_target_the_record_being_displayed(self):
+        self.open_person()
         row = self.page.locator('.weaver-field-row').first
         expect(row).to_contain_text('全局共享')
         row.get_by_role('button', name='解锁', exact=True).click()
@@ -231,10 +232,10 @@ class ContactsBrowserTests(unittest.TestCase):
 
     def test_mobile_select_back_and_light_theme(self):
         self.host.set_viewport_size({"width": 390, "height": 844})
+        self.page.locator('#theme-toggle').click()
         self.page.locator('[data-user="10002"]').click()
         expect(self.page.locator('#contacts-back')).to_be_visible()
         expect(self.page.locator('#contact-tab-profile')).to_be_visible()
-        self.page.locator('#theme-toggle').click()
         self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
         self.host.screenshot(path=str(self.shots / "contacts-mobile.png"))
         geometry = self.page.evaluate("""() => {
@@ -243,15 +244,11 @@ class ContactsBrowserTests(unittest.TestCase):
             tabs: rect('#contacts-detail-tabs'), body: rect('#contacts-detail'), height: innerHeight};
         }""")
         self.assertLessEqual(geometry['topbar']['bottom'], geometry['main']['top'] + 1)
-        self.assertGreater(geometry['title']['width'], 200)
+        self.assertGreater(geometry['title']['width'], 120)
         self.assertLess(geometry['title']['height'], 55)
         self.assertLess(geometry['tabs']['bottom'], geometry['height'] - 140)
         self.assertGreater(geometry['body']['height'], 140)
         self.assertLessEqual(geometry['body']['bottom'], geometry['height'])
-        self.page.locator('#contact-tab-relation').click()
-        expect(self.page.locator('[data-contact-page="relation"]')).to_be_visible()
-        self.page.locator('#contact-tab-profile').click()
-        expect(self.page.locator('#contact-tab-profile')).to_have_attribute('aria-selected', 'true')
         expect(self.page.locator('[data-contact-page="profile"]')).to_be_visible()
         self.host.screenshot(path=str(self.shots / "contacts-mobile.png"))
         self.page.locator('#contacts-back').click()
@@ -259,15 +256,17 @@ class ContactsBrowserTests(unittest.TestCase):
         self.assertEqual(self.errors, [])
 
     def test_about_person_folds_and_retains_preference_after_selection_and_edit(self):
+        self.open_person()
         section = self.page.locator('.contact-weaver-section')
         section.locator(':scope > summary').click()
         expect(section).not_to_have_attribute('open', '')
         expect(self.page.locator('.weaver-field-row').first).to_be_hidden()
-        self.page.locator('[data-user="10002"]').click()
+        self.page.locator('#contacts-back').click()
+        self.open_person("10002")
         expect(self.page.locator('#contacts-title')).to_contain_text('10002')
         expect(section).not_to_have_attribute('open', '')
         count = self.page.evaluate('contactCalls.length')
-        self.page.locator('#contacts-refresh').click()
+        self.page.evaluate("document.querySelector('#contacts-refresh').click()")
         self.page.wait_for_function('count => contactCalls.length > count', arg=count)
         expect(section).not_to_have_attribute('open', '')
         section.locator('[data-act="weaver-add"]').click()

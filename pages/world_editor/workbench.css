@@ -158,9 +158,9 @@ main:has(#tab-contacts.active) { padding: 8px 16px 16px; }
 @media (min-width: 761px) and (max-height: 780px) {
   .sidebar { gap: 9px; padding-top: 10px; padding-bottom: 10px; }
   .sidebar .brand { padding-bottom: 9px; }
-  .sidebar .tabs { gap: 2px; }
-  .sidebar .tabs button { height: 30px; }
-  .sidebar .nav-group { margin-top: 7px; margin-bottom: 2px; }
+  .sidebar .tabs { gap: 1px; }
+  .sidebar .tabs button { height: 28px; }
+  .sidebar .nav-group { margin-top: 4px; margin-bottom: 1px; line-height: 14px; }
   .sidebar-foot { padding-top: 7px; }
 }
 /* Related event controls share rows so the complete policy is easy to scan. */

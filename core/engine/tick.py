@@ -169,8 +169,9 @@ class TickMixin:
                 now=self._now(),
             )
             state.mood = self.dynamics.derive_mood(state)
-            # 好感每天朝 0 回落一点（长期不理就慢慢淡；一个会话组一天只结算一次）
-            decayed = self.profiles.decay_affinity(state.session_id, now=self._now())
+            # 好感按实际会话独立计账；共享生活只推进一次，但每份关系分别结算。
+            decayed = [row for sid in self.group_sessions(state.session_id)
+                       for row in self.profiles.decay_affinity(sid, now=self._now())]
             if decayed:
                 await self._log_event(
                     state,

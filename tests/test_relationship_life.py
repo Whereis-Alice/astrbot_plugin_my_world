@@ -76,6 +76,8 @@ class RelationshipRulesTests(unittest.TestCase):
             self.store.note_talked(SESSION, "42", now=START + index)
         self.assertEqual(self.store.view(SESSION, "42").affinities, ["陌生人"])
         self.store.note_talked(profiles.PRIVATE, "42", now=START + DAY)
+        self.assertEqual(self.store.view(SESSION, "42").affinities, ["陌生人"])
+        self.store.note_talked(SESSION, "42", now=START + DAY)
         self.assertEqual(self.store.view(SESSION, "42").affinities, ["群友"])
         for day in range(2, 5):
             self.store.note_talked(SESSION, "42", now=START + day * DAY)

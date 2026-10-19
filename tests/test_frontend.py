@@ -309,8 +309,8 @@ class FrontendSyntaxTest(unittest.TestCase):
         self.assertNotIn("leftText} → ${rightText}", source)
         self.assertNotIn('textPixelWidth(" → ")', source)
 
-    def test_contacts_are_one_unified_workspace(self) -> None:
-        """人物和画像库不能再并列；联系人详情内部才分栏。"""
+    def test_people_have_a_directory_and_an_independent_relationship_page(self) -> None:
+        """资料按需展开，关系与好感有独立入口。"""
 
         source = APP_JS.read_text("utf-8")
         html = INDEX_HTML.read_text("utf-8")
@@ -318,10 +318,14 @@ class FrontendSyntaxTest(unittest.TestCase):
         self.assertNotIn('data-contacts-view="people"', html)
         self.assertNotIn('data-contacts-view="library"', html)
         self.assertIn('id="contacts-view-contacts"', html)
-        self.assertIn('class="contacts-unified"', html)
+        self.assertIn('class="contacts-gallery"', html)
+        self.assertIn('id="contact-drawer"', html)
+        self.assertIn('data-tab="relationships"', html)
+        self.assertIn('id="relationships-grid"', html)
         self.assertIn('data-contact-detail-tab="profile"', html)
         self.assertNotIn('data-contact-detail-tab="activity"', html)
-        self.assertIn('data-contact-detail-tab="relation"', html)
+        self.assertNotIn('data-contact-detail-tab="relation"', html)
+        self.assertIn('id="contacts-open-relationship"', html)
         self.assertIn("function setContactDetailTab(", source)
         self.assertIn("function contactRecordsSection(", source)
         controller = (PAGES / "contact-workbench.js").read_text("utf-8")

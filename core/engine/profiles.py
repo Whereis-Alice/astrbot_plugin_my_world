@@ -12,6 +12,23 @@ from .models import MessageContext
 
 
 class ProfilesMixin:
+    def profile_session(self, state: WorldState, user_id: str, preferred: str = "") -> str:
+        """An autonomous thought uses where this person was actually encountered."""
+
+        candidate = str(preferred or (state.user_presence.get(str(user_id)) or {}).get("session") or "")
+        return candidate if candidate in self.group_sessions(state.session_id) else str(state.session_id)
+
+    def profile_people(self, state: WorldState, *, limit: int = 200) -> list[dict[str, Any]]:
+        """Read candidate identities throughout this life without merging feelings."""
+
+        rows = [row for sid in self.group_sessions(state.session_id)
+                for row in self.profiles.list_people(sid, limit=limit)]
+        rows.sort(key=lambda row: -float(row.get("last_seen_at") or 0))
+        people: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            people.setdefault(str(row["user_id"]), row)
+        return list(people.values())[:limit]
+
     # ---------------- 用户画像：提示词那一段 ----------------
 
     @staticmethod
@@ -161,7 +178,7 @@ class ProfilesMixin:
         user_id = str(getattr(ctx, "user_id", "") or "")
         person = self.person_payload(session_id, user_id) if user_id else None
         if person is not None:
-            person = self._apply_grudge_coldness(state, user_id, person)
+            person = self._apply_grudge_coldness(state, user_id, person, session_id=session_id)
         others = self.other_people(state, session_id, exclude_user_id=user_id)
         # Integrated reads remove only copies of fields still present in the
         # structured profile. Older imported experiences without a field survive.
@@ -201,7 +218,7 @@ class ProfilesMixin:
         return "\n\n".join(block for block in blocks if str(block or "").strip())
 
     def _apply_grudge_coldness(
-        self, state: WorldState, user_id: str, person: dict[str, Any]
+        self, state: WorldState, user_id: str, person: dict[str, Any], *, session_id: str = ""
     ) -> dict[str, Any]:
         """她记着这个人的账 → 对他的**生效档位降一档**（关系、好感都不动）。
 
@@ -229,7 +246,7 @@ class ProfilesMixin:
             # 编辑器/调试里能看出这一档是被"气着"压下来的
             "cold": True,
         }
-        cold["relationship"] = relationship_summary(self.profiles, state.session_id, user_id, cold)
+        cold["relationship"] = relationship_summary(self.profiles, session_id or state.session_id, user_id, cold)
         return cold
 
     # ---------------- 心迹画像（跨插件搬家） ----------------

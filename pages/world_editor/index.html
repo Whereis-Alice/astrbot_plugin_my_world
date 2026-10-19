@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="./style.css" />
     <link rel="stylesheet" href="./contacts.css" />
     <link rel="stylesheet" href="./workbench.css" />
+    <link rel="stylesheet" href="./people.css" />
     <!-- 主题在解析样式前就定下来，避免刷新时先闪一下浅色 -->
     <script>
       (function () {
@@ -53,6 +54,7 @@
           <button data-tab="thoughts" title="内心活动">内心活动</button>
           <button data-tab="events" title="事件">事件</button>
           <button data-tab="contacts" title="通讯录">通讯录</button>
+          <button data-tab="relationships" title="关系与好感">关系与好感</button>
           <button data-tab="memories" title="记忆库">记忆库</button>
           <button data-tab="logs" title="日志">日志</button>
           <button data-tab="ticks" title="运行记录">运行</button>
@@ -513,8 +515,37 @@
         </section>
 
         <!-- 会话 -->
-        <!-- 通讯录：她认识的人（画像 + 关系 + 好感度） -->
+        <section id="tab-relationships" class="tab people-page">
+          <header class="people-page-head">
+            <div><span class="people-eyebrow">相处的起点 · 各自的故事</span><h1>关系与好感 <span id="relationships-count" class="people-heading-count"></span></h1></div>
+            <p id="relationships-summary" class="people-muted">按 QQ 号设定，各会话独立发展</p>
+          </header>
+          <div class="people-toolbar">
+            <label class="people-search"><span aria-hidden="true">⌕</span><input id="relationships-search" placeholder="搜索 QQ 号或称呼" aria-label="搜索关系与好感" /></label>
+            <div class="people-filters" aria-label="统一起点筛选">
+              <button type="button" class="on" data-relationship-filter="all" aria-pressed="true">全部</button>
+              <button type="button" data-relationship-filter="configured" aria-pressed="false">已设起点</button>
+              <button type="button" data-relationship-filter="unconfigured" aria-pressed="false">未设起点</button>
+            </div>
+            <span class="people-toolbar-spacer"></span>
+            <button id="relationships-refresh" type="button" class="ghost small">刷新</button>
+            <button id="relationships-rules" type="button" class="ghost small">关系规则</button>
+            <button id="relationships-add" type="button" class="primary small">＋ 设定一个人</button>
+          </div>
+          <div id="relationships-grid" class="people-grid" aria-live="polite" data-keep-text></div>
+          <div id="relationships-pagination" class="people-pagination" hidden>
+            <button id="relationships-prev" type="button" class="ghost small">← 上一页</button><span id="relationships-page"></span><button id="relationships-next" type="button" class="ghost small">下一页 →</button>
+          </div>
+          <div id="relationship-scrim" class="people-scrim" hidden></div>
+          <section id="relationship-drawer" class="people-drawer social-drawer" role="dialog" aria-modal="true" aria-labelledby="relationship-title" tabindex="-1" hidden>
+            <header class="people-drawer-head"><div><h2 id="relationship-title"></h2><p id="relationship-subtitle" class="people-muted"></p></div><button id="relationship-close" type="button" class="ghost" aria-label="关闭关系与好感详情">关闭 ×</button></header>
+            <div id="relationship-body" class="people-drawer-body" data-keep-text></div>
+          </section>
+        </section>
+
+        <!-- 通讯录：展示和管理她对每个人的认识与经历 -->
         <section id="tab-contacts" class="tab">
+          <header class="people-page-head"><div><span class="people-eyebrow">她认识的每一个人</span><h1>通讯录 <span id="contacts-count" class="people-heading-count">0 人</span></h1></div><p class="people-muted">称呼、偏好与共同经历，在这里慢慢积累。</p></header>
           <div id="contacts-toolbar" class="contacts-command-bar">
           <div id="contacts-views-bar" class="contacts-views-bar">
             <div class="contacts-subtabs" role="tablist" aria-label="通讯录视图">
@@ -548,12 +579,9 @@
 
 
           <div id="contacts-view-contacts" class="contacts-view">
-            <div id="contacts-unified" class="contacts-unified">
-              <aside class="contacts-directory">
-                <div class="contacts-directory-head">
-                  <div>
-                    <h2>联系人 <span id="contacts-count" class="contacts-count">0 人</span></h2>
-                  </div>
+            <div id="contacts-unified" class="contacts-gallery">
+              <div class="contacts-gallery-tools">
+                <label class="people-search"><span aria-hidden="true">⌕</span><input id="contacts-search" placeholder="搜索称呼、QQ 或资料" aria-label="搜索通讯录" /></label>
                   <details class="directory-options"><summary>筛选与排序</summary>                <div class="contacts-filter-bar">
                   <button id="contacts-filter-all" class="pill on" type="button">全部</button>
                   <button id="contacts-filter-detailed" class="pill" type="button">有详细画像</button>
@@ -567,16 +595,13 @@
                   </select>
                 </div>
                   </details>
-                </div>
-                <label class="contacts-search-box">
-                  <span aria-hidden="true">⌕</span>
-                  <input id="contacts-search" placeholder="搜称呼、QQ、字段内容或备注" />
-                </label>
-                <div id="contacts-list" class="contacts-directory-list" data-keep-text></div>
-              </aside>
-              <section class="contacts-profile-pane" aria-label="联系人资料">
+                  <span class="people-toolbar-spacer"></span><span id="contacts-gallery-note" class="people-muted">点击卡片，展开完整档案</span>
+              </div>
+                <div id="contacts-list" class="people-grid contacts-card-grid" data-keep-text></div>
+              <div id="contacts-scrim" class="people-scrim" hidden></div>
+              <section id="contact-drawer" class="contacts-profile-pane people-drawer contact-drawer" role="dialog" aria-modal="true" aria-labelledby="contacts-title" tabindex="-1" hidden>
                 <header class="contacts-profile-head">
-                  <button id="contacts-back" class="ghost small" type="button">← 联系人</button>
+                  <button id="contacts-back" class="ghost small" type="button" aria-label="关闭联系人档案">关闭 ×</button>
                   <div class="contacts-profile-identity">
                     <span id="contacts-avatar" class="contacts-avatar">?</span>
                     <div>
@@ -592,7 +617,7 @@
                   </div>
                 <nav id="contacts-detail-tabs" class="contacts-detail-tabs" role="tablist" aria-label="联系人详情">
                   <button id="contact-tab-profile" type="button" role="tab" aria-selected="true" aria-controls="contact-page-profile" class="on" data-contact-detail-tab="profile">认识与经历</button>
-                  <button id="contact-tab-relation" type="button" role="tab" aria-selected="false" aria-controls="contact-page-relation" tabindex="-1" data-contact-detail-tab="relation">关系</button>
+                  <button id="contacts-open-relationship" type="button" class="ghost small">关系与好感 ↗</button>
                 </nav>
                 </header>
 

@@ -581,7 +581,7 @@ class AddressingMixin:
         if not uid or not self.profiles.enabled():
             return 1.0
         try:
-            view = self.profiles.view(state.session_id, uid)
+            view = self.profiles.view(self.profile_session(state, uid), uid)
         except Exception:
             return 1.0
         if view is None:
@@ -610,7 +610,7 @@ class AddressingMixin:
         if not uid or not self.profiles.enabled():
             return 1.0
         try:
-            view = self.profiles.view(state.session_id, uid)
+            view = self.profiles.view(self.profile_session(state, uid), uid)
         except Exception:
             return 1.0
         if view is None:

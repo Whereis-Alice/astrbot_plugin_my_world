@@ -186,7 +186,7 @@ class ProfileStore:
         self.db = db
         self.world = world
         self._group_of = group_of
-        """``session_id -> 组代表会话``：画像按"她"（会话组）存。"""
+        """旧数据迁移时使用；新画像、关系和好感均按实际会话保存。"""
 
     # ---------------- 基础 ----------------
 
@@ -200,15 +200,9 @@ class ProfileStore:
         self.world = world
 
     def group_key(self, session_id: str) -> str:
-        """画像存在哪个 key 下：分过组就是组代表会话（同一个她共用一份）。"""
+        """保留数据库字段名；人物档案始终属于实际会话，不随生活组重定向。"""
 
-        text = str(session_id or "")
-        if self._group_of is None or not text:
-            return text
-        try:
-            return str(self._group_of(text) or text)
-        except Exception:
-            return text
+        return str(session_id or "").strip()
 
     def enabled(self) -> bool:
         return bool(self.config.enabled)
@@ -235,6 +229,7 @@ class ProfileStore:
         *,
         now: float | None = None,
         count_message: bool = True,
+        seed: bool = True,
     ) -> dict[str, Any] | None:
         """每条消息都过一遍：更新昵称 / 最后出现 / 聊天条数 / 来过几天。
 
@@ -288,6 +283,11 @@ class ProfileStore:
         )
         if row is None:
             self.ensure_default_bond(session_id, uid, now=stamp)
+            baseline = self.db.relationship_baseline(uid) if seed else None
+            if baseline is not None:
+                from .social import initialize_baseline
+
+                initialize_baseline(self, session_id, uid, baseline, now=stamp)
         return self.db.get_user_profile(group_id=key, user_id=uid)
 
     def set_card(self, session_id: str, user_id: str, card: str) -> bool:
@@ -596,6 +596,7 @@ class ProfileStore:
         now: float | None = None,
         policy: str = "",
         automatic: bool = False,
+        lift_affinity: bool = True,
     ) -> dict[str, Any]:
         """确立 / 更新一条关系（模型给的候选也走这里）。
 
@@ -623,7 +624,7 @@ class ProfileStore:
                     self.db.mark_user_bond_manual(bond_id=int(item["id"]))
                 return {"ok": True, "action": "merge", "id": int(item["id"])}
         # 同一个槽位已经有人的：按策略处理（唯一的关系才会管）。
-        # 注意槽位唯一性是**全组**的：别人已经占着"男友"时，新来的同样要按策略处理——
+        # 槽位唯一性属于实际会话：别人已经占着"男友"时，新来的同样要按策略处理——
         # 不然一个人可以同时有五个男友。
         everyone = self.db.list_user_bonds(group_id=key, statuses=["current"])
         blockers = [item for item in everyone
@@ -672,7 +673,8 @@ class ProfileStore:
         )
         self._retire_default_bond(key, uid, keep_slot=str(bond.slot), now=stamp)
         self._retire_group_bonds(key, uid, bond=bond, now=stamp)
-        self.lift_affinity_to_bond_floor(session_id, uid, bond, now=stamp)
+        if lift_affinity:
+            self.lift_affinity_to_bond_floor(session_id, uid, bond, now=stamp)
         return {"ok": True, "action": "add", "id": new_id}
 
     def lift_affinity_to_bond_floor(
@@ -727,7 +729,7 @@ class ProfileStore:
         slot = str(row.get("slot") or "")
         mode = str(policy or getattr(self.config, "bond_conflict_policy", "reject") or "replace")
         if self._unique_slot(slot):
-            # 槽位唯一性是全组的：占着这个槽位的可能是别人
+            # 槽位唯一性属于当前会话：占着这个槽位的可能是别人
             for item in self.db.list_user_bonds(group_id=key, statuses=["current"]):
                 if str(item.get("slot")) != slot or str(item.get("user_id")) == uid:
                     continue
@@ -833,7 +835,7 @@ class ProfileStore:
     # ---------------- 好感的"日常"三条：混脸熟 / 每轮判断 / 慢慢回落 ----------------
 
     def _daily_people(self, group_id: str, day: str) -> dict[str, dict[str, float]]:
-        """当天这份"额度表"（按会话组存，几个会话共用一个她）。"""
+        """当天这份"额度表"（按实际会话独立计算）。"""
 
         raw = self._kv_store()
         stored = raw.kv_get(AFFINITY_DAILY_KEY, {}) if raw is not None else {}

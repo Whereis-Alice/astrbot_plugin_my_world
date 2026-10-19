@@ -712,8 +712,8 @@ class ActionsMixin:
             ):
                 # 她**主动**对某个人做事（抱抱、戳一戳这些）受"这一级每天最多主动找他几次"限制：
                 # 陌生 / 客气级别是 0 次（不主动动手），越亲近额度越大。
-                view = self.profiles.view(state.session_id, action.target)
-                left = self.profiles.proactive_quota_left(state.session_id, action.target)
+                view = self.profiles.view(self.profile_session(state, action.target, outcome.place), action.target)
+                left = self.profiles.proactive_quota_left(self.profile_session(state, action.target, outcome.place), action.target)
                 if left <= 0:
                     cap = getattr(getattr(view, "level", None), "proactive_per_day", 0)
                     outcome.notes.append(
@@ -730,7 +730,7 @@ class ActionsMixin:
                     )
                     continue
                 self.profiles.note_proactive(
-                    state.session_id, action.target, now=self._now()
+                    self.profile_session(state, action.target, outcome.place), action.target, now=self._now()
                 )
             before_action = state.current_action
             answered = await self._start_action(

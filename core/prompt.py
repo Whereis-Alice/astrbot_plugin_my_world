@@ -4342,6 +4342,8 @@ class PromptBuilder:
             "- 提到具体的人时，用材料里的 QQ 号写进 participants，不要自己造人；\n"
             "- 只输出**改动**：没变的旧记忆不要抄回来；\n"
             "- 证据（evidence）写清材料里那个人原话的一小段，方便以后核对；\n"
+            "- 同一 QQ 在不同会话的关系与好感各自独立。facts、relations、affinity 每条都写 source_session，"
+            "使用材料里的 session= 后面的完整会话标识。不要因共享记忆同时修改其他会话。来源不明确就不改；\n"
             "- 你自己那些普通的回复、寒暄和翻来覆去的解释**不算新事实**，默认不要记；"
             "只有你那句话表达了持续的状态、一个计划、或真正值得记住的经历时才留下，"
             "而且那是你自己的事，要进你自己的状态 / 计划 / 事件，"
@@ -4383,11 +4385,11 @@ class PromptBuilder:
                 '"keywords": ["关键词"], "review_in_days": 3}],\n'
                 '  "merge": [{"keep_id": 12, "drop_ids": [13, 14], "text": "合并后的一句"}],\n'
                 '  "facts": [{"user_id": "QQ号", "kind": "喜好|厌恶|习惯|基本信息|关系|约定|近况", '
-                '"text": "关于他的事", "evidence": "他的原话", "confidence": 0.8}],\n'
+                '"text": "关于他的事", "evidence": "他的原话", "source_session": "完整会话标识", "confidence": 0.8}],\n'
                 '  "relations": [{"user_id": "QQ号", "type": "主人|男友|朋友|闺蜜|家人|讨厌的人…", '
-                '"asserted_by": "她的判断|他自称", "evidence": "用户原话", "confirmation": "她明确确认的原话（没有则留空）", "confidence": 0.8}],\n'
+                '"asserted_by": "她的判断|他自称", "evidence": "用户原话", "confirmation": "她明确确认的原话（没有则留空）", "source_session": "完整会话标识", "confidence": 0.8}],\n'
                 '  "digests": {"QQ号": "这个人的画像速写（40 字内）"},\n'
-                '  "affinity": [{"user_id": "QQ号", "delta": 1, "reason": "为什么"}],\n'
+                '  "affinity": [{"user_id": "QQ号", "delta": 1, "reason": "为什么", "source_session": "完整会话标识"}],\n'
                 '  "forget": [{"id": 31, "text": "折叠成一句要点", "reason": "为什么可以忘掉"}],\n'
                 '  "dream": "可选：她做了一个什么样的梦"\n'
                 "}"

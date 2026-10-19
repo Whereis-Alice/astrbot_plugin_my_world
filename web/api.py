@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
 import json
+import math
 import time
 from typing import Any
 
@@ -37,6 +39,7 @@ from ..core.models import (
 )
 from ..core.profile_weaver_store import AuditActor
 from ..core.prompt import prompt_section_index
+from ..core.social import SocialDirectory, qq_id, rule_conflicts
 from ..core.timeline import build_timeline
 from ..core.tool_import import build_drafts as build_tool_action_drafts
 from ..core.tool_import import merge_drafts as merge_tool_action_drafts
@@ -89,13 +92,15 @@ class WebApiMixin:
                 if scope and self.engine.session_config(scope) is None:
                     return error_response("配置会话不存在，请重新选择")
                 endpoint = path.split(f"/{plugin_id}/", 1)[-1]
+                if endpoint.startswith("relationships"):
+                    scope = ""
                 if scope and method == "POST" and endpoint in {
                     "config/world", "config/schedules", "config/sessions", "reset", "restore-default",
                     "actions/purge-legacy", "presets/apply", "history/restore",
                     "presets/save", "tools/import",
                 }:
                     return error_response("此操作会修改全局配置，请先切换到全局；会话配置请使用顶部保存")
-                if not (endpoint in {"config", "persona/apply", "persona/review", "voice-samples"} or endpoint.startswith(("config/", "generate/", "voice-samples/"))):
+                if not (endpoint in {"config", "persona/apply", "persona/review", "voice-samples"} or endpoint.startswith(("config/", "generate/", "voice-samples/", "relationships"))):
                     scope = str(payload.get("session") or payload.get("session_id") or scope)
                 with self.engine.config_scope(scope):
                     if self.engine.config_scope_id and method == "POST" and endpoint in {"voice-samples/save", "persona/apply"}:
@@ -289,6 +294,12 @@ class WebApiMixin:
         register(f"/{p}/profile/fact", self.api_profile_fact, ["POST"], "通讯录：改事实")
         register(f"/{p}/profile/bond", self.api_profile_bond, ["POST"], "通讯录：改关系")
         register(f"/{p}/profile/affinity", self.api_profile_affinity, ["POST"], "通讯录：改好感度")
+        register(f"/{p}/relationships", self.api_relationships, ["GET"], "关系与好感：按 QQ 汇总")
+        register(f"/{p}/relationships/person", self.api_relationship_person, ["GET"], "关系与好感：会话现状")
+        register(f"/{p}/relationships/apply", self.api_relationship_apply, ["POST"], "设置统一起点并应用到所有会话")
+        register(f"/{p}/relationships/session", self.api_relationship_session, ["POST"], "只调整一个会话的关系与好感")
+        register(f"/{p}/relationships/baseline", self.api_relationship_baseline, ["POST"], "移除统一起点，保留会话现状")
+        register(f"/{p}/relationships/rules", self.api_relationship_rules, ["GET", "POST"], "关系类型、相处档位与发展规则")
         register(
             f"/{p}/profile/grudge",
             self.api_profile_grudge,
@@ -406,6 +417,169 @@ class WebApiMixin:
 
     def _profile_scope(self, value: Any) -> str:
         return self._scope(value)
+
+    def _relationship_rules(self) -> dict[str, Any]:
+        config = self.engine.world.profile
+        return {"bonds": [item.model_dump(mode="json") for item in config.bonds],
+                "levels": [item.model_dump(mode="json") for item in config.levels],
+                "affinity_min": config.affinity_min, "affinity_max": config.affinity_max,
+                "default_bond": config.default_bond, "affinity_initial": config.affinity_initial}
+
+    async def api_relationship_rules(self):
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload)
+        if guard is not None:
+            return guard
+        profile = self.engine.world.profile.model_dump(mode="json")
+        fingerprint = hashlib.sha256(json.dumps(profile, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        if str(getattr(request, "method", "GET")).upper() != "POST":
+            return json_response({"profile": profile, "fingerprint": fingerprint,
+                "actions": [{"id": action.id, "name": action.name or action.id} for action in self.engine.world.actions]})
+        if payload.get("fingerprint") != fingerprint:
+            return error_response("关系规则已经变更，请重新打开后再修改")
+        candidate = payload.get("profile")
+        if not isinstance(candidate, dict):
+            return error_response("关系规则必须是对象")
+        try:
+            from ..core.models import ProfileConfig
+
+            parsed = ProfileConfig.model_validate(candidate)
+            names = [bond.name.strip() for bond in parsed.bonds]
+            if not names or any(not name for name in names) or len(set(names)) != len(names):
+                raise ValueError("关系名称不能为空或重复")
+            if parsed.default_bond not in names:
+                raise ValueError("默认初始关系必须保留在关系表中")
+            if any(bond.name != bond.name.strip() for bond in parsed.bonds):
+                raise ValueError("关系名称前后不能包含空白")
+            numbers = [parsed.affinity_min, parsed.affinity_max, parsed.affinity_initial,
+                       *[value for level in parsed.levels for value in (level.min_affinity, level.max_affinity)]]
+            if not all(math.isfinite(value) for value in numbers):
+                raise ValueError("好感与档位边界必须是有限数值")
+            if not parsed.affinity_min <= parsed.affinity_initial <= parsed.affinity_max:
+                raise ValueError("初始好感必须位于好感范围内")
+            if not parsed.levels or parsed.affinity_min >= parsed.affinity_max:
+                raise ValueError("至少保留一个档位，且好感下限需小于上限")
+            level_names = [level.name.strip() for level in parsed.levels]
+            if any(not name for name in level_names) or len(set(level_names)) != len(level_names):
+                raise ValueError("相处档位名称不能为空或重复")
+            previous_end = None
+            for level in parsed.levels:
+                if level.min_affinity >= level.max_affinity or previous_end is not None and level.min_affinity < previous_end:
+                    raise ValueError("档位区间需从低到高排列，不能倒置或重叠")
+                previous_end = level.max_affinity
+            if any(bond.floor > bond.cap or bond.cap >= len(parsed.levels) or bond.floor < 0 for bond in parsed.bonds):
+                raise ValueError("关系最低档和最高档需落在分级表内，且最低档不能高于最高档")
+            current = self.db.raw._query("SELECT id,group_id,user_id,type FROM user_bond WHERE status='current'")
+            # Shared lives use their configuration owner's rules. An explicit
+            # profile snapshot in that owner's settings never follows global edits.
+            inheriting = set()
+            for sid in {row["group_id"] for row in current}:
+                with self.engine.config_scope(sid):
+                    session = self.engine.session_config(self.engine.config_scope_id)
+                    settings = (getattr(session, "config_overrides", None) or {}).get("settings", {})
+                    if "profile" not in settings:
+                        inheriting.add(sid)
+            current = [row for row in current if row["group_id"] in inheriting]
+            used = {row["type"] for row in current}
+            used.update(name for baseline in self.db.raw.relationship_baselines() for name in baseline.get("relations", []))
+            removed = used - set(names)
+            if removed:
+                raise ValueError("这些关系正在使用，请先调整联系人与统一起点后再删除或改名：" + "、".join(sorted(removed)))
+            unique_slots = {bond.slot for bond in parsed.bonds if bond.unique and bond.slot}
+            old_identity, old_unique = rule_conflicts(self.engine.world.profile, current)
+            new_identity, new_unique = rule_conflicts(parsed, current)
+            if new_unique - old_unique:
+                raise ValueError("此唯一槽位在现有会话中已由多人占用，请先调整关系")
+            if new_identity - old_identity:
+                raise ValueError("修改后，同一个人的现有关系会属于相同替代组或槽位，请先调整关系")
+            baseline_slots = {}
+            for baseline in self.db.raw.relationship_baselines():
+                if not parsed.affinity_min <= baseline["affinity"] <= parsed.affinity_max:
+                    raise ValueError("现有统一起点的好感超出新范围，请先调整起点")
+                previous = []
+                if parsed.default_bond in baseline.get("relations", []) and len(baseline["relations"]) > 1:
+                    raise ValueError("现有统一起点将同时包含默认关系和正式身份，请先调整起点")
+                for name in baseline.get("relations", []):
+                    bond = parsed.bond_by_name(name)
+                    if bond is not None:
+                        if any(bond.group and old.group == bond.group or bond.slot and old.slot == bond.slot for old in previous):
+                            raise ValueError("修改后，统一起点中的身份将属于同一替代组或槽位，请先调整起点")
+                        previous.append(bond)
+                    if bond is not None and bond.slot in unique_slots:
+                        if bond.slot in baseline_slots and baseline_slots[bond.slot] != baseline["user_id"]:
+                            raise ValueError("此唯一槽位已在多个 QQ 的统一起点中使用，请先调整起点")
+                        baseline_slots[bond.slot] = baseline["user_id"]
+            world = {**self.store.raw_world(), "profile": parsed.model_dump(mode="json")}
+            warnings = self.store.save_world(world, reason="调整关系与好感规则")
+            with self.db.raw.atomic():
+                for row in current:
+                    bond = parsed.bond_by_name(row["type"])
+                    self.db.raw._execute("UPDATE user_bond SET slot=? WHERE id=?", (bond.slot, row["id"]))
+            self.engine.reload_config()
+        except (ValueError, ValidationError) as exc:
+            return error_response(str(exc))
+        return json_response({"ok": True, "warnings": warnings})
+
+    async def api_relationships(self):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        data = SocialDirectory(self.engine).catalog(q=str(request.query.get("q", "")),
+            page=_query_int("page", 1), size=_query_int("size", 24),
+            filter_by=str(request.query.get("filter", "all")))
+        data["rules"] = self._relationship_rules()
+        return json_response(data)
+
+    async def api_relationship_person(self):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        try:
+            uid = qq_id(request.query.get("user_id"))
+        except ValueError as exc:
+            return error_response(str(exc))
+        data = SocialDirectory(self.engine).person(uid)
+        data["rules"] = self._relationship_rules()
+        for item in data["sessions"]:
+            with self.engine.config_scope(item["session"]):
+                item["rules"] = self._relationship_rules()
+        return json_response(data)
+
+    async def _relationship_apply(self, only_session: str = ""):
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload)
+        if guard is not None:
+            return guard
+        try:
+            return json_response(SocialDirectory(self.engine).apply(payload, only_session=only_session))
+        except ValueError as exc:
+            return error_response(str(exc))
+
+    async def api_relationship_apply(self):
+        return await self._relationship_apply()
+
+    async def api_relationship_session(self):
+        payload = await request.json(default={}) or {}
+        session = str(payload.get("session") or "").strip()
+        if not session:
+            return error_response("请选择实际会话")
+        return await self._relationship_apply(session)
+
+    async def api_relationship_baseline(self):
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload)
+        if guard is not None:
+            return guard
+        try:
+            uid = qq_id(payload.get("user_id"))
+            with self.db.raw.atomic():
+                baseline = self.db.raw.relationship_baseline(uid)
+                if baseline is None or payload.get("revision") != baseline["revision"]:
+                    raise ValueError("统一起点已变更，请刷新后再操作")
+                self.db.raw.delete_relationship_baseline(uid)
+        except ValueError as exc:
+            return error_response(str(exc))
+        return json_response({"ok": True, "person": SocialDirectory(self.engine).person(uid)})
 
     def _weaver_service(self):
         return getattr(self.engine, "profile_weaver_service", None)
@@ -990,7 +1164,7 @@ class WebApiMixin:
         # 「她记着他一笔账」：记的账是分人的，这里只回这个人的那条
         grudge = self.engine.grudge_for(state, user_id)
         if isinstance(payload.get("person"), dict):
-            payload["person"] = self.engine._apply_grudge_coldness(state, user_id, payload["person"])
+            payload["person"] = self.engine._apply_grudge_coldness(state, user_id, payload["person"], session_id=session_id)
         payload["relationship"] = (payload.get("person") or {}).get("relationship", {})
         payload["grudge"] = (
             {
@@ -1012,7 +1186,7 @@ class WebApiMixin:
             if isinstance(item, dict)
             and str(item.get("who") or "") == user_id
         ]
-        overview = self.engine.miss_overview(state, user_id=user_id)
+        overview = self.engine.miss_overview(state, user_id=user_id, session_id=session_id)
         payload["miss"] = next(
             (item for item in overview.get("people", []) if item.get("user_id") == user_id),
             {

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 import json
 import sqlite3
 import threading
@@ -117,6 +118,14 @@ CREATE TABLE IF NOT EXISTS affinity_log (
     source TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_affinity_user ON affinity_log (group_id, user_id, at);
+
+-- 管理员按 QQ 号设置的起点；各会话只复制一次，此后独立变化。
+CREATE TABLE IF NOT EXISTS relationship_baseline (
+    user_id TEXT PRIMARY KEY,
+    payload TEXT NOT NULL DEFAULT '{}',
+    revision INTEGER NOT NULL DEFAULT 1,
+    updated_at REAL NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS event_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -232,6 +241,7 @@ class Database:
         self.path = str(path)
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._transaction_depth = 0
         with self._lock:
             self._conn = self._connect()
 
@@ -329,14 +339,101 @@ class Database:
             self._ensure_open()
             try:
                 cursor = self._conn.execute(sql, tuple(params))
-                self._conn.commit()
+                if not self._transaction_depth:
+                    self._conn.commit()
                 return cursor
             except sqlite3.ProgrammingError:
+                if self._transaction_depth:
+                    raise
                 # 连接是在中途被关掉的：重连一次再试
                 self._conn = self._connect()
                 cursor = self._conn.execute(sql, tuple(params))
                 self._conn.commit()
                 return cursor
+
+    @contextmanager
+    def atomic(self):
+        """A short synchronous transaction. Never await while holding it."""
+
+        with self._lock:
+            self._ensure_open()
+            depth = self._transaction_depth
+            name = f"mw_atomic_{depth}"
+            self._conn.execute(f"SAVEPOINT {name}")
+            self._transaction_depth += 1
+            try:
+                yield
+            except BaseException:
+                self._conn.execute(f"ROLLBACK TO SAVEPOINT {name}")
+                self._conn.execute(f"RELEASE SAVEPOINT {name}")
+                raise
+            else:
+                self._conn.execute(f"RELEASE SAVEPOINT {name}")
+            finally:
+                self._transaction_depth -= 1
+
+    def relationship_baselines(self) -> list[dict[str, Any]]:
+        return [{**json.loads(row["payload"]), "user_id": row["user_id"],
+                 "revision": row["revision"], "updated_at": row["updated_at"]}
+                for row in self._query("SELECT * FROM relationship_baseline ORDER BY updated_at DESC")]
+
+    def relationship_baseline(self, user_id: str) -> dict[str, Any] | None:
+        rows = self._query("SELECT * FROM relationship_baseline WHERE user_id = ?", (user_id,))
+        if not rows:
+            return None
+        row = rows[0]
+        return {**json.loads(row["payload"]), "user_id": row["user_id"],
+                "revision": row["revision"], "updated_at": row["updated_at"]}
+
+    def save_relationship_baseline(self, user_id: str, payload: dict[str, Any]) -> None:
+        self._execute(
+            "INSERT INTO relationship_baseline(user_id,payload,revision,updated_at) VALUES(?,?,1,?) "
+            "ON CONFLICT(user_id) DO UPDATE SET payload=excluded.payload, "
+            "revision=relationship_baseline.revision+1, updated_at=excluded.updated_at",
+            (user_id, json.dumps(payload, ensure_ascii=False), time.time()),
+        )
+
+    def delete_relationship_baseline(self, user_id: str) -> bool:
+        return bool(self._execute("DELETE FROM relationship_baseline WHERE user_id = ?", (user_id,)).rowcount)
+
+    def all_user_profiles(self, user_id: str = "") -> list[dict[str, Any]]:
+        sql = "SELECT * FROM user_profile"
+        rows = self._query(sql + " WHERE user_id = ?" if user_id else sql, (user_id,) if user_id else ())
+        return [_profile_row(row) for row in rows]
+
+    def split_profile_sessions(self, origins: dict[str, str]) -> None:
+        """One-time snapshot of formerly shared profiles into existing sessions."""
+
+        marker = "profile_session_isolation_v1"
+        with self.atomic():
+            if self.kv_get(marker, False):
+                return
+            for target, source in origins.items():
+                if target == source:
+                    continue
+                for row in self.list_user_profiles(group_id=source, limit=1000000):
+                    uid = row["user_id"]
+                    if self.get_user_profile(group_id=target, user_id=uid) is not None:
+                        continue
+                    self.upsert_user_profile(
+                        group_id=target, user_id=uid, payload=row["payload"], affinity=row["affinity"],
+                        first_seen_at=row["first_seen_at"], last_seen_at=row["last_seen_at"],
+                        message_count=row["message_count"], digest=row["digest"],
+                    )
+                    for table in ("user_fact", "user_bond", "affinity_log"):
+                        columns = [item["name"] for item in self._query(f"PRAGMA table_info({table})")
+                                   if item["name"] not in {"id", "group_id"}]
+                        names = ",".join(columns)
+                        self._execute(
+                            f"INSERT INTO {table}(group_id,{names}) SELECT ?,{names} "
+                            f"FROM {table} WHERE group_id=? AND user_id=?", (target, source, uid),
+                        )
+                for key in ("affinity_daily", "affinity_decay_day"):
+                    data = self.kv_get(key, {})
+                    if isinstance(data, dict) and source in data and target not in data:
+                        data[target] = data[source]
+                        self.kv_set(key, data)
+            self.kv_set(marker, True)
 
     def _query(self, sql: str, params: Iterable[Any] = ()) -> list[sqlite3.Row]:
         with self._lock:

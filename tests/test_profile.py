@@ -20,7 +20,9 @@ GROUP_KEY = "aiocqhttp:GroupMessage:9000"
 
 
 def make_world():
-    world, warnings = parse_world(default_world())
+    raw = default_world()
+    raw["legacy_tool_actions"] = True  # Keep this fixture independent of test import order.
+    world, warnings = parse_world(raw)
     assert warnings == [], warnings
     return world
 
@@ -80,7 +82,7 @@ class ProfileTestCase(unittest.TestCase):
         self.assertEqual(self.store.last_talked_at(SESSION, "42"), 1200.0)
         self.assertEqual(self.store.profile(SESSION, "42")["last_seen_at"], 1800.0)
         # 同一个她：私聊里看的是同一份时间
-        self.assertEqual(self.store.last_talked_at(PRIVATE, "42"), 1200.0)
+        self.assertEqual(self.store.last_talked_at(PRIVATE, "42"), 0.0)
 
     def test_group_card_is_stored_per_session(self):
         self.store.touch(SESSION, "42", "小明")
@@ -89,15 +91,12 @@ class ProfileTestCase(unittest.TestCase):
         view = self.store.view(SESSION, "42")
         self.assertEqual(view.cards.get(SESSION), "群里的阿明")
 
-    def test_profile_is_shared_inside_a_session_group(self):
-        """同一个她：群里认识的，私聊里也认识。"""
-
+    def test_profiles_are_independent_even_inside_one_life_group(self):
         self.store.touch(SESSION, "42", "小明")
         self.store.note_fact(SESSION, "42", text="喜欢猫", kind="喜好")
-
-        private_view = self.store.view(PRIVATE, "42")
-        self.assertIsNotNone(private_view)
-        self.assertEqual([item["text"] for item in private_view.facts], ["喜欢猫"])
+        self.assertIsNone(self.store.view(PRIVATE, "42"))
+        self.store.touch(PRIVATE, "42", "小明")
+        self.assertEqual(self.store.view(PRIVATE, "42").facts, [])
 
     # ---------------- 称呼 ----------------
 
@@ -250,7 +249,7 @@ class ProfileTestCase(unittest.TestCase):
         """老数据里同类并排留着两条：展示时只留最有分量的那条（不动库）。"""
 
         self.store.touch(SESSION, "42", "小明")
-        key = GROUP_KEY
+        key = SESSION
         self.db.add_user_bond(
             group_id=key,
             user_id="42",
@@ -520,7 +519,7 @@ class ProfileTestCase(unittest.TestCase):
         self.store.touch(SESSION, "42", "小明")
         for text in ("抽卡又歪了", "抽卡又吃保底歪了", "抽卡又歪了，是个常年吃保底的非酋"):
             self.db.add_user_fact(
-                group_id=GROUP_KEY,
+                group_id=SESSION,
                 user_id="42",
                 kind="近况",
                 text=text,

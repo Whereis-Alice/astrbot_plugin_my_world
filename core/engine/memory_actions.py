@@ -112,9 +112,10 @@ class MemoryActionsMixin:
         - 没带"他的原话"（evidence）一律不记——最容易编的就是这一类；
         - 只认她**真的认识的人**（会话里有档案的），免得顺着昵称编出一个号；
         - 事实同类去重、正反冲突自动替换；关系冲突按配置策略处理
-          （默认记成"他自称"，唯一槽位全组一份）；同类关系只留一条。
+          （默认记成"他自称"，唯一槽位按实际会话检查）；同类关系只留一条。
         """
 
+        session_id = str(outcome.place or outcome.session_id or state.session_id)
         store = getattr(self, "profiles", None)
         params = dict(action.params or {})
         user_id = str(
@@ -138,7 +139,7 @@ class MemoryActionsMixin:
                 outcome=outcome,
             )
             return
-        known = {str(row.get("user_id") or "") for row in store.list_people(state.session_id, limit=500)}
+        known = {str(row.get("user_id") or "") for row in store.list_people(session_id, limit=500)}
         if user_id not in known:
             # 只认她真的见过的人：编出来的号码不进通讯录
             outcome.notes.append(f"「记住」里那个人（{user_id}）她还没见过，已跳过")
@@ -164,14 +165,14 @@ class MemoryActionsMixin:
         written: list[str] = []
         if text:
             result = store.note_fact(
-                state.session_id,
+                session_id,
                 user_id,
                 text=text,
                 kind=kind,
                 evidence=evidence,
                 context="她当场记住的",
                 confidence=0.9,
-                source_session=state.session_id,
+                source_session=session_id,
             )
             if result.get("ok"):
                 written.append(f"记住了「{text}」（{kind}）")
@@ -183,7 +184,8 @@ class MemoryActionsMixin:
             candidate = grounded_relationship({
                 "user_id": user_id, "evidence": evidence,
                 "confirmation": params.get("confirmation"), "asserted_by": "她的判断",
-            }, self.chat_window(state, state.session_id), exclusive=bool(
+            }, [row for row in self.chat_window(state, session_id)
+                if str(row.get("origin") or session_id) == session_id], exclusive=bool(
                 definition and (store._unique_slot(definition.slot)
                                 or definition.name not in {stage.bond for stage in self.world.profile.friendship_stages}
                                 and not definition.negative)))
@@ -191,7 +193,7 @@ class MemoryActionsMixin:
                 notes.append("关系依据不在本人的近期原话中")
         if bond and candidate is not None:
             result = store.note_bond(
-                state.session_id,
+                session_id,
                 user_id,
                 type=bond,
                 evidence=evidence,
@@ -214,7 +216,7 @@ class MemoryActionsMixin:
                 amount = 0.0
             if amount:
                 actual = store.apply_reply_affinity(
-                    state.session_id,
+                    session_id,
                     user_id,
                     amount,
                     reason="她自己记住的",

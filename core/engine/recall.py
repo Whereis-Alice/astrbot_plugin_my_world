@@ -31,7 +31,7 @@ class RecallMixin:
         body = str(text or "")
         if not body.strip():
             return ""
-        for row in self.profiles.list_people(state.session_id, limit=200):
+        for row in self.profile_people(state, limit=200):
             user_id = str(row.get("user_id") or "")
             payload = dict(row.get("payload") or {})
             names = [str(item) for item in (payload.get("names") or []) if str(item)]
@@ -148,7 +148,7 @@ class RecallMixin:
             name = ""
             where = ""
             if user_id:
-                profile = self.profiles.profile(state.session_id, user_id)
+                profile = self.profiles.profile(self.profile_session(state, user_id), user_id)
                 if profile is not None:
                     payload = dict(profile.get("payload") or {})
                     names = [str(item) for item in (payload.get("names") or []) if str(item)]
@@ -361,7 +361,7 @@ class RecallMixin:
             uid = str(user_id or "")
             if not uid:
                 continue
-            view = self.profiles.view(state.session_id, uid)
+            view = self.profiles.view(self.profile_session(state, uid), uid)
             if view is None:
                 continue
             # 不喜欢的人不惦记：挂过"讨厌的人 / 敌人"、或者好感是负的，直接清零不算
@@ -425,7 +425,7 @@ class RecallMixin:
         """
 
         now = self._now()
-        talked = self.profiles.last_talked_at(state.session_id, user_id)
+        talked = self.profiles.last_talked_at(self.profile_session(state, user_id), user_id)
         try:
             seen = float((profile or {}).get("last_seen_at") or 0.0)
         except (TypeError, ValueError):
@@ -439,7 +439,7 @@ class RecallMixin:
             parts.append(f"他 {ago_text((now - seen) / 60)}前在群里露过面")
         return "，".join(parts)
 
-    def miss_overview(self, state: WorldState, *, user_id: str = "") -> dict[str, Any]:
+    def miss_overview(self, state: WorldState, *, user_id: str = "", session_id: str = "") -> dict[str, Any]:
         """「她想找谁」的只读快照：给编辑器看，不用去翻代码或日志。
 
         包含三样东西：
@@ -469,7 +469,7 @@ class RecallMixin:
             uid = str(uid or "")
             if not uid or (user_id and uid != user_id):
                 continue
-            view = self.profiles.view(state.session_id, uid)
+            view = self.profiles.view(self.profile_session(state, uid, session_id), uid)
             name = (getattr(view, "name", "") or presence.get(uid) or uid) if view else (
                 presence.get(uid) or uid
             )
@@ -492,7 +492,7 @@ class RecallMixin:
                 reasons.append("先做完手上的事")
             if not self.engagement.can_speak(state) or self.engagement.proactive_blocked(state):
                 reasons.append("还在发言冷却中")
-            if push_left <= 0 or self.profiles.proactive_quota_left(state.session_id, uid, now=now) <= 0:
+            if push_left <= 0 or self.profiles.proactive_quota_left(self.profile_session(state, uid, session_id), uid, now=now) <= 0:
                 reasons.append("今天的主动联系额度已用完")
             if not self._within_hourly_limit(state):
                 reasons.append("本小时自主行为额度已用完")
@@ -517,7 +517,7 @@ class RecallMixin:
             uid = str(uid or "")
             if not uid or uid in known or (user_id and uid != user_id):
                 continue
-            view = self.profiles.view(state.session_id, uid)
+            view = self.profiles.view(self.profile_session(state, uid, session_id), uid)
             if view is not None and (view.negative or view.affinity < 0):
                 continue
             try:
@@ -583,10 +583,10 @@ class RecallMixin:
             if score < threshold:
                 continue
             uid = str(user_id or "")
-            view = self.profiles.view(state.session_id, uid)
+            view = self.profiles.view(self.profile_session(state, uid), uid)
             if view is None or self._miss_ignored(view):
                 continue
-            if self.profiles.proactive_quota_left(state.session_id, uid) <= 0:
+            if self.profiles.proactive_quota_left(self.profile_session(state, uid), uid) <= 0:
                 continue
             if best is None or score > best[1]:
                 best = (uid, score)

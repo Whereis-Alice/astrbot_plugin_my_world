@@ -1,5 +1,7 @@
 import { createContactWorkbench } from "./contact-workbench.js";
-import { renderRelationshipOverview, renderRelationshipHistory, describeMiss } from "./contact-relationship.js";
+import { createRelationshipsPage } from "./relationships.js";
+import { personAvatar, personColor } from "./people-ui.js";
+import { openRelationshipRulesEditor } from "./relationship-rules.js";
 import { applyDetailedLevels, DETAILED_LEVELS } from "./relationship-preset.js";
 
 /**
@@ -3938,6 +3940,7 @@ function showTab(name, button) {
   if (name === "status") refreshStatus();
   if (name === "events") loadEvents();
   if (name === "contacts") loadContacts();
+  if (name === "relationships") relationshipsPage.reload();
   if (name === "memories") loadMemories();
   if (name === "thoughts") loadThoughts();
   if (name === "logs") loadLogs();
@@ -4123,6 +4126,12 @@ function bindButtons() {
       }
     });
   }
+  $("contacts-open-relationship").addEventListener("click", () => {
+    const uid = ui.contactUser;
+    contactWorkbench.close();
+    showTab("relationships");
+    relationshipsPage.select(uid);
+  });
   if ($("contacts-session")) {
     $("contacts-session").addEventListener("change", () => {
       ui.contactUser = "";
@@ -4202,7 +4211,7 @@ function bindButtons() {
   }
   if ($("contacts-list")) {
     $("contacts-list").addEventListener("click", (event) => {
-      const row = event.target.closest(".contact-row");
+      const row = event.target.closest(".contact-card");
       if (!row) return;
       ui.contactUser = row.dataset.user;
       loadContactDetail(ui.contactUser);
@@ -4846,10 +4855,13 @@ function renderSessionSelects() {
       select.appendChild(option("", "（还没有白名单会话）"));
       return;
     }
-    options.forEach((item) => select.appendChild(option(item.value, item.label)));
-    select.value = options.some((item) => item.value === previous)
+    const choices = id === "contacts-session"
+      ? ui.sessions.map(item => ({value: item.session_id, label: item.note || item.session_id}))
+      : options;
+    choices.forEach((item) => select.appendChild(option(item.value, item.label)));
+    select.value = choices.some((item) => item.value === previous)
       ? previous
-      : options[0].value;
+      : choices[0]?.value || "";
   });
 }
 
@@ -15238,52 +15250,49 @@ function renderContactsList() {
     return;
   }
   rows.forEach((item) => {
-    const row = el("button", "contact-row");
-    row.type = "button";
-    row.setAttribute("aria-pressed", String(item.user_id === ui.contactUser));
-    row.classList.toggle("active", item.user_id === ui.contactUser);
-    row.dataset.user = item.user_id;
-    const avatar = el(
-      "span",
-      "contact-row-avatar",
-      String(item.name || item.user_id || "?").trim().slice(0, 1),
-    );
-    row.appendChild(avatar);
-    const body = el("div", "contact-row-body");
-    const head = el("div", "contact-row-head");
-    head.appendChild(el("strong", "", item.name || item.user_id));
-    (item.bonds || []).forEach((bond) => {
-      head.appendChild(contactBadge(bond, "pill pill-bond"));
-    });
-    (item.claims || []).forEach((bond) => {
-      head.appendChild(contactBadge(`${bond}？`, "pill pill-claim"));
-    });
-    if (num(item.profile_record_count) > 1) {
-      head.appendChild(contactBadge(`${num(item.profile_record_count)} 条记录`, "pill"));
+    const card = el("button", "contact-card");
+    card.type = "button";
+    card.dataset.user = item.user_id;
+    card.setAttribute("aria-label", `查看 ${item.name || item.user_id} 的档案`);
+    card.style.setProperty("--person-color", personColor(item.user_id));
+    const head = el("span", "people-card-head");
+    const identity = el("span", "people-card-identity");
+    identity.append(el("strong", "people-card-name", item.name || item.user_id),
+      el("span", "people-qq", `QQ ${item.user_id}`));
+    head.append(personAvatar(el, item.user_id, item.name), identity);
+    if (num(item.profile_locked_count)) head.append(el("span", "social-status", `${num(item.profile_locked_count)} 项已锁定`));
+    card.append(head);
+    const preview = Array.isArray(item.profile_preview) ? item.profile_preview : [];
+    const description = typeof item.digest === "string" ? item.digest : "";
+    card.append(el("p", "contact-card-description", description || (preview.length
+      ? "她记得的偏好与日常，正在一点点拼成这个人的样子。"
+      : "还在慢慢了解。聊过的小事，会成为她记得的细节。")));
+    const facts = el("span", "contact-card-facts");
+    for (const field of preview.slice(0, 3)) {
+      const line = el("span", "contact-card-fact");
+      line.append(el("span", "", field.name || "资料"), el("b", "", String(field.value || "")));
+      facts.append(line);
     }
-    body.appendChild(head);
-    const meta = el(
-      "div",
-      "contact-row-meta",
-      `${item.level || "陌生人"} · 好感 ${Math.round(Number(item.affinity) || 0)} · ` +
-        `${num(item.message_count)} 句 · ${formatStamp(item.last_seen_at)}`,
-    );
-    body.appendChild(meta);
-    const weaver = item.weaver || {};
-    if (weaver.completeness != null) {
-      const completeness = el("div", "contact-row-weaver");
-      completeness.appendChild(
-        el("span", "", `画像 ${Math.round(num(weaver.completeness) * 10) / 10}%`),
-      );
-      if (num(weaver.locked_count)) {
-        completeness.appendChild(
-          el("span", "pill pill-lock", `${num(weaver.locked_count)} 个字段锁`),
-        );
-      }
-      body.appendChild(completeness);
+    if (!preview.length) {
+      const line = el("span", "contact-card-fact");
+      line.append(el("span", "", "相识"), el("b", "", num(item.days) ? `${num(item.days)} 个日子里见过面` : "等待下一次交谈"));
+      facts.append(line);
     }
-    row.appendChild(body);
-    box.appendChild(row);
+    card.append(facts);
+    const coverage = el("span", "contact-card-coverage");
+    const track = el("span", "contact-card-track");
+    const fill = el("i");
+    const completeness = Math.max(0, Math.min(100, num(item.weaver?.completeness)));
+    fill.style.width = `${completeness}%`;
+    track.append(fill);
+    coverage.append(el("span", "", `画像 ${Math.round(completeness)}%`), track,
+      el("span", "", `${num(item.message_count)} 句交谈`));
+    card.append(coverage);
+    const foot = el("span", "people-card-foot");
+    foot.append(el("span", "", item.last_seen_at ? `最近见面 ${formatStamp(item.last_seen_at)}` : "尚未见面"),
+      el("b", "", "展开档案 ↗"));
+    card.append(foot);
+    box.append(card);
   });
 }
 
@@ -15524,8 +15533,8 @@ function renderContactDetail(data) {
     identity.display_name || person.call_me || person.name || data.user_id;
   $("contacts-title").textContent = displayName;
   $("contacts-subtitle").textContent =
-    `用户 ID ${data.user_id} · ` +
-    `${identity.call_him ? `她叫这个人「${identity.call_him}」` : person.level?.name || "陌生人"}`;
+    `QQ ${data.user_id} · ` +
+    `${identity.call_him ? `她叫这个人「${identity.call_him}」` : "认识与经历"}`;
   $("contacts-toolbar-summary").textContent =
     `${displayName} · ${person.level?.name || "陌生人"} · 好感 ${Math.round(num(person.affinity))}`;
   $("contacts-avatar").textContent = String(displayName).trim().slice(0, 1) || "?";
@@ -15582,119 +15591,6 @@ function renderContactDetail(data) {
     overview.appendChild(el("p", "", person.digest));
     box.prepend(overview);
   }
-
-  // 一、关系：这一页只放摘要（一长条关系表会把整页顶下去），要改点「管理关系…」进弹窗
-  const relationshipOverview = renderRelationshipOverview(data, { el, formatStamp });
-  if (relationshipOverview) box.appendChild(relationshipOverview);
-  const bondCard = el("div", "contact-section");
-  bondCard.dataset.contactPanel = "relation";
-  const bondHead = el("div", "section-head");
-  bondHead.appendChild(el("h3", "", "关系"));
-  const bondEdit = el("button", "ghost tiny", "管理关系…");
-  bondEdit.type = "button";
-  bondEdit.addEventListener("click", openBondDialog);
-  bondHead.appendChild(bondEdit);
-  bondCard.appendChild(bondHead);
-  const bonds = data.bonds || [];
-  const bondSummary = el("div", "bond-summary");
-  bonds
-    .filter((item) => item.status === "current")
-    .forEach((item) => bondSummary.appendChild(el("span", "pill pill-bond", item.type)));
-  bonds
-    .filter((item) => item.status === "claimed")
-    .forEach((item) =>
-      bondSummary.appendChild(el("span", "pill pill-claim", `${item.type}（他自称）`)),
-    );
-  const pastCount = bonds.filter((item) => item.status === "past").length;
-  if (pastCount) bondSummary.appendChild(el("span", "pill pill-past", `曾经 ${pastCount} 段`));
-  if (!bonds.length) bondSummary.appendChild(el("span", "muted", "还没定过关系。"));
-  bondCard.appendChild(bondSummary);
-  box.appendChild(bondCard);
-
-  // 二、好感度：这一页只留一条概要（数值 + 当前档位），滑杆和分级说明点「调整…」进弹窗
-  const affinityCard = el("div", "contact-section");
-  affinityCard.dataset.contactPanel = "relation";
-  const affinityHead = el("div", "section-head");
-  affinityHead.appendChild(el("h3", "", "好感度"));
-  const affinityEdit = el("button", "ghost tiny", "调整…");
-  affinityEdit.type = "button";
-  affinityEdit.addEventListener("click", openAffinityDialog);
-  affinityHead.appendChild(affinityEdit);
-  affinityCard.appendChild(affinityHead);
-  const affinityValue = Math.round(Number(person.affinity) || 0);
-  const affinityMin = Number(data.relationship?.affinity_min ?? -100);
-  const affinityMax = Number(data.relationship?.affinity_max ?? 100);
-  const affinityBar = el("div", "affinity-bar");
-  const affinityFill = el("i");
-  // -100~100 映射到 0~100%：中点 50% 就是"不好不坏"
-  affinityFill.style.width = `${Math.max(0, Math.min(100, (affinityValue - affinityMin) / Math.max(1, affinityMax - affinityMin) * 100))}%`;
-  affinityBar.appendChild(affinityFill);
-  const affinitySummary = el("div", "affinity-summary");
-  affinitySummary.appendChild(affinityBar);
-  affinitySummary.appendChild(el("span", "affinity-value", `${affinityValue} / ${affinityMax}`));
-  affinitySummary.appendChild(
-    el("span", "pill", person.level ? person.level.name : "陌生人"),
-  );
-  affinityCard.appendChild(affinitySummary);
-  // 她想不想这个人：这是"正在发生的状态"，不是设置，所以留在页面上
-  const missInfo = data.miss || {};
-  const missThreshold = Number(data.miss_threshold || 0.7);
-  affinityCard.appendChild(
-    el(
-      "p",
-      "hint-line",
-      describeMiss(missInfo, missThreshold),
-    ),
-  );
-  box.appendChild(affinityCard);
-  box.appendChild(renderRelationshipHistory(data, { el, formatStamp }));
-
-  // 二点五、她记着的账：记了就会对他冷一档，所以这里要写清现在算不算数
-  const grudge = data.grudge;
-  const grudgeCard = el("div", "contact-section");
-  grudgeCard.dataset.contactPanel = "relation";
-  grudgeCard.appendChild(el("h3", "", "她记着的账"));
-  if (grudge) {
-    const days = Number(grudge.days || 0);
-    grudgeCard.appendChild(
-      el(
-        "p",
-        "hint-line",
-        days < 1
-          ? `${grudge.reason}（今天记的）`
-          : `${grudge.reason}（${formatStamp(grudge.at)} 记的，已经 ${Math.ceil(days)} 天）`,
-      ),
-    );
-  } else {
-    grudgeCard.appendChild(el("p", "hint-line", "没记：他没做过让她记着的事。"));
-  }
-  grudgeCard.appendChild(
-    el(
-      "p",
-      "hint-line",
-      grudge
-        ? "她现在对他冷一档：只在跟他说话时提这件事，别人面前不说。"
-        : "记了账就会让他这一档冷下来（只在跟他说话时）。",
-    ),
-  );
-  const grudgeRow = el("div", "row");
-  const grudgeInput = el("input");
-  grudgeInput.placeholder = "手动记一笔：他答应的事又没做";
-  grudgeInput.dataset.act = "grudge-text";
-  const grudgeAdd = el("button", "small", "记一笔");
-  grudgeAdd.dataset.act = "grudge-add";
-  grudgeRow.appendChild(grudgeInput);
-  grudgeRow.appendChild(grudgeAdd);
-  if (grudge) {
-    const grudgeResolve = el("button", "small primary", "算了");
-    grudgeResolve.dataset.act = "grudge-resolve";
-    const grudgeDelete = el("button", "small danger", "删掉");
-    grudgeDelete.dataset.act = "grudge-delete";
-    grudgeRow.appendChild(grudgeResolve);
-    grudgeRow.appendChild(grudgeDelete);
-  }
-  grudgeCard.appendChild(grudgeRow);
-  box.appendChild(grudgeCard);
 
   // 三、称呼与备注的维护入口（输入框在资料页顶部的统一身份卡片里）
   const managedActions = el("div", "contact-managed-actions");
@@ -15803,177 +15699,6 @@ function renderContactDetail(data) {
  * 关系编辑弹窗：当前 / 他自称 / 曾经 + 加关系。
  * 每一行改完就地重画（数据已经由 loadContacts 重新取过），不用关掉再开。
  */
-function openBondDialog() {
-  openCustomDialog({
-    title: "关系",
-    hint: "自称只作待确认记录。「唯一」表示生活组内只能有一人占用该槽位。管理员设置不会被普通友谊规则替换。",
-    confirmText: "关闭",
-    hideCancel: true,
-    onSubmit: () => true,
-    build: (body) => {
-      const paint = () => {
-        body.innerHTML = "";
-        const detail = ui.contactDetail || {};
-        const bonds = detail.bonds || [];
-        const groups = [
-          { key: "current", title: "她认定的", hint: "" },
-          { key: "claimed", title: "他自称的", hint: "认不认由她决定" },
-          { key: "past", title: "曾经的", hint: "留着当记录，也可以删掉" },
-        ];
-        groups.forEach((group) => {
-          const rows = bonds.filter((item) => item.status === group.key);
-          if (!rows.length) return;
-          const block = el("div", "bond-group");
-          const head = el("div", "bond-group-title");
-          head.appendChild(el("span", "", group.title));
-          head.appendChild(el("span", "muted", `${rows.length}${group.hint ? ` · ${group.hint}` : ""}`));
-          block.appendChild(head);
-          rows.forEach((item) => {
-            const row = el("div", "bond-row");
-            const pillClass =
-              group.key === "current"
-                ? "pill pill-bond"
-                : group.key === "claimed"
-                  ? "pill pill-claim"
-                  : "pill pill-past";
-            const text =
-              group.key === "past"
-                ? `${item.type}（${item.since_text || "？"} → ${item.until_text || "？"}）`
-                : group.key === "claimed"
-                  ? `${item.type}（他自称${item.since_text ? `，${item.since_text}` : ""}）`
-                  : item.since_text
-                    ? `${item.type}（${item.since_text} 起）`
-                    : item.type;
-            row.appendChild(el("span", pillClass, text));
-            if (item.evidence) row.appendChild(el("p", "bond-evidence muted", `依据：${item.evidence}`));
-            const box = el("div", "row-item");
-            if (group.key === "current") {
-              const close = el("button", "small ghost", "解除");
-              close.dataset.act = "bond-close";
-              close.dataset.id = item.id;
-              box.appendChild(close);
-            } else if (group.key === "claimed") {
-              const accept = el("button", "small primary", "认下");
-              accept.dataset.act = "bond-accept";
-              accept.dataset.id = item.id;
-              box.appendChild(accept);
-              const drop = el("button", "small danger", "删掉");
-              drop.dataset.act = "bond-delete";
-              drop.dataset.id = item.id;
-              box.appendChild(drop);
-            } else {
-              const drop = el("button", "small danger", "删掉");
-              drop.dataset.act = "bond-delete";
-              drop.dataset.id = item.id;
-              box.appendChild(drop);
-            }
-            box.querySelectorAll("[data-act]").forEach((button) => {
-              button.addEventListener("click", async () => {
-                await contactAction(button);
-                paint();
-              });
-            });
-            row.appendChild(box);
-            block.appendChild(row);
-          });
-          body.appendChild(block);
-        });
-        if (!bonds.length) body.appendChild(el("p", "muted", "还没定过关系。"));
-
-        const add = el("div", "bond-add");
-        const bondSelect = el("select");
-        (detail.bonds_config || []).forEach((item) =>
-          bondSelect.appendChild(option(item.name, item.unique ? `${item.name}（唯一）` : item.name)),
-        );
-        const assertSelect = el("select");
-        assertSelect.appendChild(option("她的判断", "她认定"));
-        assertSelect.appendChild(option("他自称", "他自称"));
-        const addButton = el("button", "primary small", "加关系");
-        addButton.dataset.act = "bond-add";
-        add.appendChild(bondSelect);
-        add.appendChild(assertSelect);
-        add.appendChild(addButton);
-        addButton.addEventListener("click", async () => {
-          await contactAction(addButton);
-          paint();
-        });
-        body.appendChild(add);
-      };
-      paint();
-    },
-  });
-}
-
-/** 好感度弹窗：滑杆 + 当前档位说明 + 最近 8 次变化。 */
-function openAffinityDialog() {
-  openCustomDialog({
-    title: "好感度",
-    hint: "好感表示感受，关系决定边界。聊天与睡眠复盘共用每日额度；最近聊过的人有保留期，之后才回落。",
-    confirmText: "关闭",
-    hideCancel: true,
-    onSubmit: () => true,
-    build: (body) => {
-      const paint = () => {
-        body.innerHTML = "";
-        const detail = ui.contactDetail || {};
-        const person = detail.person || {};
-        const row = el("div", "contact-inline");
-        const slider = el("input");
-        slider.type = "range";
-        slider.min = String(detail.relationship?.affinity_min ?? -100);
-        slider.max = String(detail.relationship?.affinity_max ?? 100);
-        slider.value = String(Math.round(Number(person.affinity) || 0));
-        slider.dataset.act = "affinity-slider";
-        const valueLabel = el("span", "muted", `${slider.value} / ${slider.max}`);
-        slider.addEventListener("input", () => {
-          valueLabel.textContent = `${slider.value} / ${slider.max}`;
-        });
-        const save = el("button", "primary small", "保存好感度");
-        save.dataset.act = "affinity-save";
-        row.appendChild(slider);
-        row.appendChild(valueLabel);
-        row.appendChild(save);
-        save.addEventListener("click", async () => {
-          await contactAction(save);
-          paint();
-        });
-        body.appendChild(row);
-
-        body.appendChild(
-          el(
-            "p",
-            "hint-line",
-            `现在这一级：${person.level ? person.level.name : "陌生人"}` +
-              (person.level && person.level.prompt ? `——${person.level.prompt}` : ""),
-          ),
-        );
-        if (person.level && (person.level.deny || []).length) {
-          body.appendChild(el("p", "hint-line", `还不能：${(person.level.deny || []).join("、")}`));
-        }
-
-        const logs = detail.affinity_logs || [];
-        if (logs.length) {
-          const list = el("div", "list");
-          list.appendChild(el("p", "hint-line", "最近 8 次变化："));
-          logs.slice(0, 8).forEach((item) => {
-            const sourceText = AFFINITY_SOURCE_LABELS[String(item.source || "")] || "";
-            list.appendChild(
-              el(
-                "div",
-                "contact-line muted",
-                `${formatStamp(item.at)} ${Number(item.delta) >= 0 ? "+" : ""}${Math.round(Number(item.delta) * 10) / 10}` +
-                  `（${item.reason || "没写原因"}${sourceText ? `｜${sourceText}` : ""}）`,
-              ),
-            );
-          });
-          body.appendChild(list);
-        }
-      };
-      paint();
-    },
-  });
-}
-
 function renderConsolidatePreview(result) {
   const box = $("contacts-detail");
   if (!box) return;
@@ -16200,23 +15925,6 @@ async function contactAction(node) {
       toast("备注已删除");
       await refreshDetail();
       return;
-    } else if (act === "bond-add") {
-      const selects = node.parentElement.querySelectorAll("select");
-      const type = selects[0] ? selects[0].value : "";
-      const asserted = selects[1] ? selects[1].value : "她的判断";
-      await apiPost("profile/bond", {
-        session,
-        user_id: userId,
-        action: "note",
-        type,
-        asserted_by: asserted,
-      });
-    } else if (act === "bond-close") {
-      await apiPost("profile/bond", { session, user_id: userId, action: "close", id: node.dataset.id });
-    } else if (act === "bond-accept") {
-      await apiPost("profile/bond", { session, user_id: userId, action: "accept", id: node.dataset.id, policy: "reject" });
-    } else if (act === "bond-delete") {
-      await apiPost("profile/bond", { session, user_id: userId, action: "delete", id: node.dataset.id });
     } else if (act === "fact-add") {
       const box = node.parentElement;
       const kind = box.querySelector("select").value;
@@ -16239,26 +15947,6 @@ async function contactAction(node) {
       });
     } else if (act === "fact-delete") {
       await apiPost("profile/fact", { session, user_id: userId, action: "delete", id: node.dataset.id });
-    } else if (act === "affinity-save") {
-      const slider = node.parentElement.querySelector("input[type=range]");
-      await apiPost("profile/affinity", {
-        session,
-        user_id: userId,
-        value: Number(slider.value),
-        reason: "主人手动调的",
-      });
-    } else if (act === "grudge-add") {
-      const input = node.parentElement.querySelector("[data-act=grudge-text]");
-      const reason = (input && input.value.trim()) || "";
-      if (!reason) {
-        toast("先写一句她记着的事");
-        return;
-      }
-      await apiPost("profile/grudge", { session, user_id: userId, action: "add", reason });
-    } else if (act === "grudge-resolve") {
-      await apiPost("profile/grudge", { session, user_id: userId, action: "resolve" });
-    } else if (act === "grudge-delete") {
-      await apiPost("profile/grudge", { session, user_id: userId, action: "delete" });
     } else if (act === "fields-save") {
       const box = node.parentElement;
       await apiPost("profile/contact", {
@@ -21202,5 +20890,21 @@ const contactWorkbench = createContactWorkbench({
   loadMeta: loadContactsMeta, renderList: renderContactsList,
   renderPlaces: renderContactPlaces, renderDetail: renderContactDetail, el,
 });
+
+const relationshipsPage = createRelationshipsPage({
+  root: $("tab-relationships"), el, apiGet, apiPost, toast, formatStamp,
+  confirm: confirmDialog, openRules: openRelationshipRules,
+  openContact: async (uid, session) => {
+    $("contacts-session").value = session;
+    showTab("contacts");
+    await loadContacts();
+    await contactWorkbench.select(uid);
+  },
+});
+
+async function openRelationshipRules() {
+  return openRelationshipRulesEditor({el, apiGet, apiPost, openCustomDialog,
+    toast, onSaved: async () => { await loadAll(); await relationshipsPage.reload(); }});
+}
 
 boot();

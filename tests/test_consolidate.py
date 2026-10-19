@@ -24,7 +24,9 @@ USER = "2692047521"
 
 
 def make_world():
-    world, warnings = parse_world(default_world())
+    raw = default_world()
+    raw["legacy_tool_actions"] = True  # Keep this fixture independent of test import order.
+    world, warnings = parse_world(raw)
     assert warnings == [], warnings
     return world
 
@@ -151,6 +153,43 @@ class ConsolidateTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[0]["tier"], "gist")
         self.assertEqual(rows[0]["content"], "他昨天加班到很晚")
         self.assertIn("细节很多很多", rows[0]["context"])
+
+    async def test_shared_life_routes_social_updates_to_actual_conversation(self):
+        for sid in (SESSION, PRIVATE):
+            self.profiles.touch(sid, USER, "旧友", now=1_700_000_000)
+        self.consolidator._sessions_of = lambda _: [SESSION, PRIVATE]
+        records = [
+            {"origin": SESSION, "user_id": USER, "text": "我喜欢热茶"},
+            {"origin": PRIVATE, "user_id": USER, "text": "今天一起散步很开心"},
+        ]
+        payload = {"facts": [{"user_id": USER, "text": "喜欢热茶", "evidence": "我喜欢热茶"}],
+                   "affinity": [{"user_id": USER, "delta": 2, "source_session": PRIVATE, "reason": "散步很开心"}],
+                   "digests": {USER: "来源不清的跨会话摘要"}}
+
+        async def llm(*_):
+            return json.dumps(payload, ensure_ascii=False)
+
+        result = await self.consolidator.run(session_id=SESSION, llm=llm, chat_records=records)
+        self.assertTrue(result.ok)
+        self.assertEqual(len(self.profiles.facts(SESSION, USER)), 1)
+        self.assertEqual(self.profiles.facts(PRIVATE, USER), [])
+        self.assertEqual(self.profiles.profile(SESSION, USER)["affinity"], 0)
+        self.assertEqual(self.profiles.profile(PRIVATE, USER)["affinity"], 2)
+        self.assertEqual(self.profiles.profile(SESSION, USER)["digest"], "")
+        self.assertEqual(self.profiles.profile(PRIVATE, USER)["digest"], "")
+
+    async def test_ambiguous_social_update_never_changes_either_conversation(self):
+        for sid in (SESSION, PRIVATE):
+            self.profiles.touch(sid, USER, "旧友")
+        self.consolidator._sessions_of = lambda _: [SESSION, PRIVATE]
+
+        async def llm(*_):
+            return json.dumps({"affinity": [{"user_id": USER, "delta": 3, "reason": "很开心"}]})
+
+        result = await self.consolidator.run(session_id=SESSION, llm=llm,
+            chat_records=[{"origin": sid, "user_id": USER, "text": "很开心"} for sid in (SESSION, PRIVATE)])
+        self.assertTrue(any("会话来源不明确" in x for x in result.skipped))
+        self.assertEqual([self.profiles.profile(sid, USER)["affinity"] for sid in (SESSION, PRIVATE)], [0, 0])
 
     async def test_merge_folds_the_duplicates(self):
         first = self.memory.remember(

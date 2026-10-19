@@ -79,7 +79,7 @@ class CuddleMixin:
             uid = str(user_id or "").strip()
             if not uid:
                 continue
-            view = self.profiles.view(session_id, uid)
+            view = self.profiles.view(self.profile_session(state, uid, session_id), uid)
             if view is None or self._miss_ignored(view):
                 continue
             level = getattr(view, "level", None)
@@ -91,7 +91,7 @@ class CuddleMixin:
                     "level": str(getattr(level, "name", "") or ""),
                     "deny": [str(item) for item in (getattr(level, "deny", None) or [])],
                     "quota_left": int(
-                        self.profiles.proactive_quota_left(session_id, uid) or 0
+                        self.profiles.proactive_quota_left(self.profile_session(state, uid, session_id), uid) or 0
                     ),
                     "places": self._person_places(state, uid),
                 }
@@ -291,7 +291,7 @@ class CuddleMixin:
         if candidate is None or self.llm is None:
             return False
         uid, score = candidate
-        profile = self.profiles.profile(state.session_id, uid)
+        profile = self.profiles.profile(self.profile_session(state, uid), uid)
         payload = dict((profile or {}).get("payload") or {})
         names = [str(item) for item in (payload.get("names") or []) if str(item)]
         name = names[-1] if names else str(payload.get("qq_name") or uid)
@@ -320,7 +320,7 @@ class CuddleMixin:
         )
         await self._apply_plan(state, node, outcome, plan)
         self._count_autonomous(state)
-        self.profiles.note_proactive(state.session_id, uid)
+        self.profiles.note_proactive(self.profile_session(state, uid), uid)
         state.miss[uid] = 0.0
         # 刚找过他：下一次"想他"重新随机等一段时间
         state.miss_ready_at[uid] = self._next_miss_open_at(self._now())
@@ -359,10 +359,10 @@ class CuddleMixin:
         rows.sort(reverse=True)
         lines: list[str] = []
         for _score, user_id in rows[:limit]:
-            view = self.profiles.view(state.session_id, user_id)
+            view = self.profiles.view(self.profile_session(state, user_id), user_id)
             if view is None or self._miss_ignored(view):
                 continue
-            profile = self.profiles.profile(state.session_id, user_id)
+            profile = self.profiles.profile(self.profile_session(state, user_id), user_id)
             payload = dict((profile or {}).get("payload") or {})
             names = [str(item) for item in (payload.get("names") or []) if str(item)]
             name = (
@@ -524,7 +524,7 @@ class CuddleMixin:
         if not wanted:
             return ""
         uid = str(ctx.user_id or "")
-        view = self.profiles.view(state.session_id, uid)
+        view = self.profiles.view(self.profile_session(state, uid), uid)
         if view is None:
             return ""
         floor = max(0, int(getattr(config, "ask_about_min_level", 0) or 0))
@@ -615,12 +615,12 @@ class CuddleMixin:
             uid = str(item.get("user_id") or "")
             if uid and uid not in order:
                 order.append(uid)
-        for row in self.profiles.list_people(state.session_id, limit=12):
+        for row in self.profile_people(state, limit=12):
             uid = str(row.get("user_id") or "")
             if uid and uid not in order:
                 order.append(uid)
         for uid in order:
-            view = self.profiles.view(state.session_id, uid)
+            view = self.profiles.view(self.profile_session(state, uid), uid)
             if view is None or bool(getattr(view, "negative", False)):
                 continue
             if int(getattr(view, "level_index", 0) or 0) < floor:
@@ -718,7 +718,7 @@ class CuddleMixin:
         if not uid:
             return ""
         if self.profiles.enabled():
-            profile = self.profiles.profile(state.session_id, uid)
+            profile = self.profiles.profile(self.profile_session(state, uid), uid)
             if profile is not None:
                 payload = dict(profile.get("payload") or {})
                 names = [str(item) for item in (payload.get("names") or []) if str(item)]

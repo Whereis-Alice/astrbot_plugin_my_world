@@ -125,6 +125,8 @@ class ConfigMixin:
         self._tool_failures.clear()
 
         self._base_runtime = self._make_runtime(world, schedules)
+        self.db.raw.split_profile_sessions({item.session_id: self.state_key(item.session_id)
+                                            for item in sessions.sessions})
         self._scope_runtimes.clear()
         return warnings
 
@@ -138,7 +140,7 @@ class ConfigMixin:
         )
         # 记忆按会话各存一份，召回时把同组的会话一起当条件（改组不会把记忆挂错地方）
         memory = MemoryEngine(self.db.raw, world, sessions_of=self.group_sessions)
-        # 用户画像：一人一份（按"她"存），记忆回答"发生过什么"，它回答"这个人是谁"
+        # 用户画像：按实际会话各存一份，记忆回答"发生过什么"，它回答"这个人是谁"
         profiles = ProfileStore(
             self.db.raw, world, group_of=self.state_key
         )
