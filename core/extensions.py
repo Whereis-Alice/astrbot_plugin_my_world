@@ -26,8 +26,8 @@ SETTINGS_FILE = "extensions.json"
 ADJUSTABLE = ("energy", "loneliness", "curiosity", "affect", "valence", "boredom")
 """``adjust`` 能推的世界数值，取值都归一到 0~1。"""
 
-MEMORY_KINDS = ("scene", "relation", "event", "inner", "interaction")
-"""``remember`` 能写的记忆类型（和插件自己的记忆层一致）。"""
+MEMORY_KINDS = ("scene", "event", "inner", "dream")
+"""``remember`` 只写生活经历；人物资料应使用通讯录接口。"""
 
 MODEL_SLOTS = ("helper", "creator", "llm", "event", "judge", "consolidate")
 """扩展写文字时可以点名的模型档位（对应主插件配置里那几栏）。
@@ -1302,7 +1302,7 @@ class ExtensionHost:
         emotion: str = "",
         node_id: str = "",
     ) -> bool:
-        """往她的长期记忆里写一条（``kind`` 见 :data:`MEMORY_KINDS`）。"""
+        """写一条生活记忆；不支持的类型返回 False，不转成场景。"""
 
         body = " ".join(str(text or "").split())
         engine = getattr(self.plugin, "engine", None)
@@ -1310,7 +1310,7 @@ class ExtensionHost:
         if memory is None or not body:
             return False
         if kind not in MEMORY_KINDS:
-            kind = "scene"
+            return False
         try:
             memory.remember(
                 session_id=str(getattr(state, "session_id", "") or ""),

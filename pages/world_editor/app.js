@@ -235,7 +235,7 @@ const ECHO_TYPE_CHOICES = [
     key: "memory",
     icon: "📝",
     label: "写了一条记忆",
-    hint: "一段对话被总结成记忆时发出来，方便对着看记得准不准。",
+    hint: "她的生活经历被记下时发出来，方便核对活动、事件与内心。",
     group: "mind",
   },
   {
@@ -333,8 +333,8 @@ const ECHO_TYPE_CHOICES = [
   {
     key: "context",
     icon: "🗜️",
-    label: "上下文压缩",
-    hint: "群聊留档攒太多、被压成摘要的时候。",
+    label: "上下文管理",
+    hint: "短期窗口的人工清理等上下文操作。",
     group: "misc",
   },
   {
@@ -472,7 +472,7 @@ const ECHO_GROUPS = [
   { key: "schedule", label: "日程", hint: "日程什么时候被触发、她怎么改自己的日程" },
   { key: "sleep", label: "睡眠与保护", hint: "睡觉门禁、被叫醒、打断、兜底保护" },
   { key: "event", label: "事件与线索", hint: "遇上什么事、怎么判定、求助与后续" },
-  { key: "misc", label: "图片 · 上下文 · 名片", hint: "看图、上下文压缩、群名片变化" },
+  { key: "misc", label: "图片 · 上下文 · 名片", hint: "看图、上下文管理、群名片变化" },
 ];
 
 /** 日志页：事件类型 → 图标与中文名。 */
@@ -1338,23 +1338,18 @@ const KNOBS = [
   },
   {
     id: "memory_diligence",
-    label: "记忆勤奋度",
-    hint: "她记你记得多细、整理得多勤。调高留下的画像与记忆更完整（也更容易花 token）。",
+    label: "画像详略",
+    hint: "人物资料整理得多勤、一次处理多少内容。生活经历会独立记录。",
     levels: [
       { "profile.digest_chars": 40, "profile.digest_limit": 3,
-        "context.chat_compress_threshold": 400, "context.summary_refresh_minutes": 30,
         "context.chat_answered_lines": 25 },
       { "profile.digest_chars": 50, "profile.digest_limit": 4,
-        "context.chat_compress_threshold": 300, "context.summary_refresh_minutes": 20,
         "context.chat_answered_lines": 32 },
       { "profile.digest_chars": 60, "profile.digest_limit": 5,
-        "context.chat_compress_threshold": 200, "context.summary_refresh_minutes": 10,
         "context.chat_answered_lines": 40 },
       { "profile.digest_chars": 80, "profile.digest_limit": 7,
-        "context.chat_compress_threshold": 100, "context.summary_refresh_minutes": 6,
         "context.chat_answered_lines": 50 },
       { "profile.digest_chars": 100, "profile.digest_limit": 10,
-        "context.chat_compress_threshold": 60, "context.summary_refresh_minutes": 3,
         "context.chat_answered_lines": 60 },
     ],
   },
@@ -5249,48 +5244,15 @@ function setStatusPre(id, text, placeholder = "") {
   box.classList.add("pre-empty");
 }
 
-/**
- * 群聊上下文：摘要本身是多行的、还带 **小标题**。
- * 塞进一个 pre 里就是一大块同色文字，这里按行拆开渲染，标题和正文分色。
- */
+/** 群聊短期窗口状态。 */
 function renderChatContext(data) {
   const box = $("status-context");
   if (!box) return;
-  box.innerHTML = "";
-  const count = Number((data && data.chat_history_count) || 0);
-  const rows = Array.isArray(data && data.chat_summaries)
-    ? data.chat_summaries.filter((item) => String((item && item.text) || "").trim())
-    : [];
+  box.replaceChildren();
   const head = el("div", "chat-context-head");
-  head.appendChild(el("span", "chat-context-count", `留档 ${count} 条（本会话）`));
-  if (!rows.length) head.appendChild(el("span", "muted", "还没有更早的摘要"));
+  head.appendChild(el("span", "chat-context-count", `短期窗口 ${Number(data?.chat_history_count || 0)} 条（本会话）`));
+  head.appendChild(el("span", "muted", "供当前对话与画像提取使用，超出窗口自动移出"));
   box.appendChild(head);
-  rows.forEach((item) => {
-    const card = el("div", "chat-summary");
-    card.appendChild(
-      el("div", "chat-summary-label", String(item.label || item.session || "")),
-    );
-    appendRichLines(card, String(item.text || ""));
-    box.appendChild(card);
-  });
-}
-
-/** 把带 **加粗** 的多行文本渲成节点；以 - / · 开头的行当成列表项。 */
-function appendRichLines(box, text) {
-  String(text || "")
-    .split("\n")
-    .forEach((line) => {
-      const body = line.trim();
-      if (!body) return;
-      const bullet = /^[-·•]\s+/.test(body);
-      const row = el("div", bullet ? "chat-line chat-bullet" : "chat-line");
-      body.split("**").forEach((part, index) => {
-        if (!part) return;
-        if (index % 2 === 1) row.appendChild(el("strong", "chat-strong", part));
-        else row.appendChild(el("span", "", part));
-      });
-      box.appendChild(row);
-    });
 }
 
 /**
@@ -7272,25 +7234,23 @@ async function refreshStatus() {
   }
 }
 
-/** 清空这个会话的群聊留档与摘要（调试用）。 */
+/** 清空这个会话的近期消息与话题备忘。 */
 async function clearChatContext() {
   const sessionId = $("status-session").value;
   if (!sessionId) return;
   const snapshot = ui.status || {};
   const count = Number(snapshot.chat_history_count || 0);
-  const hasSummary = Boolean((snapshot.chat_summary || "").trim());
   const ok = await confirmDialog({
     title: "清空群聊上下文？",
     message:
       `会清掉「${sessionId}」保存的 ${count} 条群聊留档` +
-      (hasSummary ? "和已有的摘要" : "") +
       "。她的世界状态、记忆、日程都不受影响，但接下来她看不到之前的群聊了。",
     confirmText: "清空",
   });
   if (!ok) return;
   try {
     const result = await apiPost("state/action", { session: sessionId, action: "clear_context" });
-    toast(`已清空 ${result.removed ?? 0} 条群聊留档${result.had_summary ? "与摘要" : ""}`);
+    toast(`已清空 ${result.removed ?? 0} 条群聊留档`);
     refreshStatus();
   } catch (error) {
     toast(error.message || "清空失败");
@@ -10068,28 +10028,21 @@ function editMemoryPolicy() {
   if (!canEditLifeSettings()) return;
   const memory = ui.config.world.memory || (ui.config.world.memory = {});
   openFormDialog({
-    title: "记忆与共存设置",
-    hint: "可分工记录，也可双份保存聊天。默认只自动回忆生活，聊天记录按需查询，减少重复注入。两边数据库独立，已有记忆保留。",
+    title: "生活回忆设置",
+    hint: "记录她的生活、内心与梦。人物资料在通讯录管理，群词典独立维护，聊天往事交给 Anamnesis。",
     confirmText: "应用设置",
-    values: {mode: "custom", automatic: memory.automatic_recall || "all", summary: memory.dialogue_summary !== false, chars: memory.recall_max_chars ?? 1200},
+    values: {automatic: memory.automatic_recall || "auto", chars: memory.recall_max_chars ?? 1200, sleep_review: memory.sleep_review !== false},
     fields: [
-      {key: "mode", label: "使用方案", type: "select", options: [{value: "custom", label: "按下方选项设置"}, {value: "companion", label: "分工记录：Anamnesis 存聊天，本插件存生活"}, {value: "dual", label: "双份保存：聊天都记录，本插件只自动回忆生活"}], onChange: ({control, body}) => {
-        if (!["companion", "dual"].includes(control.value)) return;
-        body.querySelector('[data-dialog-key="automatic"]').value = "life_only";
-        body.querySelector('[data-dialog-key="summary"]').checked = control.value === "dual";
-      }},
-      {key: "automatic", label: "自动回忆的内容", type: "select", options: [{value: "all", label: "全部记忆"}, {value: "life_only", label: "只回忆生活经历（排除聊天摘要）"}, {value: "manual", label: "不自动回忆，只在主动查询时取用"}], onChange: ({body}) => { body.querySelector('[data-dialog-key="mode"]').value = "custom"; }},
-      {key: "summary", label: "本插件继续总结聊天", type: "checkbox", onChange: ({body}) => { body.querySelector('[data-dialog-key="mode"]').value = "custom"; }},
-      {key: "chars", label: "自动回忆最多字符数（0~12000）", type: "number", hint: "默认 1200，含日期与原文。0 = 不自动注入。本预算不限制画像、当前状态或其他插件的注入。"},
+      {key: "automatic", label: "何时回想生活", type: "select", options: [{value: "auto", label: "根据地点与话题自动回想"}, {value: "manual", label: "只在主动查询时回想"}]},
+      {key: "sleep_review", label: "睡眠时整理生活经历", type: "checkbox", hint: "独立于人物画像整理，只处理已发生的生活；梦始终标明为梦。"},
+      {key: "chars", label: "自动回忆字符预算", type: "number", hint: "包含时间和经历细节；0 表示关闭自动注入，主动查询仍可用。"},
     ],
     onSubmit: (values) => {
-      const companion = values.mode === "companion";
-      const dual = values.mode === "dual";
-      memory.automatic_recall = companion || dual ? "life_only" : values.automatic;
-      memory.dialogue_summary = companion ? false : dual || Boolean(values.summary);
+      memory.automatic_recall = values.automatic;
+      memory.sleep_review = Boolean(values.sleep_review);
       memory.recall_max_chars = Math.max(0, Math.min(12000, Math.round(num(values.chars, 1200))));
       markDirty();
-      toast("记忆设置已修改，已有数据保留；点顶栏「保存」后生效");
+      toast("生活回忆设置已修改，点顶栏「保存」后生效");
       return true;
     },
   });
@@ -16277,8 +16230,9 @@ async function loadMemories() {
     [
       `总数 ${Number(stats.total || 0)}`,
       `场景 ${Number(byType.scene || 0)}`,
+      `事件 ${Number(byType.event || 0)}`,
       `内心 ${Number(byType.inner || 0)}`,
-      `互动 ${Number(byType.interaction || 0)}`,
+      `梦境 ${Number(byType.dream || 0)}`,
       `今日新增 ${Number(stats.today_added || 0)}`,
       `今日召回 ${Number(stats.today_recalled || 0)}`,
       `平均权重 ${Number.isFinite(avgWeight) ? avgWeight.toFixed(2) : "—"}`,
@@ -16303,26 +16257,28 @@ async function loadMemories() {
 
     list.innerHTML = "";
     (data.memories || []).forEach((memory) => {
-      const item = el("div", "list-item");
+      const item = el("div", "list-item memory-card");
       item.classList.add("selectable");
       item.appendChild(rowCheckbox(item, memory.id, "memorySelection"));
-      const info = el("div");
+      const info = el("div", "memory-copy");
+      const typeLabel = MEMORY_TYPE_CHOICES.find((choice) => choice.value === memory.type)?.label.split("（")[0] || "生活记录";
+      const scopeLabel = MEMORY_SCOPE_CHOICES.find((choice) => choice.value === memory.scope)?.label || "默认范围";
+      const nodeLabel = nodes().find((node) => node.id === memory.node_id)?.name || memory.node_id || "无地点";
       info.appendChild(el("div", "", memory.content));
       info.appendChild(
         el(
           "div",
           "meta",
-          `${memoryStamp(memory.created_at)} · [${memory.id}] ${memory.scope} · ${
-            memory.node_id || "无节点"
-          } · ${memory.type} · 权重 ${Number(memory.weight).toFixed(
+          `${memoryStamp(memory.created_at)} · ${typeLabel} · ${nodeLabel} · ${scopeLabel}` +
+          ` · 权重 ${Number(memory.weight || 0).toFixed(
             2,
-          )} · 召回 ${memory.recall_count}` +
+          )} · 召回 ${Number(memory.recall_count || 0)}` +
             // 整理过的记忆正文会换成要点、原文挪到 context：不标出来会以为"整理没跑"
             (memory.tier === "gist" ? "　· 已整理成要点" : "　· 原文"),
         ),
       );
       item.appendChild(info);
-      const box = el("div", "inline");
+      const box = el("div", "inline memory-controls");
       const more = el("button", "small", "详情");
       more.title = "看这条记忆的完整字段（含整理前的原文）";
       more.addEventListener("click", () => openMemoryDetail(memory));
@@ -16358,7 +16314,7 @@ async function loadMemories() {
           "🧠",
           keyword
             ? "没有匹配的记忆，换个词试试，或者清掉筛选。"
-            : "这一栏还空着：她聊过、经历过之后，整理出来的记忆会出现在这里。",
+            : "生活日记从这里开始：活动、事件与内心会逐渐留下记录。",
           keyword ? [clear] : [],
         ),
       );
@@ -16386,8 +16342,7 @@ async function addMemory() {
 
 const MEMORY_TYPE_CHOICES = [
   { value: "scene", label: "场景（在这个地方发生过什么）" },
-  { value: "interaction", label: "互动（和谁聊过什么）" },
-  { value: "relation", label: "关系（对某个人的印象）" },
+  { value: "dream", label: "梦境（不作为现实经历）" },
   { value: "inner", label: "内心（她自己的想法）" },
   { value: "event", label: "事件（某件具体的事）" },
 ];
@@ -16407,7 +16362,7 @@ function openMemoryDialog(memory, preset = {}) {
   const editing = Boolean(memory);
   openFormDialog({
     title: editing ? `编辑记忆 #${memory.id}` : "新增记忆",
-    hint: "记忆会在「同一个会话 + 同一个地点」被召回，写清楚「谁、聊了什么、她怎么想」最有用。",
+    hint: "记录她在哪里做了什么、真实结果如何；梦境和内心需选对应类型。人物资料请在通讯录管理。",
     confirmText: editing ? "保存" : "添加",
     fields: [
       {
@@ -16415,7 +16370,7 @@ function openMemoryDialog(memory, preset = {}) {
         label: "记忆内容",
         type: "textarea",
         rows: 3,
-        placeholder: "例如：小明说他最近加班很累，我有点心疼",
+        placeholder: "例如：下午在书房修好了风车模型，试转时叶片终于平稳了。",
         hint: "会原样写进提示词，尽量一句话说完。",
       },
       {
@@ -18144,60 +18099,18 @@ function renderSettings() {
         { key: "skip_conflict", label: "冲突时保留旧的" },
       ],
       (value) => (world.memory_conflict_policy = value),
-      { hint: "同一地点出现互相矛盾的两条记忆（例如「他喜欢我」和「他不喜欢我」）时怎么处理。" },
+      { hint: "同一地点出现互相矛盾的两条记忆（例如同一件事的两种结果）时怎么处理。" },
     ),
   );
   world.memory = world.memory || {};
-  memory._fields.appendChild(
-    checkboxField(
-      "把对话总结成记忆",
-      world.memory.dialogue_summary !== false,
-      (value) => (world.memory.dialogue_summary = value),
-      {
-        hint: "开启后把一段对话攒起来交给大模型，压成一句以她视角写的记忆；关闭则聊天内容不进记忆。",
-      },
-    ),
-  );
-  memory._fields.appendChild(
-    inputField(
-      "攒够多少条总结一次",
-      num(world.memory.summary_trigger_messages, 10),
-      (value) => (world.memory.summary_trigger_messages = num(value, 10)),
-      {
-        hint: "同一段对话攒到这么多条（含她自己说的话）就总结一次。调小=记得更碎、调大=更省调用。",
-        type: "number",
-      },
-    ),
-  );
-  memory._fields.appendChild(
-    inputField(
-      "聊完多久算一段（分钟）",
-      num(world.memory.summary_idle_minutes, 30),
-      (value) => (world.memory.summary_idle_minutes = num(value, 30)),
-      {
-        hint: "安静超过这么久就当作这段聊完了，触发一次总结。填 0 表示不按时间触发。",
-        type: "number",
-      },
-    ),
-  );
-  memory._fields.appendChild(
-    checkboxField(
-      "她换地点时也总结一次",
-      world.memory.summary_on_move !== false,
-      (value) => (world.memory.summary_on_move = value),
-      {
-        hint: "她走开时把该地点聊过的内容总结成一条记忆，挂在那里，下次回去能想起来。",
-      },
-    ),
-  );
-  memory._fields.appendChild(
-    inputField(
-      "记忆一句话最长多少字",
-      num(world.memory.summary_max_chars, 60),
-      (value) => (world.memory.summary_max_chars = num(value, 60)),
-      { hint: "写进提示词里的长度约束，太长会挤占别的上下文。", type: "number" },
-    ),
-  );
+  memory._fields.appendChild(checkboxField("睡眠时整理生活经历", world.memory.sleep_review !== false,
+    value => { world.memory.sleep_review = value; }, {hint: "只整理自己的生活与梦，人物资料整理单独设置。"}));
+  memory._fields.appendChild(selectField("何时回想生活", world.memory.automatic_recall || "auto", [
+    {key: "auto", label: "根据地点与话题自动回想"}, {key: "manual", label: "只在主动查询时回想"},
+  ], value => { world.memory.automatic_recall = value; }));
+  memory._fields.appendChild(inputField("自动回忆字符预算", num(world.memory.recall_max_chars, 1200),
+    value => { world.memory.recall_max_chars = Math.max(0, Math.min(12000, Math.round(num(value, 1200)))); },
+    {type: "number", min: 0, max: 12000, hint: "含时间、经历与细节；0 表示关闭自动注入。人物画像与群词典独立管理。"}));
   form.appendChild(memory);
 
   /* --- 动作与地点 --- */
@@ -18868,55 +18781,6 @@ function renderSettings() {
     ),
   );
   contextSection._fields.appendChild(
-    pillsField(
-      "留档超了怎么办",
-      world.context.chat_overflow || "discard",
-      [
-        {
-          key: "discard",
-          label: "直接丢弃最早的",
-          hint: "不额外调用模型，最省；代价是更早的聊天内容会丢失。",
-        },
-        {
-          key: "compress",
-          label: "压成摘要",
-          hint: "用「上下文压缩模型」把较早的聊天压成一段摘要，摘要会一直带在提示词里。",
-        },
-      ],
-      (value) => {
-        world.context.chat_overflow = value;
-        renderSettings();
-      },
-      {},
-    ),
-  );
-  if ((world.context.chat_overflow || "discard") === "compress") {
-    contextSection._fields.appendChild(
-      inputField(
-        "攒到多少条开始压缩",
-        num(world.context.chat_compress_threshold, 200),
-        (value) => (world.context.chat_compress_threshold = num(value, 200)),
-        { hint: "留档达到这个条数才会触发一次压缩。", type: "number", min: 10 },
-      ),
-    );
-    contextSection._fields.appendChild(
-      inputField(
-        "压缩后保留多少条原文",
-        num(world.context.chat_keep_after_compress, 30),
-        (value) => (world.context.chat_keep_after_compress = num(value, 30)),
-        { hint: "被压掉的是比这更早的那些。", type: "number", min: 1 },
-      ),
-    );
-    contextSection._fields.appendChild(
-      inputField(
-        "两次压缩至少间隔（分钟）",
-        num(world.context.summary_refresh_minutes, 10),
-        (value) => (world.context.summary_refresh_minutes = num(value, 10)),
-        { hint: "避免攒够一次就压一次，模型调用会太频繁。", type: "number", min: 1 },
-      ),
-    );
-  }
-  contextSection._fields.appendChild(
     inputField(
       "一次最多带几张图（没配转述模型时）",
       num(world.context.image_max, 3),
@@ -18984,11 +18848,11 @@ function renderSettings() {
   );
   profileSection._fields.appendChild(
     pillsField(
-      "睡眠整理",
+      "睡眠时整理人物资料",
       world.profile && world.profile.consolidate_enabled === false ? "off" : "on",
       [
-        { key: "on", label: "开", hint: "她睡着时消化这段时间的经历（记忆 + 画像）。" },
-        { key: "off", label: "关", hint: "不整理；记忆只按日常节奏累积。" },
+        { key: "on", label: "开", hint: "只从可见原话整理人物事实、关系与速写。" },
+        { key: "off", label: "关", hint: "关闭睡眠人物整理，生活整理使用独立开关。" },
       ],
       (value) => {
         world.profile = world.profile || {};
@@ -19017,7 +18881,7 @@ function renderSettings() {
         );
       },
       {
-        hint: "睡沉了再整理：一段睡眠的第一次整理在这里。",
+        hint: "生活和人物资料共用的整理时机：一段睡眠的第一次整理。",
         type: "number",
         min: 1,
       },
@@ -20470,20 +20334,12 @@ function wizardMemoryStep(body) {
     }, { hint: "关掉就完全不记画像、也不往提示词里带。" }),
   );
   body.appendChild(
-    checkboxField("睡觉时整理记忆与画像", world.profile.consolidate_enabled !== false, (value) => {
+    checkboxField("睡觉时整理人物资料", world.profile.consolidate_enabled !== false, (value) => {
       world.profile.consolidate_enabled = value;
       markDirty();
-    }, { hint: "睡下 20 分钟后整理一次；关掉就一直攒着不消化。" }),
+    }, { hint: "从可见原话整理事实、关系与人物速写；生活整理在回忆设置中单独开关。" }),
   );
-  body.appendChild(
-    selectField("聊天留档超了怎么办", world.context.chat_overflow || "compress", [
-      { key: "compress", label: "压成摘要（推荐）" },
-      { key: "discard", label: "直接丢掉最早的" },
-    ], (value) => {
-      world.context.chat_overflow = value;
-      markDirty();
-    }, { hint: "压成摘要会保留「更早聊过什么」，她不会失忆；丢就是真的没了。" }),
-  );
+
 }
 
 function wizardGenerateStep(body) {

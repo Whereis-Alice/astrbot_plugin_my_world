@@ -373,7 +373,7 @@ class RelationsMixin:
                 message_id=ctx.message_id,
                 event_id=ctx.event_id,
             )
-            self._tag_chat_origin(state, ctx.session_id, recorded)
+            self._tag_chat_origin(state, ctx.session_id, recorded, original_text=ctx.text)
             # 意图路由放行时交过来的事前判定：按事件身份盖到这一批对应的留档上
             self._stamp_router_view(state, ctx, recorded)
         state.last_user_activity_at = self._now()

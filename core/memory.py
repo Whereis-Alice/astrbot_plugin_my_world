@@ -12,10 +12,9 @@ from .db import Database
 from .models import WorldConfig
 
 SCENE = "scene"
-RELATION = "relation"
 EVENT = "event"
 INNER = "inner"
-INTERACTION = "interaction"
+DREAM = "dream"
 
 SCOPE_GROUP = "group"
 SCOPE_PERSONA = "persona"
@@ -111,6 +110,10 @@ class RecalledMemory:
         """渲染成提示词里的一行；``stamp`` 是日期标签，例如 ``09-11``。"""
 
         prefix = f"[{stamp}] " if stamp else ""
+        if self.memory_type == DREAM:
+            prefix += "【梦境，非现实经历】"
+        elif self.memory_type == INNER:
+            prefix += "【当时的内心】"
         suffix = f"（{self.emotion}）" if self.emotion else ""
         detail = ""
         if self.tier == "gist" and self.context:
@@ -220,7 +223,8 @@ class MemoryEngine:
         )
 
         conflict = self._find_conflict(
-            session_id=session_id, persona_id=persona_id, node_id=node_id, content=text
+            session_id=session_id, persona_id=persona_id, node_id=node_id, content=text,
+            memory_type=memory_type, scope=scope,
         )
         if conflict is not None:
             if policy == "skip_conflict":
@@ -257,12 +261,14 @@ class MemoryEngine:
         )
 
     def _find_conflict(
-        self, *, session_id: str, persona_id: str, node_id: str, content: str
+        self, *, session_id: str, persona_id: str, node_id: str, content: str,
+        memory_type: str, scope: str,
     ) -> dict[str, Any] | None:
         """找出与待写入内容冲突的旧记忆。"""
 
         candidates = self.db.query_memories(
-            session_id=session_id, persona_id=persona_id, node_id=node_id, limit=200
+            session_id=session_id, persona_id=persona_id, node_id=node_id,
+            memory_type=memory_type, scope=scope, limit=200,
         )
         normalized = _normalize(content)
         for item in candidates:
@@ -361,8 +367,6 @@ class MemoryEngine:
 
         scored: list[tuple[float, dict[str, Any]]] = []
         for item in candidates:
-            if automatic and config and config.automatic_recall == "life_only" and item.get("type") == INTERACTION:
-                continue
             score = self._score(item, focus_user=focus_user, node_id=node_id, now=now)
             if keyword:
                 score *= self._keyword_bonus(content=self._search_text(item), keyword=keyword)

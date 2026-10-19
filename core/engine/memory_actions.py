@@ -269,7 +269,7 @@ class MemoryActionsMixin:
                 intent=intent,
                 node_names=node_names,
                 zone_names=zone_names,
-                memory_types=["scene", "interaction", "relation", "inner", "event"],
+                memory_types=["scene", "event", "inner", "dream"],
             )
             reply = await self._ask_judge(state.session_id, system_prompt, prompt)
             self._count_tool_param(state)

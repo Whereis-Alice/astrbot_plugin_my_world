@@ -167,18 +167,11 @@ class StateStoreMixin:
             migrate_plan(state, now=self._now(), tick_seconds=self.tick_seconds)
             ensure(state, self._now())
             self._sync_sleep_rhythm_mode(state)
-            # 留档超上限时要不要先把顶掉的几条攒起来（配置成"压成摘要"才需要）：
-            # 挂成临时属性，note_chat 会读它——不写进存档。
-            state.buffer_dropped_chat = self._buffer_dropped_chat()
             try:
                 yield state
             finally:
                 await self.save_state(state)
 
-    def _buffer_dropped_chat(self) -> bool:
-        """被上限顶掉的群聊要不要先攒着等压缩（"直接丢弃"就没必要留）。"""
-
-        return str(getattr(self.world.context, "chat_overflow", "discard")) == "compress"
 
     # ---------------- 数值历史（给编辑器画曲线） ----------------
 

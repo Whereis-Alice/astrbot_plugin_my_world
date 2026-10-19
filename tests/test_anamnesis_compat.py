@@ -130,9 +130,10 @@ class AnamnesisCompatibilityTests(unittest.TestCase):
                             )
                         )
                     state = asyncio.run(plugin.engine.load_state(session, cold_start=False))
+                    self.assertNotIn("外部聊天记忆", " ".join(row["snapshot"] for row in plugin.db.raw._query("SELECT snapshot FROM memory_source")))
                     self.assertNotIn(
                         "外部聊天记忆",
-                        " ".join(row.get("text", "") for row in state.pending_memory),
+                        " ".join(row.get("text", "") for row in state.recent_chat),
                     )
 
     def test_merged_reply_keeps_before_and_after_memory_without_turning_it_into_evidence(self):

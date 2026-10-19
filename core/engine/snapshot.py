@@ -315,18 +315,8 @@ class SnapshotMixin:
             },
             "event_digest": list(state.event_digest or []),
             "events_enabled": bool(getattr(self.world.events, "enabled", True)),
-            # 群聊上下文：留档条数 + 摘要（编辑器里能看到、也能一键清空）
+            # 本会话近期消息与话题备忘，编辑器可查看和清空。
             **self._chat_counts(state, session_id),
-            # 分会话的摘要：编辑器按会话列出来（老存档只有一份全局的）
-            "chat_summary": self.chat_summary_for(state, session_id),
-            "chat_summaries": [
-                {
-                    "session": str(key),
-                    "label": "这里" if str(key) == str(session_id) else self.session_label(str(key), state),
-                    "text": text,
-                }
-                for key, text in self.chat_summary_map(state).items()
-            ],
             "chat_note": self.chat_note_for(state, session_id),
             "chat_notes": {
                 str(key): str(dict(value or {}).get("text") or "")

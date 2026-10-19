@@ -12,7 +12,7 @@ from core.events import EventPackage
 from core.defaults import default_world
 from core.event_rhythm import in_event_hours, pick_tone
 from core.map_inspection import inspect_routes
-from core.memory import INTERACTION, SCENE, MemoryEngine
+from core.memory import SCENE, MemoryEngine
 from core.models import EventAutoConfig, WorldConfig, parse_world
 from core.pathfinding import find_path, nearest_node, travel_cost
 from core.state import WorldState
@@ -63,15 +63,15 @@ class RecallPolicyTests(unittest.TestCase):
     def recall(self, **extra):
         return self.memory.recall(session_id="s", persona_id="p", **extra)
 
-    def test_life_only_keeps_life_and_explicit_chat_lookup(self):
-        self.remember("一起讨论过周末旅行", INTERACTION)
+    def test_life_boundary_and_manual_mode(self):
+        with self.assertRaises(ValueError):
+            self.remember("一起讨论过周末旅行", "interaction")
         self.remember("在花园种了一盆薄荷")
-        self.world.memory.automatic_recall = "life_only"
         self.assertEqual([item.content for item in self.recall(automatic=True)], ["在花园种了一盆薄荷"])
-        self.assertEqual(len(self.recall()), 2)
+        self.assertEqual(len(self.recall()), 1)
         self.world.memory.automatic_recall = "manual"
         self.assertEqual(self.recall(automatic=True), [])
-        self.assertEqual(len(self.recall()), 2)
+        self.assertEqual(len(self.recall()), 1)
 
     def test_budget_skips_long_facts_without_truncating_or_deleting(self):
         long = "很长的完整记忆" * 80

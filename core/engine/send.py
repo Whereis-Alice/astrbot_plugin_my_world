@@ -212,6 +212,7 @@ class SendMixin:
         state: WorldState,
         session_id: str,
         item: dict[str, Any] | None = None,
+        *, original_text: str = "",
     ) -> dict[str, Any] | None:
         """给刚记下的那条留档标上"在哪儿说的"。
 
@@ -246,7 +247,7 @@ class SendMixin:
         target["origin"] = origin
         target.pop("via", None)
         from ..evidence import source_snapshot
-        source = source_snapshot(target, origin)
+        source = source_snapshot({**target, "text": original_text or target.get("text", "")}, origin)
         target["source_id"] = source["id"]
         target.setdefault("eligible", bool(target.get("is_self")))
         self.db.raw.observe_source(source, eligible=bool(target.get("eligible")))
@@ -426,7 +427,6 @@ class SendMixin:
                         origin=outcome.session_id,
                     )
                     state.note_reply(message, session_id=outcome.session_id)
-                    self.note_dialogue(state, text=message, is_self=True, origin=outcome.session_id)
                     # 这句是在哪个会话里说的（留档只有一份，来源要标出来）
                     self._tag_chat_origin(state, outcome.session_id, recorded)
                 for target, messages in routed.items():
@@ -453,7 +453,6 @@ class SendMixin:
                             origin=target,
                         )
                         state.note_reply(message, session_id=target)
-                        self.note_dialogue(state, text=message, is_self=True, origin=target)
                         self._tag_chat_origin(state, target, recorded)
             # 调试用的动作回显不算"她说过的话"：不进聊天上下文、不计无人回应保护
         sent = False

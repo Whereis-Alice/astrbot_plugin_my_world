@@ -1025,38 +1025,24 @@ ECHO_TYPE_ALIASES: dict[str, tuple[str, ...]] = {
 
 
 class MemoryConfig(Permissive):
+    sleep_review: bool = True
+    """睡眠时整理生活经历，可与人物资料整理分别开关。"""
     semantic_enabled: bool = False
     semantic_endpoint: str = ""
     semantic_model: str = ""
     semantic_api_key_env: str = ""
     semantic_min_similarity: float = Field(default=0.35, ge=0, le=1)
-    """对话记忆怎么写。
-
-    逐条存「某某说了什么」几乎没有信息量，所以对话是**攒成片段再总结**一条：
-    一段聊完（安静下来）、攒够条数、或者她离开这个地点时，才让模型把这几句压成
-    一句以她的视角写的记忆。
-    """
-
-    automatic_recall: Literal["all", "life_only", "manual"] = "all"
-    """自动召回全部记忆、只召回生活经历，或仅在模型主动查询时召回。"""
+    automatic_recall: Literal["auto", "manual"] = "auto"
+    """自动回想自己的生活，或只在主动查询时回想。"""
 
     recall_max_chars: int = Field(default=1200, ge=0, le=12000)
-    """每次自动召回的文本预算（字符，含每条的时间与原文）；0 表示不自动注入。"""
+    """自动生活回忆的字符预算，含时间与经历细节；0 表示不自动注入。"""
 
-    dialogue_summary: bool = True
-    """是否把对话总结成片段记下来（关掉就不再记录聊天内容，只留动作与内心活动）。"""
-
-    summary_trigger_messages: int = 10
-    """同一段对话攒够多少条触发一次总结。"""
-
-    summary_idle_minutes: int = 30
-    """一段对话安静这么久就当作聊完了，触发总结。"""
-
-    summary_on_move: bool = True
-    """她换地点时，把刚才那段对话总结掉。"""
-
-    summary_max_chars: int = 60
-    """总结的长度上限（写进提示词约束模型）。"""
+    @model_validator(mode="before")
+    @classmethod
+    def _life_settings(cls, data: Any) -> Any:
+        from .life_memory import clean_memory_settings
+        return clean_memory_settings({"memory": data})["memory"] if isinstance(data, dict) else data
 
     recall_penalty_minutes: int = 120
     """「临时召回惩罚」的窗口：刚被想起过的记忆在这段时间内会轻一点被再次想起。"""
@@ -1571,19 +1557,13 @@ class ContextConfig(Permissive):
     """群聊上下文怎么存、怎么带进提示词。"""
 
     chat_history_max: int = 300
-    """原始群聊留档条数（持久化，重启后仍在）。超出后按下面策略处理。"""
+    """每会话近期消息的条数上限，超出时移出最早消息，重启后仍在。"""
 
-    chat_overflow: Literal["discard", "compress"] = "compress"
-    """留档超出上限时怎么办：直接丢弃最早的，或用压缩模型压成摘要。"""
-
-    chat_compress_threshold: int = 200
-    """留档达到多少条才触发一次压缩。"""
-
-    chat_keep_after_compress: int = 30
-    """压缩后保留多少条原文（更早的变成摘要）。"""
-
-    summary_refresh_minutes: int = 10
-    """两次压缩之间至少间隔多久，避免频繁调用模型。"""
+    @model_validator(mode="before")
+    @classmethod
+    def _working_context(cls, data: Any) -> Any:
+        from .life_memory import clean_memory_settings
+        return clean_memory_settings({"context": data})["context"] if isinstance(data, dict) else data
 
     chat_note_max_minutes: int = 30
     """「刚才你们在聊什么」这句背景最多挂多久（分钟，0 = 不限）。
@@ -3003,7 +2983,6 @@ def normalize_legacy_keys(data: dict[str, Any]) -> dict[str, Any]:
         ("context", "chat_answered_line_chars", (100,), 200),
         ("context", "chat_history_max", (200,), 300),
         # 30 是「记忆勤奋度」滑块上线后的默认，80 是更早的默认
-        ("context", "chat_compress_threshold", (30, 80), 200),
         ("decider", "chat_window_minutes", (60,), 180),
     )
     for section, key, old_values, new_value in bumps:
@@ -3308,11 +3287,8 @@ FIELD_LABELS: dict[str, str] = {
     "events.min_gap_minutes": "两件事至少隔几分钟",
     "events.photo_chance": "每幕顺手拍张照的概率",
     "events.genre_cooldown_minutes": "同类事多久内不重复（分钟）",
-    "context.chat_compress_threshold": "攒多少条聊天记录压缩一次",
-    "context.summary_refresh_minutes": "多久重写一次聊天摘要",
     "context.chat_answered_lines": "提示词里带多少条聊天记录",
     "context.chat_history_max": "留档最多存多少条聊天记录",
-    "context.chat_overflow": "留档超了怎么办（丢弃 / 压缩）",
 }
 
 
@@ -3615,7 +3591,8 @@ def parse_sessions(data: dict[str, Any]) -> tuple[SessionsConfig, list[str]]:
     """校验会话白名单。"""
 
     warnings: list[str] = []
-    config = SessionsConfig.model_validate(data or {})
+    from .life_memory import clean_memory_settings
+    config = SessionsConfig.model_validate(clean_memory_settings(data or {}))
     seen: set[str] = set()
     kept: list[SessionDef] = []
     for session in config.sessions:

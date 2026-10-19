@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from ..core.life_memory import LIFE_TYPES, LIFE_DOMAIN, is_life_memory
+
 import asyncio
 import functools
 import hashlib
@@ -3476,6 +3478,8 @@ class WebApiMixin(LifeApiMixin):
         content = str(payload.get("content", "") or "").strip()
         if not session_id or not content:
             return error_response("缺少 session_id 或 content")
+        if str(payload.get("type") or "scene") not in LIFE_TYPES:
+            return error_response("生活记忆类型应为 scene、event、inner 或 dream；人物资料在通讯录管理")
         memory_id = self.engine.memory.remember(
             session_id=session_id,
             persona_id=str(payload.get("persona_id", "") or ""),
@@ -3503,6 +3507,8 @@ class WebApiMixin(LifeApiMixin):
             for key in ("content", "emotion", "weight", "node_id", "type", "scope")
             if key in payload
         }
+        if "type" in fields and fields["type"] not in LIFE_TYPES:
+            return error_response("不支持的生活记忆类型")
         # 空作用域在召回时匹配不上任何模式，等于把这条记忆"藏起来"，
         # 所以编辑器选了「用默认作用域」时不要真的写空串。
         if not str(fields.get("scope", "") or "").strip():
@@ -3590,6 +3596,7 @@ class WebApiMixin(LifeApiMixin):
             "world": self.store.raw_world(),
             "schedules": self.store.raw_schedules(),
             "sessions": self.store.raw_sessions(),
+            "memory_domain": LIFE_DOMAIN,
             "memories": await self.db.call("query_memories", limit=100000),
         }
         return json_response(data)
@@ -3602,24 +3609,51 @@ class WebApiMixin(LifeApiMixin):
         memories = payload.get("memories")
         if not isinstance(memories, list):
             return error_response("memories 必须是数组")
-        imported = 0
-        for item in memories:
-            if not isinstance(item, dict) or not item.get("content"):
-                continue
-            self.engine.memory.remember(
-                session_id=str(item.get("session_id", "") or ""),
-                persona_id=str(item.get("persona_id", "") or ""),
-                node_id=str(item.get("node_id", "") or ""),
-                content=str(item.get("content")),
-                memory_type=str(item.get("type", "scene") or "scene"),
-                related_users=[str(u) for u in item.get("related_users", []) or []],
-                emotion=str(item.get("emotion", "") or ""),
-                weight=float(item.get("weight", 0.5) or 0.5),
-                scope=item.get("scope") or None,
-                source="import",
-            )
-            imported += 1
-        return json_response({"ok": True, "imported": imported})
+        if payload.get("memory_domain") != LIFE_DOMAIN:
+            return error_response("请导入生活记忆导出文件（memory_domain=my_world.life）；旧聊天备份不能直接混入生活库")
+        if any(not isinstance(item, dict) or not is_life_memory(item) for item in memories):
+            return error_response("文件含聊天摘要或不支持的来源，未导入任何记录")
+        prepared = []
+        try:
+            for item in memories:
+                content = item.get("content", "")
+                if not isinstance(content, str):
+                    raise ValueError("生活记忆正文必须是文本")
+                if not content.strip():
+                    continue
+                weight = float(item.get("weight", 0.5))
+                created_at = float(item.get("created_at", time.time()))
+                next_review = float(item.get("next_review_at", 0))
+                if not all(math.isfinite(value) for value in (weight, created_at, next_review)):
+                    raise ValueError("日期和权重必须是有效数字")
+                if not 0 <= weight <= 1 or created_at < 0 or next_review < 0:
+                    raise ValueError("日期或权重超出允许范围")
+                scope = item.get("scope") or self.engine.world.memory_scope_mode
+                tier = item.get("tier") or "raw"
+                if scope not in ("group", "persona", "group_persona", "global", "node") or tier not in ("raw", "gist"):
+                    raise ValueError("记忆作用域或层级无效")
+                lists = {}
+                for key in ("related_users", "participants", "keywords"):
+                    values = item.get(key) or []
+                    if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+                        raise ValueError(f"{key} 必须是文本数组")
+                    lists[key] = values
+                prepared.append({
+                    **lists, "content": content.strip(), "memory_type": item.get("type", "scene"),
+                    "session_id": str(item.get("session_id") or ""), "persona_id": str(item.get("persona_id") or ""),
+                    "node_id": str(item.get("node_id") or ""), "emotion": str(item.get("emotion") or ""),
+                    "weight": weight, "created_at": created_at, "next_review_at": next_review,
+                    "scope": scope, "source": "import", "tier": tier,
+                    "context": str(item.get("context") or ""), "pinned": bool(item.get("pinned")),
+                })
+        except (TypeError, ValueError, OverflowError) as exc:
+            return error_response(f"生活记忆格式有误，未导入任何记录：{exc}")
+        # Restore historical dates and weights verbatim; don't re-score or replace
+        # an existing experience through normal runtime conflict handling.
+        with self.db.raw.atomic():
+            for item in prepared:
+                self.db.raw.add_memory(**item)
+        return json_response({"ok": True, "imported": len(prepared)})
 
     async def api_prompt(self):
         guard = self._guard()

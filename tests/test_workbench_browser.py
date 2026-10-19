@@ -385,21 +385,6 @@ class WorkbenchBrowserTests(unittest.TestCase):
         self.assertEqual(policy['tone_weights']['good'], 10)
         self.assertEqual(self.errors, [])
 
-    def test_companion_preset_retains_life_and_stops_duplicate_chat_summaries(self):
-        self.capture_writes()
-        self.page.locator('button[data-tab="memories"]').click()
-        self.page.locator('#memory-policy').click()
-        self.page.locator('[data-dialog-key="mode"]').select_option('companion')
-        expect(self.page.locator('[data-dialog-key="automatic"]')).to_have_value('life_only')
-        expect(self.page.locator('[data-dialog-key="summary"]')).not_to_be_checked()
-        self.page.locator('[data-dialog-key="chars"]').fill('800')
-        self.page.locator('#dialog-ok').click()
-        self.page.locator('#save').click()
-        self.page.wait_for_function('policyWrites.length > 0')
-        memory = self.page.evaluate('policyWrites.at(-1).memory')
-        self.assertEqual(memory['automatic_recall'], 'life_only')
-        self.assertFalse(memory['dialogue_summary'])
-        self.assertEqual(memory['recall_max_chars'], 800)
 
     def test_console_menus_and_action_search_leave_space_for_content(self):
         self.page.locator('button[data-tab="status"]').click()
@@ -422,48 +407,7 @@ class WorkbenchBrowserTests(unittest.TestCase):
         self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth <= innerWidth'))
         self.assertEqual(self.errors, [])
 
-    def test_dual_storage_preset_keeps_chat_summaries_and_budget(self):
-        self.capture_writes()
-        self.page.locator('button[data-tab="memories"]').click()
-        self.page.locator('#memory-policy').click()
-        self.page.locator('[data-dialog-key="mode"]').select_option('dual')
-        expect(self.page.locator('[data-dialog-key="summary"]')).to_be_checked()
-        expect(self.page.locator('[data-dialog-key="automatic"]')).to_have_value('life_only')
-        self.page.locator('[data-dialog-key="chars"]').fill('900')
-        self.page.locator('#dialog-ok').click()
-        self.page.locator('#save').click()
-        self.page.wait_for_function('policyWrites.length > 0')
-        memory = self.page.evaluate('policyWrites.at(-1).memory')
-        self.assertTrue(memory['dialogue_summary'])
-        self.assertEqual(memory['automatic_recall'], 'life_only')
-        self.assertEqual(memory['recall_max_chars'], 900)
 
-    def test_long_chat_summaries_scroll_inside_their_card(self):
-        # Playwright's sync bridge owns an event loop on this thread.
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            snapshot = executor.submit(asyncio.run, console_snapshot()).result()
-        snapshot['chat_summaries'] = [{'session': f's{index}', 'label': f'合成会话 {index}',
-                                      'text': '\n'.join(f'第 {line} 行：完整聊天摘要。' * 4 for line in range(45))}
-                                     for index in range(3)]
-        snapshot['chat_summaries'][-1]['text'] += '\n摘要末尾标记'
-        self.page.evaluate("""data => {
-          const original = AstrBotPluginPage.apiGet;
-          AstrBotPluginPage.apiGet = (key, params) => key === 'state' ? Promise.resolve(data) : original(key, params);
-          const select = document.querySelector('#status-session');
-          select.add(new Option('合成测试', 's')); select.value='s'; select.dispatchEvent(new Event('change'));
-        }""", snapshot)
-        expect(self.page.locator('.chat-summary')).to_have_count(3)
-        for width, height in [(1600, 900), (1280, 692), (390, 844)]:
-            self.host.set_viewport_size({'width': width, 'height': height})
-            box = self.page.locator('#status-context')
-            self.assertTrue(box.evaluate('node => node.scrollHeight > node.clientHeight && node.clientHeight <= 240'))
-            box.evaluate('node => node.scrollTop = node.scrollHeight')
-            self.assertTrue(box.evaluate("""node => {
-              const last=node.querySelector('.chat-summary:last-child .chat-line:last-child').getBoundingClientRect();
-              return last.bottom <= node.getBoundingClientRect().bottom + 1;
-            }"""))
-            self.assertTrue(box.evaluate("node => node.getBoundingClientRect().bottom <= node.closest('.card').getBoundingClientRect().bottom"))
-        self.assertEqual(self.errors, [])
 
     def test_map_commands_and_property_panel_do_not_cover_each_other(self):
         self.page.locator('button[data-tab="map"]').click()

@@ -987,7 +987,6 @@ class ReplyMixin:
                     origin=ctx.session_id,
                 )
                 state.note_reply(message, session_id=ctx.session_id)
-                self.note_dialogue(state, text=message, is_self=True, origin=ctx.session_id)
                 # 这句话是在哪个会话里说的：留档只有一份，来源要标出来。
                 # 用 note_chat 的返回值定位那一条（重复没记时是 None → 什么都不改）
                 self._tag_chat_origin(state, ctx.session_id, recorded)
@@ -1079,8 +1078,6 @@ class ReplyMixin:
             # 「你倒是说啊」它也能判出来），所以它说是别人就信它
             self._mark_reply_addressing(state, ctx, parsed.addressing)
             await self._echo_events_since(state, outcome, echo_marker)
-            # 模型顺手给的总结只当"写记忆时的提示"，不单独落成一条记忆
-            self.note_memory_hint(state, parsed.memory)
             await self._log_event(
                 state,
                 "reply",

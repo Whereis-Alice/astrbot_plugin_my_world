@@ -23,7 +23,7 @@ class TurnMixin:
     async def record_self_reply(
         self, session_id: str, text: str, *, persona_id: str = ""
     ) -> None:
-        """宿主替她说完之后，把她这句话写回世界：聊天留档 + 待总结 + 反重复。
+        """宿主替她说完之后，把她这句话写回世界：短期聊天窗口 + 反重复。
 
         注入模式下主回复由宿主发送，引擎这边不再经手内容；但她的世界必须知道
         她刚说过什么，否则下一轮提示词里的「你最近说过的话」会是空的。
@@ -43,8 +43,7 @@ class TurnMixin:
                 origin=session_id,
             )
             state.note_reply(clean, session_id=session_id)
-            self.note_dialogue(state, text=clean, is_self=True, persona_id=persona_id, origin=session_id)
-            self._tag_chat_origin(state, session_id, recorded)
+            self._tag_chat_origin(state, session_id, recorded, original_text=clean)
             self._count_passive_reply(state)
 
     @session_scoped
@@ -196,8 +195,6 @@ class TurnMixin:
             )
             state.last_user_tone = str(parsed.tone or "")
             self._mark_reply_addressing(state, ctx, parsed.addressing)
-            if parsed.memory:
-                self.note_memory_hint(state, parsed.memory)
             reflection = {
                 "at": self._now(),
                 "world_time": int(state.world_time),
@@ -206,7 +203,6 @@ class TurnMixin:
                 "reply": _clip_text(reply_text, 300),
                 "provider_reasoning": _clip_text(reasoning_text, 600),
                 "reasoning": dict(parsed.reasoning or {}),
-                "memory": str(parsed.memory or ""),
                 "chat_note": str(parsed.chat_note or ""),
                 "tone": str(parsed.tone or ""),
                 "addressing": str(parsed.addressing or ""),

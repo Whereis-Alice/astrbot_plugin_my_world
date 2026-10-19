@@ -857,7 +857,7 @@ class SleepMixin:
 
         - 不在白名单 / 内容安全拦截 -> 返回 None（本插件完全不干预，交给宿主；
           接管失败也不会回落成"主人格替她答"）；
-        - 计数、状态、日志、"待总结"缓冲这些副作用都在这里完成；
+        - 计数、状态、日志与近期消息窗口在这里更新；
         - 提示词不在这里拼：接管路径自己组装（见 :meth:`handle_reply`）。
         """
 
@@ -891,17 +891,6 @@ class SleepMixin:
                 )
                 self._queue_echo(ctx.session_id, echo.debug_messages)
 
-            # 把这次对话放进"待总结"缓冲：一段聊完或她离开这个地点时，
-            # 才让模型把它压成一条记忆（逐条存「谁说了什么」没有信息量）。
-            self.note_dialogue(
-                state,
-                user_id=ctx.user_id,
-                name=ctx.user_name or ctx.user_id,
-                text=ctx.text,
-                persona_id=ctx.persona_id,
-                source_id=ctx.event_key,
-                origin=ctx.session_id,
-            )
             await self._log_event(
                 state,
                 "user_message",

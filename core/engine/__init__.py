@@ -62,7 +62,6 @@ from .constants import (
     DESIRE_TEASE_CEIL,
     SEARCH_QUERY_RULES,
     TICK_LOG_KEEP,
-    MEMORY_REFUSAL_HINTS,
 )
 from .models import (
     TickOutcome,
@@ -106,7 +105,7 @@ from .persona import PersonaMixin
 from .commands import CommandsMixin
 from .sleep import SleepMixin
 from .sleep_rhythm import SleepRhythmMixin
-from .dialogue_memory import DialogueMemoryMixin
+from .message_rules import MessageRulesMixin
 from .addressing import AddressingMixin
 from .reply import ReplyMixin
 from .profiles import ProfilesMixin
@@ -155,7 +154,6 @@ __all__ = [
     'INTERRUPT_STREAK_MAX',
     'INTERRUPT_STREAK_WINDOW_SECONDS',
     'MAX_GROUP_IMAGES',
-    'MEMORY_REFUSAL_HINTS',
     'MERGE_MAX_RESTARTS',
     'MERGE_MAX_TEXTS',
     'MERGE_WINDOW_SECONDS',
@@ -225,7 +223,7 @@ class MyWorldEngine(
     CommandsMixin,
     SleepMixin,
     SleepRhythmMixin,
-    DialogueMemoryMixin,
+    MessageRulesMixin,
     AddressingMixin,
     ReplyMixin,
     ProfilesMixin,
@@ -264,7 +262,6 @@ class MyWorldEngine(
         llm=None,
         helper_llm=None,
         judge_llm=None,
-        context_llm=None,
         creator_llm=None,
         event_llm=None,
         consolidate_llm=None,
@@ -295,8 +292,6 @@ class MyWorldEngine(
         # 和打杂分开是有原因的——打杂里混着"要文笔"的活（写事件结局、她求助的话），
         # 那些塞给最小的模型会明显掉质量。
         self.judge_llm = judge_llm or self.helper_llm
-        # 上下文压缩模型：只负责把较早的群聊压成摘要
-        self.context_llm = context_llm or self.helper_llm
         # 内容生成模型：编事件包、以及编辑器里"批量生成动作 / 地点"
         self.creator_llm = creator_llm or self.llm
         # 事件模型：写"这件事最后怎么样了"。它决定事件读起来尬不尬，

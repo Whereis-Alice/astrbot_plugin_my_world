@@ -1537,8 +1537,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             session_id=SESSION,
             persona_id="",
             node_id=self.node_id,
-            content="他以前养过一只橘猫",
-            memory_type="interaction",
+            content="我和小明在公园照料过一只橘猫",
+            memory_type="scene",
             related_users=["42"],
             participants=["42"],
             tier="gist",
@@ -1573,7 +1573,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
                 persona_id="",
                 node_id=self.node_id,
                 content=f"值得回想的事 {index}",
-                memory_type="interaction",
+                memory_type="scene",
                 related_users=["42"],
                 participants=["42"],
                 tier="gist",
@@ -2701,26 +2701,14 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(second.ok, second.error)
         self.assertNotIn("刚从沉睡中苏醒", str(self.llm.calls[-1]["system_prompt"]))
 
-    async def test_user_message_updates_state_and_records_memory(self):
+    async def test_user_message_updates_presence_without_writing_chat_memory(self):
         await self.engine.handle_incoming(self.ctx(text="我今天有点难过", mood_signal="negative"))
         await self.expose_dialogue()
         state = await self.get_state()
-        self.assertIn("42", state.user_presence)
         self.assertEqual(state.user_presence["42"]["name"], "小明")
-        # 逐条不落记忆：先攒着，等这段聊完再总结
-        self.assertTrue(state.pending_memory)
+        self.assertNotIn("pending_memory", state.to_payload())
         self.assertEqual(self.interaction_rows(), [])
 
-        self.llm.replies = ["小明说他今天有点难过，我记下了"]
-        self.clock.advance(31 * 60)
-        await self.engine.flush_pending_memory(SESSION)
-        memories = self.engine.memory.recall(
-            session_id=SESSION, persona_id="", node_id=self.node_id, focus_user="42", limit=5
-        )
-        self.assertTrue(
-            any("小明" in item.content for item in memories),
-            [item.content for item in memories],
-        )
 
     async def test_blocked_words_are_ignored(self):
         async with self.engine.session_state(SESSION):
@@ -3880,7 +3868,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_chat_context_carry_is_limited_but_history_is_kept(self):
         """带进提示词的条数有限，但原始留档不受影响。"""
 
-        self.set_context(chat_history_max=50, chat_overflow="discard")
+        self.set_context(chat_history_max=50)
         for index in range(20):
             await self.engine.note_presence(
                 self.ctx(text=f"消息{index}", user_id="1", user_name="小明")
@@ -3894,7 +3882,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(carried[-1]["text"], "消息19")
 
     async def test_chat_overflow_discard_keeps_only_limit(self):
-        self.set_context(chat_history_max=20, chat_overflow="discard")
+        self.set_context(chat_history_max=20)
         for index in range(35):
             await self.engine.note_presence(
                 self.ctx(text=f"消息{index}", user_id="1", user_name="小明")
@@ -3903,75 +3891,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(state.recent_chat), 20)
         self.assertEqual(state.recent_chat[-1]["text"], "消息34")
 
-    async def test_chat_overflow_compress_makes_summary(self):
-        """留档超阈值时用压缩模型压成摘要，只保留最近的原文。"""
 
-        self.set_context(
-            chat_history_max=200,
-            chat_overflow="compress",
-            chat_compress_threshold=10,
-            chat_keep_after_compress=4,
-            summary_refresh_minutes=1,
-        )
-        for index in range(12):
-            await self.engine.note_presence(
-                self.ctx(text=f"消息{index}", user_id="1", user_name="小明")
-            )
-        self.llm.replies = ["大家主要在聊周末去哪玩，顺便问了她在不在。"]
-        await self.engine.tick()
-
-        state = await self.get_state()
-        self.assertEqual(
-            self.engine.chat_summary_for(state, SESSION),
-            "大家主要在聊周末去哪玩，顺便问了她在不在。",
-        )
-        self.assertEqual(len(state.recent_chat), 4)
-
-        # 摘要会出现在提示词里：看**实际发出去的那一轮**的原文
-        self.llm.replies = ['{"actions":[{"type":"say","messages":["嗯"]}]}']
-        outcome = await self.engine.handle_reply(self.ctx(text="在吗"))
-        self.assertTrue(outcome.ok, outcome.error)
-        request = await self.engine.preview_last_reply_request(SESSION)
-        self.assertIn("更早聊过的", request)
-
-    async def test_summaries_are_kept_per_session(self):
-        """群聊和私聊的「更早聊过的」各自成段：压缩只喂本会话的内容。"""
-
-        self.add_group(sessions=[SESSION, PRIVATE_SESSION])
-        self.set_session_note(PRIVATE_SESSION, "主人")
-        self.set_context(
-            chat_history_max=200,
-            chat_overflow="compress",
-            chat_compress_threshold=10,
-            chat_keep_after_compress=2,
-            summary_refresh_minutes=1,
-        )
-        for index in range(12):
-            await self.engine.note_presence(
-                self.ctx(text=f"群里第{index}句", user_id="1", user_name="小明")
-            )
-        for index in range(12):
-            await self.engine.note_presence(
-                self.ctx(
-                    session_id=PRIVATE_SESSION,
-                    text=f"私聊第{index}句",
-                    user_id="2",
-                    user_name="主人",
-                )
-            )
-        self.llm.replies = ["群里在聊周末去哪玩。", "私聊里在闹别扭。"]
-        await self.engine.tick()
-
-        state = await self.get_state()
-        self.assertEqual(self.engine.chat_summary_for(state, SESSION), "群里在聊周末去哪玩。")
-        self.assertEqual(
-            self.engine.chat_summary_for(state, PRIVATE_SESSION), "私聊里在闹别扭。"
-        )
-        # 压群里那一份时，提示词里不该混进私聊的内容（反过来也一样）
-        prompts = [str(call.get("prompt") or "") for call in self.llm.calls]
-        group_prompt = next((item for item in prompts if "群里第" in item), "")
-        self.assertTrue(group_prompt)
-        self.assertNotIn("私聊第", group_prompt)
 
     async def test_the_two_chat_views_use_the_same_unit(self):
         """"插话判定 / 工具选型"的视图和进提示词的视图必须同一套口径（都按行）。"""
@@ -4209,15 +4129,10 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.add_group(sessions=[SESSION, PRIVATE_SESSION])
         async with self.engine.session_state(SESSION) as state:
             # 升级前的老存档形态：只有全局字段，没有按会话的那几份
-            state.chat_summary = "很久以前群里聊过的事"
-            state.chat_summary_at = 12345.0
             state.chat_note = "老存档里刚才在聊什么"
             state.chat_preview = "老存档里她刚回应过的那批"
 
             # 问的就是建档的那个会话：照着回落
-            self.assertEqual(
-                self.engine.chat_summary_for(state, SESSION), "很久以前群里聊过的事"
-            )
             self.assertEqual(
                 self.engine.chat_note_for(state, SESSION), "老存档里刚才在聊什么"
             )
@@ -4226,23 +4141,9 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
                 "老存档里她刚回应过的那批",
             )
             # 同世界的另一个会话没写过这几样：必须读空，不能借来当成自己的
-            self.assertEqual(self.engine.chat_summary_for(state, PRIVATE_SESSION), "")
             self.assertEqual(self.engine.chat_note_for(state, PRIVATE_SESSION), "")
             self.assertEqual(self.engine.chat_preview_for(state, PRIVATE_SESSION), "")
 
-    async def test_the_summary_map_and_the_reader_agree_on_legacy_data(self):
-        """提示词用的 map 和编辑器用的 for 对老存档必须一个口径（都是建档会话的）。"""
-
-        self.add_group(sessions=[SESSION, PRIVATE_SESSION])
-        async with self.engine.session_state(SESSION) as state:
-            state.chat_summary = "老存档摘要"
-            state.chat_summary_at = 100.0
-
-            self.assertEqual(
-                self.engine.chat_summary_map(state), {SESSION: "老存档摘要"}
-            )
-            self.assertEqual(self.engine.chat_summary_for(state, SESSION), "老存档摘要")
-            self.assertEqual(self.engine.chat_summary_for(state, PRIVATE_SESSION), "")
 
     async def test_migrated_legacy_fields_land_on_their_own_session(self):
         """迁移（老 payload 读进来）之后，老字段也只归建档会话，别人读不到。"""
@@ -4256,10 +4157,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         }
         state = WorldState.from_payload(legacy, SESSION)
 
-        self.assertEqual(self.engine.chat_summary_for(state, SESSION), "升级前的旧摘要")
         self.assertEqual(self.engine.chat_note_for(state, SESSION), "升级前的旧备忘")
         self.assertEqual(self.engine.chat_preview_for(state, SESSION), "升级前的旧预览")
-        self.assertEqual(self.engine.chat_summary_for(state, PRIVATE_SESSION), "")
         self.assertEqual(self.engine.chat_note_for(state, PRIVATE_SESSION), "")
         self.assertEqual(self.engine.chat_preview_for(state, PRIVATE_SESSION), "")
 
@@ -4501,59 +4400,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("一小时前说的这句", prompt)
         self.assertIn("你已经回过话", prompt)
 
-    async def test_chat_dropped_by_the_cap_still_reaches_the_summary(self):
-        """被上限顶掉、还没轮到压缩的那几条，下次压缩要一起并进摘要。"""
 
-        self.set_context(
-            chat_history_max=20,
-            chat_overflow="compress",
-            chat_compress_threshold=80,
-            chat_keep_after_compress=10,
-            summary_refresh_minutes=1,
-        )
-        for index in range(25):
-            await self.engine.note_presence(
-                self.ctx(text=f"消息{index}", user_id="1", user_name="小明")
-            )
-        state = await self.get_state()
-        self.assertEqual(len(state.recent_chat), 20)
-        self.assertEqual(len(state.chat_dropped), 5, "顶掉的几条要先攒着")
-
-        self.llm.replies = ["本周大家在聊搬家，顺便问了她周末有没有空。"]
-        await self.engine.tick()
-
-        state = await self.get_state()
-        self.assertEqual(
-            self.engine.chat_summary_for(state, SESSION),
-            "本周大家在聊搬家，顺便问了她周末有没有空。",
-        )
-        self.assertEqual(state.chat_dropped, [], "并进摘要之后就该清掉")
-        sent = str(self.llm.calls[-1].get("prompt") or "")
-        self.assertIn("消息0", sent, "顶掉的那几条要出现在压缩请求里")
-
-    async def test_discard_mode_tells_the_user_chat_is_being_dropped(self):
-        """配置成"直接丢弃"时，留档满了要在日志里说清怎么改成压缩（一小时一次）。"""
-
-        self.set_context(chat_history_max=20, chat_overflow="discard")
-        for index in range(25):
-            await self.engine.note_presence(
-                self.ctx(text=f"消息{index}", user_id="1", user_name="小明")
-            )
-        state = await self.get_state()
-        self.assertEqual(state.chat_dropped, [], "直接丢弃模式不攒被顶掉的内容")
-
-        outcome = TickOutcome(session_id=SESSION)
-        async with self.engine.session_state(SESSION) as live:
-            await self.engine._maybe_compress_chat(live, outcome)
-            await self.engine._maybe_compress_chat(live, outcome)
-        events = await self.db.call("query_events", session_id=SESSION, limit=50)
-        warned = [
-            item
-            for item in events
-            if "留档已满"
-            in json.dumps(item.get("detail") or {}, ensure_ascii=False)
-        ]
-        self.assertEqual(len(warned), 1)
 
     def test_when_text_reads_relative_and_absolute_times(self):
         """日程的「什么时候」要能读懂「十分钟后」和「晚上八点」。"""
@@ -4632,34 +4479,21 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(ok)
         self.assertIn("不能再排日程", note)
 
-    async def test_clear_chat_context(self):
-        """清空上下文：留档与摘要一起清掉，其它状态不受影响。"""
-
-        # 压缩阈值有下限（10），所以这里攒够 14 条
-        self.set_context(chat_history_max=200, chat_overflow="compress",
-                         chat_compress_threshold=10, chat_keep_after_compress=2,
-                         summary_refresh_minutes=1)
+    async def test_clear_chat_context_keeps_world_and_life_memory(self):
+        self.set_context(chat_history_max=200)
         for index in range(14):
-            await self.engine.note_presence(
-                self.ctx(text=f"消息{index}", user_id="1", user_name="小明")
-            )
-        self.llm.replies = ["摘要是她正在和人聊周末安排。"]
-        await self.engine.tick()
-        state = await self.get_state()
-        self.assertTrue(self.engine.chat_summary_for(state, SESSION))
-
+            await self.engine.note_presence(self.ctx(text=f"消息{index}", user_id="1", user_name="小明"))
+        life = self.engine.memory.remember(session_id=SESSION, persona_id="", node_id=self.node_id, content="读完了一本书")
         result = await self.engine.clear_chat_context(SESSION)
-        self.assertEqual(result["removed"], 2)
-        self.assertTrue(result["had_summary"])
+        self.assertEqual(result["removed"], 14)
         state = await self.get_state()
         self.assertEqual(state.recent_chat, [])
-        self.assertEqual(self.engine.chat_summary_for(state, SESSION), "")
-        # 世界状态不受影响
         self.assertEqual(state.node_id, self.node_id)
-
+        self.assertIsNotNone(self.db.raw.memory_by_id(life))
         snapshot = await self.engine.snapshot(SESSION)
         self.assertEqual(snapshot["chat_history_count"], 0)
-        self.assertEqual(snapshot["chat_summary"], "")
+        self.assertNotIn("chat_summary", snapshot)
+
 
     async def test_takeover_reply_is_remembered_as_her_own_words(self):
         """她说出去的话要进聊天上下文，下一轮提示词才有「你最近说过的话」。"""
@@ -6538,7 +6372,6 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
                 "duration_ticks": 100,
                 "interruptible": False,
             }
-            state.pending_memory = []
             state.recent_chat = []
 
         for index in range(5):
@@ -8448,29 +8281,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([name for name, _params in self.tools.calls], ["hsearch"])
         self.assertEqual(self.tools.calls[0][1]["query"], "今天新闻")
 
-    def test_memory_summary_refusal_is_dropped(self):
-        """模型反过来"要人名"的那句不是记忆，直接丢掉，让兜底文案接手。"""
 
-        refusal = "这段记忆里没有出现对方的名字，两条都是「我」在说，我无法凭空捏造一个人名。"
-        self.assertEqual(self.engine._clean_memory_summary(refusal), "")
-        self.assertEqual(
-            self.engine._clean_memory_summary("我在厨房做好鱼，招呼人来蹭一口。"),
-            "我在厨房做好鱼，招呼人来蹭一口",
-        )
-
-    def test_memory_fallback_keeps_her_own_words(self):
-        """只有她自己说话时，兜底记忆直接用她自己的话，不套「我说」那层壳。"""
-
-        entries = [
-            {"name": "我", "text": "我在厨房做好鱼", "is_self": True},
-            {"name": "我", "text": "招呼人来蹭一口", "is_self": True},
-        ]
-        text = self.engine._fallback_memory_text(entries)
-        self.assertIn("厨房", text)
-        self.assertNotIn("我说", text)
-
-        mixed = entries + [{"name": "小明", "text": "好香", "is_self": False}]
-        self.assertIn("小明", self.engine._fallback_memory_text(mixed))
 
     def switch_to_other_search_tool(self, action_id: str = "search_web", node_id: str = "study"):
         """模拟用户把 web_search 换成另一个插件提供的搜索工具。"""
@@ -10099,137 +9910,41 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         async with self.engine.session_state(SESSION) as state:
             self.engine.mark_context_sources(state, self.ctx(), list(state.recent_chat))
 
-    async def drain_memory_jobs(self):
-        import asyncio
-        jobs = [task for key, task in getattr(self.engine, "_background_jobs", {}).items() if key.startswith("memory:")]
-        if jobs:
-            await asyncio.gather(*jobs)
 
     # ---------------- 对话记忆：攒片段再总结 ----------------
 
-    async def test_dialogue_is_not_stored_message_by_message(self):
-        """连着聊几句只攒着，一条记忆都不落。"""
-
+    async def test_dialogue_does_not_create_long_term_chat_memory(self):
         for text in ("在吗", "我今天加班到现在才下班", "好累啊"):
             await self.engine.handle_incoming(self.ctx(text=text))
         state = await self.get_state()
-        self.assertEqual(len(state.pending_memory), 3)
+        self.assertEqual(len(state.recent_chat), 3)
+        self.assertNotIn("pending_memory", state.to_payload())
         self.assertEqual(self.interaction_rows(), [])
 
-    async def test_summary_trigger_messages_writes_one_memory(self):
-        """攒够条数触发一次总结：一段对话只留一条。"""
 
-        raw = self.store.raw_world()
-        raw["memory"] = {"summary_trigger_messages": 3}
-        self.store.save_world(raw)
-        self.engine.reload_config()
-        self.llm.replies = ["小明说他加班到很晚，我有点心疼"]
 
-        for text in ("在吗", "我今天加班到现在才下班", "好累啊"):
-            await self.engine.handle_incoming(self.ctx(text=text))
-        await self.expose_dialogue()
-        await self.engine.flush_pending_memory(SESSION)
-
-        rows = self.interaction_rows()
-        self.assertEqual(len(rows), 1, rows)
-        self.assertEqual(rows[0]["content"], "小明说他加班到很晚，我有点心疼")
-        self.assertIn("42", rows[0]["related_users"])
-        self.assertEqual(rows[0]["node_id"], self.node_id)
-        state = await self.get_state()
-        self.assertEqual(state.pending_memory, [])
-
-    async def test_model_memory_field_is_only_a_hint(self):
-        """模型顺手给的 memory 只当写记忆时的提示，不单独落成一条。"""
-
-        self.llm.replies = [
-            '{"reasoning":{"intent":"安慰一下"},'
-            '"memory":"小明说他加班很累，我有点心疼",'
-            '"actions":[{"type":"say","messages":["辛苦啦"]}]}',
-            "小明说他加班到很晚，我有点心疼",
-        ]
+    async def test_legacy_chat_memory_output_is_ignored(self):
+        self.llm.replies = ['{"memory":"小明说他加班很累","actions":[{"type":"say","messages":["辛苦啦"]}]}']
         ctx = self.ctx(text="我今天加班到现在才下班，好累")
         await self.engine.handle_incoming(ctx)
         await self.engine.handle_reply(ctx)
         self.assertEqual(self.interaction_rows(), [])
-        self.assertEqual((await self.get_state()).memory_hints, ["小明说他加班很累，我有点心疼"])
-
-        self.clock.advance(31 * 60)
-        await self.engine.flush_pending_memory(SESSION)
-        rows = self.interaction_rows()
-        self.assertEqual(len(rows), 1, [row["content"] for row in rows])
-        self.assertEqual(rows[0]["content"], "小明说他加班到很晚，我有点心疼")
-        # 她自己说过的话也在同一段材料里（总结时能看到）
-        self.assertIn("辛苦啦", self.llm.calls[-1]["prompt"])
-
-    async def test_moving_summarizes_the_conversation_where_it_happened(self):
-        """换地点时把刚才那段总结掉，并挂在原来那个地点上。"""
-
-        await self.set_state(node_id="bedroom")
-        await self.engine.handle_incoming(self.ctx(text="我先去睡了，你也早点休息"))
-        self.assertEqual(self.interaction_rows(), [])
-        self.assertEqual((await self.get_state()).pending_memory_node, "bedroom")
-
-        # 走开：这一步走完就顺手把刚才那段总结掉
-        await self.set_state(
-            current_action={
-                "type": "walk_to",
-                "target_node": "study",
-                "duration_ticks": 1,
-                "elapsed_ticks": 0,
-                "interruptible": True,
-                "arrival_decide": 0,
-            }
-        )
-        await self.expose_dialogue()
-        await self.engine.tick()
-        await self.drain_memory_jobs()
-
         state = await self.get_state()
-        self.assertEqual(state.node_id, "study")
-        self.assertEqual(state.pending_memory, [])
-        rows = self.interaction_rows()
-        self.assertEqual(len(rows), 1, rows)
-        self.assertEqual(rows[0]["node_id"], "bedroom")
+        self.assertNotIn("memory_hints", state.to_payload())
+        self.assertNotIn("memory", state.external_state)
 
-    async def test_memory_flush_runs_on_tick(self):
-        """tick 会顺手把攒着的对话总结掉（不需要额外调用）。"""
 
-        await self.engine.handle_incoming(self.ctx(text="今天天气不错啊"))
-        self.clock.advance(31 * 60)
-        await self.expose_dialogue()
-        await self.engine.tick()
-        await self.drain_memory_jobs()
-        self.assertEqual(len(self.interaction_rows()), 1)
 
-    async def test_wake_up_and_memory_are_logged(self):
-        """叫醒和写记忆都要进事件日志（日志页与调试回显都用它）。"""
 
+    async def test_wake_up_is_logged_without_creating_a_chat_memory(self):
         await self.set_state(state="sleeping", current_action={"type": "sleep"})
         await self.engine.handle_incoming(self.ctx(text="醒醒，别睡了"))
-        self.clock.advance(31 * 60)
-        self.llm.replies = []  # 没有总结可用 -> 退化成一行摘录
         await self.expose_dialogue()
-        await self.engine.flush_pending_memory(SESSION)
-
         events = await self.db.call("query_events", session_id=SESSION, limit=50)
-        kinds = [item["event_type"] for item in events]
-        self.assertIn("wake_up", kinds)
-        self.assertIn("memory", kinds)
-        memory_event = next(item for item in events if item["event_type"] == "memory")
-        self.assertIn("醒醒", memory_event["detail"]["content"])
+        self.assertIn("wake_up", [row["event_type"] for row in events])
+        self.assertEqual(self.interaction_rows(), [])
 
-    async def test_summary_falls_back_to_an_excerpt_without_a_model(self):
-        """模型没给出总结时，退化成一行摘录，而不是什么都不记。"""
 
-        await self.engine.handle_incoming(self.ctx(text="我今天加班到现在才下班"))
-        self.engine.llm = None
-        self.clock.advance(31 * 60)
-        await self.expose_dialogue()
-        await self.engine.flush_pending_memory(SESSION)
-        rows = self.interaction_rows()
-        self.assertEqual(len(rows), 1, rows)
-        self.assertIn("我今天加班到现在才下班", rows[0]["content"])
-        self.assertIn("小明", rows[0]["content"])
 
     async def test_takeover_falls_back_when_llm_unavailable(self):
         """没有可用模型/调用失败时返回 ok=False：这一条就不回了，不换人答。"""

@@ -62,7 +62,7 @@
           <button data-tab="events" title="事件">事件</button>
           <button data-tab="contacts" title="通讯录">通讯录</button>
           <button data-tab="relationships" title="关系与好感">关系与好感</button>
-          <button data-tab="memories" title="记忆库">记忆库</button>
+          <button data-tab="memories" title="生活记忆">生活记忆</button>
           <button data-tab="logs" title="日志">日志</button>
           <button data-tab="model-calls" title="模型调用">模型调用</button>
           <button data-tab="ticks" title="运行记录">运行</button>
@@ -159,7 +159,7 @@
               <button id="state-decide" class="ghost">触发决策</button>
               <button id="state-interrupt" class="ghost">打断动作</button>
               <button id="state-wake" class="ghost">叫醒</button>
-              <hr /><button id="state-clear-context" class="danger" title="清空这个会话的群聊留档与摘要">清空上下文…</button>
+              <hr /><button id="state-clear-context" class="danger" title="清空这个会话的近期消息与话题备忘">清空上下文…</button>
             </div></details>
             <details class="command-menu nickname-menu"><summary>群名片</summary><div class="command-menu-body">
               <label class="field"><span>她在这个群的名片</span><input id="status-nickname" placeholder="输入群名片" /></label>
@@ -736,10 +736,9 @@
                   <select id="memory-type">
                     <option value="">全部</option>
                     <option value="scene">场景</option>
-                    <option value="relation">关系</option>
                     <option value="event">事件</option>
                     <option value="inner">内心</option>
-                    <option value="interaction">互动</option>
+                    <option value="dream">梦境</option>
                   </select>
                 </label>
                 <label class="field">
@@ -759,7 +758,7 @@
               <div class="toolbar">
                 <button id="memory-filter-toggle" class="ghost filter-toggle" type="button">更多筛选 ▾</button>
                 <button id="memory-search" class="ghost">筛选</button>
-                <button id="memory-policy" class="ghost" type="button">共存设置</button>
+                <button id="memory-policy" class="ghost" type="button">回忆设置</button>
                 <button id="memory-vocabulary" class="ghost" type="button">会话词典</button>
                 <button id="memory-add" class="primary">新增记忆</button>
               </div>

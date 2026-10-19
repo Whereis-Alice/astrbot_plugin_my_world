@@ -4,7 +4,7 @@ export const CALL_PURPOSES = {
   life_matter: "生活事项",
   embedding: "语义记忆检索",
   chat: "对话回复", plan: "自主决策", tick: "生活推进", event: "事件推进与结算", consolidate: "睡眠整理",
-  context: "上下文压缩", memory: "记忆处理", helper: "参数补全", judge: "辅助判断", creation: "内容生成",
+  context: "上下文管理", memory: "记忆处理", helper: "参数补全", judge: "辅助判断", creation: "内容生成",
   persona: "角色与样例", evaluation: "角色测评", vision: "图片转述", vision_relation: "图片话题分析",
   forward: "转发摘要", profile: "画像提取", reflection: "对话复盘", followup: "动作后续回应",
   schedule: "日程执行", search: "搜索与阅读", weather: "天气整理", action: "动作文字", extension: "扩展调用",

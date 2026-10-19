@@ -81,8 +81,6 @@ class TickMixin:
             self._log("warning", f"日程检查失败: {exc}")
         finally:
             CRITICAL_TICK.reset(schedule_token)
-        for session_id in [row.session_id for row in outcomes if row.summary.get("memory_due")]:
-            self.queue_background("memory:" + self.state_key(session_id), lambda sid=session_id: self.flush_pending_memory(sid))
         for session_id in self.tick_session_ids():
             self.queue_background("social:" + self.state_key(session_id), lambda sid=session_id: self.maintain_social_learning(sid))
         for outcome in outcomes:
@@ -224,9 +222,6 @@ class TickMixin:
             except Exception as exc:
                 self._log("warning", f"事件系统出错：{exc}")
 
-            # 4) 群聊留档攒太多时压成摘要（只在配置成"压缩"时才会跑）
-            await self._maybe_compress_chat(state, outcome)
-
             # 4.5) 心事随时间淡掉；到期就放下（写进记忆）
             self._decay_heart_knots(state, now=self._now())
             # 4.6) 她记着的账、她自己的事：都到点就放下（账会写进记忆）
@@ -297,7 +292,6 @@ class TickMixin:
             if state.current_action or state.current_plan:
                 node = self.node(state.node_id) or node
             outcome.summary = {
-                "memory_due": bool(self._memory_flush_reason(state)) or await self.db.call("has_pending_memory_batch", self.group_sessions(session_id)),
                 "life_seed_due": self.life_seed_due(state),
                 "matters_pending": any(item.get("status") not in {"completed", "abandoned", "expired", "paused"} for item in state.life_matters),
                 "world_time": int(state.world_time),
@@ -423,8 +417,6 @@ class TickMixin:
             target_node = str(action.get("target_node", "") or "")
             if target_node and target_node in self.world.node_map():
                 # 离开这个地点之前，把刚才在那儿聊的那段总结成一条记忆
-                if bool(self.world.memory.summary_on_move):
-                    state.memory_flush_wanted = True
                 state.node_id = target_node
                 # 换地方了：事件系统按"在这里待了多久"决定要不要出事，重新计时
                 state.node_since = self._now()

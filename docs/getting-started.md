@@ -226,7 +226,6 @@
 | `llm_provider_id` | 空 | 插件自己发起的调用用哪个 Provider；留空用会话默认。分工见下一节 |
 | `helper_provider_id` | 空 | **辅助模型**：把「她想干什么」翻译成工具参数。建议填便宜、快、能稳定输出 JSON 的模型；留空则复用 `llm_provider_id` |
 | `vision_provider_id` | 空 | **图片转述模型**：必须是支持图片输入的多模态 Provider。**留空表示不转述，直接把图片交给多模态主模型**（上限见「全局设置 → 上下文」） |
-| `context_provider_id` | 空 | **上下文压缩模型**：只在「全局设置 → 上下文 → 留档超了怎么办 = 压成摘要」时才会被调用；留空复用 `llm_provider_id` |
 | `creator_provider_id` | 空 | **内容生成模型**：只在编辑器里点「生成动作 / 生成地点」时写草稿，运行时完全不调用；留空复用 `llm_provider_id` |
 | `tick_interval` | 60 | 世界时钟步长（秒）。`world_time` 以 tick 计数，动作/移动耗时都以 tick 为单位 |
 | `decider_interval` | 300 | 自主决策评估间隔（秒） |

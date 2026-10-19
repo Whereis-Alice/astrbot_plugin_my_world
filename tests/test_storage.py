@@ -119,7 +119,7 @@ class TestConfigStore(TempDirMixin, unittest.TestCase):
         self.assertEqual(world.limits, Limits())
         self.assertEqual(world.context, ContextConfig())
         self.assertEqual(world.limits.max_replies_per_hour, 200)
-        self.assertEqual(world.context.chat_overflow, "compress")
+        self.assertFalse(hasattr(world.context, "chat_overflow"))
 
     def test_old_defaults_are_neither_rewritten_nor_reported(self):
         """还停在旧版默认值的项：**不替用户改，也不提醒**。
@@ -136,7 +136,7 @@ class TestConfigStore(TempDirMixin, unittest.TestCase):
         raw["context"] = {"chat_overflow": "discard"}
         world, warnings = parse_world(raw)
         self.assertEqual(world.limits.max_replies_per_hour, 15, "不该替用户改")
-        self.assertEqual(world.context.chat_overflow, "discard")
+        self.assertFalse(hasattr(world.context, "chat_overflow"))
         self.assertEqual([], [item for item in warnings if "默认值" in str(item)], warnings)
 
     def test_invalid_node_references_are_repaired(self):

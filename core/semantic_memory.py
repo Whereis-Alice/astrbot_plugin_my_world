@@ -113,8 +113,6 @@ class SemanticMemory:
                 # Apply the exact same privacy rules BEFORE sending any text to an embedding provider.
                 candidates = await asyncio.to_thread(self.memory._query, session, persona, mode or self.memory.world.memory_scope_mode,
                     session_ids=self.memory.sessions(session))
-                if automatic and config.automatic_recall == "life_only":
-                    candidates = [row for row in candidates if row.get("type") != "interaction"]
                 if not candidates:
                     return
                 model_key = revision(config.semantic_endpoint + "|" + config.semantic_model)

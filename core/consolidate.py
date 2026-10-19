@@ -1,13 +1,4 @@
-"""睡眠整理：把这段时间的经历消化成记忆与画像，顺手把细节折叠掉。
-
-对着人类的记忆机制做的三件事：
-
-1. **消化**（慢波睡眠的系统巩固）：原始聊天 + 现有记忆 + 画像现状 → 要点、事实、关系、缩略版；
-2. **重组**：同一个人的同一件事合并、被确认过的旧记忆更新、回访时间按间隔重复往后排；
-3. **遗忘**：只"折叠"（raw → gist，原文进 ``context``），**不删除**——忘的是细节，不是那件事。
-
-小睡只做轻整理：要点化 + 缩略版 + 一条梦，不碰关系与事实（小睡短，做重判断容易记错）。
-"""
+"""睡眠时分别整理人物资料与已发生的生活经历，不保存聊天往事。"""
 
 from __future__ import annotations
 
@@ -19,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from .json_actions import extract_json_object
-from .memory import INTERACTION, MemoryEngine
+from .memory import DREAM, MemoryEngine
 from .profile import ProfileStore
 
 REVIEW_STEPS = (1.0, 3.0, 7.0, 30.0)
@@ -43,9 +34,6 @@ def _fallback_session_label(session_id: str) -> str:
             kind = name
             break
     return f"{kind} {number}" if kind else f"会话 {number}"
-
-DREAM_TYPE = "dream"
-"""梦：低权重的记忆，只进"想起"那一段，不进画像。"""
 
 MAX_FACTS_PER_RUN = 8
 """一次整理最多记几条"关于他的事"（模型一次给太多时，多半是在凑数）。"""
@@ -187,6 +175,8 @@ class Consolidator:
         labels = dict(session_labels or {})
         lines: list[str] = []
         for item in rows:
+            if item.get("type") == DREAM:
+                continue
             stamp = time.strftime(
                 "%m-%d", time.localtime(float(item.get("created_at") or 0.0))
             )
@@ -195,26 +185,26 @@ class Consolidator:
             tail = f"（{people}）" if people else ""
             where = self._where(str(item.get("session_id") or ""), labels)
             lines.append(
-                f"#{item['id']} [{stamp}·{tier}·{where}] "
+                f"#{item['id']} [{stamp}·{tier}·{item['type']}·{where}] "
                 f"{str(item.get('content') or '')[:120]}{tail}"
             )
         return lines
 
-    def profile_lines(self, session_id: str, *, limit: int = 40) -> list[str]:
-        """她现在认识的人：给整理模型当"已知"，免得重复记同一件事。"""
+    def profile_lines(self, session_id: str, *, limit: int = 40, user_ids: set[str] | None = None) -> list[str]:
+        """保留本批说话人已有的稳定速写；它不是新的原话证据。"""
 
         rows: list[str] = []
         for row in self.profiles.list_people(session_id, limit=limit):
             user_id = str(row.get("user_id") or "")
+            if user_ids is not None and user_id not in user_ids:
+                continue
             payload = dict(row.get("payload") or {})
             names = [str(item) for item in (payload.get("names") or []) if str(item)]
-            bonds = self.profiles.bonds(session_id, user_id, statuses=["current"])
             view = self.profiles.view(session_id, user_id)
             bits = [
+                f"session={session_id}",
                 f"QQ {user_id}",
                 names[-1] if names else user_id,
-                "、".join(str(bond.get("type") or "") for bond in bonds) or "没定关系",
-                f"好感 {round(float(row.get('affinity') or 0.0))}",
             ]
             if view is not None and view.digest:
                 bits.append(f"印象：{view.digest}")
@@ -245,40 +235,25 @@ class Consolidator:
     # ---------------- 跑一次整理 ----------------
 
     async def run(
-        self,
-        *,
-        session_id: str,
+        self, *, session_id: str,
         llm: Callable[[str, str], Awaitable[str | None]] | None,
-        mode: str = "full",
-        chat_records: list[dict[str, Any]] | None = None,
-        persona_text: str = "",
-        pending: list[str] | None = None,
-        now: float | None = None,
-        dry_run: bool = False,
-        session_labels: dict[str, str] | None = None,
-        current_session: str = "",
+        mode: str = "full", chat_records: list[dict[str, Any]] | None = None,
+        persona_text: str = "", now: float | None = None, dry_run: bool = False,
+        session_labels: dict[str, str] | None = None, current_session: str = "",
+        context_current: Callable[[], Awaitable[bool]] | None = None,
     ) -> ConsolidateResult:
-        """跑一次整理。``llm(system, prompt)`` 由调用方提供（独立整理模型）。
-
-        ``dry_run=True``：照常组装输入、调模型、解析，但**一个字都不写库**，
-        把提示词与模型原话一起返回——用来先看"它整理得像不像样"。
-        """
-
+        """Two independent stages: direct speech -> profiles; lived events -> journal review."""
         result = ConsolidateResult(mode=str(mode or "full"))
+        world = self.world
         if llm is None or self.prompts is None:
             result.note = "没有可用的整理模型"
             return result
         stamp = float(now if now is not None else time.time())
-        max_items = 12 if result.mode == "full" else 6
-        records = []
-        source_map = {}
-        observed = {}
+        records, observed = [], {}
         for row in chat_records or []:
             snapshot = source_snapshot(row, session_id)
             stored = self.memory.db.source_record(snapshot["id"])
-            if stored is not None and not stored["eligible"]:
-                continue
-            if row.get("eligible") is False and stored is None:
+            if stored is not None and not stored["eligible"] or row.get("eligible") is False and stored is None:
                 continue
             if snapshot["kind"] not in {"direct_speech", "self_statement"}:
                 continue
@@ -286,124 +261,105 @@ class Consolidator:
             body = direct_text(str(original.get("text") or ""))
             if not body:
                 continue
-            record = {**row, "text": body, "source_id": snapshot["id"]}
-            records.append(record)
-            source_map[snapshot["id"]] = {**original, "text": body}
+            records.append({**row, "text": body, "source_id": snapshot["id"]})
             if not stored:
                 observed[snapshot["id"]] = snapshot
-
-        batch_key = self._batch_key(session_id, result.mode, records)
-        if records and not dry_run and self.memory.db.kv_get(batch_key):
+        profile_key = self._batch_key(session_id, result.mode, records)
+        stages = []
+        if records and self.world.profile.enabled and self.world.profile.consolidate_enabled and not self.memory.db.kv_get(profile_key):
+            known_profiles = []
+            for sid in self._sessions_of(session_id):
+                users = {str(row.get("user_id") or "") for row in records
+                         if not row.get("is_self") and str(row.get("origin") or session_id) == sid}
+                known_profiles.extend(self.profile_lines(sid, user_ids=users))
+            system, prompt = self.prompts.build_consolidate_prompt(
+                persona_text=persona_text,
+                known_profiles=known_profiles[:40],
+                chat_lines=self.chat_lines(records, session_labels=session_labels,
+                                          current_session=current_session or session_id),
+                date_text=time.strftime("%Y-%m-%d", time.localtime(stamp)), mode=result.mode,
+                max_items=12 if result.mode == "full" else 6,
+            )
+            stages.append(("profiles", profile_key, system, prompt, {}))
+        old = self.memory_lines(session_id, session_labels=session_labels)
+        old_ids = {int(line.split(" ", 1)[0][1:]) for line in old}
+        fields = ("content", "context", "session_id", "persona_id", "scope", "tier", "type", "source", "pinned")
+        def version(mid):
+            row = self.memory.db.memory_by_id(mid)
+            return {key: row.get(key) for key in fields} if row else None
+        versions = {mid: version(mid) for mid in old_ids}
+        life_key = "life-review:" + hashlib.sha256(json.dumps(
+            [session_id, result.mode, versions], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        if old and self.world.memory.sleep_review and not self.memory.db.kv_get(life_key):
+            system, prompt = self.prompts.build_life_review_prompt(
+                memories=old, persona_text=persona_text, mode=result.mode)
+            stages.append(("life", life_key, system, prompt, versions))
+        if not stages:
             result.ok = True
-            result.note = "这批来源已经整理过，不重复记账"
+            result.note = "没有新的生活经历或待整理的画像来源"
             return result
-
-        here = str(current_session or session_id or "")
-        system, prompt = self.prompts.build_consolidate_prompt(
-            persona_text=persona_text,
-            # 素材带来源标签（群 / 私聊）：模型才知道"这是哪里说的话"，
-            # 免得把两处的对话压成同一件事。素材本身不按会话过滤。
-            chat_lines=self.chat_lines(
-                records,
-                session_labels=session_labels,
-                current_session=here,
-            ),
-            # New evidence extraction never sees recalled conclusions or existing feelings.
-            memories=[],
-            profiles=[],
-            pending=list(pending or []),
-            date_text=time.strftime("%Y-%m-%d", time.localtime(stamp)),
-            mode=result.mode,
-            max_items=max_items,
-        )
-        try:
-            reply = await llm(system, prompt)
-        except Exception as exc:
-            result.note = f"整理调用失败：{exc}"
-            return result
-        payload = extract_json_object(reply or "")
-        result.raw = str(reply or "")[:2000]
-        if dry_run:
-            result.ok = bool(reply)
-            result.note = "预览：只跑模型，没有写库"
-            result.parsed = payload if isinstance(payload, dict) else {}
-            result.preview = {"system": system, "user": prompt}
-            if not isinstance(payload, dict) or not payload:
-                result.note = "预览：模型没给出可用的 JSON"
-            return result
-        if not isinstance(payload, dict) or not payload:
-            result.note = "整理模型没有给出可用的 JSON"
-            return result
-        # Scores belong to the blind per-turn evaluation, never to sleep or old-memory review.
-        if payload.pop("affinity", None):
-            result.skipped.append("睡眠整理不重复修改好感；会话来源不明确或已有的互动评价留给逐轮评估处理")
-        payload.pop("merge", None)
-        payload.pop("forget", None)
-        review_versions = {}
-        if result.mode == "full":
-            old = self.memory_lines(session_id, session_labels=session_labels)
-            old_ids = {int(line.split(" ", 1)[0][1:]) for line in old}
-            review_versions = {mid: self.memory.db.memory_by_id(mid) for mid in old_ids}
-            if old:
-                try:
-                    reviewed = extract_json_object(await llm(
-                        "只整理已经存在的记忆。不能提取新事实、判断用户动机、改变好感、关系或人设。"
-                        "保留日期和事实变化，不把旧总结作为新证据。只输出 JSON："
-                        '{"merge":[{"keep_id":1,"drop_ids":[2],"text":"保持原意的概括"}],'
-                        '"forget":[{"id":3,"text":"保留原意的简短要点"}]}。可以输出空对象。',
-                        json.dumps({"existing_memories": old}, ensure_ascii=False)) or "")
-                    if isinstance(reviewed, dict):
-                        payload.update({key: reviewed.get(key, []) for key in ("merge", "forget")})
-                except Exception:
-                    result.skipped.append("旧记忆整理暂缓；新证据仍独立保存")
-            payload["_review_ids"] = old_ids
-        for field in ("memories", "notes"):
-            for item in self._rows(payload.get(field)):
-                raw_ids = item.get("source_ids")
-                ids = [str(sid) for sid in raw_ids if str(sid) in source_map] if isinstance(raw_ids, list) else []
-                if not ids and item.get("context"):
-                    quote = " ".join(str(item["context"]).split())
-                    ids = [sid for sid, record in source_map.items() if len(quote) >= 4 and quote in str(record.get("text") or "")]
-                item["_evidence"] = [source_map[sid] for sid in ids]
-                if not ids:
-                    item["_ungrounded"] = True
-                if ids:
-                    item["context"] = "\n".join(f"{source_map[sid].get('name') or source_map[sid].get('user_id')}: {source_map[sid].get('text')}" for sid in ids)
-        if not records:
-            # Preserve idempotency for an old-memory-only review, without trusting new facts.
-            batch_key = self._batch_key(session_id, result.mode, records, {
-                k: v for k, v in payload.items() if not k.startswith("_")
-            })
-        if self.memory.db.kv_get(batch_key):
-            result.ok = True
-            result.note = "这批来源已经整理过，不重复记账"
-            return result
-        result.ok = True
-        if result.mode != "nap":
-            payload = {**payload, "relations": self._grounded_relations(payload, records, result)}
-        with self.memory.db.atomic():
-            if self.memory.db.kv_get(batch_key):
-                result.note = "这批来源已经整理过，不重复记账"
-                return result
-            for snapshot in observed.values():
-                self.memory.db.observe_source(snapshot, eligible=True)
-            payload["_review_ids"] = {
-                mid for mid, before in review_versions.items()
-                if before is not None and (after := self.memory.db.memory_by_id(mid))
-                and all(before.get(key) == after.get(key) for key in (
-                    "content", "context", "session_id", "persona_id", "scope", "tier"
-                ))
-            }
-            scoped = self._scoped_profile_updates(session_id, payload, records, result)
-            for sid, local in scoped.items():
-                local_records = [row for row in records if str(row.get("origin") or session_id) == sid]
-                local_known = self.known_ids(sid, local_records)
-                if result.mode == "nap":
-                    self._apply_nap(sid, local, result, now=stamp, known=local_known)
+        previews, parsed = [], {}
+        for kind, batch_key, system, prompt, before in stages:
+            if self.world is not world or context_current is not None and not await context_current():
+                result.skipped.append("角色或世界已改变，剩余整理结果不保存")
+                break
+            try:
+                reply = await llm(system, prompt)
+                payload = extract_json_object(reply or "")
+            except Exception as exc:
+                result.skipped.append(f"{'画像' if kind == 'profiles' else '生活'}整理暂缓：{exc}")
+                continue
+            if self.world is not world or context_current is not None and not await context_current():
+                result.skipped.append("角色或世界已改变，本次整理结果不保存")
+                break
+            result.raw = (result.raw + f"[{kind}] " + str(reply or ""))[:2000]
+            previews.append({"stage": kind, "system": system, "user": prompt})
+            if not isinstance(payload, dict):
+                result.note = "整理模型没有给出可用的 JSON"
+                continue
+            # Strict output allowlists: ignore even valid JSON from the other stage.
+            if kind == "profiles":
+                keys = {"digests"} if result.mode == "nap" else {"facts", "relations", "digests"}
+            else:
+                keys = {"forget", "dream"} if result.mode == "nap" else {"merge", "forget", "dream"}
+            payload = {key: value for key, value in payload.items() if key in keys}
+            parsed[kind] = payload
+            if dry_run:
+                result.ok = True
+                continue
+            if kind == "profiles" and result.mode != "nap":
+                payload["relations"] = self._grounded_relations(payload, records, result)
+            with self.memory.db.atomic():
+                if self.memory.db.kv_get(batch_key):
+                    continue
+                if kind == "profiles":
+                    for snapshot in observed.values():
+                        self.memory.db.observe_source(snapshot, eligible=True)
+                    for sid, local in self._scoped_profile_updates(session_id, payload, records, result).items():
+                        known = self.known_ids(sid, [row for row in records if str(row.get("origin") or session_id) == sid])
+                        apply = self._apply_nap if result.mode == "nap" else self._apply_full
+                        apply(sid, local, result, now=stamp, known=known)
                 else:
-                    self._apply_full(sid, local, result, now=stamp, known=local_known)
-            self.memory.db.kv_set(batch_key, {"at": stamp})
+                    valid = {mid for mid, original in before.items() if original is not None
+                             and version(mid) == original}
+                    # A stale review/dream cannot describe an edited or deleted experience.
+                    if valid != set(before):
+                        result.skipped.append("生活材料已改变，本次整理结果不保存")
+                        continue
+                    payload["_review_ids"] = valid
+                    self._apply_full(session_id, payload, result, now=stamp, known=set())
+                self.memory.db.kv_set(batch_key, {"at": stamp})
+                if kind == "life":
+                    after = {mid: version(mid) for mid in before}
+                    after_key = "life-review:" + hashlib.sha256(json.dumps([session_id, result.mode, after], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+                    self.memory.db.kv_set(after_key, {"at": stamp})
+                result.ok = True
+        if dry_run:
+            result.preview = {**(previews[0] if previews else {}), "stages": previews}
+            result.parsed = parsed
+            result.note = "预览：画像与生活分开整理，没有写库"
         return result
+
 
     @staticmethod
     def _batch_key(session_id, mode, records, payload=None):
@@ -465,25 +421,8 @@ class Consolidator:
             sid = destination({"user_id": str(uid)})
             if sid:
                 local[sid]["digests"][str(uid)] = text
-        routed_memories = {sid: [] for sid in sessions}
-        for item in self._rows(payload.get("memories")):
-            if item.get("_ungrounded"):
-                result.skipped.append("新记忆没有可核对的来源，暂不保存")
-                continue
-            origins = {record["session"] for record in item.get("_evidence", [])}
-            if len(origins) == 1 and next(iter(origins)) in sessions:
-                routed_memories[next(iter(origins))].append(item)
-            elif not origins:
-                routed_memories[session_id].append(item)
-            else:
-                result.skipped.append("一条记忆混入多个会话来源，暂不保存")
-        for sid, items in routed_memories.items():
-            local[sid]["memories"] = items
-        # Shared memory processing and the dream run once, in the original life.
-        main = {**payload, **local.pop(session_id)}
-        local[session_id] = main
-        return {sid: part for sid, part in local.items() if sid == session_id
-                or any(part.get(field) for field in ("facts", "relations", "affinity", "digests", "memories"))}
+        return {sid: part for sid, part in local.items()
+                if any(part.get(field) for field in ("facts", "relations", "digests"))}
 
     def _grounded_relations(
         self, payload: dict[str, Any], records: list[dict[str, Any]], result: ConsolidateResult
@@ -528,11 +467,11 @@ class Consolidator:
             text = str(item.get("text") or "").strip()
             allowed = payload.get("_review_ids", set())
             kept = self.memory.db.memory_by_id(keep) if keep in allowed else None
-            if kept is None or not text:
+            if kept is None or kept.get("pinned") or not text:
                 continue
             drops = [value for value in drops if value != keep and value in allowed]
             drops = [value for value in drops if (row := self.memory.db.memory_by_id(value))
-                     and all(row.get(key) == kept.get(key) for key in ("session_id", "persona_id", "scope"))]
+                     and not row.get("pinned") and all(row.get(key) == kept.get(key) for key in ("session_id", "persona_id", "scope", "type"))]
             self.memory.fold(keep, text=text[:200], when=now)
             for drop in drops:
                 sources = self.memory.db.memory_sources(drop)["sources"]
@@ -570,7 +509,7 @@ class Consolidator:
         # 提示词里那一类（每类最多 6 条）就全是废话了。
         # 除了这一轮写到的人，材料里出现的人一起过一遍——这样早先攒下来的重复
         # 也能在她第一次睡觉整理时清掉。
-        for user_id in sorted(set(touched_facts) | set(list(known)[:12])):
+        for user_id in sorted(set(touched_facts) | set(list(known or set())[:12])):
             merged = self.profiles.dedupe_facts(session_id, user_id)
             if merged:
                 result.facts_merged += merged
@@ -601,14 +540,10 @@ class Consolidator:
         )
         for item in self._rows(payload.get("forget")):
             memory_id = self._int(item.get("id"))
-            if memory_id in payload.get("_review_ids", set()):
+            row = self.memory.db.memory_by_id(memory_id)
+            if memory_id in payload.get("_review_ids", set()) and row and not row.get("pinned"):
                 self.memory.fold(memory_id, text=str(item.get("text") or ""), when=now)
                 result.folded += 1
-        # Apply fresh evidence last: reviewing an old ID must not overwrite a
-        # new fact that updates that same ID through the conflict policy.
-        for item in self._rows(payload.get("memories")):
-            if self._write_memory(session_id, item, result, now=now):
-                result.memories += 1
         result.dream = self._apply_dream(session_id, payload.get("dream"), now=now)
 
     # ---------------- 落库：小睡 ----------------
@@ -622,9 +557,6 @@ class Consolidator:
         now: float,
         known: set[str] | None = None,
     ) -> None:
-        for item in self._rows(payload.get("notes")):
-            if self._write_memory(session_id, item, result, now=now):
-                result.memories += 1
         result.digests += self._apply_digests(
             session_id, payload.get("digests"), known=known
         )
@@ -653,48 +585,7 @@ class Consolidator:
 
         return bool(user_id) and user_id in (known or set())
 
-    def _write_memory(
-        self,
-        session_id: str,
-        item: dict[str, Any],
-        result: ConsolidateResult,
-        *,
-        now: float,
-    ) -> bool:
-        if item.get("_ungrounded"):
-            result.skipped.append("新记忆没有可核对的来源，暂不保存")
-            return False
-        text = " ".join(str(item.get("text") or "").split())[:200]
-        if not text:
-            return False
-        people = [
-            str(value)
-            for value in (item.get("participants") or [])
-            if str(value).strip()
-        ]
-        days = float(item.get("review_in_days") or 0.0)
-        next_at = now + days * 86400 if days > 0 else 0.0
-        memory_id = self.memory.remember(
-            session_id=session_id,
-            persona_id="",
-            node_id=str(item.get("node_id") or ""),
-            content=text,
-            memory_type=str(item.get("type") or INTERACTION),
-            related_users=people,
-            participants=people,
-            emotion=str(item.get("emotion") or ""),
-            weight=float(item.get("weight") or 0.55),
-            source="consolidate",
-            tier="gist",
-            context=str(item.get("context") or ""),
-            evidence=item.get("_evidence") or [],
-            keywords=[
-                str(value) for value in (item.get("keywords") or []) if str(value)
-            ],
-            next_review_at=next_at,
-            pinned=bool(item.get("pinned")),
-        )
-        return bool(memory_id)
+
 
     def _apply_digests(
         self, session_id: str, value: Any, *, known: set[str] | None = None
@@ -721,7 +612,7 @@ class Consolidator:
             persona_id="",
             node_id="",
             content=f"做了个梦：{text}",
-            memory_type=INTERACTION,
+            memory_type=DREAM,
             emotion="迷糊",
             weight=0.25,
             source="dream",

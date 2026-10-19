@@ -231,14 +231,20 @@ class MattersAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("从日子里积累的活动经验", matters.context_block(state, session_id=SESSION))
 
     async def test_context_eligibility_uses_message_identity_and_keeps_full_original(self):
-        state = await self.state()
         text = "这是一段很长的原话，" * 40
         for key in ("first", "second"):
-            self.engine.note_dialogue(state, user_id="42", text=text, source_id=key, origin=SESSION)
-        self.engine.mark_context_sources(state, self.ctx(user_id="42"),
-            [{"user_id":"42", "text":text, "event_key":"first", "origin":SESSION}])
-        self.assertEqual([row["eligible"] for row in state.pending_memory], [True, False])
-        self.assertEqual(state.pending_memory[0]["source_snapshot"]["text"], text)
+            await self.engine.note_presence(self.ctx(user_id="42", text=text, message_id=key))
+        state = await self.state()
+        rows = [row for row in state.recent_chat if row.get("user_id") == "42"]
+        self.assertEqual(len(rows), 2)
+        from unittest.mock import patch
+        with patch.object(self.engine, "chat_context_for_reply", return_value=[]):
+            self.engine.mark_context_sources(state, self.ctx(user_id="42"), [rows[0]])
+        sources = [self.db.raw.source_record(row["source_id"]) for row in rows]
+        self.assertEqual([row["eligible"] for row in sources], [True, False])
+        self.assertEqual(sources[0]["text"], text)
+        self.assertNotIn("pending_memory", state.to_payload())
+
 
     async def test_next_stage_keeps_previous_receipts_and_does_not_finish_the_goal(self):
         async with self.engine.session_state(SESSION) as state:
@@ -274,58 +280,21 @@ class MattersAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         finally:
             lock.release()
 
-    async def test_frozen_memory_batch_recovers_after_generation_cancellation(self):
-        async with self.engine.session_state(SESSION) as state:
-            self.engine.note_dialogue(state, user_id="42", text="读到第四章", source_id="read4", origin=SESSION)
-            state.pending_memory[0]["eligible"] = True
-            state.memory_flush_wanted = True
-        self.engine._ask_llm = AsyncMock(side_effect=asyncio.CancelledError())
-        with self.assertRaises(asyncio.CancelledError):
-            await self.engine.flush_pending_memory(SESSION)
-        self.assertIsNotNone(self.db.raw.pending_memory_batch(SESSION))
-        async with self.engine.session_state(SESSION) as state:
-            self.engine.note_dialogue(state, user_id="7", text="新来的消息", source_id="new", origin=SESSION)
-        self.engine._ask_llm = AsyncMock(return_value="今天读到第四章")
-        await self.engine.flush_pending_memory(SESSION)
-        self.assertIsNone(self.db.raw.pending_memory_batch(SESSION))
-        self.assertEqual((await self.state()).pending_memory[0]["text"], "新来的消息")
-        self.assertEqual(len(self.db.raw.query_memories(memory_type="interaction")), 1)
 
-    async def test_shared_life_summaries_keep_each_original_conversation(self):
-        other = "test:FriendMessage:42"
-        self.add_group(sessions=[SESSION, other])
-        async with self.engine.session_state(SESSION) as state:
-            for origin, text in [(other,"私聊中的约定"), (SESSION,"群里聊过的事")]:
-                self.engine.note_dialogue(state, user_id="42", text=text, source_id=origin, origin=origin)
-                state.pending_memory[-1]["eligible"] = True
-            state.memory_flush_wanted = True
-            state.memory_hints = ["不应跨会话传递的提示"]
-        self.engine._ask_llm = AsyncMock(side_effect=asyncio.CancelledError())
-        with self.assertRaises(asyncio.CancelledError):
-            await self.engine.flush_pending_memory(SESSION)
-        self.assertTrue(self.db.raw.has_pending_memory_batch([other]))
-        self.engine._ask_llm = AsyncMock(return_value="私下说过的话")
-        await self.engine.flush_pending_memory(SESSION)
-        private = self.db.raw.query_memories(session_id=other, memory_type="interaction")
-        self.assertEqual(len(private), 1)
-        self.assertEqual(self.db.raw.query_memories(session_id=SESSION, memory_type="interaction"), [])
-        self.assertNotIn("不应跨会话传递的提示", self.engine._ask_llm.call_args.args[-1])
 
     async def test_native_self_reply_keeps_its_actual_conversation_in_shared_life(self):
         other = "test:FriendMessage:42"
         self.add_group(sessions=[SESSION, other])
         await self.engine.record_self_reply(other, "这句只在私聊说过", persona_id="p")
         state = await self.state()
-        entry = state.pending_memory[-1]
+        entry = state.recent_chat[-1]
         self.assertEqual(entry["origin"], other)
-        self.assertEqual(entry["source_snapshot"]["session"], other)
-        self.assertEqual(entry["source_snapshot"]["kind"], "self_statement")
-        async with self.engine.session_state(SESSION) as state:
-            state.memory_flush_wanted = True
-        self.engine._ask_llm = AsyncMock(return_value="私聊时说过这句话")
-        await self.engine.flush_pending_memory(SESSION)
-        self.assertEqual(len(self.db.raw.query_memories(session_id=other, memory_type="interaction")), 1)
-        self.assertEqual(self.db.raw.query_memories(session_id=SESSION, memory_type="interaction"), [])
+        source = self.db.raw.source_record(entry["source_id"])
+        self.assertEqual(source["session"], other)
+        self.assertEqual(source["kind"], "self_statement")
+        self.assertTrue(all(row["source"] == "preset" for row in self.db.raw.query_memories()))
+        self.assertNotIn("pending_memory", state.to_payload())
+
 
     async def test_private_promise_wording_does_not_leak_into_shared_activity_or_plan(self):
         other = "test:FriendMessage:42"

@@ -1693,7 +1693,7 @@ class TestLegacyGlobalChatFields(unittest.TestCase):
 
     def test_only_the_owning_session_may_fall_back_to_the_old_globals(self):
         state = self._legacy_state()
-        self.assertEqual(state.chat_summary, "老存档的全局摘要")
+        self.assertNotIn("chat_summary", state.to_payload())
         self.assertEqual(state.chat_note_text(self.OLD), "老存档的全局备忘")
         self.assertEqual(state.chat_preview_text(self.OLD), "老存档的全局预览")
         # 建档会话自己读得到（不传 session_id 就是它）
@@ -4054,13 +4054,10 @@ class TestPromptBuilder(unittest.TestCase):
         system, _ = self.builder.build_consolidate_prompt(
             persona_text="你是温柔少女。",
             chat_lines=["她: 早呀", "小明: 早"],
-            memories=["她记得昨天聊过天气"],
-            profiles=["小明：住武汉"],
-            pending=[],
             date_text="2024-01-01",
         )
-        self.assertIn("不算新事实", system)
-        self.assertIn("别包装成关于用户的事实", system)
+        self.assertIn("只用本人原话作为事实依据", system)
+        self.assertIn("不能写成用户事实", system)
 
     def test_bot_name_list_covers_nickname_variants(self):
         """昵称带表情/后缀时也要认得出来（「凶猛蓝色虎鲸💢」→「凶猛蓝色虎鲸」）。"""

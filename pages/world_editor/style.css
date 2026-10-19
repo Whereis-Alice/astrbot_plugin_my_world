@@ -1204,6 +1204,20 @@ button.pill:hover:not(.on) {
   flex: 0 0 auto;
 }
 
+@media (max-width: 600px) {
+  #memory-list .memory-card {
+    display: grid;
+    grid-template-columns: 14px minmax(0, 1fr);
+    gap: 8px 10px;
+  }
+
+  #memory-list .memory-controls {
+    grid-column: 2;
+    margin-left: 0;
+    justify-self: end;
+  }
+}
+
 /* 批量勾选 */
 
 .row-check {
@@ -1569,46 +1583,6 @@ button.pill:hover:not(.on) {
   border-radius: var(--r-pill);
   background: var(--bg-soft);
   color: var(--text-2);
-}
-
-.chat-summary {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--bg-inset);
-}
-
-.chat-summary-label {
-  font-size: 11.5px;
-  color: var(--accent-ink);
-}
-
-.chat-line {
-  font-size: 12.5px;
-  line-height: 1.75;
-  color: var(--text);
-  overflow-wrap: anywhere;
-}
-
-.chat-bullet {
-  position: relative;
-  padding-left: 12px;
-  color: var(--text-2);
-}
-
-.chat-bullet::before {
-  content: "·";
-  position: absolute;
-  left: 3px;
-  color: var(--muted);
-}
-
-.chat-strong {
-  color: var(--text);
-  font-weight: 650;
 }
 
 /* ---- 分块生成：一块一块的进度 ---- */

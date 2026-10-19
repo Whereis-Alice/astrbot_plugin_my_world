@@ -165,8 +165,6 @@ class ParseResult:
     warnings: list[str] = field(default_factory=list)
     fallback_used: bool = False
     raw_text: str = ""
-    memory: str = ""
-    """这次对话值得记住的一句话（以她的视角，由模型顺手总结）。留空表示模型没给。"""
 
     cancel: str = ""
     """模型是否要求取消她手头的安排：``now`` = 立刻停手并放弃剩下的，``queue`` = 只清掉还没开始的。"""
@@ -562,7 +560,6 @@ def parse_action_payload(
         raw_text=raw,
         head_clean=head_clean,
         leading_text=leading_text,
-        memory=parse_memory(payload.get("memory")),
         cancel=cancel,
         plan_mode=plan_mode,
         chat_note=_clean_note(payload.get("chat_note")),
@@ -959,18 +956,7 @@ def _fallback_result(cleaned: str, raw: str) -> ParseResult:
     )
 
 
-def parse_memory(payload: Any) -> str:
-    """这次对话要记下来的一句话（模型可能给字符串，也可能给 {"summary": "..."}）。"""
 
-    if payload is None:
-        return ""
-    if isinstance(payload, dict):
-        for key in ("summary", "content", "text", "note"):
-            value = payload.get(key)
-            if value:
-                return str(value).strip()[:120]
-        return ""
-    return str(payload).strip()[:120]
 
 
 def parse_plan_payload(

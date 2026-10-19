@@ -1,8 +1,6 @@
-"""群聊上下文、插话与留档压缩。"""
+"""群聊短期窗口、插话与上下文管理。"""
 
 from __future__ import annotations
-
-from ..model_calls import model_operation
 
 from typing import Any
 from ..decider import reply_willingness
@@ -519,67 +517,17 @@ class GroupChatMixin:
 
         return reply_willingness(state)
 
-    # ---------------- 群聊上下文：留档与压缩 ----------------
+    # ---------------- 群聊上下文：有限消息窗口 ----------------
 
     def chat_history_limit(self) -> int:
         return max(20, int(self.world.context.chat_history_max))
 
-    def chat_summary_text(self, state: WorldState) -> str:
-        """默认取"存档会话"那一份（老存档回落到全局摘要）。"""
-
-        return self.chat_summary_for(state, state.session_id)
-
-    def chat_summary_for(self, state: WorldState, session_id: str) -> str:
-        """某个会话"更早聊过的"那一段（分会话存；老存档只有全局那份）。
-
-        老存档那份全局摘要的**主人是 ``state.session_id``**（和
-        :meth:`chat_summary_map`、``clear_chat_context`` 的口径一致）：
-        只有问的就是它才回落。别的会话没有自己的摘要时返回空串——
-        把存档会话的旧摘要当成这里的，她会把在别处说过的事讲成“我们刚才在这儿聊的”。
-        """
-
-        key = str(session_id or state.session_id or "")
-        entry = dict((state.chat_summaries or {}).get(key) or {})
-        text = str(entry.get("text") or "").strip()
-        if text:
-            return text
-        if key != str(state.session_id or ""):
-            return ""
-        return str(state.chat_summary or "").strip()
-
-    def chat_summary_map(self, state: WorldState) -> dict[str, str]:
-        """每个会话一份"更早聊过的"，按"最近更新"排序（提示词按这个顺序渲染）。"""
-
-        rows: list[tuple[float, str, str]] = []
-        for key, entry in dict(state.chat_summaries or {}).items():
-            info = dict(entry or {}) if isinstance(entry, dict) else {}
-            text = str(info.get("text") or "").strip()
-            if not text:
-                continue
-            try:
-                at = float(info.get("at") or 0.0)
-            except (TypeError, ValueError):
-                at = 0.0
-            rows.append((at, str(key), text))
-        if not rows and str(state.chat_summary or "").strip():
-            # 老存档（升级前压过摘要）：归到存档会话名下
-            rows.append(
-                (
-                    float(state.chat_summary_at or 0.0),
-                    str(state.session_id),
-                    str(state.chat_summary).strip(),
-                )
-            )
-        rows.sort(key=lambda item: item[0])
-        return {key: text for _at, key, text in rows}
-
     async def clear_chat_context(self, session_id: str) -> dict[str, Any]:
-        """清空**这个会话**的群聊留档与摘要（调试用：想看她"第一次听到"的反应时很有用）。
+        """清空本会话的近期消息与话题备忘，不改生活记忆和人物资料。
 
-        会话组里别的群 / 私聊的留档与摘要不受影响——它们本来就是分开记的。
+        会话组里别的群 / 私聊的窗口与备忘不受影响。
 
-        清的是**这个会话的上下文**：留档（``recent_chat`` / ``chat_dropped``）、
-        「更早聊过的」摘要（``chat_summaries[target]`` 与老字段 ``chat_summary``）、
+        清的是本会话的短期窗口（``recent_chat``）、
         「刚才在聊什么」（``chat_notes[target]``）和「她刚回应过的那批」
         （``chat_previews[target]``）。后两个也是**分会话上下文**：留着的话
         下一轮提示词里还会写着"上一轮你们在聊：…"，看起来就像清空没生效。
@@ -595,16 +543,7 @@ class GroupChatMixin:
 
             kept = [item for item in state.recent_chat if not _from_here(item)]
             removed = len(state.recent_chat) - len(kept)
-            had_summary = bool(self.chat_summary_for(state, target))
             state.recent_chat = kept
-            state.chat_dropped = [
-                item for item in list(getattr(state, "chat_dropped", None) or []) if not _from_here(item)
-            ]
-            state.chat_summaries = {
-                key: value
-                for key, value in dict(state.chat_summaries or {}).items()
-                if str(key) != target
-            }
             # 会话上下文的小尾巴：不留的话"清空上下文"之后她还记得刚才在聊什么
             state.chat_notes = {
                 key: value
@@ -617,8 +556,7 @@ class GroupChatMixin:
                 if str(key) != target
             }
             if target == str(state.session_id):
-                # 老字段（全局摘要 / 全局备忘 / 全局预览）就是这个会话的，一起清掉
-                state.chat_summary = ""
+                # 老字段（全局备忘 / 全局预览）就是这个会话的，一起清掉
                 state.chat_note = ""
                 state.chat_preview = ""
             await self._log_event(
@@ -630,166 +568,7 @@ class GroupChatMixin:
                     "session": self.session_label(target, state),
                 },
             )
-        return {"removed": removed, "had_summary": had_summary}
-
-    async def _maybe_compress_chat(
-        self, state: WorldState, outcome: TickOutcome
-    ) -> None:
-        """留档攒到阈值时，把较早的部分交给压缩模型压成一段摘要。
-
-        **按会话分开压**：一个会话组里的群和私聊共用一份留档，一起压的话
-        群里聊的和私聊聊的会混进同一段摘要（提示词里她就分不清哪句是哪儿的）。
-        """
-
-        config = self.world.context
-        if str(config.chat_overflow) != "compress":
-            await self._warn_chat_overflow(state)
-            return
-        threshold = max(10, int(config.chat_compress_threshold))
-        refresh = max(60, int(config.summary_refresh_minutes)) * 60
-        keep = max(1, int(config.chat_keep_after_compress))
-        now = self._now()
-        dropped = list(getattr(state, "chat_dropped", None) or [])
-        # 按"在哪儿说的"分堆：先放"被上限顶掉、还没进过摘要"的那几条（它们更早），
-        # 不带上就等于凭空消失了（聊得快的时候正是这样丢的记忆）。
-        buckets: dict[str, list[dict[str, Any]]] = {}
-        for item in [*dropped, *state.recent_chat]:
-            key = str(item.get("origin") or state.session_id)
-            buckets.setdefault(key, []).append(item)
-        dropped_ids = {id(item) for item in dropped}
-        summaries: dict[str, dict[str, Any]] = {
-            str(key): dict(info)
-            for key, info in dict(state.chat_summaries or {}).items()
-            if isinstance(info, dict)
-        }
-        keep_ids: set[int] = set()
-        compressed = 0
-        for key, items in buckets.items():
-            # 有"被上限顶掉、还没进过摘要"的那几条时必须压：不压就等于凭空消失
-            has_dropped = any(id(item) in dropped_ids for item in items)
-            if len(items) < threshold and not has_dropped:
-                keep_ids.update(id(item) for item in items)
-                continue
-            last_at = float((summaries.get(key) or {}).get("at") or 0.0)
-            if last_at <= 0.0:
-                # 老存档只有一个全局的节流时间：第一次按它算
-                last_at = float(state.chat_summary_at or 0.0)
-            if now - last_at < refresh:
-                keep_ids.update(id(item) for item in items)
-                continue
-            older = items[: max(0, len(items) - keep)]
-            if not older:
-                keep_ids.update(id(item) for item in items)
-                continue
-            summary = await self._summarize_chat(state, older, session_id=key)
-            if not summary:
-                keep_ids.update(id(item) for item in items)
-                continue
-            summaries[key] = {"text": summary, "at": now}
-            compressed += len(older)
-            keep_ids.update(id(item) for item in items[-keep:])
-        if compressed <= 0:
-            return
-        state.chat_summaries = summaries
-        state.chat_summary_at = now
-        # 已经按会话存了，老字段清掉：留着会在提示词里重复出现一次
-        state.chat_summary = ""
-        state.recent_chat = [item for item in state.recent_chat if id(item) in keep_ids]
-        state.chat_dropped = [item for item in dropped if id(item) in keep_ids]
-        outcome.notes.append(f"已把较早的 {compressed} 条群聊压成摘要")
-        await self._log_event(
-            state,
-            "context",
-            {
-                "note": "压缩较早群聊",
-                "compressed": compressed,
-                "kept": keep,
-                "sessions": len(buckets),
-            },
-            outcome=outcome,
-        )
-
-    async def _warn_chat_overflow(self, state: WorldState) -> None:
-        """留档已经顶到上限、而且是"直接丢弃"：提醒一次，免得她"忘事"却查不出原因。
-
-        一小时最多提醒一次。
-        """
-
-        limit = self.chat_history_limit()
-        # 留档是按会话各自留的：这里要看"最多的那个会话"够没够上限
-        buckets: dict[str, int] = {}
-        for item in state.recent_chat:
-            key = self._chat_origin(item, state)
-            buckets[key] = buckets.get(key, 0) + 1
-        if max(buckets.values(), default=0) < limit:
-            return
-        now = self._now()
-        if now - float(getattr(state, "chat_overflow_warned_at", 0.0) or 0.0) < 3600:
-            return
-        state.chat_overflow_warned_at = now
-        await self._log_event(
-            state,
-            "context",
-            {
-                "note": "群聊留档已满，最早的会被直接丢弃",
-                "hint": "想让她记得久一点：全局设置 → 上下文 → 留档超了怎么办 → 压成摘要",
-                "limit": limit,
-            },
-        )
-
-    @model_operation("context", "聊天窗口达到压缩条件")
-    async def _summarize_chat(
-        self,
-        state: WorldState,
-        history: list[dict[str, Any]],
-        *,
-        session_id: str = "",
-    ) -> str:
-        if self.context_llm is None or not history:
-            return ""
-        limit = max(40, int(self.world.context.history_max_chars))
-        lines = []
-        for item in history:
-            who = "她" if item.get("is_self") else (item.get("name") or item.get("user_id") or "")
-            text = _clip_text(item.get("text"), limit)
-            if text:
-                lines.append(f"- {who}: {text}")
-        if not lines:
-            return ""
-        # 只接着"这个会话"的上一份摘要往下写：群里和私聊的脉络本来就不一样
-        previous = (
-            self.chat_summary_for(state, session_id)
-            if str(session_id or "").strip()
-            else self.chat_summary_text(state)
-        )
-        system_prompt = (
-            "你负责把群聊记录整理成一段背景摘要，供同一个角色之后回忆这段日子。\n"
-            "要写清：参与的人（谁在跟谁说话）、正在聊的话题及其来龙去脉、"
-            "已经约定或承诺过的事、还没回应的事，以及**具体细节**"
-            "（时间、数字、物品、称呼、喜欢/讨厌的东西）——细节比概括有用得多，"
-            "她后面要靠它接话。\n"
-            "已经有更早的摘要时：接着它往下写，把仍然成立的事并进去，过时的不再写。"
-            "不要逐条复述、不要评价、不要编造。只输出摘要本身，不超过 600 字。"
-        )
-        prompt = (
-            (f"已有的更早摘要：\n{previous}\n\n" if previous else "")
-            + "需要压缩的群聊记录：\n"
-            + "\n".join(lines)
-            + "\n\n请输出更新后的摘要。"
-        )
-        try:
-            reply = await self.context_llm.generate(
-                session_id=state.session_id,
-                system_prompt=system_prompt,
-                prompt=prompt,
-                temperature=0.2,
-            )
-        except Exception as exc:
-            self._log("debug", f"上下文压缩失败：{exc}")
-            return ""
-        if not getattr(reply, "ok", False):
-            return ""
-        return str(reply.text or "").strip()[:600]
+        return {"removed": removed}
 
     def interject_allowed(self, state: WorldState) -> bool:
         """是否允许主动插话：插话冷却 + 无人回应冷却 + 每小时上限。"""

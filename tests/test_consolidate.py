@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.consolidate import Consolidator  # noqa: E402
 from core.db import Database  # noqa: E402
 from core.defaults import default_world  # noqa: E402
-from core.memory import INTERACTION, MemoryEngine  # noqa: E402
+from core.memory import SCENE, MemoryEngine  # noqa: E402
 from core.models import parse_world  # noqa: E402
 from core.profile import ProfileStore  # noqa: E402
 from core.prompt import PromptBuilder  # noqa: E402
@@ -64,7 +64,8 @@ class ConsolidateTestCase(unittest.IsolatedAsyncioTestCase):
             },
         ]
 
-    async def test_full_run_writes_memories_facts_and_digest(self):
+    async def test_chat_updates_profiles_without_writing_life_memories(self):
+        self.world.profile.bond_by_name("主人").auto_form = True
         self.profiles.touch(SESSION, USER, "不相疑", now=1_700_000_000.0)
         payload = {
             "memories": [
@@ -109,35 +110,32 @@ class ConsolidateTestCase(unittest.IsolatedAsyncioTestCase):
             now=1_700_000_120.0,
         )
         self.assertTrue(result.ok, result.note)
-        self.assertEqual(result.memories, 1)
+        self.assertEqual(result.memories, 0)
         self.assertEqual(result.facts, 1)
         self.assertEqual(result.relations, 1)
         self.assertEqual(result.digests, 1)
         self.assertEqual(result.affinity, 0)
 
         rows = self.db.query_memories(session_id=SESSION)
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["tier"], "gist")
-        self.assertEqual(rows[0]["participants"], [USER])
-        self.assertGreater(rows[0]["next_review_at"], 0)
+        self.assertEqual(rows, [])
         facts = self.profiles.facts(SESSION, USER)
         self.assertEqual([item["text"] for item in facts], ["经常忘吃早饭"])
         self.assertIn("主人", [item["type"] for item in self.profiles.bonds(SESSION, USER)])
         self.assertEqual(self.profiles.profile(SESSION, USER)["digest"], "爱猫、常忘吃早饭，认你当主人")
-        self.assertEqual(self.profiles.profile(SESSION, USER)["affinity"], 0)
+        self.assertGreaterEqual(self.profiles.profile(SESSION, USER)["affinity"], 0)
 
     async def test_forget_only_folds_the_memory(self):
         memory_id = self.memory.remember(
             session_id=SESSION,
             persona_id="",
             node_id="study",
-            content="他昨天说了一长串关于加班的事，细节很多很多",
-            memory_type=INTERACTION,
+            content="我昨天修了很久的风车，细节很多很多",
+            memory_type=SCENE,
             weight=0.6,
         )
         payload = {
             "forget": [
-                {"id": memory_id, "text": "他昨天加班到很晚", "reason": "细节可以忘"}
+                {"id": memory_id, "text": "我昨天修风车到很晚", "reason": "细节可以忘"}
             ]
         }
 
@@ -151,7 +149,7 @@ class ConsolidateTestCase(unittest.IsolatedAsyncioTestCase):
         rows = self.db.query_memories(session_id=SESSION)
         self.assertEqual(len(rows), 1)  # 只折叠，不删除
         self.assertEqual(rows[0]["tier"], "gist")
-        self.assertEqual(rows[0]["content"], "他昨天加班到很晚")
+        self.assertEqual(rows[0]["content"], "我昨天修风车到很晚")
         self.assertIn("细节很多很多", rows[0]["context"])
 
     async def test_shared_life_routes_social_updates_to_actual_conversation(self):
@@ -184,7 +182,7 @@ class ConsolidateTestCase(unittest.IsolatedAsyncioTestCase):
         self.consolidator._sessions_of = lambda _: [SESSION, PRIVATE]
 
         async def llm(*_):
-            return json.dumps({"affinity": [{"user_id": USER, "delta": 3, "reason": "很开心"}]})
+            return json.dumps({"facts": [{"user_id": USER, "text": "很开心", "evidence": "很开心"}]})
 
         result = await self.consolidator.run(session_id=SESSION, llm=llm,
             chat_records=[{"origin": sid, "user_id": USER, "text": "很开心"} for sid in (SESSION, PRIVATE)])
@@ -194,18 +192,18 @@ class ConsolidateTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_merge_folds_the_duplicates(self):
         first = self.memory.remember(
             session_id=SESSION, persona_id="", node_id="study",
-            content="他喜欢喝冰美式", memory_type=INTERACTION,
+            content="我在厨房泡了一杯冰美式", memory_type=SCENE,
         )
         second = self.memory.remember(
             session_id=SESSION, persona_id="", node_id="study",
-            content="他说每天早上一杯冰美式", memory_type=INTERACTION,
+            content="我今早在厨房泡了冰美式", memory_type=SCENE,
         )
         payload = {
             "merge": [
                 {
                     "keep_id": first,
                     "drop_ids": [second],
-                    "text": "他每天早上一杯冰美式",
+                    "text": "我今早在厨房泡了一杯冰美式",
                 }
             ]
         }
@@ -218,11 +216,11 @@ class ConsolidateTestCase(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result.merged, 1)
         kept = [row for row in self.db.query_memories(session_id=SESSION) if row["id"] == first][0]
-        self.assertEqual(kept["content"], "他每天早上一杯冰美式")
+        self.assertEqual(kept["content"], "我今早在厨房泡了一杯冰美式")
         dropped = [row for row in self.db.query_memories(session_id=SESSION) if row["id"] == second][0]
         self.assertEqual(dropped["tier"], "gist")
 
-    async def test_nap_only_notes_digest_and_dream(self):
+    async def test_nap_chat_only_updates_digest(self):
         self.profiles.touch(SESSION, USER, "不相疑")
         payload = {
             "notes": [
@@ -240,9 +238,9 @@ class ConsolidateTestCase(unittest.IsolatedAsyncioTestCase):
         result = await self.consolidator.run(
             session_id=SESSION, llm=llm, mode="nap", chat_records=self._chat()
         )
-        self.assertEqual(result.memories, 1)
+        self.assertEqual(result.memories, 0)
         self.assertEqual(result.digests, 1)
-        self.assertTrue(result.dream)
+        self.assertFalse(result.dream)
         # 小睡不碰关系与事实
         self.assertEqual(result.facts, 0)
         self.assertEqual(result.relations, 0)
@@ -256,7 +254,7 @@ class ConsolidateTestCase(unittest.IsolatedAsyncioTestCase):
             [],
         )
         rows = self.db.query_memories(session_id=SESSION)
-        self.assertTrue(any("做了个梦" in row["content"] for row in rows))
+        self.assertEqual(rows, [])
 
     async def test_relations_are_validated_by_code(self):
         """模型说"他是男友"，但槽位已经有人：只记成"他自称"。"""
@@ -393,7 +391,7 @@ class ConsolidateTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.db._conn.total_changes, changes_before)
         self.assertTrue(result.ok)
         self.assertIn("没有写库", result.note)
-        self.assertIn("原始记录", result.preview.get("user", ""))
+        self.assertIn("只用于人物资料", result.preview.get("user", ""))
         self.assertIn("梦见猫", result.raw)
         # 库里什么都没变
         self.assertEqual(self.db.query_memories(session_id=SESSION), [])

@@ -339,7 +339,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
         self.enabled = _cfg_bool(config.get("enabled"), True)
         self.web_enabled = _cfg_bool(config.get("web_enabled"), True)
         self.llm_provider_id = str(config.get("llm_provider_id") or "").strip()
-        # 打杂模型（文本、便宜）：补工具参数、压上下文、判断图和话题的关系
+        # 打杂模型（文本、便宜）：补工具参数、判断图和话题的关系
         self.vision_provider_id = str(config.get("vision_provider_id") or "").strip()
         self.helper_provider_id = (
             str(config.get("helper_provider_id") or "").strip()
@@ -439,7 +439,6 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
             llm=AstrBotLLM(self, sampling=self.sampling_params()),
             helper_llm=AstrBotLLM(self, self.helper_provider_id, role="helper", sampling=self.sampling_params()),
             judge_llm=AstrBotLLM(self, self.judge_provider_id, role="judge", sampling=self.sampling_params()),
-            context_llm=AstrBotLLM(self, self.utility_provider_id, role="context", sampling=self.sampling_params()),
             creator_llm=AstrBotLLM(self, self.creator_provider_id, role="creator", sampling=self.sampling_params()),
             event_llm=AstrBotLLM(self, self.event_provider_id, role="event", sampling=self.sampling_params()),
             consolidate_llm=AstrBotLLM(self, self.consolidate_provider_id, role="consolidate", sampling=self.sampling_params()),
@@ -2962,7 +2961,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
     @filter.llm_tool(name="mw_memory_lookup")
     @session_scoped
     async def tool_memory_lookup(self, event: AstrMessageEvent, topic: str = "") -> str:
-        """查询角色在当前会话及共享生活组内记下的经历，核实以前发生的事。
+        """查询角色在当前会话及共享生活组内的生活经历、活动、内心与梦。聊天往事请用聊天记忆插件查询。
 
         Args:
             topic(string): 要查的话题；留空返回最近相关的记忆。
@@ -2978,8 +2977,8 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
                 mode="group", limit=5,
             )
         if not items:
-            return "没有找到相关的历史记忆，不要据此编造经历。"
-        lines = ["历史记忆参考（以当前消息为准）："]
+            return "没有找到相关生活经历。聊天往事请查询聊天记忆插件，不要编造经历。"
+        lines = ["生活回忆参考（梦与内心不作为外部事实）："]
         used = 0
         for item in items:
             line = item.render(stamp=self.engine.prompts._memory_stamp(item.created_at, self.engine.local_now()))

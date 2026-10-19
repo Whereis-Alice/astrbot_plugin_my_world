@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -323,7 +324,7 @@ def lean_prompt(text: str) -> str:
     删的是三块"提醒她该怎么做人"的话（不删功能，规则本体还在格式段里）：
     1. 「你最近说过的话」那段负向约束；
     2. 「最后确认」那段近因锚点；
-    3. 输出格式里"关于 reasoning / memory / chat_note / open_topic / valence_delta /
+    3. 输出格式里"关于 reasoning / chat_note / open_topic / valence_delta /
        affinity_delta"这一串字段劝导（JSON 示例与 actions 规范都留着）。
 
     放在这里而不是做成开关，是为了**不动生产路径**：只有测评会用它。
@@ -974,7 +975,6 @@ class PromptBuilder:
         blocks.extend(
             self.chat_blocks(
                 recent_chat,
-                getattr(state, "chat_summary", ""),
                 # 「刚才在聊什么」按会话取，过期的不带（老存档回落全局那份）
                 state.chat_note_text(
                     session_key,
@@ -986,7 +986,6 @@ class PromptBuilder:
                     now=float(now.timestamp()) if hasattr(now, "timestamp") else float(now or 0.0),
                 ),
                 preview=state.chat_preview_text(session_key),
-                summaries=dict(getattr(state, "chat_summaries", None) or {}),
                 # 三个"带几行"都来自世界配置：渲染这一层不再写死。
                 # **0 就是"这一类一条都不带"**（用户明确要关掉），只有字段整个缺失
                 # 时才回落到默认值——所以这里不能用 `or 0` 把缺省和 0 混成一个意思。
@@ -1509,10 +1508,8 @@ class PromptBuilder:
     def chat_blocks(
         self,
         recent_chat: list[dict[str, Any]] | None,
-        summary: str = "",
         note: str = "",
         *,
-        summaries: dict[str, Any] | None = None,
         answered_max: int = -1,
         elsewhere_max: int = -1,
         preview: str = "",
@@ -1526,7 +1523,7 @@ class PromptBuilder:
     ) -> list[str]:
         """把群聊背景拆成三块：之前聊过的概览、现在在聊什么、她刚说过的话。
 
-        - **之前的群聊**：她上一轮已经回应过的那批（压缩成一条概览）+ 更早的压缩摘要。
+        - **之前的群聊**：她上一轮已经回应过的近期消息。
           这些不该再被回应，但也不能凭空消失——否则她下一轮会忘了上下文。
         - **最近在聊什么**：水位线之后的原文，带时间；同一个人连着说的几句合并成一行；
           图片的转述描述跟着消息一起带进来。
@@ -1650,31 +1647,7 @@ class PromptBuilder:
         answered_lines = _render_rows(answered_rows, back_chars)
 
         history: list[str] = []
-        def _summary_rows() -> list[tuple[str, str]]:
-            """→ [(会话 id, 摘要)]：当前会话排最前（没有分会话数据时用老的那一份）。"""
-
-            rows: list[tuple[str, str]] = []
-            for key, value in dict(summaries or {}).items():
-                if isinstance(value, dict):
-                    text = str(value.get("text") or "").strip()
-                else:
-                    text = str(value or "").strip()
-                if text:
-                    rows.append((str(key), text))
-            if not rows and str(summary or "").strip():
-                rows = [("", str(summary).strip())]
-            rows.sort(key=lambda item: 0 if item[0] == current else 1)
-            return rows
-
         note = " ".join(str(note or "").split())
-
-        # 「更早聊过的」按会话分开列：群里聊的和私聊聊的本来就不是一回事，
-        # 混成一段她就分不清哪句是哪儿的。当前会话排最前。
-        for key, text in _summary_rows():
-            label = "这里" if (not key or key == current) else (
-                label_map.get(key) or key
-            )
-            history.append(f"- 〔{label}〕更早聊过的：{_one_line(text, 600)}")
 
         # 「最近在聊什么」那一块：她这一轮真正要读、要回的就是这几条，
         # **预算是先给它的**。除了记录本身，这块还有固定的表头与一句"这几条是
@@ -1963,7 +1936,7 @@ class PromptBuilder:
         """
 
         reasoning_block = ""
-        # 计划模式只解析 plan，没有 reasoning/memory，就别在提示里写这两段
+        # 计划模式只解析 plan，没有 reasoning，就别在提示里写这两段
         if reasoning and mode != "plan":
             reasoning_block = (
                 "你的输出必须是 JSON：**第一个字符就是 `{`**，**reasoning 是第一个键、写在 actions 前面**，"
@@ -1977,8 +1950,6 @@ class PromptBuilder:
                 '    "inner": "用第一人称写下你此刻心里冒出的一两句（30 字以内，心里话，不是台词）",\n'
                 '    "intent": "你打算怎么回应（20 字以内）"\n'
                 "  },\n"
-                '  "memory": "这一轮你自己会记住的一句话（20 字以内，以你的视角）。'
-                '注意这只是你的回忆：关于他的事要用 remember 动作写进通讯录",\n'
                 '  "chat_note": "刚才你们在聊什么（20 字以内，只在这条消息带群聊背景时才写）",\n'
                 '  "open_topic": "他有一件还没说完、之后你能接着问的事（20 字以内，'
                 '时间写成具体日期，例如「9 月 29 号要去体检」；别写明天/下周；没有就留空）",\n'
@@ -2014,11 +1985,6 @@ class PromptBuilder:
                 "- 必须先写、写短、写具体（要引用你上面看到的环境/状态/对话），不要写空话；\n"
                 "- inner 是纯粹的心理活动（第一人称、可以嘴硬、可以不讲道理），别写成旁白、别复述动作；\n"
                 "- 严禁把 reasoning 的内容原样搬进 say。\n\n"
-                "关于 memory：\n"
-                "- 它是这次对话的**一句话总结**，会并进你在这个地方的记忆里；\n"
-                "- 写「对方是谁、聊了什么、你怎么想」，例如「小明说他今天很累，我有点心疼」；\n"
-                "- 纯寒暄、复读、没什么信息量的对话直接给空字符串；\n"
-                "- 它不是回复，不会发到群里。\n\n"
                 "关于 chat_note：\n"
                 "- 它是给下一轮的**话题背景**：一句话说清「刚才这段在聊什么」；\n"
                 "- 下一轮你会看到它，并且**已经回应过的内容不会再重复出现**，"
@@ -2769,7 +2735,6 @@ class PromptBuilder:
             '    "inner": "她心里冒出的第一人称的一两句话（30 字以内）",\n'
             '    "intent": "她打算怎么回应（20 字以内）"\n'
             "  },\n"
-            '  "memory": "这一轮她会记住的一句话（20 字以内，没有就留空）",\n'
             '  "chat_note": "刚才你们在聊什么（20 字以内，没有就留空）",\n'
             '  "valence_delta": 0,\n'
             '  "affinity_delta": 0,\n'
@@ -3841,40 +3806,6 @@ class PromptBuilder:
         )
         return system, prompt
 
-    def build_memory_summary_prompt(
-        self,
-        *,
-        node_name: str,
-        lines: list[str],
-        hints: list[str] | None = None,
-        max_chars: int = 60,
-    ) -> tuple[str, str]:
-        """把一段对话压成一条记忆（返回 system, user）。"""
-
-        system = (
-            "你在帮一个角色整理记忆。把下面这段记录压成一句她会记住的话，"
-            f"不超过 {max_chars} 字。要求：她自己一律用「我」；"
-            "有别人说话时写清对方是谁、聊了什么、她当时怎么想；"
-            "如果整段只有她自己（自言自语、一个人做事），就写她做了什么、当时怎么想，"
-            "不要提「对方」、也不要问对方是谁。"
-            "只输出这一句话本身：不要逐条复述、不要客套、不要括号、"
-            "不要写「他/她说了」这种流水账、不要向任何人提问或索要信息。"
-        )
-        others: list[str] = []
-        for line in lines:
-            name = str(line).split(":", 1)[0].strip()
-            if name and name not in ("我", "有人") and name not in others:
-                others.append(name)
-        parts = [f"她当时在：{node_name or '某个地方'}"]
-        if others:
-            parts.append("这段里除了她还有：" + "、".join(others))
-        else:
-            parts.append("这段里没有别人说话，是她自己的事。")
-        if hints:
-            parts.append("她自己觉得值得记住的：" + "；".join(hints))
-        parts.append("这段对话：")
-        parts.extend(f"- {line}" for line in lines)
-        return system, "\n".join(parts)
 
     def build_schedule_intent_prompt(
         self,
@@ -4313,94 +4244,55 @@ class PromptBuilder:
     # ---------------- 睡眠整理（睡眠记忆整理 / 用户画像） ----------------
 
     def build_consolidate_prompt(
-        self,
-        *,
-        persona_text: str = "",
-        chat_lines: list[str] | None = None,
-        memories: list[str] | None = None,
-        profiles: list[str] | None = None,
-        pending: list[str] | None = None,
-        date_text: str = "",
-        mode: str = "full",
-        max_items: int = 12,
+        self, *, persona_text: str = "", chat_lines: list[str] | None = None,
+        known_profiles: list[str] | None = None,
+        date_text: str = "", mode: str = "full", max_items: int = 12,
     ) -> tuple[str, str]:
-        """睡眠整理用的提示词（返回 ``system, user``）。
-
-        ``mode``：``full`` = 整觉整理（消化 + 重组 + 遗忘 + 画像）；
-        ``nap`` = 小睡轻整理（只做要点化 + 缩略版 + 一条梦，不动关系与事实）。
-        """
-
+        """New direct speech updates contacts only, never the life journal."""
         system = (
-            "你在替一个角色整理她这段时间的经历。她睡着了，梦境与记忆都在重排。\n"
-            "只输出一个 JSON 对象，不要解释、不要 Markdown、不要代码块。\n"
-            "规则：\n"
-            "- 只写材料里真的发生过的事，**不要编**：数字、时间、人名都必须来自材料；\n"
-            "- 用她自己的口吻记下要点（第一人称，像她在回想）；\n"
-            "- 提到具体的人时，用材料里的 QQ 号写进 participants，不要自己造人；\n"
-            "- 只输出**改动**：没变的旧记忆不要抄回来；\n"
-            "- 本阶段只从本批新原话提取事实，不访问旧记忆、不归纳永久习惯、不改变好感；"
-            "引用、转述、召回片段、工具日志和角色自己的猜想不能证明用户事实；重要程度不代表可信程度；\n"
-            "- 证据（evidence）写清材料里那个人原话的一小段，方便以后核对；\n"
-            "- 同一 QQ 在不同会话的关系与好感各自独立。facts、relations 每条都写 source_session，"
-            "使用材料里的 session= 后面的完整会话标识。不要因共享记忆同时修改其他会话。来源不明确就不改；\n"
-            "- 你自己那些普通的回复、寒暄和翻来覆去的解释**不算新事实**，默认不要记；"
-            "只有你那句话表达了持续的状态、一个计划、或真正值得记住的经历时才留下，"
-            "而且那是你自己的事，要进你自己的状态 / 计划 / 事件，"
-            "别包装成关于用户的事实；\n"
-            "- digests 里的那一段是**这个人的画像速写**：只写他是谁、怎么说话、喜欢什么、"
-            "你们什么关系这类**稳定的特征**，**不要写他最近遇到的事 / 新闻 / 一次性的事件**"
-            "（那种事放进 facts 的「近况」，或者留在记忆里）；\n"
-            "- 只有配置允许自然形成的关系可以根据证据调整。管理员设置的关系不可自动替换。"
-            "普通关系可以升也可以降：该升级就写升级，你自己想清楚了也可以写降级"
-            "（朋友退回群友、恋人退回朋友、甚至翻脸）——同类关系（群友 / 朋友 / 闺蜜 / "
-            "男友 / 女友）她身上只会留最新那条，旧的那条自动变成「曾经」，所以"
-            "**写你现在真实的想法**就行；降级同样要有原话当证据。"
-            "关系的 evidence 必须是这个用户在本次聊天材料中的原话，不可用别人的话或自己的概括。"
-            "用户单方面的身份宣称、角色扮演玩笑和昵称不能确立关系。"
-            "特殊身份或唯一关系（如恋人、主人、挚友）还必须提供 confirmation：你在同一会话中紧接这段交谈明确认下关系的原话；"
-            "没有这段确认时只能标 asserted_by=他自称，不能替自己答应。"
+            "从本批原话提取人物事实、关系和画像速写。只输出 JSON。"
+            "不总结聊天往事，不生成生活记忆或梦，不改变好感和基础人设。"
+            "只用本人原话作为事实依据；引用、工具输出、旧记忆、他人转述和角色猜测不算证据。"
+            "facts、relations 必须写 source_session，使用材料的完整 session 标识；不同会话独立。"
+            "evidence 必须引用该用户本次原话。关系不可凭自称、昵称、玩笑或角色扮演确立。"
+            "特殊或唯一身份还要 confirmation：角色在同一段交谈明确认下的原话；没有只能记他自称。"
+            "管理员设定的关系不可替换；只有配置允许自然形成的关系可有据调整。"
+            "digests 只写稳定特征，不能用最近的新闻、一次性事件替代完整画像。"
+            "保留已有速写中未被明确纠正的稳定资料；旧速写不能充当本次新事实或关系确认的原话证据。"
+            "自己的计划留在生活事项，不能写成用户事实。没有新资料输出空对象。"
         )
         system += "\n关系自然形成设置：" + "；".join(
             f"{bond.name}={'允许有据确认' if bond.auto_form else '只允许管理员设置'}"
             for bond in self.world.profile.bonds)
-        chat = "\n".join(f"- {item}" for item in (chat_lines or [])[:400])
-        old = "\n".join(f"- {item}" for item in (memories or [])[:120])
-        people = "\n".join(f"- {item}" for item in (profiles or [])[:40])
-        todo = "\n".join(f"- {item}" for item in (pending or [])[:20])
-        if mode == "nap":
-            schema = (
-                "{\n"
-                '  "notes": [{"text": "一句话要点", "source_ids": ["原话的source ID"], "participants": ["QQ号"], '
-                '"emotion": "心情词", "context": "当时的原话"}],\n'
-                '  "digests": {"QQ号": "这个人的画像速写（40 字内）"},\n'
-                '  "dream": "她做了一个什么样的梦（一两句，可以荒诞一点）"\n'
-                "}"
-            )
-        else:
-            schema = (
-                "{\n"
-                '  "memories": [{"text": "要点（一句话）", "source_ids": ["原话的source ID"], "context": "当时的原话", '
-                '"participants": ["QQ号"], "emotion": "心情词", "weight": 0.6, '
-                '"keywords": ["关键词"], "review_in_days": 3}],\n'
-                '  "facts": [{"user_id": "QQ号", "kind": "喜好|厌恶|习惯|基本信息|关系|约定|近况", '
-                '"text": "关于他的事", "evidence": "他的原话", "source_session": "完整会话标识", "confidence": 0.8}],\n'
-                '  "relations": [{"user_id": "QQ号", "type": "主人|男友|朋友|闺蜜|家人|讨厌的人…", '
-                '"asserted_by": "她的判断|他自称", "evidence": "用户原话", "confirmation": "她明确确认的原话（没有则留空）", "source_session": "完整会话标识", "confidence": 0.8}],\n'
-                '  "digests": {"QQ号": "这个人的画像速写（40 字内）"},\n'
-                '  "dream": "可选：她做了一个什么样的梦"\n'
-                "}"
-            )
-        user = (
-            (f"# 她是谁\n{_one_line(persona_text, 400)}\n\n" if persona_text else "")
-            + (f"今天是 {date_text}。\n\n" if date_text else "")
-            + f"# 这段时间发生的事（原始记录）\n{chat or '（这段时间没人说过话）'}\n\n"
-            + (f"# 她现在的记忆（可以合并 / 改写 / 折叠）\n{old}\n\n" if old else "")
-            + (f"# 她现在认识的人\n{people}\n\n" if people else "")
-            + (f"# 还挂着的事（约定 / 没做完的）\n{todo}\n\n" if todo else "")
-            + "# 要输出的 JSON\n" + schema + "\n\n"
-            + f"最多给 {max(1, int(max_items))} 条新要点；没有可整理的就输出空对象 {{}}。"
+        schema = {"digests": {"QQ号": "人物速写（40字内）"}}
+        if mode != "nap":
+            schema.update({
+                "facts": [{"user_id": "QQ号", "kind": "喜好|厌恶|习惯|基本信息|关系|约定|近况",
+                           "text": "人物事实", "evidence": "本人原话", "source_session": "完整会话标识", "confidence": 0.8}],
+                "relations": [{"user_id": "QQ号", "type": "关系名", "asserted_by": "她的判断|他自称",
+                               "evidence": "本人原话", "confirmation": "她确认关系的原话", "source_session": "完整会话标识", "confidence": 0.8}]})
+        prompt = (f"# 基础人设\n{_one_line(persona_text, 400)}\n日期：{date_text}\n"
+                  + "# 已知人物速写（只供保留，不是新证据）\n" + "\n".join((known_profiles or [])[:40]) + "\n"
+                  + "# 本批直接发言（只用于人物资料）\n" + "\n".join((chat_lines or [])[:400])
+                  + f"\n最多 {max_items} 条改动。输出格式：\n" + json.dumps(schema, ensure_ascii=False))
+        return system, prompt
+
+    def build_life_review_prompt(self, *, memories: list[str], persona_text: str = "", mode: str = "full") -> tuple[str, str]:
+        """Only recorded life experiences may inform a review or a subjective dream."""
+        system = (
+            "整理角色已经记下的生活经历。只输出 JSON。不能新增经历或人物事实，不能修改关系、好感、偏好或人设。"
+            "只能按提供的 ID 合并重复经历、折叠细节；保留日期、地点、结果，不能把失败、想象或未完成打算改成成功。"
+            "inner 是当时的内心，不能把猜想变成外部事实；不同类型、会话、人格和作用域不可合并。"
+            "梦只可温和联想本次生活材料，明确是梦，不能作为真实事件或用户承诺；可以不做梦。"
+            "小睡只折叠细节，不合并。只输出改动，没有可整理的输出空对象。"
         )
-        return system, user
+        schema = {"forget": [{"id": 3, "text": "保留原意与结果的简短要点"}], "dream": "可选的一两句梦境"}
+        if mode != "nap":
+            schema["merge"] = [{"keep_id": 1, "drop_ids": [2], "text": "保持原意的概括"}]
+        return system, (f"# 基础人设（不可改变）\n{_one_line(persona_text, 400)}\n"
+                        + "# 已发生的生活经历\n" + "\n".join(memories)
+                        + "\n# 输出格式\n" + json.dumps(schema, ensure_ascii=False))
+
 
     # ---------------- 事件系统 ----------------
 

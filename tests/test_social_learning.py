@@ -13,7 +13,7 @@ from core.db import Database
 from core.defaults import default_world
 from core.evidence import direct_text, source_snapshot
 from core.life_policy import choose_life
-from core.memory import MemoryEngine, INTERACTION, SCENE
+from core.memory import MemoryEngine, SCENE
 from core.models import parse_world
 from core.prompt import PromptBuilder
 from core.request_context import _split_prompt_injection
@@ -213,14 +213,8 @@ class ParticipantRecallTests(unittest.TestCase):
             node_id="study",
             content="考试养猫私密内容",
         )
-        self.memory.remember(
-            session_id=S,
-            persona_id="p",
-            node_id="study",
-            content="养猫聊天摘要",
-            memory_type=INTERACTION,
-        )
-        self.world.memory.automatic_recall = "life_only"
+        self.db._execute("INSERT INTO node_memory(session_id,persona_id,node_id,content,type,scope,created_at) VALUES(?,?,?,?,?,?,?)",
+                         (S, "p", "study", "养猫聊天摘要", "interaction", "group", 100))
         result = self.memory.recall_participants(
             records=self.records, session_id=S, persona_id="p", node_id="study"
         )
@@ -448,7 +442,7 @@ class ConsolidationBoundaryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.db.memory_by_id(memory_id)["content"], "管理员校正的记忆")
 
-    async def test_old_review_cannot_overwrite_new_evidence_updating_same_id(self):
+    async def test_chat_memory_output_cannot_rewrite_a_life_experience(self):
         memory_id = self.memory.remember(
             session_id=S, persona_id="", node_id="study", content="我喜欢下雨"
         )
@@ -470,25 +464,20 @@ class ConsolidationBoundaryTests(unittest.IsolatedAsyncioTestCase):
         await self.consolidator.run(
             session_id=S, llm=model, chat_records=[{"user_id": "42", "text": "我不喜欢下雨"}]
         )
-        self.assertEqual(self.db.memory_by_id(memory_id)["content"], "我不喜欢下雨")
+        self.assertEqual(self.db.memory_by_id(memory_id)["content"], "我喜欢下雨")
 
 
 class SemanticCoexistenceTests(unittest.IsolatedAsyncioTestCase):
     asyncSetUp = consolidate_fixture.ConsolidateTestCase.asyncSetUp
 
-    async def test_life_only_automatic_embedding_preserves_explicit_history_lookup(self):
+    async def test_chat_is_excluded_from_automatic_and_explicit_embedding(self):
         self.world.memory.semantic_enabled = True
         self.world.memory.semantic_endpoint = "https://example.invalid/v1"
         self.world.memory.semantic_model = "test"
-        self.world.memory.automatic_recall = "life_only"
+        self.world.memory.automatic_recall = "auto"
         self.world.memory_scope_mode = "group"
-        self.memory.remember(
-            session_id=S,
-            persona_id="",
-            node_id="study",
-            content="聊天独有内容",
-            memory_type=INTERACTION,
-        )
+        self.db._execute("INSERT INTO node_memory(session_id,persona_id,node_id,content,type,scope,created_at) VALUES(?,?,?,?,?,?,?)",
+                         (S, "", "study", "聊天独有内容", "interaction", "group", 100))
         self.memory.remember(session_id=S, persona_id="", node_id="study", content="生活独有内容")
         texts = []
 
@@ -502,7 +491,7 @@ class SemanticCoexistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("生活独有内容", texts)
         texts.clear()
         await self.memory.semantic.prepare(S, "", "回想")
-        self.assertIn("聊天独有内容", texts)
+        self.assertNotIn("聊天独有内容", texts)
         texts.clear()
         self.world.memory.automatic_recall = "manual"
         await self.memory.semantic.prepare(S, "", "另一个话题", automatic=True)

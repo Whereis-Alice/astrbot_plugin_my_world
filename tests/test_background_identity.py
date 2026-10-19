@@ -128,3 +128,38 @@ class BackgroundIdentityTests(unittest.IsolatedAsyncioTestCase):
         _, after, _, result = await self.pending_result("seed", change)
         self.assertIsNone(result)
         self.assertEqual(after.life_matters, [])
+
+
+class BackgroundConsolidationTests(unittest.IsolatedAsyncioTestCase):
+    node_id = "study"
+    asyncSetUp = fixture.EngineTestCase.asyncSetUp
+
+    async def check_discarded(self, change):
+        mid = self.engine.memory.remember(session_id=SESSION, persona_id="", node_id="study", content="修好了风车")
+        state = await self.engine.load_state(SESSION, cold_start=False)
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def model(*args):
+            entered.set()
+            await release.wait()
+            return json.dumps({"forget": [{"id": mid, "text": "改写后的旧经历"}], "dream": "风车飞上天空"})
+        self.engine._ask_consolidate = AsyncMock(side_effect=model)
+        task = asyncio.create_task(self.engine.consolidate_now(state))
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            change()
+        finally:
+            release.set()
+        self.assertIsNone(await asyncio.wait_for(task, 2))
+        self.assertEqual(self.db.raw.memory_by_id(mid)["content"], "修好了风车")
+        self.assertEqual(len(self.db.raw.query_memories()), 1)
+        self.assertEqual(state.consolidate_cursor, 0)
+        self.assertFalse(state.last_dream)
+
+    async def test_review_cannot_apply_after_persona_changes(self):
+        await self.check_discarded(lambda: setattr(self.persona, "text", "你是严谨克制的学者。"))
+
+    async def test_review_cannot_apply_after_world_reloads(self):
+        await self.check_discarded(self.engine.reload_config)
+
+    async def test_review_cannot_apply_after_session_is_disabled(self):
+        await self.check_discarded(lambda: setattr(self.engine.session_config(SESSION), "enabled", False))

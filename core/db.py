@@ -20,6 +20,7 @@ from .model_call_store import MODEL_CALL_SCHEMA, ModelCallStoreMixin
 from .background import BackgroundStoreMixin
 from .evidence import EVIDENCE_SCHEMA, EvidenceStoreMixin
 from .social_learning import SOCIAL_SCHEMA, SocialStoreMixin
+from .life_memory import LIFE_SQL, LIFE_TYPES, LIFE_SOURCES, migrate_life_memory
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS world_state (
@@ -252,13 +253,18 @@ class Database(ModelCallStoreMixin, BackgroundStoreMixin, EvidenceStoreMixin, So
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=30000")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.executescript(SCHEMA + MODEL_CALL_SCHEMA + EVIDENCE_SCHEMA + SOCIAL_SCHEMA)
-        conn.commit()
-        self._migrate(conn)
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.executescript(SCHEMA + MODEL_CALL_SCHEMA + EVIDENCE_SCHEMA + SOCIAL_SCHEMA)
+            conn.commit()
+            self._migrate(conn)
+            migrate_life_memory(conn, self.path)
+        except BaseException:
+            conn.close()
+            raise
         return conn
 
     @staticmethod
@@ -502,6 +508,8 @@ class Database(ModelCallStoreMixin, BackgroundStoreMixin, EvidenceStoreMixin, So
         next_review_at: float = 0.0,
         pinned: bool = False,
     ) -> int:
+        if memory_type not in LIFE_TYPES or source not in LIFE_SOURCES:
+            raise ValueError("生活记忆只接受经历、事件、内心和梦；人物资料请写入通讯录")
         cursor = self._execute(
             "INSERT INTO node_memory (session_id, persona_id, scope, node_id, content, "
             "type, related_users, emotion, weight, created_at, last_recalled, recall_count, source, "
@@ -546,7 +554,7 @@ class Database(ModelCallStoreMixin, BackgroundStoreMixin, EvidenceStoreMixin, So
         limit: int = 200,
         order: str = "created_at DESC",
     ) -> list[dict[str, Any]]:
-        sql = "SELECT * FROM node_memory WHERE 1 = 1"
+        sql = "SELECT * FROM node_memory WHERE " + LIFE_SQL
         params: list[Any] = []
         if session_id is not None:
             sql += " AND session_id = ?"
@@ -621,6 +629,8 @@ class Database(ModelCallStoreMixin, BackgroundStoreMixin, EvidenceStoreMixin, So
     def update_memory(self, memory_id: int, **fields: Any) -> None:
         if not fields:
             return
+        if "type" in fields and fields["type"] not in LIFE_TYPES or "source" in fields and fields["source"] not in LIFE_SOURCES:
+            raise ValueError("不能把聊天摘要写入生活记忆")
         columns: list[str] = []
         params: list[Any] = []
         for key, value in fields.items():
@@ -770,6 +780,7 @@ class Database(ModelCallStoreMixin, BackgroundStoreMixin, EvidenceStoreMixin, So
         else:
             where = ""
             params = ()
+        where = where + " AND " + LIFE_SQL if where else "WHERE " + LIFE_SQL
         total = self._query(f"SELECT COUNT(*) AS c FROM node_memory {where}", params)[0]["c"]
         by_type = {
             row["type"]: row["c"]

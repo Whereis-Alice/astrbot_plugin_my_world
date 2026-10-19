@@ -18,7 +18,7 @@ class RecallMixin:
     # ---------------- 睡眠整理 ----------------
 
     CONSOLIDATE_NAP_MINUTES = 5.0
-    """小睡的轻整理：睡得短，只做要点化 + 缩略版 + 一条梦（一段小睡一次）。"""
+    """小睡只折叠生活细节、整理人物速写，可有一条梦；一段小睡一次。"""
 
     CONSOLIDATE_MAX_PASSES = 2
     """**一段睡眠最多整理两次**：入睡后一次、睡到后半段补一次（见配置项）。"""
@@ -79,8 +79,6 @@ class RecallMixin:
             session_ids=self.group_sessions(state.session_id), now=now, limit=8
         )
         for row in rows:
-            if memory_config.automatic_recall == "life_only" and row.get("type") == "interaction":
-                continue
             user_id = next(
                 (
                     str(entry)
@@ -139,6 +137,10 @@ class RecallMixin:
             text = " ".join(str(row.get("content") or "").split())
             if not text:
                 continue
+            if row.get("type") == "dream":
+                text = "【梦境，非现实经历】" + text
+            elif row.get("type") == "inner":
+                text = "【当时的内心】" + text
             user_id = next(
                 (
                     str(entry)
@@ -180,9 +182,7 @@ class RecallMixin:
         """
 
         config = self.world.profile
-        if not bool(getattr(config, "enabled", True)):
-            return None
-        if not bool(getattr(config, "consolidate_enabled", True)):
+        if not self.world.memory.sleep_review and not (config.enabled and config.consolidate_enabled):
             return None
         key = str(state.session_id)
         now = self._now()
@@ -239,6 +239,14 @@ class RecallMixin:
         if self.consolidator is None:
             return None
         session_id = str(state.session_id)
+        world, state_key = self.world, self.state_key(session_id)
+        persona_text = await self._persona_text(session_id)
+
+        async def context_current() -> bool:
+            persona = await self._persona_text(session_id)
+            return (self.world is world and self.state_key(session_id) == state_key
+                    and self.is_enabled(session_id) and persona == persona_text)
+
         records = self.chat_window(state, session_id)
         result = await self.consolidator.run(
             session_id=session_id,
@@ -250,13 +258,15 @@ class RecallMixin:
             mode=mode,
             chat_records=records,
             # 素材带来源标签：群和私聊共用一个世界，不标出"这是哪儿说的"，
-            # 模型会把两处的对话压成同一件事（记忆还是各存各的，只是标签不同）
+            # 让人物事实与关系按原话所在会话落库。
             session_labels=self.session_labels(state),
             current_session=session_id,
-            persona_text=await self._persona_text(session_id),
-            pending=self._consolidate_pending(state),
+            persona_text=persona_text,
             dry_run=dry_run,
+            context_current=context_current,
         )
+        if not await context_current():
+            return None
         if dry_run:
             return {
                 "mode": mode,
@@ -308,16 +318,7 @@ class RecallMixin:
             },
         }
 
-    def _consolidate_pending(self, state: WorldState) -> list[str]:
-        """还挂着的事（未完成的线索 / 约定）：整理时要优先"重放"它们。"""
 
-        rows: list[str] = []
-        thread = self._active_thread(state)
-        if thread is not None:
-            rows.append(f"还没完的事：{thread.get('title') or '一件事'}")
-        for item in list(getattr(state, "event_digest", None) or [])[-3:]:
-            rows.append(f"最近的事：{item}")
-        return rows
 
     GROUP_LIVELY_COOLDOWN_SECONDS = 300.0
     """「群里很热闹」这条情绪脉冲最多 5 分钟结算一次（不然刷屏会把孤独扣光）。"""

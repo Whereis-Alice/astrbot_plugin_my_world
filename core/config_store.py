@@ -21,6 +21,7 @@ from .defaults import (
     default_world,
 )
 from .config_scope import BLOCK_NAMES, effective_config, world_block
+from .life_memory import clean_memory_settings
 from .models import (
     SchedulesConfig,
     SessionsConfig,
@@ -146,6 +147,11 @@ class ConfigStore:
 
     def load_world(self) -> WorldConfig:
         raw = self._read_json(self.world_path, default_world())
+        cleaned = clean_memory_settings(raw)
+        if cleaned != raw:
+            self.snapshot_before("记忆职责调整前备份")
+            raw = cleaned
+            self._write_json(self.world_path, raw)
         if self._migrate_life_cadence(raw):
             self.snapshot_before("降低旧默认孤独与无聊增长")
             self._write_json(self.world_path, raw)
@@ -211,7 +217,9 @@ class ConfigStore:
 
     def load_sessions(self) -> SessionsConfig:
         raw = self._read_json(self.sessions_path, {"sessions": []})
-        changed = False
+        cleaned = clean_memory_settings(raw)
+        changed = cleaned != raw
+        raw = cleaned
         for row in raw.get("sessions", []):
             settings = (row.get("config_overrides") or {}).get("settings") if isinstance(row, dict) else None
             if isinstance(settings, dict):
@@ -244,6 +252,7 @@ class ConfigStore:
     ) -> list[str]:
         """写世界配置。``snapshot=True``（默认）时先给改动前的那一份留个历史。"""
 
+        data = clean_memory_settings(data)
         world, warnings = parse_world(data)
         if snapshot:
             self.snapshot_before(reason)

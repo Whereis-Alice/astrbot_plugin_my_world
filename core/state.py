@@ -47,9 +47,6 @@ _CHAT_TEXT_CHARS = 200
 _FORWARD_TEXT_CHARS = 800
 """带转发摘要的那一条放宽：摘要本身就是压过的，再掐200字就只剩半句。"""
 
-CHAT_DROPPED_KEEP = 120
-"""留档超上限被顶掉的那几条先攒着，等下一次压缩一起并进摘要（配置成"压缩"时）。"""
-
 MAX_CHAT_IMAGE_REFS = 2
 """一条聊天记录最多记住几张图（再多也没人会去对照）。"""
 
@@ -519,40 +516,13 @@ class WorldState:
     """
 
     recent_chat: list[dict[str, Any]] = field(default_factory=list)
-    """最近群聊内容（持久化，重启后仍在）。带上限，按配置决定丢弃还是压缩。"""
+    """有条数上限的近期消息窗口，超出时移出最早消息，重启后仍在。"""
 
     pending_images: list[dict[str, Any]] = field(default_factory=list)
     """自上次回复以来收到的图片（没配转述模型时，会把它们直接交给多模态主模型）。
 
     只存地址和时间，回复一次就清空；上限由「全局设置 → 上下文 → 图片上限」决定。
     """
-
-    chat_summary: str = ""
-    """较早群聊的压缩摘要（`chat_overflow = compress` 时才会有内容）。
-
-    老存档只有这一份**全局**摘要；新版改用按会话分开的 :attr:`chat_summaries`，
-    这里只在读取旧存档时当回落。
-    """
-
-    chat_summary_at: float = 0.0
-    """上次压缩摘要的时间戳。"""
-
-    chat_summaries: dict[str, dict[str, Any]] = field(default_factory=dict)
-    """按会话分开的"更早聊过的"：``{会话 id: {"text": 摘要, "at": 时间戳}}``。
-
-    同一个会话组里的群和私聊共用一份状态，摘要也要分会话存——不然群里聊的和私聊聊的
-    会被压进同一段，她就分不清哪句是哪儿的。
-    """
-
-    chat_dropped: list[dict[str, Any]] = field(default_factory=list)
-    """被留档上限顶掉、还没并进摘要的那几条（配置成"压缩"时才会攒）。
-
-    没有它的话，聊得快的时候"还没轮到压缩就已经被丢掉"的内容会彻底消失，
-    她之后就再也想不起那一段。
-    """
-
-    chat_overflow_warned_at: float = 0.0
-    """上次提醒"留档满了、最早的在被丢掉"的时间（配置成"直接丢弃"时才用）。"""
 
     chat_replied_until: float = 0.0
     """「已回应水位线」：这个时间点之前的群聊不再进"最近在聊"（留档仍然保留）。"""
@@ -712,16 +682,6 @@ class WorldState:
     """上一次在提示词里提醒她"可以出去走走"是什么时候（别每轮都念）。"""
 
     cold_start_done: bool = False
-    pending_memory: list[dict[str, Any]] = field(default_factory=list)
-    """还没总结的对话片段：攒够条数、聊完、或她离开这个地点时，压成一条记忆。"""
-    pending_memory_node: str = ""
-    """上面那些片段发生在哪个地点。"""
-    memory_hints: list[str] = field(default_factory=list)
-    """大模型顺手给的一句话总结，作为写记忆时的提示。"""
-    memory_flush_at: float = 0.0
-    """上次写对话记忆的时间。"""
-    memory_flush_wanted: bool = False
-    """硬触发（换地点）标记：下一次 tick 立刻把这段总结掉。"""
     wake_note: str = ""
     """刚被叫醒时给提示词的一句说明（下一次回复用完即弃，见 wake_note_until）。"""
     wake_note_until: int = 0
@@ -860,17 +820,6 @@ class WorldState:
             state.last_plan = {}
         if not isinstance(state.last_reasoning, dict):
             state.last_reasoning = {}
-        # 老存档只有一份全局摘要：挂到存档会话名下，下次压缩自然按会话替换
-        if not isinstance(state.chat_summaries, dict):
-            state.chat_summaries = {}
-        legacy = str(state.chat_summary or "").strip()
-        if legacy and not state.chat_summaries:
-            state.chat_summaries = {
-                str(session_id): {
-                    "text": legacy,
-                    "at": float(state.chat_summary_at or 0.0),
-                }
-            }
         # 「刚才在聊什么」/「她刚回应过的那批」以前也是全局一份：同样挂到存档会话名下
         for field_name, legacy_field in (
             ("chat_notes", "chat_note"),
@@ -1019,7 +968,6 @@ class WorldState:
         except (TypeError, ValueError):
             self.negative_valence_sum = 0.0
         self.negative_tone_streak = max(0, int(self.negative_tone_streak or 0))
-        self.memory_flush_wanted = bool(self.memory_flush_wanted)
         self.wake_note_until = max(0, int(self.wake_note_until))
         self.sleep_started_at = max(0, int(self.sleep_started_at or 0))
         if not isinstance(self.sleep_rhythm, dict):
@@ -1089,12 +1037,6 @@ class WorldState:
                 for key, value in self.external_state.items()
                 if isinstance(value, dict)
             }
-        if not isinstance(self.chat_dropped, list):
-            self.chat_dropped = []
-        else:
-            self.chat_dropped = [
-                dict(item) for item in self.chat_dropped if isinstance(item, dict)
-            ][-CHAT_DROPPED_KEEP:]
         self.interject_hour_marker = max(0, int(self.interject_hour_marker or 0))
         self.mood_cause = " ".join(str(self.mood_cause or "").split())
         self.mood_cause_at = max(0.0, float(self.mood_cause_at or 0.0))
@@ -1216,16 +1158,6 @@ class WorldState:
         if not isinstance(self.pending_help, dict):
             self.pending_help = {}
         self.node_since = max(0.0, float(self.node_since or 0.0))
-        if not isinstance(self.pending_memory, list):
-            self.pending_memory = []
-        else:
-            self.pending_memory = [
-                item for item in self.pending_memory if isinstance(item, dict)
-            ][-60:]
-        if not isinstance(self.memory_hints, list):
-            self.memory_hints = []
-        else:
-            self.memory_hints = [str(item) for item in self.memory_hints][-5:]
 
     # 兼容旧字段名：老版本叫「社交欲（social）」，语义已经换成「心潮（affect）」。
     @property
@@ -1371,7 +1303,6 @@ class WorldState:
         is_self: bool = False,
         internal: bool = False,
         images: Any = None,
-        buffer_dropped: bool = False,
         origin: str = "",
         at: Any = None,
         reply_to: Any = None,
@@ -1383,9 +1314,6 @@ class WorldState:
 
         ``images`` 是这条消息带的图片地址：留着是为了「聊天记录里的图直接交给
         多模态主模型」那一步——她能看到"这条带的是哪张图"。
-
-        ``buffer_dropped``：被上限顶掉的那几条先攒到 :attr:`chat_dropped`，
-        等下一次压缩并进摘要（只有配置成"压成摘要"时才需要传 True）。
 
         ``origin``：这条消息是在哪个会话说的。**要在记下来的同时就给**——
         留档是按会话各自限额裁的，晚一步标就会算到别的会话头上。
@@ -1503,11 +1431,7 @@ class WorldState:
                 item["event_id"] = str(event_id).strip()
         self.recent_chat.append(item)
         self.chat_seq = int(self.chat_seq) + 1
-        dropped = self._trim_chat(keep)
-        if dropped:
-            wanted = bool(getattr(self, "buffer_dropped_chat", buffer_dropped))
-            if wanted:
-                self.chat_dropped = [*self.chat_dropped, *dropped][-CHAT_DROPPED_KEEP:]
+        self._trim_chat(keep)
         return item
 
     def _trim_chat(self, keep: int) -> list[dict[str, Any]]:
@@ -1601,7 +1525,7 @@ class WorldState:
 
         ``max_minutes`` 之后就不再算"刚才"（0 = 不限）。老存档里只有一份全局的
         （``chat_note``），**那份的主人是 ``self.session_id``**：只有问的就是它才
-        回落（和 :meth:`from_payload` 的迁移口径、``chat_summary_map`` 一致），
+        回落（和 :meth:`from_payload` 的迁移口径一致），
         别的会话缺自己的条目时返回空串——把别的会话的旧备忘当成这里的，
         她会以为"刚才在这儿聊的事"其实是在别处说的。
         提示词和编辑器都用这一个实现，免得两处口径不一样。
