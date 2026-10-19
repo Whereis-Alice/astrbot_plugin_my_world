@@ -32,7 +32,10 @@ class AutonomyMixin:
 
         if not self.is_enabled(session_id):
             return None
-        await self.advance_life_matters(session_id)
+        if self.life_executor is None:
+            await self.advance_life_matters(session_id)
+        else:
+            self.queue_background("matter:" + self.state_key(session_id), lambda: self.advance_life_matters(session_id))
         now = self._now()
         # 节流按"这一整个她"算，不按会话：同一个组的几个会话共用一个她
         pace_key = self.state_key(session_id)
@@ -53,7 +56,7 @@ class AutonomyMixin:
                 return None
             if self.world.sleep.mode == "autonomous" and state.sleep_rhythm.get("decision") == "sleep":
                 await self._run_rhythm_sleep(state, outcome)
-            elif self.life_choice(state)["kind"] in {"event", "schedule"}:
+            elif self.life_choice(state)["kind"] in {"event", "schedule", "continue"}:
                 outcome.notes.append(state.life_decision["reason"])
             elif not self.proactive_chat_allowed(session_id):
                 outcome.notes.append("自主搭话已关闭，继续安静生活")

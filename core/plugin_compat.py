@@ -96,3 +96,49 @@ def profile_weaver_active(context: Any) -> bool:
     """心迹画像在不在跑（它在跑就会自己注入画像，我们别重复注入）。"""
 
     return plugin_active(context, PROFILE_WEAVER_PLUGIN)
+
+
+def motion_media_refs(context: Any, event: Any, request: Any, *, sources: list[str] | None = None) -> tuple[bool, set[str]]:
+    """Use observed Motion Vision provenance, never disable ordinary vision globally.
+
+    No files are opened, copied, retained or deleted here. The media plugin owns
+    frame/audio lifetimes and its review registry.
+    """
+    from urllib.parse import urlsplit
+    parts = getattr(request, "extra_user_content_parts", []) or []
+    texts = [str(part.get("text", "") if isinstance(part, dict) else getattr(part, "text", "")) for part in parts]
+    touched = any("【动态媒体解析】" in text or "【整片视频模型报告｜" in text for text in texts)
+    if not touched:
+        return False, set()
+    excluded = set()
+    try:
+        for star in context.get_all_stars() or []:
+            labels = {str(getattr(star, key, "") or "") for key in ("name", "root_dir_name")}
+            if "astrbot_plugin_motion_vision" not in labels or not getattr(star, "activated", False):
+                continue
+            instance = getattr(star, "star_cls", None)
+            base = str(getattr(getattr(instance, "store", None), "base", "") or "").replace("\\", "/").rstrip("/")
+            for ref in getattr(request, "image_urls", []) or []:
+                normal = str(ref).replace("\\", "/")
+                if base and normal.startswith(base + "/"):
+                    excluded.add(str(ref))
+            registry = getattr(instance, "registry", None)
+            records = registry.records(event.unified_msg_origin) if registry else []
+            since = float(getattr(event, "created_at", 0) or 0)
+            for record in records:
+                if since and float(getattr(record, "received_at", 0)) < since - 3:
+                    continue
+                for name in ("source_url", "path"):
+                    ref = getattr(record, name, None)
+                    if ref:
+                        excluded.add(str(ref))
+    except Exception:
+        pass  # Incomplete provenance preserves ordinary image fallback.
+    # Motion Vision removes decoded GIF originals from image_urls. GIFs still
+    # present may have failed decoding or exceeded its processing count: retain
+    # ordinary fallback for those, even when another clip was injected.
+    remaining = set(getattr(request, "image_urls", []) or [])
+    for ref in sources or []:
+        if ref not in remaining and urlsplit(str(ref)).path.lower().endswith(".gif"):
+            excluded.add(str(ref))
+    return True, excluded

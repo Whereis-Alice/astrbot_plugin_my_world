@@ -13,6 +13,7 @@ from ..config_scope import session_scoped
 from ..json_actions import extract_json_object
 from ..life import life_role
 from ..life_policy import choose_life
+from ..life_execution import block, capability_key
 from ..model_calls import model_context
 from ..pathfinding import find_path
 from ..planner import create_plan
@@ -38,7 +39,7 @@ class MattersMixin:
         """One suggestion a day; transient failures get a bounded, delayed retry."""
         if (not self.world.limits.life_matter_enabled or not self.world.limits.life_matter_self_start
                 or not self._matter_can_work(state) or state.world_time * self.tick_seconds < 6 * 3600
-                or any(m["status"] not in matters.CLOSED for m in state.life_matters)):
+                or any(m["status"] in {"active", "working"} for m in state.life_matters)):
             return False
         key = f"life_seed:{self.state_key(state.session_id)}:{self._today_key(self._now())}"
         marker = self.db.raw.kv_get(key)
@@ -61,12 +62,12 @@ class MattersMixin:
             if not self.life_seed_due(state):
                 return
             candidates = self._matter_actions(state)
-            interests = matters.stable_interests(state)
+            interests = matters.stable_interests(state, now=self._now())
             marker = self.db.raw.kv_get(key) or {}
-            attempts = int(marker.get("attempts") or 0) + bool(candidates)
+            attempts = int(marker.get("attempts") or 0) + bool(candidates or self.life_executor)
             self.db.raw.kv_set(key, {"at": self._now(), "attempts": attempts,
                 "retry_at": self._now() + max(15, self.world.limits.life_matter_interval_minutes) * 60})
-            if not candidates:
+            if not candidates and self.life_executor is None:
                 return
         persona = await self._persona_text(session_id)
         with model_context("life_matter", "有空闲，为自己的生活想一件可持续的小事", session_id):
@@ -88,7 +89,7 @@ class MattersMixin:
                 return
             matters.ensure(state, self._now())
             if (not self._matter_can_work(state)
-                    or any(m["status"] not in matters.CLOSED for m in state.life_matters)):
+                    or any(m["status"] in {"active", "working"} for m in state.life_matters)):
                 return
             self.db.raw.kv_set(key, {"at": self._now(), "attempts": attempts, "done": True})
             self.add_life_matter(state, str(payload.get("text") or ""), session=session_id,
@@ -117,6 +118,17 @@ class MattersMixin:
         running = str((state.current_action or {}).get("matter_id") or (state.current_plan or {}).get("matter_id") or "")
         for item in state.life_matters:
             if item["status"] == "working" and item["id"] != running:
+                execution = next((r for r in reversed(item.get("executions", [])) if r.get("status") == "running"), None)
+                task = getattr(self, "_life_runs", {}).get(execution["id"]) if execution else None
+                if task and not task.done():
+                    continue
+                if execution:
+                    execution["status"] = "unknown"
+                    item["execution_review_required"] = True
+                    block(item, kind="uncertain", reason="上次执行在重启前未结算，先核对沙盒，不能自动重放", now=self._now(),
+                          condition="核对执行记录后点击「核对后继续」")
+                    matters.history(item, "execution_unknown", item["obstacle"], self._now())
+                    continue
                 item.update(status="active", obstacle="上次的小步被打断，稍后接着做")
                 matters.history(item, "interrupted", item["obstacle"], self._now())
         matters.sync(state)
@@ -192,7 +204,14 @@ class MattersMixin:
         item = matters.find(state, matter_id)
         if item is None:
             raise ValueError("找不到这件生活事项")
-        if operation in {"pause", "resume", "postpone", "abandon"}:
+        if operation == "acknowledge_execution":
+            if item["status"] in matters.CLOSED:
+                raise ValueError("已经结束的事项保留为历史")
+            if not reason.strip():
+                raise ValueError("请填写核对到的实际执行情况；不确定时请继续保留等待")
+            item.update(execution_review_required=False, needs_replan=True, needs_review=False,
+                        status="active", blocker="", resume_at=0, last_attempt_at=0, plan_attempts=0)
+        elif operation in {"pause", "resume", "postpone", "abandon"}:
             if item["status"] in matters.CLOSED:
                 raise ValueError("已经结束的事项不能再次执行，请新建事项")
             if operation in {"resume", "postpone"} and item["status"] == "paused" and sum(
@@ -217,14 +236,16 @@ class MattersMixin:
                     item[key] = str(changes[key]).strip()[:160 if key == "text" else 300]
             if changed_goal:
                 item.update(needs_replan=True, needs_review=False, last_attempt_at=0, plan_attempts=0,
-                            resume_at=0, obstacle="",
+                            resume_at=0, obstacle="", blocker="", capability_key="", remaining_condition="",
                             next_step="目标已调整，保留已做步骤，重新安排后续")
         else:
             raise ValueError("支持暂停、继续、延期、放弃和编辑；完成需要真实执行依据")
         if operation in {"pause", "postpone", "abandon", "complete", "edit"}:
             self._stop_matter_work(state, matter_id)
         if operation == "resume":
-            item.update(last_attempt_at=0, plan_attempts=0)
+            if item.get("remaining_condition") or item.get("blocker") == "materials":
+                item.update(needs_replan=True, needs_review=False, previous_condition=item.get("remaining_condition") or item.get("obstacle"))
+            item.update(last_attempt_at=0, plan_attempts=0, blocker="", remaining_condition="")
         if operation == "edit" and item["status"] == "working":
             item["status"] = "active"
         matters.history(item, "manual_" + operation, reason or "管理员调整", self._now(), manual=True)
@@ -254,6 +275,9 @@ class MattersMixin:
             return
         world, state_key = self.world, self.state_key(session_id)
         now = self._now()
+        capabilities = await self.life_capabilities(session_id)
+        cap_key = capability_key(capabilities)
+        execute = False
         async with self.session_state(session_id) as state:
             self.reconcile_matters(state)
             if not self._matter_can_work(state):
@@ -263,6 +287,13 @@ class MattersMixin:
             for candidate in state.life_matters:
                 if candidate["status"] not in {"active", "waiting", "blocked", "working"}:
                     continue
+                if candidate.get("execution_review_required"):
+                    continue
+                if (candidate.get("blocker") in {"environment", "capability", "materials", "uncertain"}
+                        and candidate.get("capability_key") == cap_key):
+                    continue
+                if candidate.get("blocker") in {"environment", "capability", "materials"} and candidate.get("capability_key") != cap_key:
+                    candidate.update(last_attempt_at=0, plan_attempts=0, resume_at=0, blocker="")
                 if candidate.get("work_day") != day:
                     candidate.update(work_day=day, worked_minutes=0, plan_attempts=0)
                 if (float(candidate.get("resume_at") or 0) > now
@@ -279,32 +310,47 @@ class MattersMixin:
             item["last_attempt_at"] = now
             review = bool(item.get("needs_review"))
             if item.get("steps") and not item.get("needs_replan") and not review:
-                await self._start_matter_step(state, item)
-                return
-            item["plan_attempts"] = int(item.get("plan_attempts", 0)) + 1
+                pending = next((s for s in item["steps"] if s.get("status") != "done"), None)
+                if not pending or pending.get("action") != "native_agent":
+                    await self._start_matter_step(state, item)
+                    return
+                execute = True
+            if not execute:
+                item["plan_attempts"] = int(item.get("plan_attempts", 0)) + 1
             snapshot = copy.deepcopy(item)
+            interrupted = [event for event in item.get("history", []) if event.get("kind") == "paused_step"
+                           and now - float(event.get("at") or 0) <= 7 * 86400]
+            snapshot["rhythm_hint"] = "最近多次被打断，优先拆成5到15分钟的小步；不代表喜好改变" if len(interrupted) >= 2 else ""
             candidates = self._matter_actions(state)
         # Never wait for inference while holding the life-state lock.
         persona = await self._persona_text(session_id)
         if not await self._matter_context_current(session_id, world, state_key, persona):
             return
+        if execute:
+            await self._run_life_step(session_id, snapshot, world=world, state_key=state_key,
+                                      persona=persona, capabilities=capabilities)
+            return
         if review:
             await self._review_matter_stage(session_id, snapshot, world=world, state_key=state_key, persona=persona)
             return
-        if not candidates:
+        if not candidates and self.life_executor is None:
             raw = None
         else:
             with model_context("life_matter", f"为生活事项 {snapshot['id']} 安排可执行的小步", session_id):
                 raw = await self._ask_judge(session_id,
                     "你为角色安排一个能持续数天的个人项目，只输出JSON。不要把计划写成已经发生的事实。"
                     "基础人设的喜恶、价值观和能力优先；经历只用于温和延伸，不得改变身份、性格或强迫培养新爱好。"
-                    "只能从候选动作与地点安排真实适配的小步；不可借看书完成发照片、购物、联系他人等外部操作。"
-                    "外部操作或缺少能力时返回blocked及原因，等待实际对话/工具结果。"
+                    "只能从候选动作与地点安排真实适配的小步；不可借看书完成编程、整理真实素材、购物、联系他人等外部操作。"
+                    "电脑、代码和已授权工具可用时，把能独立执行的小步设为action=native_agent，不再自行编写工具循环。"
+                    "电脑未就绪也可以先安排native_agent步骤，明确等待环境；不要假设任何真实文件存在。"
+                    "缺素材的项目可先编程并用明确标注的synthetic样例验证，保留真实素材处理为后续条件。"
+                    "有可做部分先安排可做部分，blocked只描述剩余阻碍，不能抹掉可做步骤。"
                     '格式：{"motivation":"一句动机","steps":[{"text":"具体下一步","action":"候选ID",'
                     '"node":"候选地点","minutes":20,"day_offset":0}],"blocked":""}。最多6步，每步5到60分钟。'
                     "day_offset是从今天起经过几天才适合做，可跨多日，不要为填满日程而强行赶完。",
                     json.dumps({"persona": persona[:6000],
-                                "matter": snapshot, "available": candidates}, ensure_ascii=False))
+                                "matter": snapshot, "available": candidates,
+                                "native_agent": capabilities}, ensure_ascii=False))
         payload = extract_json_object(raw or "") or {}
         if not await self._matter_context_current(session_id, world, state_key, persona):
             return
@@ -317,29 +363,35 @@ class MattersMixin:
             steps = []
             proposed = payload.get("steps") if isinstance(payload.get("steps"), list) else []
             for index, step in enumerate(proposed[:6]):
-                if not isinstance(step, dict) or (step.get("action"), step.get("node")) not in allowed or not step.get("text"):
+                if not isinstance(step, dict) or not step.get("text"):
+                    continue
+                native = step.get("action") == "native_agent" and self.life_executor is not None
+                if not native and (step.get("action"), step.get("node")) not in allowed:
                     continue
                 try:
                     minutes = min(60, max(5, int(step.get("minutes") or 20)))
                     day_offset = min(30, max(0, int(step.get("day_offset", index))))
                 except (ValueError, TypeError):
                     continue
-                definition = self.world.action_map()[step["action"]]
-                if definition.duration_mode == "llm":
+                definition = self.world.action_map().get(step["action"])
+                if definition and definition.duration_mode == "llm":
                     minutes = min(max(minutes, max(1, definition.duration_min / 60)), max(1, definition.duration_max / 60))
                 steps.append({"id": f"{item['id']}_{item['revision']}_{index}", "text": str(step["text"])[:300],
-                              "action": step["action"], "node": step["node"], "minutes": minutes,
+                              "action": step["action"], "node": step.get("node", state.node_id), "minutes": minutes,
                               "not_before": now + day_offset * 86400, "status": "pending"})
-            if steps and not payload.get("blocked"):
+            if steps:
                 steps = [s for s in item.get("steps", []) if s.get("status") == "done"][-60:] + steps
                 item.update(steps=steps, progress=min(99, round(100 * sum(s["status"] == "done" for s in steps) / len(steps))),
                             next_step=next(s["text"] for s in steps if s["status"] != "done"), status="active",
-                            motivation=str(payload.get("motivation") or item.get("motivation") or "")[:300], obstacle="", needs_replan=False)
+                            motivation=str(payload.get("motivation") or item.get("motivation") or "")[:300], obstacle="", blocker="",
+                            remaining_condition=str(payload.get("blocked") or "")[:300], needs_replan=False)
                 matters.history(item, "planned", "安排了可执行的小步，尚未完成", now)
-                if self._matter_can_work(state):
+                if self._matter_can_work(state) and next(s for s in steps if s["status"] != "done")["action"] != "native_agent":
                     await self._start_matter_step(state, item)
             else:
-                item.update(status="blocked", obstacle=str(payload.get("blocked") or "暂时没有得到可执行安排，稍后再想")[:300])
+                block(item, kind="capability" if payload.get("blocked") else "transient",
+                      reason=str(payload.get("blocked") or "暂时没有得到可执行安排，稍后再想"), now=now,
+                      condition="能力或资料有变化时继续，也可手动重新安排", key=cap_key)
                 matters.history(item, "blocked", item["obstacle"], now)
             matters.sync(state)
 
@@ -354,7 +406,8 @@ class MattersMixin:
             raw = await self._ask_judge(session_id,
                 "根据事项目标和实际动作收据，判断整个目标是否已达成，只输出JSON。"
                 '格式：{"outcome":"completed|continue|blocked","reason":""}。'
-                "只能证明收据中的世界内活动；读资料不能证明修好了物品或产出了文件。"
+                "区分世界内动作、真实沙盒工具结果和已读回的文件；读资料不能证明修好了物品或产出了文件。"
+                "样例验证不代表真实素材已处理。remaining_condition非空且未满足时不可completed。"
                 "可以继续则continue，能力不足则blocked，已有依据确实覆盖整个目标才completed。不要编造新经历。",
                 json.dumps({"persona": persona[:6000], "matter": snapshot}, ensure_ascii=False))
         result = extract_json_object(raw or "") or {}
@@ -367,7 +420,7 @@ class MattersMixin:
                 return
             reason = str(result.get("reason") or "尚未取得可核对的目标结果")[:300]
             outcome = result.get("outcome")
-            if outcome == "completed" and item["kind"] != "promise":
+            if outcome == "completed" and item["kind"] != "promise" and not item.get("remaining_condition"):
                 receipts = [s.get("result", {}) for s in item["steps"] if s.get("status") == "done"]
                 item.update(status="completed", progress=100, needs_review=False, next_step="", completed_at=self._now(),
                             result="；".join(str(r.get("result") or "") for r in receipts)[-500:])
@@ -376,7 +429,10 @@ class MattersMixin:
                 item.update(status="active", needs_review=False, needs_replan=True, next_step=reason, last_attempt_at=0)
                 matters.history(item, "continue_stage", "进入下一阶段：" + reason, self._now())
             else:
-                item.update(status="blocked", obstacle=reason, next_step="等待真实结果或人工确认")
+                block(item, kind="materials" if item.get("remaining_condition") else "capability",
+                      reason=item.get("remaining_condition") or reason, now=self._now(),
+                      condition=item.get("remaining_condition") or "等待真实结果或人工确认",
+                      key=capability_key(await self.life_capabilities(session_id)))
                 matters.history(item, "review_blocked", reason, self._now())
             matters.sync(state)
 

@@ -19,6 +19,12 @@ export function renderRelationshipOverview(data, { el, formatStamp }) {
     grid.appendChild(cell);
   }
   section.appendChild(grid);
+  const trend = relation.trend;
+  if (trend) {
+    const detail = el("details", "contact-trend"); detail.append(el("summary", "", `${trend.label} · ${trend.count} 条依据`), el("p", "hint-line", trend.explanation));
+    for (const item of trend.evidence || []) detail.append(el("p", "contact-relation-reason", `${formatStamp(item.at)} · ${item.reason}`));
+    section.append(detail);
+  }
   section.appendChild(el("p", "hint-line", person.level?.prompt || "相处方式会参考人设、关系和最近的经历。"));
   for (const reason of relation.reasons || []) section.appendChild(el("p", "contact-relation-reason", reason));
   if ((person.level?.deny || []).length)

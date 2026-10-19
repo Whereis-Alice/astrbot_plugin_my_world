@@ -317,6 +317,18 @@ class RelationshipsBrowserTests(unittest.TestCase):
         self.assertEqual(self.errors, [])
 
     def test_evidence_and_temporary_feelings_remain_visible_without_html_execution(self):
+        self.page.evaluate("""() => {
+          const get = AstrBotPluginPage.apiGet;
+          AstrBotPluginPage.apiGet = async (endpoint, params) => {
+            const data = await get(endpoint, params);
+            if (endpoint === 'profile/contact') data.relationship.trend = {
+              label: '近期相处较融洽', count: 4,
+              explanation: '近14天的直接交谈观察，不改变好感、身份或权限。',
+              evidence: [{at: Date.now()/1000, reason: '<img src=x onerror=alert(1)> 认真听她讲完了一件自己的事'}]
+            };
+            return data;
+          };
+        }""")
         self.page.locator('[data-qq="10001"]').click()
         card = self.page.locator(".social-scope-card").first
         card.locator("summary").first.click()
@@ -327,8 +339,20 @@ class RelationshipsBrowserTests(unittest.TestCase):
         history = card.locator(".contact-relationship-history")
         expect(history).to_contain_text("<img src=x")
         self.assertEqual(history.locator("img").count(), 0)
+        trend = overview.locator('.contact-trend')
+        trend.locator('summary').click()
+        expect(trend).to_contain_text('近期相处较融洽 · 4 条依据')
+        expect(trend).to_contain_text('不改变好感、身份或权限')
+        expect(trend).to_contain_text('<img src=x')
+        self.assertEqual(trend.locator('img').count(), 0)
         expect(card.get_by_label("她还在意的事")).to_be_visible()
         self.assertEqual(self.page.evaluate("socialWrites"), [])
+        for width, height in [(1600, 1000), (390, 844)]:
+            self.host.set_viewport_size({'width': width, 'height': height})
+            trend.scroll_into_view_if_needed()
+            self.assertTrue(trend.evaluate('node => node.scrollWidth <= node.clientWidth + 1'))
+            self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'))
+            self.host.screenshot(path=str(self.shots / f'relationship-trend-{width}.png'))
         self.assertEqual(self.errors, [])
 
     def test_saving_one_form_warns_before_discarding_another_form_draft(self):

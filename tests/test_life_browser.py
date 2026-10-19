@@ -87,6 +87,42 @@ class LifeBrowserTests(unittest.TestCase):
             self.page.locator('#life-close').click()
         self.assertEqual(self.errors, [])
 
+    def test_execution_evidence_environment_and_no_invented_progress(self):
+        self.page.evaluate("""() => {
+          lifeData.execution={ready:false,reason:'请配置独立生活沙盒',booter:'shipyard_neo',tools:[
+            {name:'astrbot_execute_shell',scope:'sandbox',allowed:true},
+            {name:'public_lookup',scope:'host',allowed:false,fingerprint:'synthetic',reason:'需要单独信任：在宿主执行'},
+            {name:'astrbot_file_download',scope:'host',allowed:false,reason:'电脑工具仅接入已确认的原生沙盒工具'}]};
+          Object.assign(lifeData.items[0],{text:'归类和校验本地动漫截图与资源元数据：先实现脚本，真实素材尚未提供',motivation:'想为自己的收藏做一份清楚的目录，先从可验证的小步开始。',next_step:'在独立沙盒中编写校验脚本',status:'blocked',blocker:'environment',steps:[],history:[],progress:0,obstacle:'请配置独立生活沙盒',recovery_condition:'沙盒配置或工具能力变化后继续'});
+          Object.assign(lifeData.items[1],{text:'素材校验脚本与样例验证',motivation:'先把字段和异常处理想清楚，用明确标注的样例测试，真实素材到齐后再继续。',next_step:'检查明确提供到项目沙盒的真实素材',status:'blocked',blocker:'materials',obstacle:'真实截图尚未提供',recovery_condition:'提供项目沙盒内的真实素材路径',progress:50,
+            steps:[{id:'script',text:'编写脚本并完成 synthetic 样例验证',action:'native_agent',status:'done',finished_at:Date.now()/1000},{id:'real',text:'收到真实素材后运行校验并留下报告',action:'native_agent',status:'pending'}],
+            history:[{at:Date.now()/1000,text:'脚本与样例验证小步已完成，尚未处理真实素材',receipt:{kind:'native_agent'}}],
+            artifacts:[{path:'my_world/lm_demo/validate.py',verification:'原生沙盒文件接口已读回，样例不代表真实素材'}],executions:[{id:'le_demo',at:Date.now()/1000,status:'succeeded',events:[{kind:'environment',booter:'shipyard_neo'},{kind:'tool_start',tool:'astrbot_execute_shell'},{kind:'tool_end',tool:'astrbot_execute_shell',ok:true,result:'synthetic tests: 3 passed'}]}]});
+          Object.assign(lifeData.items[2],{steps:[],history:[],progress:0,blocker:'capability',next_step:'先确认实际可用的寄送方式'});
+        }""")
+        self.page.locator('#life-tools summary').click()
+        self.page.locator('#life-refresh').click()
+        expect(self.page.locator('.life-card').first).not_to_contain_text('0%')
+        expect(self.page.locator('#life-grid')).to_contain_text('等待执行环境')
+        expect(self.page.locator('#life-grid')).to_contain_text('等待资料或素材')
+        self.host.screenshot(path=str(self.shots/'life-execution-desktop.png'))
+        self.page.locator('.life-card').filter(has_text='素材校验脚本与样例验证').click()
+        expect(self.page.locator('#life-detail')).to_contain_text('my_world/lm_demo/validate.py')
+        self.page.locator('.life-execution summary').click()
+        expect(self.page.locator('.life-execution')).to_contain_text('synthetic tests: 3 passed')
+        self.host.screenshot(path=str(self.shots/'life-execution-drawer.png'))
+        self.page.locator('#life-close').click()
+        self.host.set_viewport_size({'width':390,'height':844})
+        self.host.screenshot(path=str(self.shots/'life-execution-phone.png'))
+        self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'))
+        self.page.locator('#life-tools summary').click()
+        self.page.locator('#life-settings').click()
+        expect(self.page.get_by_label('生活沙盒环境')).to_be_visible()
+        self.page.get_by_text('生活可用工具与宿主授权', exact=True).click()
+        expect(self.page.get_by_text('public_lookup', exact=True)).to_be_visible()
+        self.host.screenshot(path=str(self.shots/'life-execution-settings-phone.png'))
+        self.assertEqual(self.errors, [])
+
     def test_old_save_cannot_close_a_new_session_drawer(self):
         self.page.evaluate("""() => {
           const read=AstrBotPluginPage.apiGet, write=AstrBotPluginPage.apiPost;

@@ -105,7 +105,9 @@ class BackgroundMixin:
         if active >= self.world.limits.background_concurrency:
             return LLMReply(ok=False, error="后台通道忙，留待下一次")
         self._background_active = active + 1
-        reserve = len(str(kwargs.get("system_prompt", ""))) + len(str(kwargs.get("prompt", ""))) + int(kwargs.get("max_tokens") or 2048)
+        reserve = (len(str(kwargs.get("system_prompt", ""))) + len(str(kwargs.get("prompt", "")))
+                   + len(str(kwargs.get("contexts") or "")) + len(str(kwargs.get("func_tool") or ""))
+                   + int(kwargs.get("max_tokens") or 2048))
         day = self._today_key(now)
         admitted = False
         usage = None

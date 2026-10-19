@@ -101,7 +101,29 @@ def evolve_friendship(store: Any, session_id: str, user_id: str, *, now: float) 
     )
 
 
-def relationship_summary(store: Any, session_id: str, user_id: str, person: dict[str, Any]) -> dict[str, Any]:
+def interaction_trend(logs: list[dict], *, now: float) -> dict:
+    """Explain observed recent interactions without recomputing affinity or rights."""
+    rows = [row for row in logs if row.get("source") == "chat" and
+            0 <= now - float(row.get("at") or 0) <= 14 * 86400][:20]
+    positive = sum(float(row.get("delta") or 0) > 0 for row in rows)
+    negative = sum(float(row.get("delta") or 0) < 0 for row in rows)
+    if len(rows) < 3:
+        direction, label = "insufficient", "近期互动依据还少"
+    elif positive and negative and min(positive, negative) / len(rows) >= .3:
+        direction, label = "mixed", "近期相处有起伏"
+    elif positive > negative:
+        direction, label = "warming", "近期相处较融洽"
+    elif negative > positive:
+        direction, label = "cooling", "近期相处有些摩擦"
+    else:
+        direction, label = "steady", "近期相处平稳"
+    return {"direction": direction, "label": label, "days": 14, "count": len(rows),
+            "explanation": "近14天最多20条直接交谈记录，仅作观察；手动设定、关系下限和自然衰减不参与，不改变好感、身份或权限。",
+            "evidence": [{"id": row.get("id"), "at": row["at"], "reason": row.get("reason") or "未记录具体原因",
+                          "delta": row.get("delta")} for row in rows[:3]]}
+
+
+def relationship_summary(store: Any, session_id: str, user_id: str, person: dict[str, Any], *, now: float = 0) -> dict[str, Any]:
     names = list(person.get("affinities") or [])
     config = store.config
     affinity = float(person.get("affinity") or 0)
@@ -132,4 +154,5 @@ def relationship_summary(store: Any, session_id: str, user_id: str, person: dict
         "affinity_max": config.affinity_max,
         "decay_grace_days": config.affinity_decay_grace_days,
         "progress": friendship_progress(store, session_id, user_id),
+        "trend": interaction_trend(store.affinity_logs(session_id, user_id, limit=200), now=now),
     }

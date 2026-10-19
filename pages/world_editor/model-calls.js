@@ -2,6 +2,7 @@
 export const CALL_PURPOSES = {
   interaction_style: "相处习惯归纳",
   life_matter: "生活事项",
+  life_rerank: "生活记忆重排",
   embedding: "语义记忆检索",
   chat: "对话回复", plan: "自主决策", tick: "生活推进", event: "事件推进与结算", consolidate: "睡眠整理",
   context: "上下文管理", memory: "记忆处理", helper: "参数补全", judge: "辅助判断", creation: "内容生成",

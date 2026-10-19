@@ -9,20 +9,23 @@ from uuid import uuid4
 CLOSED = {"completed", "abandoned", "expired"}
 
 
-def stable_interests(state) -> list[dict]:
+def stable_interests(state, *, now: float = 0) -> list[dict]:
     """Several actual sessions across three days, rather than a sampled personality change."""
     return [{"action": key, **value} for key, value in state.life_interests.items()
             if len(value.get("days", [])) >= 3 and value.get("sessions", 0) >= 3
-            and value.get("minutes", 0) >= 45][:8]
+            and value.get("minutes", 0) >= 45
+            and (not now or not value.get("last_at") or now - value["last_at"] <= 30 * 86400)][:8]
 
 
-def routine_hints(state) -> list[dict]:
+def routine_hints(state, *, now: float = 0) -> list[dict]:
     """Repeated, dated circumstances are context, never a new identity or taste."""
     hints = []
-    for item in stable_interests(state):
+    for item in stable_interests(state, now=now):
         periods = {}
         for episode in item.get("episodes", []):
             if not isinstance(episode, dict) or not episode.get("day") or not episode.get("period"):
+                continue
+            if now and episode.get("at") and now - episode["at"] > 30 * 86400:
                 continue
             periods.setdefault(episode["period"], set()).add(episode["day"])
         if periods:
@@ -113,7 +116,8 @@ def complete_step(state, matter_id: str, step_id: str, *, now: float,
         history(item, "stage_done", "本阶段步骤均已实际执行，尚未确认整个目标完成", now, receipt=receipt)
         # An in-world work product, explicitly labelled; never an external file/operation.
         state.life_artifacts[item["id"]] = {"label": item["text"], "result": str(receipt.get("result") or "已执行本阶段步骤"),
-                                            "at": now, "scope": "in_world", "session": item["session"]}
+                                            "at": now, "scope": "sandbox" if receipt.get("kind") == "native_agent" else "in_world",
+                                            "artifacts": receipt.get("artifacts", []), "session": item["session"]}
         state.life_artifacts = dict(list(state.life_artifacts.items())[-40:])
     else:
         item["resume_at"] = float(remaining[0].get("not_before") or 0)
@@ -130,22 +134,23 @@ def context_block(state, *, session_id: str, user_id: str = "", now: float = 0) 
             continue
         if user_id and item.get("who") and item["who"] != user_id:
             continue
+        from .life_execution import progress_label
         rows.append(f"- [{item['id']}] {item['text']}；动机：{item.get('motivation') or '原先想做的事'}；"
-                    f"状态：{item['status']}；已执行进度：{item.get('progress', 0)}%；"
+                    f"状态：{item['status']}；{progress_label(item)}；"
                     f"下一步：{item.get('next_step') or '尚待安排'}；阻碍：{item.get('obstacle') or '无'}")
     block = ("# 你一直在推进的生活事项\n只记得真实进展；打算、想象、梦和口头声称都不算做成。"
             "可以自然提起，不要逐条念清单。涉及他人的事情只能在来源会话提及。\n" + "\n".join(rows[:6])) if rows else ""
-    interests = stable_interests(state)
+    interests = stable_interests(state, now=now)
     if interests:
         block += "\n# 从日子里积累的活动经验\n这些只证明实际多日投入，不证明喜欢，更不能覆盖人设的喜恶、身份和说话方式。"
         block += "符合原有人设时才可温和延伸为日常偏好；可改变或放下，不必每次重复。\n" + "\n".join(
             f"- {item['label']}：{len(item['days'])} 天、{item['sessions']} 次、累计 {item['minutes']:g} 分钟" for item in interests)
-    routines = routine_hints(state)
+    routines = routine_hints(state, now=now)
     if routines:
         block += "\n# 可参考的生活节奏\n以下是实际重复发生的时段，只在符合人设、困意和日程时作为轻微倾向；不能推断她喜欢或讨厌什么。\n" + "\n".join(
             f"- {item['label']}曾在{len(item['days'])}个日期的{item['period']}进行，可以考虑沿用，也可以换一种安排。" for item in routines)
     artifacts = [item for item in state.life_artifacts.values() if item.get("session") == session_id][-3:]
     if artifacts:
-        block += "\n# 已留下的生活阶段记录\n以下仅证明世界内活动，不代表产出了真实文件、寄出物品或完成外部操作。\n" + "\n".join(
-            f"- {item['label']}：{item['result']}" for item in artifacts)
+        block += "\n# 已留下的生活阶段记录\n严格区分世界内活动与沙盒工具结果；沙盒文件不代表服务器素材、寄送或向聊天发送成功。\n" + "\n".join(
+            f"- [{item.get('scope', 'in_world')}] {item['label']}：{item['result']}" for item in artifacts)
     return block

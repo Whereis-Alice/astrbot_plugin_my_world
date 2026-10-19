@@ -64,6 +64,12 @@ python -m pytest tests/test_contacts_browser.py -q  # 需要 Playwright + Chromi
 `MY_WORLD_DATA_DIR` 覆盖。第一次启动时可以用 `MY_WORLD_MIGRATE_FROM=<旧目录>`
 从 `astrbot_plugin_her_world` / `astrbot_plugin_virtual_world` 整份搬数据（不覆盖已有数据）。
 
+## 原生 Agent 与插件共存验证
+
+生活执行的离线 SDK 契约复现脚本为 `tools/verify_life_sdk.py`。将仓库与 AstrBot SDK 放到 `PYTHONPATH`，从一次性临时目录运行，避免 SDK 的默认配置初始化写入开发目录。脚本运行真实原生 Runner 与 Shell 工具，仅模型和沙盒传输使用合成桩，不连接服务器或执行宿主命令；这不能替代实际沙盒服务的隔离测试。
+
+共存测试可设置 `MY_WORLD_MOTION_VISION_SOURCE`、`MY_WORLD_ANAMNESIS_SOURCE` 为对应源码目录，复用实际媒体注入与聊天记忆注入代码。浏览器测试使用合成数据；执行账本的失败、暂停、重启与防重场景见 `tests/test_life_execution.py`。
+
 ## 推送到 GitHub
 
 如果遇到只能访问 `api.github.com`、`git push` 被重置的网络，

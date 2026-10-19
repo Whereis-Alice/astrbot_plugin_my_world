@@ -870,6 +870,16 @@ class StateDynamics(Permissive):
         return _rename_keys(data, {"social_decay_per_min": "affect_decay_per_min"})
 
 
+class LifeExecutionConfig(Permissive):
+    enabled: bool = True
+    sandbox: Literal["inherit", "shipyard", "shipyard_neo", "boxlite", "cua"] = "inherit"
+    max_steps: int = Field(default=8, ge=1, le=30)
+    timeout_seconds: int = Field(default=300, ge=30, le=1800)
+    tool_timeout_seconds: int = Field(default=90, ge=5, le=300)
+    trusted_tools: dict[str, str] = Field(default_factory=dict)
+    """Explicitly trusted host/plugin tools, keyed by name with their schema fingerprint."""
+
+
 class Limits(Permissive):
     background_daily_calls: int = Field(default=120, ge=0, le=10000)
     background_daily_tokens: int = Field(default=0, ge=0, le=100000000)
@@ -1032,6 +1042,8 @@ class MemoryConfig(Permissive):
     semantic_model: str = ""
     semantic_api_key_env: str = ""
     semantic_min_similarity: float = Field(default=0.35, ge=0, le=1)
+    life_rerank: bool = False
+    """Only explicit life-memory lookups: optionally reorder scoped candidates, never rewrite them."""
     automatic_recall: Literal["auto", "manual"] = "auto"
     """自动回想自己的生活，或只在主动查询时回想。"""
 
@@ -2386,6 +2398,7 @@ class WorldConfig(Permissive):
     default_state: DefaultState = Field(default_factory=DefaultState)
     state_dynamics: StateDynamics = Field(default_factory=StateDynamics)
     limits: Limits = Field(default_factory=Limits)
+    life_execution: LifeExecutionConfig = Field(default_factory=LifeExecutionConfig)
     engagement: Engagement = Field(default_factory=Engagement)
     sleep: SleepConfig = Field(default_factory=SleepConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)

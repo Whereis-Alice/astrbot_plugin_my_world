@@ -133,7 +133,7 @@ class ProfilesMixin:
             if nickname:
                 result["call_me"] = nickname
                 result["name"] = nickname
-        result["relationship"] = relationship_summary(self.profiles, session_id, user_id, result)
+        result["relationship"] = relationship_summary(self.profiles, session_id, user_id, result, now=self._now())
         return result
 
     def other_people(
@@ -252,7 +252,7 @@ class ProfilesMixin:
             # 编辑器/调试里能看出这一档是被"气着"压下来的
             "cold": True,
         }
-        cold["relationship"] = relationship_summary(self.profiles, session_id or state.session_id, user_id, cold)
+        cold["relationship"] = relationship_summary(self.profiles, session_id or state.session_id, user_id, cold, now=self._now())
         return cold
 
     # ---------------- 心迹画像（跨插件搬家） ----------------

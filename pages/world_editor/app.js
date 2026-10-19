@@ -20819,7 +20819,7 @@ $("calls-decisions").addEventListener("click", () => socialLearning.openDecision
 const modelCallsPage = createModelCallsPage({root: $("tab-model-calls"), apiGet, el, openDecisions: socialLearning.openDecisions});
 const lifePage = createLifePage({root: $("tab-life"), apiGet, apiPost, el, toast,
   getSession: () => $("status-session").value,
-  openSettings: () => openLifeSettings({world: ui.config.world, el, openCustomDialog, markDirty}),
+  openSettings: execution => openLifeSettings({world: ui.config.world, execution, el, openCustomDialog, markDirty}),
   openCalls: id => { showTab("model-calls"); const input = $("calls-search"); if (input) { input.value = id; input.dispatchEvent(new Event("input")); } },
   openMemories: text => { showTab("memories"); const input = $("memory-keyword"); if (input) { input.value = text; $("memory-search").click(); } },
 });

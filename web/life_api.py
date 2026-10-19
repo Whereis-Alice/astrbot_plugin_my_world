@@ -85,6 +85,8 @@ class LifeApiMixin:
                     "semantic": self.engine.memory.semantic.status,
                     "active": sum(item.get("status") not in CLOSED for item in items)})
         result["budget"] = await self.db.call("kv_get", "background_budget:" + self.engine._today_key(self.engine._now()), {})
+        with self.engine.config_scope(session_id):
+            result["execution"] = await self.engine.life_capabilities(session_id)
         return json_response(result)
 
     async def api_life_update(self):
@@ -99,6 +101,13 @@ class LifeApiMixin:
             with self.engine.config_scope(session_id):
                 async with self.engine.session_state(session_id) as state:
                     operation = str(payload.get("operation") or "")
+                    if operation == "forget_experience":
+                        action = str(payload.get("action") or "")
+                        if action not in state.life_interests:
+                            raise ValueError("找不到这条生活经验，请刷新")
+                        removed = state.life_interests.pop(action)
+                        state.add_event("life_experience_removed", {"action": action, "label": removed.get("label"), "source": "管理员整理"})
+                        return json_response({"ok": True})
                     if operation == "create":
                         item = self.engine.add_life_matter(state, str(payload.get("text") or ""),
                             session=session_id, motivation=str(payload.get("motivation") or ""), kind=str(payload.get("kind") or "project"))
@@ -108,6 +117,8 @@ class LifeApiMixin:
                         item = next((row for row in ensure(state, self.engine._now()) if row["id"] == str(payload.get("id") or "")), None)
                         if item is None or not visible(item, session_id):
                             raise ValueError("当前会话内找不到这件事项")
+                        if "revision" in payload and int(payload["revision"]) != int(item.get("revision", 0)):
+                            raise ValueError("事项已有新进展，请刷新后再调整")
                         resume_at = float(payload.get("resume_at") or 0)
                         if operation == "postpone" and (not math.isfinite(resume_at) or resume_at <= self.engine._now()):
                             raise ValueError("请选择将来的时间")
