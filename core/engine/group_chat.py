@@ -544,6 +544,9 @@ class GroupChatMixin:
             kept = [item for item in state.recent_chat if not _from_here(item)]
             removed = len(state.recent_chat) - len(kept)
             state.recent_chat = kept
+            state.thoughts = [item for item in state.thoughts if item.get("browse_session") != target]
+            if (state.current_action or {}).get("browse_session") == target:
+                self._stop_chat_browse(state, state.current_action)
             # 会话上下文的小尾巴：不留的话"清空上下文"之后她还记得刚才在聊什么
             state.chat_notes = {
                 key: value

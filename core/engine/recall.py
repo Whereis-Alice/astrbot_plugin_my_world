@@ -28,7 +28,7 @@ class RecallMixin:
         await self.memory.semantic.prepare(session_id, persona_id, topic, mode="group")
         rerank = self.world.memory.life_rerank and bool(topic)
         items = self.memory.recall(session_id=session_id, persona_id=persona_id, keyword=topic,
-                                   strict_keyword=bool(topic), mode="group", limit=12 if rerank else 5)
+                                   strict_keyword=bool(topic), mode="group", limit=12 if rerank else 5, include_reading=True)
         fields = ("content", "type", "source", "session_id", "persona_id", "scope", "node_id", "created_at")
         snapshots = {}
         allowed_sessions = set(self.group_sessions(session_id))

@@ -57,7 +57,7 @@ class LifeControlMixin:
             pending = list((plan or {}).get("steps", []))[int((plan or {}).get("current_step", 0)):]
             if pending and all((d := defs.get(str(step.get("action") or "")))
                                and d.llm_level == "template" and d.target_type == "none"
-                               and d.id not in {"sleep", "nap", "walk_to", "say", "share", "poke"}
+                               and d.id not in {"sleep", "nap", "walk_to", "say", "share", "poke", "browse_phone", "browse_computer"}
                                and d.on_complete.trigger == "none" for step in pending):
                 saved = copy.deepcopy(plan)
                 if action:
@@ -87,6 +87,7 @@ class LifeControlMixin:
             state.life_resume = {}
             return False
         if any(not (d := self.world.action_map().get(str(s.get("action") or ""))) or not d.enabled
+               or d.id in {"browse_phone", "browse_computer"}
                for s in plan.get("steps", [])):
             state.life_resume = {}
             return False

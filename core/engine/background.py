@@ -31,10 +31,10 @@ class BackgroundMixin:
         current = jobs.get(key)
         if current and not current.done():
             return current
-        # Reserve room for every character's five job families and the three global
+        # Reserve room for every character's six job families and the three global
         # jobs. A fixed capacity used to discard the same characters on every beat.
         concurrency = self._background_concurrency()
-        capacity = max(8, concurrency * 5, len(self.tick_session_ids()) * 5 + 3)
+        capacity = max(8, concurrency * 6, len(self.tick_session_ids()) * 6 + 3)
         live = sum(not task.done() for task in jobs.values())
         if live >= capacity:
             return None

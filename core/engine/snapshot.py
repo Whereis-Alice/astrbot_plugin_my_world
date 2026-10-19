@@ -6,6 +6,7 @@ from datetime import date, timedelta
 import time
 from typing import Any
 from ..config_scope import session_scoped
+from ..chat_browse import thought_visible
 from ..decider import reply_willingness
 from ..events import (
     ABILITIES,
@@ -267,7 +268,8 @@ class SnapshotMixin:
             },
             "interject": dict(state.interject_stats or {}),
             "tool_breakers": self.tool_breaker_state(),
-            "current_action": state.current_action,
+            "current_action": {key: value for key, value in state.current_action.items()
+                               if not key.startswith("browse_") and key != "identity"} if state.current_action else None,
             "activity": self.activity_view(state),
             "life_matters": [item for item in ensure_matters(state, self._now())
                              if not item.get("who") or item.get("session") == session_id],
@@ -277,7 +279,7 @@ class SnapshotMixin:
             "activity_reason": str((state.current_plan or {}).get("reason") or ""),
             "current_plan": state.current_plan,
             "last_reasoning": state.last_reasoning,
-            "thoughts": state.thoughts[-5:],
+            "thoughts": [item for item in state.thoughts if thought_visible(item, session_id, self._now())][-5:],
             # 别的插件的状态（今日穿搭、背包…）：编辑器里能看到、能手清
             "external_state": dict(getattr(state, "external_state", None) or {}),
             "unanswered_count": state.unanswered_count,
@@ -437,7 +439,7 @@ class SnapshotMixin:
             return {"session": session_id, "thoughts": []}
         rows: list[dict[str, Any]] = []
         for item in list(state.thoughts or [])[-max(1, int(limit)):]:
-            if not isinstance(item, dict):
+            if not isinstance(item, dict) or not thought_visible(item, session_id, self._now()):
                 continue
             content = str(item.get("content") or "").strip()
             if not content:
@@ -458,6 +460,9 @@ class SnapshotMixin:
                     "quote": str(item.get("quote") or ""),
                     "reply": str(item.get("reply") or ""),
                     "detail": dict(item.get("detail") or {}),
+                    "browse_session": str(item.get("browse_session") or ""),
+                    "browse_label": self.session_label(item["browse_session"], state) if item.get("browse_session") else "",
+                    "browse_sources": list(item.get("browse_sources") or []),
                 }
             )
         rows.reverse()

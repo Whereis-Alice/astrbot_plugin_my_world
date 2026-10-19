@@ -1,5 +1,6 @@
 /** The model ledger: filter locally selected scopes, read provider-reported usage. */
 export const CALL_PURPOSES = {
+  chat_browse: "翻消息时的感想",
   interaction_style: "相处习惯归纳",
   life_matter: "生活事项",
   life_rerank: "生活记忆重排",

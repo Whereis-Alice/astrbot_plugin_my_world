@@ -598,6 +598,7 @@ const STATES = [
   { key: "reading", label: "看书" },
   { key: "walking", label: "移动中" },
   { key: "thinking", label: "沉思" },
+  { key: "browsing", label: "翻消息中" },
 ];
 
 /**
@@ -16025,6 +16026,7 @@ function renderThoughtsPage() {
     );
     if (row.node_name) head.appendChild(el("span", "thought-node", row.node_name));
     if (row.source) head.appendChild(el("span", "thought-source", row.source));
+    if (row.browse_label) head.appendChild(el("span", "thought-chip", row.browse_label));
     const detail = row.detail || {};
     const hasSnapshot = ["env", "state", "mood", "who", "intent"].some((key) =>
       String(detail[key] || "").trim(),
@@ -16058,6 +16060,16 @@ function renderThoughtsPage() {
       el("div", "thought-intent", `打算：${detail.intent || "没有留下明确打算"}`),
     );
 
+    if (row.browse_session) {
+      const evidence = el("details", "thought-browse-sources");
+      evidence.append(el("summary", "", "阅读依据 · 仅留下感想，未发送消息"));
+      for (const source of row.browse_sources || []) {
+        const quote = el("blockquote");
+        quote.append(el("small", "muted", `${source.name || "消息"} · ${source.at ? formatStamp(source.at) : "时间未记录"}`), el("p", "", String(source.text || "")));
+        evidence.append(quote);
+      }
+      item.append(evidence);
+    }
     // 回了谁、回了哪条、她回了什么：光有一句心里话看不出这一轮的来龙去脉
     if (row.target || row.quote || row.reply) {
       const context = el("div", "thought-context");
@@ -20858,7 +20870,7 @@ const lifePage = createLifePage({root: $("tab-life"), apiGet, apiPost, el, toast
   workspace: lifeWorkspace,
   onData: data => { ui.lifeData = data; },
   getSession: () => $("status-session").value,
-  openSettings: () => openLifeSettings({world: ui.config.world, el, openCustomDialog, markDirty}),
+  openSettings: () => openLifeSettings({world: ui.config.world, sessions: (ui.sessions || []).map(item => ({...item, label: contactSessionLabel(item)})), el, openCustomDialog, markDirty}),
   openCalls: id => { showTab("model-calls"); const input = $("calls-search"); if (input) { input.value = id; input.dispatchEvent(new Event("input")); } },
   openMemories: text => { showTab("memories"); const input = $("memory-keyword"); if (input) { input.value = text; $("memory-search").click(); } },
 });

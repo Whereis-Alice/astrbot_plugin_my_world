@@ -177,6 +177,8 @@ class Consolidator:
         labels = dict(session_labels or {})
         lines: list[str] = []
         for item in rows:
+            if item.get("source") == "chat_browse":
+                continue  # Never turn source-scoped reading feelings into a shared review/dream.
             stamp = time.strftime(
                 "%Y-%m-%d %H:%M", time.localtime(float(item.get("created_at") or 0.0))
             )

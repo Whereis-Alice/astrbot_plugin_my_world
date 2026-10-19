@@ -115,6 +115,7 @@ from .relations import RelationsMixin
 from .matters import MattersMixin
 from .life_control import LifeControlMixin
 from .background import BackgroundMixin
+from .chat_browse import ChatBrowseMixin
 from .tools import ToolsMixin
 from .schedule import ScheduleMixin
 from .weather import WeatherMixin
@@ -234,6 +235,7 @@ class MyWorldEngine(
     MattersMixin,
     LifeControlMixin,
     BackgroundMixin,
+    ChatBrowseMixin,
     ToolsMixin,
     ScheduleMixin,
     WeatherMixin,

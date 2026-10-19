@@ -13,9 +13,9 @@ import sqlite3
 import time
 
 LIFE_TYPES = frozenset({"scene", "event", "inner", "dream"})
-LIFE_SOURCES = frozenset({"runtime", "life_matter", "preset", "manual", "import", "dream"})
+LIFE_SOURCES = frozenset({"runtime", "life_matter", "preset", "manual", "import", "dream", "chat_browse"})
 LIFE_DOMAIN = "my_world.life"
-LIFE_SQL = "type IN ('scene','event','inner','dream') AND source IN ('runtime','life_matter','preset','manual','import','dream')"
+LIFE_SQL = "type IN ('scene','event','inner','dream') AND source IN ('runtime','life_matter','preset','manual','import','dream','chat_browse')"
 RETIRED_MEMORY = {"dialogue_summary", "summary_trigger_messages", "summary_idle_minutes", "summary_on_move", "summary_max_chars"}
 RETIRED_CONTEXT = {"chat_overflow", "chat_compress_threshold", "chat_keep_after_compress", "summary_refresh_minutes"}
 RETIRED_STATE = {"pending_memory", "pending_memory_node", "memory_hints", "memory_flush_at", "memory_flush_wanted",

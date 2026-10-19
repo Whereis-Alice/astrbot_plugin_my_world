@@ -2268,6 +2268,22 @@ class PersonaConfig(Permissive):
     """候选池最多攒多少条（超了丢最旧的）。"""
 
 
+class ChatBrowseConfig(Permissive):
+    enabled: bool = False
+    phone: bool = False
+    computer_nodes: list[str] = Field(default_factory=list, max_length=100)
+    sessions: list[str] = Field(default_factory=list, max_length=100)
+    cooldown_minutes: int = Field(default=120, ge=30, le=1440)
+    daily_max: int = Field(default=3, ge=1, le=12)
+    window_hours: int = Field(default=6, ge=1, le=24)
+    max_messages: int = Field(default=20, ge=1, le=40)
+    max_chars: int = Field(default=3000, ge=300, le=6000)
+    remember_meaningful: bool = True
+
+
+CHAT_BROWSE_IDS = frozenset({"browse_phone", "browse_computer"})
+
+
 class IdleLifeConfig(Permissive):
     enabled: bool = True
     duration_min_minutes: int = Field(default=10, ge=1, le=120)
@@ -2454,6 +2470,7 @@ class WorldConfig(Permissive):
     edges: list[EdgeDef] = Field(default_factory=list)
     actions: list[ActionDef] = Field(default_factory=list)
     idle_life: IdleLifeConfig = Field(default_factory=IdleLifeConfig)
+    chat_browse: ChatBrowseConfig = Field(default_factory=ChatBrowseConfig)
 
     # --- 便捷索引 ---
 
@@ -2495,11 +2512,17 @@ class WorldConfig(Permissive):
         # optional action library is empty. It never invokes tools or commands.
         actions = {action.id: action for action in self.actions}
         actions[LIFE_SIMULATION_ACTION.id] = LIFE_SIMULATION_ACTION
+        for aid, name in (("browse_phone", "翻翻手机"), ("browse_computer", "看看电脑消息")):
+            actions[aid] = ActionDef(id=aid, name=name, category="continuous", llm_level="template",
+                enabled=self.chat_browse.enabled, life_role="none", visible=False,
+                scope="global" if aid == "browse_phone" else "node",
+                allowed_nodes=[] if aid == "browse_phone" else self.chat_browse.computer_nodes,
+                description="安静翻阅已收到的近期消息，产生自己的感受，不发送消息。")
         return actions
 
     def actions_in(self, node_id: str) -> list[ActionDef]:
         sleeping_place = self.sleep_node_id()
-        return [a for a in self.actions if a.enabled and not a.idle and (
+        return [a for a in self.actions if a.id not in CHAT_BROWSE_IDS and a.enabled and not a.idle and (
             node_id == sleeping_place if a.id == "sleep" and sleeping_place else a.available_in(node_id)
         )]
 

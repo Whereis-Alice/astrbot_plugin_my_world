@@ -550,6 +550,11 @@ class ActionsMixin:
         if depth > self.world.limits.max_action_chain_depth:
             outcome.notes.append("动作链超过深度上限，已停止")
             return False
+        from ..models import CHAT_BROWSE_IDS
+        browsing = next((a for a in actions if a.type in CHAT_BROWSE_IDS), None)
+        if browsing is not None:
+            # Reading is an isolated activity; ignore any accompanying speech/tools.
+            return self.start_chat_browse(state, browsing.type)
         executed = False
         max_actions = self.world.limits.max_actions_per_message
         queued_actions = list(actions)[:max_actions]
@@ -1230,7 +1235,7 @@ class ActionsMixin:
         return await self._budgeted_generate(channel, **kwargs)
 
     async def _ask_helper(
-        self, session_id: str, system_prompt: str, prompt: str
+        self, session_id: str, system_prompt: str, prompt: str, *, max_tokens: int | None = None
     ) -> str | None:
         if self.helper_llm is None:
             return None
@@ -1240,6 +1245,7 @@ class ActionsMixin:
                 system_prompt=system_prompt,
                 prompt=prompt,
                 temperature=0.0,
+                **({"max_tokens": max_tokens} if max_tokens is not None else {}),
             )
         except Exception as exc:
             self._log("debug", f"参数补全调用失败：{exc}")
@@ -1247,7 +1253,7 @@ class ActionsMixin:
         return reply.text if getattr(reply, "ok", False) else None
 
     async def _ask_judge(
-        self, session_id: str, system_prompt: str, prompt: str
+        self, session_id: str, system_prompt: str, prompt: str, *, max_tokens: int | None = None
     ) -> str | None:
         """纯判断通道（挑一个 / 打分 / 抽字段）：走判断模型，没配就跟随打杂模型。
 
@@ -1261,13 +1267,15 @@ class ActionsMixin:
                     system_prompt=system_prompt,
                     prompt=prompt,
                     temperature=0.0,
+                    **({"max_tokens": max_tokens} if max_tokens is not None else {}),
                 )
                 if getattr(reply, "ok", False) and str(getattr(reply, "text", "") or "").strip():
                     return reply.text
                 self._log("debug", "判断模型没给出内容，这一轮退回打杂模型")
             except Exception as exc:
                 self._log("debug", f"判断模型调用失败（{exc}），退回打杂模型")
-        return await self._ask_helper(session_id, system_prompt, prompt)
+        return await self._ask_helper(session_id, system_prompt, prompt,
+                                      **({"max_tokens": max_tokens} if max_tokens is not None else {}))
 
     async def _ask_event(
         self, session_id: str, system_prompt: str, prompt: str

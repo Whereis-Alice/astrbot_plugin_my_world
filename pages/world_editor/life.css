@@ -144,3 +144,23 @@
   .life-drawer-head, .life-detail { padding: 20px; }
 }
 @media (prefers-reduced-motion: reduce) { .life-card { transition: none; } .life-card:hover { transform: none; } }
+
+.browse-settings { grid-column: 1 / -1; min-width: 0; border: 1px solid var(--accent-ring); border-radius: 14px; padding: 16px; background: linear-gradient(135deg, var(--accent-soft), transparent 70%); }
+.browse-settings > summary { cursor: pointer; font-weight: 600; font-size: 14px; color: var(--text); }
+.browse-settings p { font-size: 12px; line-height: 1.8; margin: 10px 0; }
+.browse-settings-content { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; padding-top: 8px; }
+.browse-settings-content > p, .browse-settings-content > details, .browse-settings-content > .browse-limits { grid-column: 1 / -1; }
+.browse-toggle { display: flex; align-items: flex-start; gap: 9px; font-size: 12px; line-height: 1.7; cursor: pointer; min-width: 0; }
+.browse-toggle input[type="checkbox"] { flex: 0 0 auto; width: 16px; height: 16px; margin: 2px 0; accent-color: var(--accent); }
+.browse-toggle span { overflow-wrap: anywhere; }
+.browse-choices { min-width: 0; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.browse-choices legend { font-size: 12px; padding: 0 6px; color: var(--text-2); }
+.browse-choice-list { display: grid; gap: 8px; max-height: 160px; overflow: auto; }
+.browse-limits { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.browse-limits .field { margin: 0; min-width: 0; }
+.browse-advanced summary, .thought-browse-sources summary { cursor: pointer; color: var(--muted); font-size: 11px; line-height: 1.8; }
+.browse-advanced .field { margin-top: 12px; }
+.thought-browse-sources { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+.thought-browse-sources blockquote { border-left: 2px solid var(--accent-ring); padding: 8px 14px; margin: 12px 0 0; background: var(--accent-soft); border-radius: 0 8px 8px 0; overflow-wrap: anywhere; }
+.thought-browse-sources p { font-size: 12px; line-height: 1.8; margin: 4px 0; white-space: pre-wrap; }
+@media (max-width: 600px) { .browse-settings-content, .browse-limits { grid-template-columns: 1fr; } }

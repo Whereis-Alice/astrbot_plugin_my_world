@@ -870,7 +870,8 @@ class PromptBuilder:
             replied_seq = int(getattr(state, "chat_replied_seq", 0) or 0)
         # 记忆按时间从早到晚排，越靠下越新——模型读提示词时最后的更"近"。
         ordered = sorted(
-            memories or [], key=lambda item: float(getattr(item, "created_at", 0.0))
+            [item for item in (memories or []) if item.source != "chat_browse"],
+            key=lambda item: float(getattr(item, "created_at", 0.0))
         )
         memory_text = (
             "\n".join(
@@ -1366,9 +1367,9 @@ class PromptBuilder:
                 return "\n".join(lines)
         thoughts = [
             str(item.get("content"))
-            for item in state.thoughts[-3:]
-            if item.get("content")
-        ]
+            for item in state.thoughts
+            if item.get("content") and not item.get("browse_session")
+        ][-3:]
         if thoughts:
             return "\n".join(f"- {text}" for text in thoughts)
         return "（你还没细想这件事）"
@@ -2693,6 +2694,18 @@ class PromptBuilder:
             profile_text=profile_text,
         )
         runtime = f"{runtime}\n\n{self.dialogue_reminder_layer()}"
+        from .chat_browse import feeling_context
+        now = self._now()
+        sid = current_session or state.session_id
+        feelings = feeling_context(state, sid, now.timestamp() if now else 0)
+        older = list(dict.fromkeys(item.content for item in (memories or [])
+                 if item.source == "chat_browse" and item.session_id == sid
+                 and item.content.removeprefix("翻阅消息时，我想到：") not in feelings))
+        if older:
+            feelings += ("\n阅读本会话曾留下的感想（主观想法，不是亲历或人物事实；仅当前交谈相关时参考）：\n"
+                         + "\n".join("- " + text[:160] for text in older[:2]))
+        if feelings:
+            runtime += "\n\n" + feelings
         sample_text = self.samples_layer(
             samples, pronoun=pronoun_for(getattr(self.world, "gender", "female"))
         )

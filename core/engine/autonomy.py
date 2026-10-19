@@ -58,6 +58,8 @@ class AutonomyMixin:
                 await self._run_rhythm_sleep(state, outcome)
             elif self.life_choice(state)["kind"] in {"event", "schedule", "continue"}:
                 outcome.notes.append(state.life_decision["reason"])
+            elif self.maybe_start_chat_browse(state):
+                outcome.notes.append("空闲时安静翻阅近期消息")
             elif not self.proactive_chat_allowed(session_id):
                 outcome.notes.append("自主搭话已关闭，继续安静生活")
                 await self._quiet_rule_plan(state, node, outcome)

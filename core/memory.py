@@ -106,6 +106,9 @@ class RecalledMemory:
     participants: list[str] = field(default_factory=list)
     """这件事有谁在场（含说话人；一条记忆可以有多个人）。"""
 
+    source: str = ""
+    session_id: str = ""
+
     def render(self, *, stamp: str = "") -> str:
         """渲染成提示词里的一行；``stamp`` 是日期标签，例如 ``09-11``。"""
 
@@ -315,6 +318,7 @@ class MemoryEngine:
         automatic: bool = False,
         strict_keyword: bool = False,
         record_hits: bool = True,
+        include_reading: bool = False,
     ) -> list[RecalledMemory]:
         """召回记忆。返回按分数降序的结果。
 
@@ -356,7 +360,7 @@ class MemoryEngine:
                     nodes=wanted_nodes, memory_type=memory_type,
                     session_ids=wanted_sessions, text_terms=terms,
                 )
-            return rows
+            return [row for row in rows if include_reading or row.get("source") != "chat_browse"]
 
         semantic = self.semantic.cached(session_id, persona_id, keyword, mode=mode, automatic=automatic) if config and config.semantic_enabled and keyword else {}
         semantic = {mid: score for mid, score in semantic.items() if score >= config.semantic_min_similarity}
@@ -435,11 +439,11 @@ class MemoryEngine:
         """Per-speaker retrieval, fair merge, one shared injection budget and no premature hits."""
         queries = self.participant_queries(records, session_id)
         groups = [self.recall(session_id=session_id, persona_id=persona_id, node_id=node_id,
-                  focus_user=uid, keyword=query, limit=limit, automatic=True, record_hits=False)
+                  focus_user=uid, keyword=query, limit=limit, automatic=True, record_hits=False, include_reading=True)
                   for uid, query in queries.items()]
         if not groups:
             groups = [self.recall(session_id=session_id, persona_id=persona_id, node_id=node_id,
-                      limit=limit, automatic=True, record_hits=False)]
+                      limit=limit, automatic=True, record_hits=False, include_reading=True)]
         result, seen, bodies, cost = [], set(), set(), 0
         budget = self.world.memory.recall_max_chars if self.world else 1200
         for index in range(max((len(group) for group in groups), default=0)):
@@ -547,7 +551,9 @@ class MemoryEngine:
             # 不按这个过滤的话，"回忆厨房"会把书房的事也捞进来。
             allowed = set(wanted_nodes)
             rows = [item for item in rows if str(item.get("node_id") or "") in allowed]
-        return _dedupe(rows)
+        # Reading feelings retain their actual source even under global/persona recall.
+        return _dedupe([row for row in rows if row.get("source") != "chat_browse"
+                        or row.get("session_id") == session_id])
 
     def _score(
         self, item: dict[str, Any], *, focus_user: str, node_id: str, now: float
@@ -616,6 +622,8 @@ class MemoryEngine:
             tier=str(item.get("tier") or "raw"),
             context=str(item.get("context") or ""),
             participants=[str(u) for u in (item.get("participants") or [])],
+            source=str(item.get("source") or ""),
+            session_id=str(item.get("session_id") or ""),
         )
 
     # ---------------- 衰减 ----------------
@@ -645,7 +653,7 @@ class MemoryEngine:
             limit=max(1, int(limit)),
             order="next_review_at ASC",
         )
-        return rows
+        return [row for row in rows if row.get("source") != "chat_browse"]
 
     def schedule_review(self, memory_id: int, *, next_at: float) -> None:
         """排下一次回访（1 天 / 3 天 / 7 天 / 30 天……由整理那一步决定）。"""

@@ -314,6 +314,9 @@ class ActionsRunMixin:
     ) -> bool | None:
         # 这里是所有动作真正开始执行的唯一入口（计划 / 日程 / 自主行为 / 工具后续都走这里），
         # 因此把「能不能做」的校验统一放在这里，避免某条路径绕过检查。
+        from ..models import CHAT_BROWSE_IDS
+        if definition.id in CHAT_BROWSE_IDS:
+            return self.start_chat_browse(state, definition.id)
         if definition.id == "sleep":
             target = self.world.sleep_node_id()
             if not self._action_usable_now(definition) or (target and state.node_id != target):
@@ -705,6 +708,9 @@ class ActionsRunMixin:
         - 剩下的（没有文案、纯空间动作）保持静默。
         """
 
+        from ..models import CHAT_BROWSE_IDS
+        if definition.id in CHAT_BROWSE_IDS:
+            return False
         if definition.visible:
             return True
         if definition.id in self.INNER_ACTIONS:

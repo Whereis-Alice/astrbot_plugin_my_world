@@ -561,6 +561,9 @@ class WorldState:
     chat_seq: int = 0
     """群聊留档的递增序号（时间戳只有秒，判断"谁是新消息"不够用）。"""
 
+    chat_browsing: dict[str, Any] = field(default_factory=dict)
+    """静默浏览的独立进度与低频额度；不改变已回复水位线。"""
+
     chat_replied_seq: int = 0
     """已回应水位线（序号版）：大于它的群聊才是"还没回应过的"。"""
 
