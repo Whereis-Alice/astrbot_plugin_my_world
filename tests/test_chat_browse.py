@@ -334,6 +334,14 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(state.current_action)
         self.assertEqual(state.thoughts, [])
 
+    async def test_long_persona_keeps_important_traits_at_the_end(self):
+        self.persona.text = "角色原有的世界背景。" * 1000 + "末尾的重要设定：不喜欢花，不能因阅读改变这个喜好。"
+        action = await self.prepare()
+        await self.complete(action, inner="", source_seqs=[])
+        material = json.loads(self.llm.calls[-1]["prompt"])
+        self.assertEqual(material["persona"], self.persona.text)
+        self.assertIn("不能因阅读改变这个喜好", material["persona"])
+
     async def test_cancelled_inference_stops_on_next_finish_without_retry(self):
         action = await self.prepare()
         started = asyncio.Event()

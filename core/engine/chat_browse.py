@@ -118,7 +118,7 @@ class ChatBrowseMixin:
             action["inference_started"] = True
             snapshot = copy.deepcopy(action)
             persona = await self._persona_text(session_id)
-            prompt = json.dumps({"persona": persona[:6000], "activity": action["desc"],
+            prompt = json.dumps({"persona": persona, "activity": action["desc"],
                 "place": self._node_name(state.node_id), "mood": state.mood, "energy": state.energy,
                 "messages": action["browse_rows"]}, ensure_ascii=False)
         # Outside the state lock: ordinary chat and the basic clock keep working.
