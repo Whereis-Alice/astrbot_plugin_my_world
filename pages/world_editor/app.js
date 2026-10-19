@@ -1,4 +1,6 @@
 import { createContactWorkbench } from "./contact-workbench.js";
+import { renderRelationshipOverview, renderRelationshipHistory, describeMiss } from "./contact-relationship.js";
+import { applyDetailedLevels, DETAILED_LEVELS } from "./relationship-preset.js";
 
 /**
  * 我的世界编辑器前端。
@@ -1493,6 +1495,54 @@ function foldEditor(title, hint) {
 }
 
 /** 关系表：一行一种关系（槽位 / 亲密度区间 / 别名）。 */
+function friendshipEditor(world) {
+  world.profile = world.profile || {};
+  world.profile.friendship_stages = world.profile.friendship_stages ?? [
+    { bond: "群友", min_talk_days: 2, min_affinity: 3 },
+    { bond: "朋友", min_talk_days: 5, min_affinity: 15 },
+  ];
+  const box = foldEditor("普通友谊的发展条件", "两个条件同时满足，普通关系才会逐渐变熟。只在不同日期直接交谈时累计天数，群内刷屏不累计。");
+  box._note.textContent = `${world.profile.friendship_stages.length} 个阶段 · 点开编辑`;
+  world.profile.friendship_stages.forEach((stage, index) => {
+    const row = el("div", "list-row");
+    row.appendChild(cellSelect(stage.bond, (world.profile.bonds || []).filter(bond =>
+      bond.group && !bond.unique && !bond.negative).map(bond => ({value: bond.name, label: bond.name})),
+    value => (stage.bond = value), {width: 110, title: "这个阶段的普通关系，需同时开启自然形成"}));
+    row.appendChild(el("span", "muted", "交谈天数"));
+    row.appendChild(cellInput(stage.min_talk_days, value => {
+      stage.min_talk_days = Math.max(1, Math.min(366, Math.round(num(value, 2))));
+    }, { type: "number", min: 1, max: 366, width: 80 }));
+    row.appendChild(el("span", "muted", "最低好感"));
+    row.appendChild(cellInput(stage.min_affinity, value => {
+      stage.min_affinity = Math.max(-100, Math.min(100, num(value, 3)));
+    }, { type: "number", min: -100, max: 100, width: 80 }));
+    const remove = el("button", "icon-btn", "✕");
+    remove.type = "button";
+    remove.title = "移除这个发展阶段";
+    remove.addEventListener("click", () => {
+      world.profile.friendship_stages.splice(index, 1);
+      markDirty();
+      renderSettings();
+    });
+    row.appendChild(remove);
+    box.appendChild(row);
+  });
+  const add = el("button", "small ghost", "＋ 添加普通友谊阶段");
+  add.type = "button";
+  add.disabled = world.profile.friendship_stages.length >= 12;
+  add.addEventListener("click", () => {
+    const bond = (world.profile.bonds || []).find(bond => bond.group && !bond.unique && !bond.negative
+      && !world.profile.friendship_stages.some(stage => stage.bond === bond.name));
+    if (!bond) { toast("请先在关系表添加一种普通关系", "error"); return; }
+    world.profile.friendship_stages.push({bond: bond.name, min_talk_days: 10, min_affinity: 30});
+    markDirty();
+    renderSettings();
+  });
+  box.appendChild(add);
+  box.appendChild(el("p", "hint-line", "只自动发展普通友谊。恋爱、特殊身份、负面关系和管理员手动设置不由这些条件决定；也不会因为暂时少聊就自动解除关系。"));
+  return box;
+}
+
 function bondsEditor(world) {
   world.profile = world.profile || {};
   if (!Array.isArray(world.profile.bonds)) world.profile.bonds = [];
@@ -1503,9 +1553,9 @@ function bondsEditor(world) {
       "muted",
       "每行一种关系。槽位相同的算一类（例如 romance 里男友和女友不能并存）。"
         + "「最低 / 最高档」是这个关系对应的亲密度区间：绑定男友之后，"
-        + "哪怕好感还没养起来也能抱抱，而群友聊再久也上不去——生效档位 = 好感给的档位，"
+        + "让相处方式和关系一致；生效档位 = 好感给的档位，"
         + "先被最低档抬起、再被最高档压下；绑上的那一刻好感也会被抬到最低档的下边界"
-        + "（已经更高的不动）。「别名」用逗号分隔。",
+        + "（已经更高的不动）。允许越过上限时，可随好感继续发展，但身份不变。特殊关系的自然形成默认关闭。",
     ),
   );
   const levelOptions = (world.profile.levels || [])
@@ -1551,6 +1601,12 @@ function bondsEditor(world) {
           width: 84,
         }),
       );
+      row.appendChild(cellInput(item.group || "", value => (item.group = value), {
+        placeholder: "替代组", width: 84, title: "同一人、同组只保留一种关系；留空可并存",
+      }));
+      row.appendChild(cellCheck("自然形成", item.auto_form, value => (item.auto_form = value), "允许模型根据真实相处确立；关闭后只能管理员设置"));
+      row.appendChild(cellCheck("允许越过上限", item.allow_boundary_crossing,
+        value => (item.allow_boundary_crossing = value), "好感可超出通常距离上限；不会自动改变身份或取消动作边界"));
       row.appendChild(
         el("span", "muted", "最低"),
       );
@@ -1565,7 +1621,7 @@ function bondsEditor(world) {
       );
       row.appendChild(
         cellSelect(item.cap ?? 0, levelOptions, (value) => (item.cap = num(value)), {
-          title: "这个关系最多到哪一档（普通关系聊再久也上不去）",
+          title: "通常距离上限；允许越过上限时可随好感继续发展",
           width: 112,
         }),
       );
@@ -1578,7 +1634,7 @@ function bondsEditor(world) {
         }, { placeholder: "别名，逗号分隔", width: 130 }),
       );
       row.appendChild(
-        cellCheck("唯一", item.unique, (value) => (item.unique = value), "同类里全球只能有一个"),
+        cellCheck("唯一", item.unique, (value) => (item.unique = value), "同槽位在当前生活组中只能有一人"),
       );
       row.appendChild(
         cellCheck("负面", item.negative, (value) => (item.negative = value), "负面关系：不惦记、不主动"),
@@ -1631,6 +1687,18 @@ function levelsEditor(world) {
   world.profile = world.profile || {};
   if (!Array.isArray(world.profile.levels)) world.profile.levels = [];
   const box = foldEditor("亲密度分级", "按好感度分档：称呼、这一档还不能做的动作、主动频率。");
+  const preset = el("button", "small ghost", "使用十档相处方案");
+  preset.type = "button";
+  preset.addEventListener("click", async () => {
+    if (!await confirmDialog({title: "使用十档相处方案", danger: false,
+      message: DETAILED_LEVELS.map(level => level.name).join(" → ")
+        + "。将替换档位的称呼、边界提示和频率，并换算各关系的上下限；现有关系、好感和自然形成开关保留。保存后生效。",
+      confirmText: "应用到草稿"})) return;
+    applyDetailedLevels(world.profile);
+    markDirty();
+    renderSettings();
+  });
+  box.appendChild(preset);
   box.appendChild(
     el(
       "p",
@@ -1727,8 +1795,14 @@ function levelsEditor(world) {
       del.title = "删掉这一档";
       del.addEventListener("click", () => {
         world.profile.levels.splice(index, 1);
+        for (const bond of world.profile.bonds || []) {
+          for (const field of ["floor", "cap"]) {
+            const value = Number(bond[field] || 0);
+            bond[field] = Math.max(0, value >= index ? value - 1 : value);
+          }
+        }
         markDirty();
-        redraw();
+        renderSettings();
       });
       edit.appendChild(del);
       body.appendChild(edit);
@@ -15510,6 +15584,8 @@ function renderContactDetail(data) {
   }
 
   // 一、关系：这一页只放摘要（一长条关系表会把整页顶下去），要改点「管理关系…」进弹窗
+  const relationshipOverview = renderRelationshipOverview(data, { el, formatStamp });
+  if (relationshipOverview) box.appendChild(relationshipOverview);
   const bondCard = el("div", "contact-section");
   bondCard.dataset.contactPanel = "relation";
   const bondHead = el("div", "section-head");
@@ -15546,37 +15622,32 @@ function renderContactDetail(data) {
   affinityHead.appendChild(affinityEdit);
   affinityCard.appendChild(affinityHead);
   const affinityValue = Math.round(Number(person.affinity) || 0);
+  const affinityMin = Number(data.relationship?.affinity_min ?? -100);
+  const affinityMax = Number(data.relationship?.affinity_max ?? 100);
   const affinityBar = el("div", "affinity-bar");
   const affinityFill = el("i");
   // -100~100 映射到 0~100%：中点 50% 就是"不好不坏"
-  affinityFill.style.width = `${Math.max(0, Math.min(100, (affinityValue + 100) / 2))}%`;
+  affinityFill.style.width = `${Math.max(0, Math.min(100, (affinityValue - affinityMin) / Math.max(1, affinityMax - affinityMin) * 100))}%`;
   affinityBar.appendChild(affinityFill);
   const affinitySummary = el("div", "affinity-summary");
   affinitySummary.appendChild(affinityBar);
-  affinitySummary.appendChild(el("span", "affinity-value", `${affinityValue} / 100`));
+  affinitySummary.appendChild(el("span", "affinity-value", `${affinityValue} / ${affinityMax}`));
   affinitySummary.appendChild(
     el("span", "pill", person.level ? person.level.name : "陌生人"),
   );
   affinityCard.appendChild(affinitySummary);
   // 她想不想这个人：这是"正在发生的状态"，不是设置，所以留在页面上
   const missInfo = data.miss || {};
-  const missValue = Number(missInfo.value || 0);
   const missThreshold = Number(data.miss_threshold || 0.7);
   affinityCard.appendChild(
     el(
       "p",
       "hint-line",
-      missInfo.waiting
-        ? `想念：0.00 —— 刚聊过（或者她刚主动找过他），`
-          + `再过 ${Number(missInfo.ready_in_minutes || 0)} 分钟才开始攒`
-          + "（这是设计如此：每次直接跟她说话都会清零重来）"
-        : `想念：${missValue.toFixed(2)} / ${missThreshold.toFixed(2)}`
-          + (missValue >= missThreshold
-            ? "——到点了，她会主动去找这个人"
-            : "（越接近阈值越想找人；孤独感越高涨得越快）"),
+      describeMiss(missInfo, missThreshold),
     ),
   );
   box.appendChild(affinityCard);
+  box.appendChild(renderRelationshipHistory(data, { el, formatStamp }));
 
   // 二点五、她记着的账：记了就会对他冷一档，所以这里要写清现在算不算数
   const grudge = data.grudge;
@@ -15735,7 +15806,7 @@ function renderContactDetail(data) {
 function openBondDialog() {
   openCustomDialog({
     title: "关系",
-    hint: "「她认定」是她自己的判断；「他自称」只是他说过、还没被认下。标了唯一的类型，同一个人身上只会有一条。",
+    hint: "自称只作待确认记录。「唯一」表示生活组内只能有一人占用该槽位。管理员设置不会被普通友谊规则替换。",
     confirmText: "关闭",
     hideCancel: true,
     onSubmit: () => true,
@@ -15774,6 +15845,7 @@ function openBondDialog() {
                     ? `${item.type}（${item.since_text} 起）`
                     : item.type;
             row.appendChild(el("span", pillClass, text));
+            if (item.evidence) row.appendChild(el("p", "bond-evidence muted", `依据：${item.evidence}`));
             const box = el("div", "row-item");
             if (group.key === "current") {
               const close = el("button", "small ghost", "解除");
@@ -15836,7 +15908,7 @@ function openBondDialog() {
 function openAffinityDialog() {
   openCustomDialog({
     title: "好感度",
-    hint: "0 是陌生人，越高越亲近；说话时每轮由她自己判断（有每轮与每天上限），他露个面也会长一点，长期不理每天慢慢回落。",
+    hint: "好感表示感受，关系决定边界。聊天与睡眠复盘共用每日额度；最近聊过的人有保留期，之后才回落。",
     confirmText: "关闭",
     hideCancel: true,
     onSubmit: () => true,
@@ -15848,13 +15920,13 @@ function openAffinityDialog() {
         const row = el("div", "contact-inline");
         const slider = el("input");
         slider.type = "range";
-        slider.min = "-100";
-        slider.max = "100";
+        slider.min = String(detail.relationship?.affinity_min ?? -100);
+        slider.max = String(detail.relationship?.affinity_max ?? 100);
         slider.value = String(Math.round(Number(person.affinity) || 0));
         slider.dataset.act = "affinity-slider";
-        const valueLabel = el("span", "muted", `${slider.value} / 100`);
+        const valueLabel = el("span", "muted", `${slider.value} / ${slider.max}`);
         slider.addEventListener("input", () => {
-          valueLabel.textContent = `${slider.value} / 100`;
+          valueLabel.textContent = `${slider.value} / ${slider.max}`;
         });
         const save = el("button", "primary small", "保存好感度");
         save.dataset.act = "affinity-save";
@@ -16142,7 +16214,7 @@ async function contactAction(node) {
     } else if (act === "bond-close") {
       await apiPost("profile/bond", { session, user_id: userId, action: "close", id: node.dataset.id });
     } else if (act === "bond-accept") {
-      await apiPost("profile/bond", { session, user_id: userId, action: "accept", id: node.dataset.id, policy: "replace" });
+      await apiPost("profile/bond", { session, user_id: userId, action: "accept", id: node.dataset.id, policy: "reject" });
     } else if (act === "bond-delete") {
       await apiPost("profile/bond", { session, user_id: userId, action: "delete", id: node.dataset.id });
     } else if (act === "fact-add") {
@@ -17801,6 +17873,7 @@ function renderSettings() {
     ["max_actions_per_message", "一次最多执行几个动作", "一条消息里允许的动作数量"],
     ["plan_valid_duration", "计划有效期（秒）", "一次 LLM 计划覆盖多长时间，默认 1800（30 分钟）"],
     ["max_action_chain_depth", "动作链最大深度", "防止动作套动作无限循环"],
+    ["background_llm_timeout_seconds", "后台模型等待上限（秒）", "决策、复盘、事件与睡眠整理的单次等待上限，默认 120 秒；原生聊天独立运行。"],
     ["llm_plan_min_interval_seconds", "问计划的间隔（秒）", "两次「问大模型要计划」之间至少隔多久，默认 900"],
     ["max_llm_plan_per_hour", "每小时最多计划决策次数", "降低 token 消耗"],
     ["max_llm_text_per_hour", "每小时最多生成发言次数", "超出后她这一轮保持安静（不会再退到一句写死的通用台词）"],
@@ -19282,6 +19355,18 @@ function renderSettings() {
       { hint: "当前说话人永远是全文；群里其他人各给一行缩略版。", type: "number", min: 1 },
     ),
   );
+  profileSection._fields.appendChild(pillsField(
+    "自动发展普通友谊", world.profile?.relationship_auto_enabled === false ? "off" : "on",
+    [{ key: "on", label: "开", hint: "相处久了，陌生人可以逐渐成为群友、朋友。" },
+      { key: "off", label: "关", hint: "只保留已有关系与明确判断。" }],
+    value => { world.profile = world.profile || {}; world.profile.relationship_auto_enabled = value === "on"; }, {},
+  ));
+  profileSection._fields.appendChild(inputField(
+    "好感保留天数", num(world.profile?.affinity_decay_grace_days, 7),
+    value => { world.profile = world.profile || {}; world.profile.affinity_decay_grace_days = Math.max(0, Math.min(366, num(value, 7))); },
+    { hint: "正好感在最近直接交谈后保留几天，再缓慢回落；负面情绪仍逐渐缓和。默认 7，0 = 不保留。", type: "number", min: 0, max: 366 },
+  ));
+  profileSection._fields.appendChild(friendshipEditor(world));
   profileSection._fields.appendChild(el("div", "sub-title", "想念"));
   [
     [

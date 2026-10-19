@@ -1252,7 +1252,7 @@ class ActionsRunMixin:
             note(False, "没有可用的模型")
             return None
         try:
-            reply = await self.llm.generate(
+            reply = await self._background_generate(self.llm,
                 session_id=session_id,
                 system_prompt=system_prompt,
                 prompt=prompt,

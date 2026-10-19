@@ -657,14 +657,15 @@ class ProfileTestCase(unittest.TestCase):
 
         self.store.touch(SESSION, "42", "小明", now=1000.0)
         self.store.adjust_affinity(SESSION, "42", 50, reason="聊得多", now=1000.0)
-        first = self.store.decay_affinity(SESSION, now=1000.0)
+        stamp = 1000.0 + 8 * 86400
+        first = self.store.decay_affinity(SESSION, now=stamp)
         self.assertEqual(len(first), 1)
         value = float(self.store.profile(SESSION, "42")["affinity"])
         self.assertAlmostEqual(value, 50 - float(self.world.profile.affinity_decay_per_day), 4)
         # 同一天再来一次：不动
-        self.assertEqual(self.store.decay_affinity(SESSION, now=1000.0 + 60), [])
+        self.assertEqual(self.store.decay_affinity(SESSION, now=stamp + 60), [])
         # 第二天：再淡一点
-        self.store.decay_affinity(SESSION, now=1000.0 + 86400)
+        self.store.decay_affinity(SESSION, now=stamp + 86400)
         self.assertLess(float(self.store.profile(SESSION, "42")["affinity"]), value)
 
     def test_decay_never_crosses_zero(self):

@@ -635,7 +635,12 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, Star):
                 # 一个会话组只催一次决策：按"会话"逐个催的话，同一个她会被催好几遍，
                 # 而且第二次很可能挂在别的会话名下决定（落点就跟着跑了）
                 for session_id in self.engine.tick_session_ids():
-                    await self.engine.maybe_decide(session_id)
+                    try:
+                        await self.engine.maybe_decide(session_id)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        self.logger.warning(f"[my_world] 自主决策失败 session={session_id}: {exc}")
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

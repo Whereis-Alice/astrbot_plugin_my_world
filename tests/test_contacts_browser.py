@@ -23,6 +23,14 @@ CONTACTS_BRIDGE = r"""
     data.user_id = params.user_id;
     data.identity.display_name = `朋友 ${params.user_id}`;
     data.person.name = data.identity.display_name;
+    data.person.level = {...data.person.level, name: '信任'};
+    data.relationship = {base_level: '亲密', effective_level: '信任', affinity_min: -100, affinity_max: 100,
+      reasons: ['她还在生气，暂时比平常疏远；关系本身没有解除'],
+      progress: {enabled: true, talk_days: 4, next: {bond: '朋友', min_talk_days: 5,
+        min_affinity: 15, days_left: 1, affinity_left: 2}}};
+    data.miss = {value: 0.9, reason: '自主搭话已暂停', will_reach_out: false};
+    data.bonds = [{id: 1, type: '朋友', status: 'current', since: 1792230000,
+      evidence: '<img src=x onerror=alert(1)> 是一段原话', asserted_by: '管理员设置'}];
     data.person.digest = '一起看过电影，也记得上次约定的事。';
     data.weaver.fields = Array.from({length: 27}, (_, index) => ({
       name: `资料 ${index}`, value: `喜欢安静的地方和热茶 ${params.user_id}，会把聊天里的小事记在心里。`,
@@ -115,6 +123,70 @@ class ContactsBrowserTests(unittest.TestCase):
         self.host.set_viewport_size({"width": 1827, "height": 870})
         self.page.locator("#contacts-list").evaluate("node => node.scrollTop = 0")
         self.host.screenshot(path=str(self.shots / "contacts-desktop.png"))
+        self.assertEqual(self.errors, [])
+
+    def test_relationship_explanations_and_history_fit_desktop_and_mobile(self):
+        self.page.locator('#contact-tab-relation').click()
+        overview = self.page.locator('.contact-relationship-overview')
+        expect(overview).to_contain_text('4 个不同日期')
+        expect(overview).to_contain_text('平常的距离')
+        expect(overview).to_contain_text('暂时比平常疏远')
+        history = self.page.locator('.contact-relationship-history')
+        history.locator('summary').click()
+        expect(history).to_contain_text('<img src=x')
+        self.assertEqual(history.locator('img').count(), 0)
+        for width, name in [(1827, 'desktop'), (390, 'mobile')]:
+            self.host.set_viewport_size({'width': width, 'height': 844})
+            if width == 390:
+                self.page.locator('[data-user="10002"]').click()
+                self.page.locator('#contact-tab-relation').click()
+                self.page.locator('.contact-relationship-history summary').click()
+            expect(overview).to_be_visible()
+            self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth <= innerWidth'))
+            self.assertTrue(overview.evaluate('node => node.scrollWidth <= node.clientWidth + 1'))
+            self.page.locator('#contacts-detail').evaluate('node => node.scrollTop = 0')
+            self.host.screenshot(path=str(self.shots / f'relationship-{name}.png'))
+        self.assertEqual(self.errors, [])
+
+    def test_detailed_tiers_preserve_relationship_policy_and_remap_boundaries(self):
+        result = self.page.evaluate('''async () => {
+          const {applyDetailedLevels} = await import('./relationship-preset.js');
+          const profile = {levels: [{min_affinity: -100, max_affinity: 0},
+            {min_affinity: 0, max_affinity: 100}], bonds: [{name: '朋友', floor: 1, cap: 1,
+              auto_form: false, allow_boundary_crossing: true}]};
+          applyDetailedLevels(profile);
+          return profile;
+        }''')
+        self.assertEqual(len(result['levels']), 10)
+        self.assertEqual(result['bonds'][0]['floor'], 2)
+        self.assertEqual(result['bonds'][0]['cap'], 9)
+        self.assertFalse(result['bonds'][0]['auto_form'])
+        self.assertTrue(result['bonds'][0]['allow_boundary_crossing'])
+
+    def test_relationship_settings_expose_manual_default_and_apply_tier_draft(self):
+        self.page.locator('button[data-tab="settings"]').click()
+        self.page.locator('#settings-tabs').get_by_role('button', name='记忆与上下文').click()
+        def fold(title):
+            return self.page.locator('details.fold-editor').filter(
+                has=self.page.locator('summary', has_text=title))
+        bonds = fold('关系表')
+        bonds.locator(':scope > summary').click()
+        rows = bonds.locator('.list-row').filter(has=self.page.locator('input[placeholder="名称"]'))
+        romance = next(row for row in rows.all() if row.locator('input').first.input_value() == '男友')
+        expect(romance.get_by_label('自然形成', exact=True)).not_to_be_checked()
+        expect(romance.get_by_label('允许越过上限', exact=True)).not_to_be_checked()
+        romance.get_by_label('自然形成', exact=True).check()
+        levels = fold('亲密度分级')
+        levels.locator(':scope > summary').click()
+        levels.get_by_role('button', name='使用十档相处方案').click()
+        expect(self.page.locator('#dialog-hint')).to_contain_text('戒备 → 疏远 → 礼貌')
+        self.page.locator('#dialog-ok').click()
+        expect(fold('亲密度分级').locator('.fold-note')).to_contain_text('10 档')
+        bonds = fold('关系表')
+        bonds.locator(':scope > summary').click()
+        rows = bonds.locator('.list-row').filter(has=self.page.locator('input[placeholder="名称"]'))
+        romance = next(row for row in rows.all() if row.locator('input').first.input_value() == '男友')
+        expect(romance.get_by_label('自然形成', exact=True)).to_be_checked()
         self.assertEqual(self.errors, [])
 
     def test_selection_and_session_responses_cannot_overwrite_newer_selection(self):

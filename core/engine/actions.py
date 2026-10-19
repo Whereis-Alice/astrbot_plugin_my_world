@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 from typing import Any
 from ..json_actions import (
@@ -1206,13 +1207,21 @@ class ActionsMixin:
             self._filled_params.clear()
         return merged, ""
 
+    async def _background_generate(self, channel: Any, **kwargs: Any) -> Any:
+        """A stalled provider must eventually release the life/session lock."""
+        try:
+            async with asyncio.timeout(self.world.limits.background_llm_timeout_seconds):
+                return await channel.generate(**kwargs)
+        except TimeoutError as exc:
+            raise TimeoutError("后台模型等待超时，这次交给规则或留待下次") from exc
+
     async def _ask_helper(
         self, session_id: str, system_prompt: str, prompt: str
     ) -> str | None:
         if self.helper_llm is None:
             return None
         try:
-            reply = await self.helper_llm.generate(
+            reply = await self._background_generate(self.helper_llm,
                 session_id=session_id,
                 system_prompt=system_prompt,
                 prompt=prompt,
@@ -1233,7 +1242,7 @@ class ActionsMixin:
 
         if self.judge_llm is not None and self.judge_llm is not self.helper_llm:
             try:
-                reply = await self.judge_llm.generate(
+                reply = await self._background_generate(self.judge_llm,
                     session_id=session_id,
                     system_prompt=system_prompt,
                     prompt=prompt,
@@ -1257,7 +1266,7 @@ class ActionsMixin:
 
         if self.event_llm is not None and self.event_llm is not self.helper_llm:
             try:
-                reply = await self.event_llm.generate(
+                reply = await self._background_generate(self.event_llm,
                     session_id=session_id,
                     system_prompt=system_prompt,
                     prompt=prompt,
@@ -1279,7 +1288,7 @@ class ActionsMixin:
         if channel is None:
             return None
         try:
-            reply = await channel.generate(
+            reply = await self._background_generate(channel,
                 session_id=session_id,
                 system_prompt=system_prompt,
                 prompt=prompt,

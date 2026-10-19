@@ -212,6 +212,8 @@ class RelationsMixin:
             dict(item) for item in (state.own_topics or []) if isinstance(item, dict)
         ]
         for item in items:
+            if str(item.get("who") or "") != uid:
+                continue
             existing = str(item.get("text") or "")
             if existing == body or (existing and (existing in body or body in existing)):
                 item["text"] = body
@@ -228,6 +230,8 @@ class RelationsMixin:
             }
         )
         limit = max(1, int(getattr(config, "own_topic_max", 2) or 2))
+        for item in items[:-limit]:
+            self._archive_unfinished_topic(state, item)
         state.own_topics = items[-limit:]
         self._log("debug", f"记下一件自己的事：{body}")
         return True
@@ -253,15 +257,28 @@ class RelationsMixin:
         return removed
 
     def _decay_own_topics(self, state: WorldState, *, now: float) -> None:
-        """放太久的自己那点事：要么早做完了、要么她其实不在意，丢掉。"""
+        """Long-unfinished intentions become a memory, never a claimed success."""
 
         keep_days = max(1, int(getattr(self.world.state_dynamics, "own_topic_days", 3) or 3))
-        state.own_topics = [
-            item
-            for item in list(state.own_topics or [])
-            if isinstance(item, dict)
-            and float(now) - float(item.get("at") or now) < keep_days * 86400.0
-        ]
+        keep = []
+        for item in list(state.own_topics or []):
+            if not isinstance(item, dict):
+                continue
+            if float(now) - float(item.get("at") or now) < keep_days * 86400:
+                keep.append(item)
+                continue
+            self._archive_unfinished_topic(state, item)
+        state.own_topics = keep
+
+    def _archive_unfinished_topic(self, state: WorldState, item: dict[str, Any]) -> None:
+        text = str(item.get("text") or "").strip()
+        if text:
+            self.memory.remember(
+                session_id=state.session_id, persona_id="", node_id=state.node_id,
+                content=f"（后来搁置、尚未确认完成的打算）{text}", memory_type=INNER,
+                emotion=state.mood, weight=0.3,
+                participants=[str(item["who"])] if item.get("who") else [],
+            )
 
     def _own_topic_block(
         self, state: WorldState, ctx: Any = None, *, autonomy: bool = False

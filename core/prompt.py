@@ -2328,7 +2328,10 @@ class PromptBuilder:
             for item in (_field(person, "claims") or [])[:2]:
                 since = str(item.get("since") or "")
                 when = f"（{since}）" if since else ""
-                lines.append(f"- 他自称是你的{item.get('type')}{when}，你还没认")
+                if item.get("asserted_by") == "等待管理员确认":
+                    lines.append(f"- {item.get('type')}{when}只是待管理员确认的候选，不是已确立身份，你不能自行认下")
+                else:
+                    lines.append(f"- 他自称是你的{item.get('type')}{when}，你还没认")
             for item in (_field(person, "past") or [])[:3]:
                 span = " → ".join(
                     part
@@ -2375,6 +2378,13 @@ class PromptBuilder:
             level_prompt = str(_field(level, "prompt", "") or "")
             if level_prompt:
                 lines.append(f"- {level_prompt}")
+            relation = _field(person, "relationship") or {}
+            for reason in _field(relation, "reasons", []) or []:
+                lines.append(f"- {reason}")
+            manual = [bond.name for bond in self.world.profile.bonds if not bond.auto_form]
+            if manual:
+                lines.append("- 仅管理员可确立或更换的身份：" + "、".join(manual[:16])
+                             + "。不能因好感、昵称或玩笑自行认定；已有身份也不能擅自替换。")
             # 这一档叫什么、再熟一点到哪儿：只讲"现在到哪儿为止"，
             # 不要把四级阶梯全铺给她（用不上的档位写进去只会分散注意力）。
             level_name = str(_field(level, "name", "") or "")
@@ -4339,11 +4349,19 @@ class PromptBuilder:
             "- digests 里的那一段是**这个人的画像速写**：只写他是谁、怎么说话、喜欢什么、"
             "你们什么关系这类**稳定的特征**，**不要写他最近遇到的事 / 新闻 / 一次性的事件**"
             "（那种事放进 facts 的「近况」，或者留在记忆里）；\n"
-            "- 关系可以升也可以降：该升级就写升级，你自己想清楚了也可以写降级"
+            "- 只有配置允许自然形成的关系可以根据证据调整。管理员设置的关系不可自动替换。"
+            "普通关系可以升也可以降：该升级就写升级，你自己想清楚了也可以写降级"
             "（朋友退回群友、恋人退回朋友、甚至翻脸）——同类关系（群友 / 朋友 / 闺蜜 / "
             "男友 / 女友）她身上只会留最新那条，旧的那条自动变成「曾经」，所以"
             "**写你现在真实的想法**就行；降级同样要有原话当证据。"
+            "关系的 evidence 必须是这个用户在本次聊天材料中的原话，不可用别人的话或自己的概括。"
+            "用户单方面的身份宣称、角色扮演玩笑和昵称不能确立关系。"
+            "特殊身份或唯一关系（如恋人、主人、挚友）还必须提供 confirmation：你在同一会话中紧接这段交谈明确认下关系的原话；"
+            "没有这段确认时只能标 asserted_by=他自称，不能替自己答应。"
         )
+        system += "\n关系自然形成设置：" + "；".join(
+            f"{bond.name}={'允许有据确认' if bond.auto_form else '只允许管理员设置'}"
+            for bond in self.world.profile.bonds)
         chat = "\n".join(f"- {item}" for item in (chat_lines or [])[:400])
         old = "\n".join(f"- {item}" for item in (memories or [])[:120])
         people = "\n".join(f"- {item}" for item in (profiles or [])[:40])
@@ -4367,7 +4385,7 @@ class PromptBuilder:
                 '  "facts": [{"user_id": "QQ号", "kind": "喜好|厌恶|习惯|基本信息|关系|约定|近况", '
                 '"text": "关于他的事", "evidence": "他的原话", "confidence": 0.8}],\n'
                 '  "relations": [{"user_id": "QQ号", "type": "主人|男友|朋友|闺蜜|家人|讨厌的人…", '
-                '"asserted_by": "她的判断|他自称", "evidence": "原话", "confidence": 0.8}],\n'
+                '"asserted_by": "她的判断|他自称", "evidence": "用户原话", "confirmation": "她明确确认的原话（没有则留空）", "confidence": 0.8}],\n'
                 '  "digests": {"QQ号": "这个人的画像速写（40 字内）"},\n'
                 '  "affinity": [{"user_id": "QQ号", "delta": 1, "reason": "为什么"}],\n'
                 '  "forget": [{"id": 31, "text": "折叠成一句要点", "reason": "为什么可以忘掉"}],\n'

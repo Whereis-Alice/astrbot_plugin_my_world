@@ -962,6 +962,10 @@ class Database:
         )
         return bool(cursor.rowcount)
 
+    def get_user_fact(self, *, fact_id: int) -> dict[str, Any] | None:
+        rows = self._query("SELECT * FROM user_fact WHERE id = ?", (int(fact_id),))
+        return dict(rows[0]) if rows else None
+
     def delete_user_fact(self, *, fact_id: int) -> bool:
         cursor = self._execute("DELETE FROM user_fact WHERE id = ?", (int(fact_id),))
         return bool(cursor.rowcount)
@@ -1031,13 +1035,17 @@ class Database:
     def close_user_bond(self, *, bond_id: int, until: float | None = None, status: str = "past") -> bool:
         cursor = self._execute(
             "UPDATE user_bond SET status = ?, until = ?, updated_at = ? WHERE id = ?",
-            (str(status), float(until or time.time()), time.time(), int(bond_id)),
+            (str(status), float(time.time() if until is None else until), time.time(), int(bond_id)),
         )
         return bool(cursor.rowcount)
 
     def delete_user_bond(self, *, bond_id: int) -> bool:
         cursor = self._execute("DELETE FROM user_bond WHERE id = ?", (int(bond_id),))
         return bool(cursor.rowcount)
+
+    def mark_user_bond_manual(self, *, bond_id: int) -> None:
+        self._execute("UPDATE user_bond SET asserted_by = ?, updated_at = ? WHERE id = ?",
+                      ("管理员设置", time.time(), int(bond_id)))
 
     # ---------------- 好感度日志 ----------------
 

@@ -6,6 +6,7 @@
 用法：
     python tools/simulate_day.py            # 默认模拟 1 天，tick=60 秒
     python tools/simulate_day.py --days 3   # 模拟 3 天
+    python tools/simulate_day.py --days 3 --quiet  # 无模型、无主动发言的生活兜底
 """
 
 from __future__ import annotations
@@ -60,13 +61,17 @@ class CyclingLLM(StubLLM):
         return reply
 
 
-async def run(days: int, tick_seconds: int) -> None:
+async def run(days: float, tick_seconds: int, *, quiet: bool = False) -> None:
     tmp = tempfile.TemporaryDirectory()
     data_dir = Path(tmp.name)
     store = ConfigStore(data_dir)
     store.ensure_files()
     store.load_world()
     store.add_session(SESSION, cold_start_node="bedroom")
+    if quiet:
+        raw = store.raw_world()
+        raw.update(proactive_chat_paused=True, schedule_speech_enabled=False, event_speech_enabled=False)
+        store.save_world(raw)
 
     db = AsyncDatabase(store.db_path)
     clock = StubClock(now=datetime(2026, 9, 10, 0, 0).timestamp(),
@@ -76,7 +81,7 @@ async def run(days: int, tick_seconds: int) -> None:
     engine = MyWorldEngine(
         store=store,
         db=db,
-        llm=llm,
+        llm=None if quiet else llm,
         messenger=messenger,
         tools=StubTools({"web_search": "搜索网页"}, {"web_search": "鲸鱼一天要吃很多吨磷虾。"}),
         persona=StubPersona("你是一个温柔黏人的少女。"),
@@ -89,10 +94,16 @@ async def run(days: int, tick_seconds: int) -> None:
     timeline: list[str] = []
     last_node = ""
     last_state = ""
+    idle_actions: set[str] = set()
+    sleeping_ticks = 0
     for index in range(ticks):
         outcomes = await engine.tick()
         for session_id in engine.enabled_session_ids():
             await engine.maybe_decide(session_id)
+        current = await engine.load_state(SESSION, cold_start=False)
+        sleeping_ticks += int(current.is_sleeping)
+        if current.idle_activity.get("id"):
+            idle_actions.add(current.idle_activity["id"])
         for outcome in outcomes:
             for note in outcome.notes:
                 if note.startswith("t="):
@@ -130,6 +141,11 @@ async def run(days: int, tick_seconds: int) -> None:
     )
     print(f"累计发言 {len(messenger.flat_messages)} 条，LLM 调用 {len(llm.calls)} 次")
     print(f"记忆条数 {engine.memory.stats(SESSION)['total']}")
+    print(f"睡眠 {sleeping_ticks} tick，闲置动作：{', '.join(sorted(idle_actions)) or '无'}")
+    if quiet:
+        assert not messenger.flat_messages, "安静模式发送了意外消息"
+        assert sleeping_ticks > 0 if days >= 1 else True, "未进入睡眠兜底"
+        assert idle_actions, "默认世界未进行闲置活动"
     await db.close()
     tmp.cleanup()
 
@@ -138,9 +154,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="模拟她的世界的一天")
     parser.add_argument("--days", type=float, default=1.0)
     parser.add_argument("--tick", type=int, default=60)
+    parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
-    asyncio.run(run(args.days, args.tick))
+    asyncio.run(run(args.days, args.tick, quiet=args.quiet))
 
 
 if __name__ == "__main__":

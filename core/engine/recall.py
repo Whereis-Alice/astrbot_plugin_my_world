@@ -439,11 +439,11 @@ class RecallMixin:
             parts.append(f"他 {ago_text((now - seen) / 60)}前在群里露过面")
         return "，".join(parts)
 
-    def miss_overview(self, state: WorldState) -> dict[str, Any]:
+    def miss_overview(self, state: WorldState, *, user_id: str = "") -> dict[str, Any]:
         """「她想找谁」的只读快照：给编辑器看，不用去翻代码或日志。
 
         包含三样东西：
-        - 每个人的**想念值**（0~1，到阈值她就会主动去找）；
+        - 每个人的**想念值**与当前能否考虑主动联系的原因；
         - 刚聊过、还在冷却里的人（想念值暂时为 0，标出还要多久才会开始想他）——
           不然"她怎么不想我"看不出来；
         - 今天的主动找人额度用掉了几次。
@@ -461,10 +461,13 @@ class RecallMixin:
             if isinstance(item, dict)
         }
         ready_map = dict(getattr(state, "miss_ready_at", None) or {})
+        cap = max(0, int(config.miss_push_daily_max or 0))
+        day = self._today_key(now)
+        push_left = max(0, cap - (int(state.miss_push_count or 0) if state.miss_push_day == day else 0))
         people: list[dict[str, Any]] = []
         for uid, value in (state.miss or {}).items():
             uid = str(uid or "")
-            if not uid:
+            if not uid or (user_id and uid != user_id):
                 continue
             view = self.profiles.view(state.session_id, uid)
             name = (getattr(view, "name", "") or presence.get(uid) or uid) if view else (
@@ -476,6 +479,28 @@ class RecallMixin:
                 score = 0.0
             if score <= 0:
                 continue
+            reasons = []
+            if view is None or self._miss_ignored(view):
+                reasons.append("当前关系不适合主动联系")
+            if not config.enabled or not config.miss_push_enabled:
+                reasons.append("想念驱动的联系已关闭")
+            if not self.proactive_chat_allowed(state.session_id):
+                reasons.append("自主搭话已暂停")
+            if state.is_sleeping or state.state == "drowsy":
+                reasons.append("正在休息")
+            if state.current_action or state.current_plan:
+                reasons.append("先做完手上的事")
+            if not self.engagement.can_speak(state) or self.engagement.proactive_blocked(state):
+                reasons.append("还在发言冷却中")
+            if push_left <= 0 or self.profiles.proactive_quota_left(state.session_id, uid, now=now) <= 0:
+                reasons.append("今天的主动联系额度已用完")
+            if not self._within_hourly_limit(state):
+                reasons.append("本小时自主行为额度已用完")
+            if self.llm is None:
+                reasons.append("尚无可用的行为模型")
+            if score < threshold:
+                reasons.append("还在慢慢积累想念")
+            ready = not reasons
             people.append(
                 {
                     "user_id": uid,
@@ -483,13 +508,17 @@ class RecallMixin:
                     "value": round(score, 3),
                     "waiting": False,
                     "ready_in_minutes": 0,
-                    "will_reach_out": score >= threshold,
+                    "will_reach_out": ready,
+                    "reason": "；".join(reasons) if reasons else "可以考虑联系，是否开口仍由她决定",
                 }
             )
         known = {item["user_id"] for item in people}
         for uid, open_at in ready_map.items():
             uid = str(uid or "")
-            if not uid or uid in known:
+            if not uid or uid in known or (user_id and uid != user_id):
+                continue
+            view = self.profiles.view(state.session_id, uid)
+            if view is not None and (view.negative or view.affinity < 0):
                 continue
             try:
                 at = float(open_at or 0.0)
@@ -501,22 +530,19 @@ class RecallMixin:
             people.append(
                 {
                     "user_id": uid,
-                    "name": presence.get(uid) or uid,
+                    "name": (view.name if view else "") or presence.get(uid) or uid,
                     "value": 0.0,
                     "waiting": True,
                     "ready_in_minutes": minutes,
                     "will_reach_out": False,
+                    "reason": "刚交谈过，先各自生活一会儿",
                 }
             )
         people.sort(key=lambda item: (item["value"], -item["ready_in_minutes"]), reverse=True)
-        try:
-            cap = max(0, int(getattr(config, "miss_push_daily_max", 0) or 0))
-        except (TypeError, ValueError):
-            cap = 0
         return {
             "enabled": bool(getattr(config, "miss_push_enabled", True)),
             "threshold": round(threshold, 3),
-            "push_left": self._miss_push_left(state),
+            "push_left": push_left,
             "push_cap": cap,
             "people": people[:8],
         }

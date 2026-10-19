@@ -871,6 +871,9 @@ class StateDynamics(Permissive):
 
 
 class Limits(Permissive):
+    background_llm_timeout_seconds: float = Field(default=120, ge=1, le=1800)
+    """后台决策、复盘、事件和睡眠整理的单次模型等待上限；原生聊天不受影响。"""
+
     max_actions_per_message: int = 3
     max_autonomous_per_hour: int = 6
     max_share_per_hour: int = 4
@@ -1680,6 +1683,12 @@ class BondType(Permissive):
 
     unique: bool = False
 
+    auto_form: bool = False
+    """允许根据实际交谈自然确立；关闭时只有管理员能正式设置。"""
+
+    allow_boundary_crossing: bool = False
+    """允许好感越过此关系的通常距离上限，不改变身份或跳过当前档位的动作边界。"""
+
     negative: bool = False
     """负面关系（讨厌的人 / 敌人）：好感为负、亲密度压到最低。"""
 
@@ -1723,6 +1732,14 @@ def _default_profile_tables() -> tuple[list[BondType], list[IntimacyLevel]]:
 
 ASK_ABOUT_FIELDS_DEFAULT = ["性别", "生日", "年龄", "爱吃的东西", "所在地"]
 """「主动问」默认要打听的几件事（老清单里问的是"时区"，见 ``normalize_legacy_keys``）。"""
+
+
+class FriendshipStage(Permissive):
+    """An ordinary friendship needs time together as well as positive feelings."""
+
+    bond: str
+    min_talk_days: int = Field(default=2, ge=1, le=366)
+    min_affinity: float = Field(default=3.0, ge=-100, le=100)
 
 
 class ProfileConfig(Permissive):
@@ -1776,6 +1793,17 @@ class ProfileConfig(Permissive):
 
     affinity_decay_per_day: float = 0.2
     """每天向 0 回落多少（疏远慢慢淡掉）。0 = 不回落。"""
+
+    affinity_decay_grace_days: float = Field(default=7.0, ge=0, le=366)
+    """正好感在最后一次直接交谈后保留几天，再开始缓慢回落。"""
+
+    relationship_auto_enabled: bool = True
+    """根据实际交谈天数和好感，自动发展普通友谊；不自动确立恋爱或身份关系。"""
+
+    friendship_stages: list[FriendshipStage] = Field(default_factory=lambda: [
+        FriendshipStage(bond="群友", min_talk_days=2, min_affinity=3),
+        FriendshipStage(bond="朋友", min_talk_days=5, min_affinity=15),
+    ], max_length=12)
 
     digest_chars: int = 60
     """缩略版画像最多多少字（非主要的人注入这一份）。"""
@@ -1922,6 +1950,8 @@ class ProfileConfig(Permissive):
         except Exception:
             defaults = {}
         for item in self.bonds:
+            if "auto_form" not in item.model_fields_set:
+                item.auto_form = item.name in {"群友", "朋友"} or item.negative
             if "floor" in getattr(item, "model_fields_set", set()):
                 continue
             item.floor = defaults.get(str(item.name), 0)
@@ -1946,8 +1976,14 @@ class ProfileConfig(Permissive):
     def bond_cap(self, names: list[str]) -> int:
         """这几种关系里最高的亲密度上限（没有关系就用默认初始关系的上限）。"""
 
+        negative_caps = [
+            int(bond.cap) for bond in (self.bond_by_name(name) for name in names or [])
+            if bond is not None and bond.negative
+        ]
+        if negative_caps:
+            return min(negative_caps)
         caps = [
-            int(bond.cap)
+            (len(self.levels) - 1 if bond.allow_boundary_crossing else int(bond.cap))
             for bond in (self.bond_by_name(name) for name in names or [])
             if bond is not None
         ]
@@ -1962,6 +1998,9 @@ class ProfileConfig(Permissive):
         ``floor`` 放的是"关系本身带来的态度"：绑成男友之后，好感还没养起来也该能抱抱。
         """
 
+        if any(bond is not None and bond.negative
+               for bond in (self.bond_by_name(name) for name in names or [])):
+            return 0
         floors = [
             int(bond.floor)
             for bond in (self.bond_by_name(name) for name in names or [])
@@ -1979,7 +2018,12 @@ class ProfileConfig(Permissive):
         for index, level in enumerate(self.levels):
             if float(level.min_affinity) <= value < float(level.max_affinity):
                 return index
-        return max(0, len(self.levels) - 1)
+        if not self.levels:
+            return 0
+        # Gaps in a custom table retain the last reached tier, never jump to
+        # maximum intimacy. Values below the table use its lowest tier.
+        reached = [index for index, level in enumerate(self.levels) if value >= level.min_affinity]
+        return reached[-1] if reached else 0
 
     def level_for(
         self,

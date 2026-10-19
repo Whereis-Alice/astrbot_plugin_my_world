@@ -50,6 +50,9 @@ class AutonomyMixin:
                 return None
             if self.world.sleep.mode == "autonomous" and state.sleep_rhythm.get("decision") == "sleep":
                 await self._run_rhythm_sleep(state, outcome)
+            elif not self.proactive_chat_allowed(session_id):
+                outcome.notes.append("自主搭话已关闭，继续安静生活")
+                await self._quiet_rule_plan(state, node, outcome)
             elif not self.engagement.can_speak(state):
                 outcome.notes.append("处于发言冷却期，继续安静生活")
                 await self._quiet_rule_plan(state, node, outcome)
@@ -220,11 +223,14 @@ class AutonomyMixin:
         但仍然守冷却和一个专门的每小时上限，避免来回走 + 反复决策把 token 烧光。
         """
 
-        if not self.world.decider.enabled or state.is_sleeping or state.state == STATE_DROWSY:
+        if state.is_sleeping or state.state == STATE_DROWSY:
             return
         if state.current_plan is not None or state.current_action is not None:
             return
-        if not self.engagement.can_speak(state):
+        if self.world.sleep.mode == "autonomous" and state.sleep_rhythm.get("decision") == "sleep":
+            await self._run_rhythm_sleep(state, outcome)
+            return
+        if not self.proactive_chat_allowed(outcome.session_id) or not self.engagement.can_speak(state):
             outcome.notes.append("抵达新地点，冷却期内继续安静生活")
             await self._quiet_rule_plan(state, node, outcome)
             return

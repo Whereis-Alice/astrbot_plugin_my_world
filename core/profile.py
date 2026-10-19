@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import difflib
+import math
 import re
 import time
 from dataclasses import dataclass, field
@@ -23,6 +24,7 @@ from typing import Any
 
 from .db import Database
 from .models import BondType, IntimacyLevel, ProfileConfig, WorldConfig
+from .relationship import evolve_friendship
 
 AFFINITY_DAILY_KEY = "affinity_daily"
 """当天的好感额度表（混脸熟 / 每轮模型给的增减，各自有上限）。"""
@@ -164,6 +166,7 @@ class PersonView:
     """
     message_count: int = 0
     days: int = 0
+    talk_days: int = 0
 
     @property
     def days_known(self) -> int:
@@ -592,6 +595,7 @@ class ProfileStore:
         asserted_by: str = "她的判断",
         now: float | None = None,
         policy: str = "",
+        automatic: bool = False,
     ) -> dict[str, Any]:
         """确立 / 更新一条关系（模型给的候选也走这里）。
 
@@ -615,54 +619,46 @@ class ProfileStore:
         claimed = self.db.list_user_bonds(group_id=key, user_id=uid, statuses=["claimed"])
         for item in current:
             if str(item.get("type")) == str(bond.name):
+                if not automatic and asserted_by == "管理员设置":
+                    self.db.mark_user_bond_manual(bond_id=int(item["id"]))
                 return {"ok": True, "action": "merge", "id": int(item["id"])}
         # 同一个槽位已经有人的：按策略处理（唯一的关系才会管）。
         # 注意槽位唯一性是**全组**的：别人已经占着"男友"时，新来的同样要按策略处理——
         # 不然一个人可以同时有五个男友。
         everyone = self.db.list_user_bonds(group_id=key, statuses=["current"])
-        blocker = next(
-            (
-                item
-                for item in everyone
-                if str(item.get("slot")) == str(bond.slot)
-                and self._unique_slot(str(bond.slot))
-            ),
-            None,
+        blockers = [item for item in everyone
+                    if str(item.get("slot")) == str(bond.slot)
+                    and str(item.get("user_id")) != uid
+                    and self._unique_slot(str(bond.slot))]
+        protected = any(
+            self.bond_group(str(item.get("type") or "")) == bond.group and bond.group
+            and (str(item.get("asserted_by") or "") == "管理员设置"
+                 or not self.config.bond_by_name(str(item.get("type") or "")).auto_form)
+            for item in current if self.config.bond_by_name(str(item.get("type") or "")) is not None
         )
-        claimed_by_him = str(asserted_by or "") in ("他自称", "他自己说的", "user")
-        if blocker is not None:
-            mode = str(policy or getattr(self.config, "bond_conflict_policy", "reject") or "reject")
-            if mode == "replace" and not claimed_by_him:
-                self.db.close_user_bond(bond_id=int(blocker["id"]), until=stamp)
-            else:
-                existing_claim = next(
-                    (
-                        item
-                        for item in claimed
-                        if str(item.get("type")) == str(bond.name)
-                    ),
-                    None,
-                )
-                if existing_claim is not None:
-                    return {"ok": True, "action": "merge", "id": int(existing_claim["id"])}
-                new_id = self.db.add_user_bond(
-                    group_id=key,
-                    user_id=uid,
-                    type=bond.name,
-                    slot=bond.slot,
-                    status="claimed",
-                    since=stamp,
-                    evidence=evidence,
-                    confidence=confidence,
-                    asserted_by=asserted_by or "他自称",
-                )
-                return {
-                    "ok": True,
-                    "action": "claim",
-                    "id": new_id,
-                    "reason": f"已经有一个「{blocker.get('type')}」"
-                    f"（{blocker.get('user_id')}），这句先记成他自称",
-                }
+        manual_only = automatic and (not bond.auto_form or protected)
+        claimed_by_him = str(asserted_by or "") in ("他自称", "他自己说的", "user") or manual_only
+        if manual_only:
+            asserted_by = "等待管理员确认"
+        mode = str(policy or self.config.bond_conflict_policy)
+        if claimed_by_him or (blockers and mode != "replace"):
+            existing_claim = next((item for item in claimed if str(item.get("type")) == bond.name), None)
+            if existing_claim is not None:
+                return {"ok": True, "action": "merge", "id": int(existing_claim["id"])}
+            new_id = self.db.add_user_bond(
+                group_id=key, user_id=uid, type=bond.name, slot=bond.slot,
+                status="claimed", since=stamp, evidence=evidence,
+                confidence=confidence, asserted_by=asserted_by,
+            )
+            return {"ok": True, "action": "claim", "id": new_id,
+                    "reason": "此关系只允许管理员设置" if manual_only else (
+                        "单方面自称还未确认" if claimed_by_him else "唯一关系已有其他人，等待明确处理")}
+        for blocker in blockers:
+            self.db.close_user_bond(bond_id=int(blocker["id"]), until=stamp)
+        # A later explicit recognition resolves the old candidate as well.
+        for claim in claimed:
+            if str(claim.get("type")) == bond.name:
+                self.db.close_user_bond(bond_id=int(claim["id"]), until=stamp, status="dismissed")
         new_id = self.db.add_user_bond(
             group_id=key,
             user_id=uid,
@@ -699,6 +695,12 @@ class ProfileStore:
         if row is None:
             return 0.0
         current = float(row.get("affinity") or 0.0)
+        if current < 0 or any(
+            definition is not None and definition.negative
+            for definition in (self.config.bond_by_name(str(item.get("type") or ""))
+                               for item in self.bonds(session_id, uid, statuses=["current"]))
+        ):
+            return 0.0
         if current >= target:
             return 0.0
         self.adjust_affinity(
@@ -720,14 +722,16 @@ class ProfileStore:
         row = self.db.get_user_bond(bond_id=int(bond_id))
         if row is None or str(row.get("group_id")) != key or str(row.get("user_id")) != uid:
             return {"ok": False, "reason": "找不到这条关系"}
+        if str(row.get("status")) != "claimed":
+            return {"ok": False, "reason": "只有待确认的关系可以认下"}
         slot = str(row.get("slot") or "")
         mode = str(policy or getattr(self.config, "bond_conflict_policy", "reject") or "replace")
         if self._unique_slot(slot):
             # 槽位唯一性是全组的：占着这个槽位的可能是别人
             for item in self.db.list_user_bonds(group_id=key, statuses=["current"]):
-                if str(item.get("slot")) != slot:
+                if str(item.get("slot")) != slot or str(item.get("user_id")) == uid:
                     continue
-                if mode == "reject":
+                if mode != "replace":
                     return {
                         "ok": False,
                         "reason": f"已经有「{item.get('type')}」（{item.get('user_id')}），先解除它",
@@ -741,6 +745,7 @@ class ProfileStore:
         if row is None:
             return
         self.db.close_user_bond(bond_id=bond_id, until=0.0, status="current")
+        self.db.mark_user_bond_manual(bond_id=bond_id)
         now = time.time()
         self._retire_default_bond(
             str(row.get("group_id") or ""),
@@ -934,6 +939,7 @@ class ProfileStore:
         *,
         reason: str = "",
         now: float | None = None,
+        source: str = "chat",
     ) -> float:
         """主模型每轮给的 ``affinity_delta``：先削到每轮上限，再受"每天每人"约束。
 
@@ -941,7 +947,7 @@ class ProfileStore:
         """
 
         amount = float(delta or 0.0)
-        if not self.enabled() or abs(amount) < 1e-9:
+        if not self.enabled() or not math.isfinite(amount) or abs(amount) < 1e-9:
             return 0.0
         per_turn = abs(float(getattr(self.config, "affinity_reply_max", 3.0) or 0.0))
         if per_turn > 0:
@@ -960,29 +966,32 @@ class ProfileStore:
             if amount > 0:
                 room = cap - float(bucket.get("model_up") or 0.0)
                 amount = max(0.0, min(amount, room))
-                bucket["model_up"] = float(bucket.get("model_up") or 0.0) + amount
             else:
                 room = cap - float(bucket.get("model_down") or 0.0)
                 amount = -max(0.0, min(-amount, room))
-                bucket["model_down"] = float(bucket.get("model_down") or 0.0) + abs(amount)
-        people[uid] = bucket
-        self._save_daily_people(key, day, people)
         if abs(amount) < 1e-9:
             return 0.0
-        self.adjust_affinity(
+        result = self.adjust_affinity(
             session_id,
             uid,
             amount,
             reason=reason or "聊了这一轮",
-            source="chat",
+            source=source,
             now=stamp,
         )
-        return amount
+        actual = float(result.get("delta") or 0.0)
+        if cap > 0:
+            field = "model_up" if actual >= 0 else "model_down"
+            bucket[field] = float(bucket.get(field) or 0.0) + abs(actual)
+            people[uid] = bucket
+            self._save_daily_people(key, day, people)
+        evolve_friendship(self, session_id, uid, now=stamp)
+        return actual
 
     def decay_affinity(
         self, session_id: str, *, now: float | None = None
     ) -> list[tuple[str, float]]:
-        """每天一次：所有人的好感朝 0 回落一点（长期不理就慢慢淡）。
+        """每天一次：久未交谈的正好感缓慢回落，负好感逐渐缓和。
 
         每个会话组一天只结算一次（几个群私聊共享一份画像，也只该淡一次）；
         落在"朝 0 靠拢"上，所以负好感也会慢慢被忘掉。
@@ -1006,6 +1015,11 @@ class ProfileStore:
             uid = str(row.get("user_id") or "")
             value = float(row.get("affinity") or 0.0)
             if not uid or abs(value) < 1e-9:
+                continue
+            payload = row.get("payload") or {}
+            last_contact = float(payload.get("last_talked_at") or row.get("first_seen_at") or 0)
+            grace = max(0.0, self.config.affinity_decay_grace_days) * 86400
+            if value > 0 and grace > 0 and last_contact > 0 and stamp - last_contact < grace:
                 continue
             amount = -step if value > 0 else step
             if abs(amount) > abs(value):
@@ -1145,10 +1159,7 @@ class ProfileStore:
         """这个槽位是不是"只能有一个人"（配置里任一种关系标了 unique 就算）。"""
 
         text = str(slot or "")
-        for bond in self.config.bonds:
-            if str(bond.slot) == text:
-                return bool(bond.unique)
-        return False
+        return bool(text) and any(str(bond.slot) == text and bond.unique for bond in self.config.bonds)
 
     # ---------------- 好感度 ----------------
 
@@ -1176,7 +1187,10 @@ class ProfileStore:
         before = float(row.get("affinity") or 0.0)
         low = float(self.config.affinity_min)
         high = float(self.config.affinity_max)
-        after = max(low, min(high, before + float(delta or 0.0)))
+        amount = float(delta or 0.0)
+        if not math.isfinite(amount):
+            return {"ok": False, "value": before, "reason": "好感变化必须是有限数值"}
+        after = max(low, min(high, before + amount))
         self.db.upsert_user_profile(
             group_id=key,
             user_id=uid,
@@ -1220,8 +1234,15 @@ class ProfileStore:
         if row is None:
             return
         payload = dict(row.get("payload") or {})
-        payload["last_talked_at"] = float(now if now is not None else time.time())
+        stamp = float(now if now is not None else time.time())
+        payload["last_talked_at"] = stamp
+        days = list(dict.fromkeys(str(day) for day in payload.get("talk_days", []) if day))
+        today = self._day_key(stamp)
+        if today not in days:
+            days.append(today)
+        payload["talk_days"] = days[-366:]
         self._save(key, uid, payload)
+        evolve_friendship(self, session_id, uid, now=stamp)
 
     def last_talked_at(self, session_id: str, user_id: str) -> float:
         """他上一次**直接跟她说话**是什么时候（0 = 还没聊过）。"""
@@ -1302,6 +1323,7 @@ class ProfileStore:
             last_talked_at=float(payload.get("last_talked_at") or 0.0),
             message_count=int(row.get("message_count") or 0),
             days=len([item for item in (payload.get("days") or []) if str(item)]),
+            talk_days=len(set(str(item) for item in payload.get("talk_days", []) if item)),
         )
 
     def action_label(self, action_id: str) -> str:

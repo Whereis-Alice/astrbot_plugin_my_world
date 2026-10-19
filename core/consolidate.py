@@ -312,8 +312,32 @@ class Consolidator:
         if result.mode == "nap":
             self._apply_nap(session_id, payload, result, now=stamp, known=known)
         else:
+            payload = {**payload, "relations": self._grounded_relations(payload, records, result)}
             self._apply_full(session_id, payload, result, now=stamp, known=known)
         return result
+
+    def _grounded_relations(
+        self, payload: dict[str, Any], records: list[dict[str, Any]], result: ConsolidateResult
+    ) -> list[dict[str, Any]]:
+        """Relationship evidence must belong to the identified person.
+
+        Exclusive commitments also need her own explicit confirmation. Without
+        that second quote, preserve the user's statement as a candidate only.
+        """
+        from .relationship import grounded_relationship
+        kept = []
+        for item in self._rows(payload.get("relations"))[:MAX_BONDS_PER_RUN]:
+            uid = str(item.get("user_id") or "")
+            bond = self.world.profile.bond_by_name(str(item.get("type") or ""))
+            candidate = grounded_relationship(item, records, exclusive=bool(
+                bond is not None and (self.profiles._unique_slot(bond.slot)
+                                      or bond.name not in {stage.bond for stage in self.world.profile.friendship_stages}
+                                      and not bond.negative)))
+            if candidate is None:
+                result.skipped.append(f"关系依据不在本人的原话中：{uid} / {item.get('type')}")
+                continue
+            kept.append(candidate)
+        return kept
 
     # ---------------- 落库：整觉 ----------------
 
@@ -390,6 +414,7 @@ class Consolidator:
                 confidence=float(item.get("confidence") or 0.6),
                 asserted_by=str(item.get("asserted_by") or "她的判断"),
                 now=now,
+                automatic=True,
             )
             if outcome.get("ok"):
                 result.relations += 1
@@ -403,7 +428,7 @@ class Consolidator:
             if not self._known(user_id, known):
                 result.skipped.append(f"材料里没这个人的好感变化被跳过：{user_id}")
                 continue
-            outcome = self.profiles.adjust_affinity(
+            amount = self.profiles.apply_reply_affinity(
                 session_id,
                 user_id,
                 float(item.get("delta") or 0.0),
@@ -411,7 +436,7 @@ class Consolidator:
                 source="consolidate",
                 now=now,
             )
-            if outcome.get("ok"):
+            if abs(amount) > 1e-9:
                 result.affinity += 1
         for item in self._rows(payload.get("forget")):
             memory_id = self._int(item.get("id"))

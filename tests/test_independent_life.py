@@ -140,6 +140,10 @@ class IndependentEngineTests(unittest.IsolatedAsyncioTestCase):
 
     def add_idle(self, **extra):
         raw = self.store.raw_world()
+        # This fixture controls the one idle activity under observation.
+        for action in raw["actions"]:
+            if action.get("idle"):
+                action["enabled"] = False
         raw["actions"].append(quiet_action(**extra).model_dump(mode="json"))
         self.store.save_world(raw)
         self.engine.reload_config()

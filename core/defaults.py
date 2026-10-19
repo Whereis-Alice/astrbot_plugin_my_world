@@ -18,10 +18,10 @@ import os
 import sys
 from typing import Any
 
-# 这 8 个是引擎必需的核心动作（说话出口 / 寻路 / 睡眠 / 内心活动 / 分享 / 回忆 / 记住 / 碰一碰），
-# 默认保持开启；其余随插件附带的内容动作一律默认停用，由用户在动作库按需开启。
+# 基础行为、休息和安静生活默认开启；主题性内容动作由用户按角色需要开启。
 CORE_BUILTIN_ACTIONS = frozenset(
-    {"say", "walk_to", "sleep", "think", "share", "recall", "remember", "poke"}
+    {"say", "walk_to", "sleep", "nap", "think", "share", "recall", "remember", "poke",
+     "idle_observe", "idle_unwind", "idle_tidy"}
 )
 
 # 「明确叫醒她」的说法：命中这些词（且消息是 @ 她的）才打断睡眠，否则只回睡觉时的固定文案
@@ -327,9 +327,9 @@ DEFAULT_WORLD: dict[str, Any] = {
         "bonds": [
             {"name": "陌生人", "slot": "stranger", "floor": 2, "cap": 2,
              "aliases": ["不认识", "没见过"]},
-            {"name": "群友", "slot": "acquaintance", "group": "close", "floor": 2, "cap": 3,
+            {"name": "群友", "slot": "acquaintance", "auto_form": True, "group": "close", "floor": 2, "cap": 3,
              "aliases": ["网友", "同群的"]},
-            {"name": "朋友", "slot": "friend", "group": "close", "floor": 3, "cap": 4,
+            {"name": "朋友", "slot": "friend", "auto_form": True, "group": "close", "floor": 3, "cap": 4,
              "aliases": ["好朋友"]},
             {"name": "闺蜜", "slot": "bestie", "group": "close", "floor": 4, "cap": 5, "unique": True,
              "aliases": ["死党", "挚友"]},
@@ -341,9 +341,9 @@ DEFAULT_WORLD: dict[str, Any] = {
              "aliases": ["女朋友", "老婆", "未婚妻"]},
             {"name": "家人", "slot": "family", "floor": 4, "cap": 6,
              "aliases": ["哥哥", "姐姐", "弟弟", "妹妹"]},
-            {"name": "讨厌的人", "slot": "rival", "floor": 0, "cap": 1, "negative": True,
+            {"name": "讨厌的人", "slot": "rival", "auto_form": True, "floor": 0, "cap": 1, "negative": True,
              "aliases": ["烦人精", "讨厌鬼"]},
-            {"name": "敌人", "slot": "enemy", "floor": 0, "cap": 0, "negative": True,
+            {"name": "敌人", "slot": "enemy", "auto_form": True, "floor": 0, "cap": 0, "negative": True,
              "aliases": ["仇人"]},
         ],
         # 亲密度分级：每一级自己的称呼、允许 / 禁止的动作、主动频率，以及给模型的提示词文本。
@@ -2566,6 +2566,19 @@ DEFAULT_WORLD: dict[str, Any] = {
         },
     ],
 }
+
+# Quiet starting activities work without a model, tools or generated content.
+# Existing action lists are loaded as-is; this seeds new worlds only.
+DEFAULT_WORLD["actions"].extend([
+    {"id": "idle_observe", "name": "看看周围", "description": "留意此刻所在地方的光线、声音与细节。", "life_role": "explore"},
+    {"id": "idle_unwind", "name": "舒展休息", "description": "舒展一下，放松身体，安静地歇一会儿。", "life_role": "rest"},
+    {"id": "idle_tidy", "name": "整理手边的小东西", "description": "把随手放下的东西理整齐，让自己舒服一些。", "life_role": "interest"},
+])
+for _quiet_action in DEFAULT_WORLD["actions"][-3:]:
+    _quiet_action.update(enabled=True, idle=True, category="continuous", llm_level="template",
+                         scope="global", target_type="none", visible=False,
+                         on_complete={"trigger": "none"})
+
 
 def apply_default_actions_off(actions: list[dict[str, Any]]) -> None:
     """把随插件附带的内容动作默认停用；核心动作保持原样。"""

@@ -989,6 +989,9 @@ class WebApiMixin:
         state = await self.engine.load_state(session_id, cold_start=False)
         # 「她记着他一笔账」：记的账是分人的，这里只回这个人的那条
         grudge = self.engine.grudge_for(state, user_id)
+        if isinstance(payload.get("person"), dict):
+            payload["person"] = self.engine._apply_grudge_coldness(state, user_id, payload["person"])
+        payload["relationship"] = (payload.get("person") or {}).get("relationship", {})
         payload["grudge"] = (
             {
                 **grudge,
@@ -1007,9 +1010,9 @@ class WebApiMixin:
             dict(item)
             for item in (state.own_topics or [])
             if isinstance(item, dict)
-            and str(item.get("who") or "") in ("", user_id)
+            and str(item.get("who") or "") == user_id
         ]
-        overview = self.engine.miss_overview(state)
+        overview = self.engine.miss_overview(state, user_id=user_id)
         payload["miss"] = next(
             (item for item in overview.get("people", []) if item.get("user_id") == user_id),
             {
@@ -1035,6 +1038,9 @@ class WebApiMixin:
                 "unique": bool(bond.unique),
                 "negative": bool(bond.negative),
                 "aliases": list(bond.aliases or []),
+                "floor": bond.floor,
+                "auto_form": bond.auto_form,
+                "allow_boundary_crossing": bond.allow_boundary_crossing,
             }
             for bond in config.bonds
         ]
@@ -1311,6 +1317,15 @@ class WebApiMixin:
             return error_response("缺少参数")
         db = store.db
         group_id = store.group_key(session_id)
+        if action in {"update", "delete"}:
+            try:
+                fact_id = int(payload.get("id") or 0)
+            except (ValueError, TypeError):
+                return error_response("经历 ID 无效")
+            row = db.get_user_fact(fact_id=fact_id)
+            if (row is None or str(row.get("group_id")) != group_id
+                    or str(row.get("user_id")) != user_id):
+                return error_response("当前联系人没有这条经历")
         if action == "add":
             result = store.note_fact(
                 session_id,
@@ -1359,6 +1374,15 @@ class WebApiMixin:
         store = getattr(self.engine, "profiles", None)
         if store is None or not session_id or not user_id:
             return error_response("缺少参数")
+        if action in {"close", "accept", "delete"}:
+            try:
+                bond_id = int(payload.get("id") or 0)
+            except (ValueError, TypeError):
+                return error_response("关系 ID 无效")
+            row = store.db.get_user_bond(bond_id=bond_id)
+            if (row is None or str(row.get("group_id")) != store.group_key(session_id)
+                    or str(row.get("user_id")) != user_id):
+                return error_response("当前联系人没有这条关系")
         if action == "note":
             result = store.note_bond(
                 session_id,
@@ -1366,24 +1390,25 @@ class WebApiMixin:
                 type=str(payload.get("type") or ""),
                 evidence=str(payload.get("evidence") or "主人手动设的"),
                 confidence=1.0,
-                asserted_by=str(payload.get("asserted_by") or "她的判断"),
+                asserted_by="他自称" if payload.get("asserted_by") == "他自称" else "管理员设置",
                 policy=str(payload.get("policy") or ""),
             )
             if not result.get("ok"):
                 return error_response(str(result.get("reason") or "没记下来"))
         elif action == "close":
-            store.close_bond(session_id, user_id, bond_id=int(payload.get("id") or 0))
+            if not store.close_bond(session_id, user_id, bond_id=bond_id):
+                return error_response("关系未解除")
         elif action == "accept":
             result = store.accept_claim(
                 session_id,
                 user_id,
-                bond_id=int(payload.get("id") or 0),
+                bond_id=bond_id,
                 policy=str(payload.get("policy") or ""),
             )
             if not result.get("ok"):
                 return error_response(str(result.get("reason") or "认不下来"))
         elif action == "delete":
-            store.db.delete_user_bond(bond_id=int(payload.get("id") or 0))
+            store.db.delete_user_bond(bond_id=bond_id)
         else:
             return error_response("不认识的操作")
         return json_response(

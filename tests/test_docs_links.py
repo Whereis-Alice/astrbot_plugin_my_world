@@ -16,7 +16,7 @@ _LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 
 
 def _doc_files() -> list[Path]:
-    files = [ROOT / "README.md", ROOT / "NOTICE.md", ROOT / "CHANGELOG.md"]
+    files = [ROOT / "README.md", ROOT / "NOTICE.md", ROOT / "changelog.md"]
     files.extend(sorted((ROOT / "docs").glob("*.md")))
     return [path for path in files if path.is_file()]
 

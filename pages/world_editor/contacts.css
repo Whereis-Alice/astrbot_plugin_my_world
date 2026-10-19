@@ -1,5 +1,16 @@
 /* The address book owns its viewport. Headers and tabs occupy explicit grid
    rows; only the list and detail body scroll. No JS height measurements. */
+.contact-distance-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 12px 0; }
+.contact-distance-cell { display: grid; gap: 5px; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
+.contact-distance-cell span { font-size: 12px; }
+.contact-distance-cell strong { font-size: 15px; overflow-wrap: anywhere; }
+.contact-relation-reason { border-left: 3px solid var(--accent, #8973d8); padding-left: 10px; font-size: 13px; }
+.contact-relation-event { display: grid; gap: 5px; padding: 13px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.contact-relation-event:first-of-type { margin-top: 12px; }
+.contact-relation-event > span { font-size: 12px; }
+.contact-relation-event > p { margin: 0; font-size: 13px; }
+.bond-evidence { flex-basis: 100%; margin: 4px 0; overflow-wrap: anywhere; }
+@media (max-width: 480px) { .contact-distance-grid { gap: 7px; } .contact-distance-cell { padding: 9px; } }
 .content:has(#tab-contacts.active) {
   height: 100dvh;
   min-height: 0;

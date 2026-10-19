@@ -6,6 +6,7 @@ import time
 from typing import Any
 from .. import profile_weaver as profile_weaver_bridge
 from ..contact_knowledge import contact_knowledge
+from ..relationship import relationship_summary
 from ..state import WorldState
 from .models import MessageContext
 
@@ -41,7 +42,7 @@ class ProfilesMixin:
         if view is None:
             return None
         bonds: list[dict[str, Any]] = []
-        for item in self.profiles.bonds(session_id, user_id, statuses=["current"]):
+        for item in self.profiles.visible_bonds(session_id, user_id, statuses=["current"]):
             bonds.append(
                 {
                     "type": str(item.get("type") or ""),
@@ -99,6 +100,7 @@ class ProfilesMixin:
             "note": view.note,
             "message_count": view.message_count,
             "days_known": view.days_known,
+            "talk_days": view.talk_days,
             # 时间锚点：提示词里要能说"上次跟你说话是多久前"
             #（想念那条线用的是同一对数，但那只在她主动找人时才算）
             "last_talked_at": view.last_talked_at,
@@ -114,6 +116,7 @@ class ProfilesMixin:
             if nickname:
                 result["call_me"] = nickname
                 result["name"] = nickname
+        result["relationship"] = relationship_summary(self.profiles, session_id, user_id, result)
         return result
 
     def other_people(
@@ -226,6 +229,7 @@ class ProfilesMixin:
             # 编辑器/调试里能看出这一档是被"气着"压下来的
             "cold": True,
         }
+        cold["relationship"] = relationship_summary(self.profiles, state.session_id, user_id, cold)
         return cold
 
     # ---------------- 心迹画像（跨插件搬家） ----------------

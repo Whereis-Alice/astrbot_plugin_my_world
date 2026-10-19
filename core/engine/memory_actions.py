@@ -178,13 +178,26 @@ class MemoryActionsMixin:
             else:
                 notes.append(str(result.get("reason") or "事实没记下"))
         if bond:
+            from ..relationship import grounded_relationship
+            definition = self.world.profile.bond_by_name(bond)
+            candidate = grounded_relationship({
+                "user_id": user_id, "evidence": evidence,
+                "confirmation": params.get("confirmation"), "asserted_by": "她的判断",
+            }, self.chat_window(state, state.session_id), exclusive=bool(
+                definition and (store._unique_slot(definition.slot)
+                                or definition.name not in {stage.bond for stage in self.world.profile.friendship_stages}
+                                and not definition.negative)))
+            if candidate is None:
+                notes.append("关系依据不在本人的近期原话中")
+        if bond and candidate is not None:
             result = store.note_bond(
                 state.session_id,
                 user_id,
                 type=bond,
                 evidence=evidence,
                 confidence=0.9,
-                asserted_by="她的判断",
+                asserted_by=candidate["asserted_by"],
+                automatic=True,
             )
             if result.get("ok"):
                 action_name = str(result.get("action") or "")
@@ -200,17 +213,15 @@ class MemoryActionsMixin:
             except (TypeError, ValueError):
                 amount = 0.0
             if amount:
-                result = store.adjust_affinity(
+                actual = store.apply_reply_affinity(
                     state.session_id,
                     user_id,
                     amount,
                     reason="她自己记住的",
                     source="remember",
                 )
-                if result.get("ok"):
-                    value = result.get("value")
-                    tail = f"，现在 {round(float(value))}" if value is not None else ""
-                    written.append(f"好感 {amount:+.0f}{tail}")
+                if actual:
+                    written.append(f"好感 {actual:+.2f}")
         await self._log_event(
             state,
             "remember",

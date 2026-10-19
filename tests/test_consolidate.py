@@ -89,7 +89,8 @@ class ConsolidateTestCase(unittest.IsolatedAsyncioTestCase):
                     "user_id": USER,
                     "type": "主人",
                     "asserted_by": "她的判断",
-                    "evidence": "他让我叫他主人",
+                    "evidence": "请认我当你的主人",
+                    "confirmation": "我认你当我的主人",
                 }
             ],
             "digests": {USER: "爱猫、常忘吃早饭，认你当主人"},
@@ -102,7 +103,7 @@ class ConsolidateTestCase(unittest.IsolatedAsyncioTestCase):
         result = await self.consolidator.run(
             session_id=SESSION,
             llm=llm,
-            chat_records=self._chat(),
+            chat_records=self._chat() + [{"user_id": USER, "text": "请认我当你的主人"}, {"is_self": True, "text": "我认你当我的主人"}],
             now=1_700_000_120.0,
         )
         self.assertTrue(result.ok, result.note)
@@ -239,7 +240,7 @@ class ConsolidateTestCase(unittest.IsolatedAsyncioTestCase):
             return json.dumps(payload, ensure_ascii=False)
 
         await self.consolidator.run(
-            session_id=SESSION, llm=llm, chat_records=self._chat()
+            session_id=SESSION, llm=llm, chat_records=self._chat() + [{"user_id": USER, "text": "我是你男朋友"}]
         )
         claims = self.profiles.bonds(SESSION, USER, statuses=["claimed"])
         self.assertEqual([item["type"] for item in claims], ["男友"])
@@ -257,6 +258,7 @@ class ConsolidateTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_facts_and_relations_without_evidence_are_skipped(self):
         """没带"他的原话"的事实 / 关系一律不记：这是最容易被编出来的一类。"""
 
+        self.world.profile.bond_by_name("主人").auto_form = True
         self.profiles.touch(SESSION, USER, "不相疑")
         payload = {
             "facts": [
@@ -264,7 +266,7 @@ class ConsolidateTestCase(unittest.IsolatedAsyncioTestCase):
                 {"user_id": USER, "kind": "喜好", "text": "喜欢狗"},
             ],
             "relations": [
-                {"user_id": USER, "type": "主人", "asserted_by": "她的判断", "evidence": "叫我主人"},
+                {"user_id": USER, "type": "主人", "asserted_by": "她的判断", "evidence": "叫我主人", "confirmation": "我认你当我的主人"},
                 {"user_id": USER, "type": "男友", "asserted_by": "她的判断"},
             ],
         }
@@ -273,7 +275,7 @@ class ConsolidateTestCase(unittest.IsolatedAsyncioTestCase):
             return json.dumps(payload, ensure_ascii=False)
 
         result = await self.consolidator.run(
-            session_id=SESSION, llm=llm, chat_records=self._chat()
+            session_id=SESSION, llm=llm, chat_records=self._chat() + [{"user_id": USER, "text": "以后叫我主人"}, {"is_self": True, "text": "我认你当我的主人"}]
         )
         self.assertEqual(result.facts, 1)
         self.assertEqual(result.relations, 1)
