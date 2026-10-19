@@ -9,6 +9,7 @@ export function initialiseWorkspace() {
     relationships: '<path d="M12 20s-9-5.5-9-11a5 5 0 0 1 9-3 5 5 0 0 1 9 3c0 5.5-9 11-9 11z"/>',
     memories: '<path d="M4 5c3-1 6-1 8 1 2-2 5-2 8-1v15c-3-1-6-1-8 1-2-2-5-2-8-1zM12 6v15"/>',
     logs: '<path d="M6 3h9l4 4v14H6zM14 3v5h5M9 12h7M9 16h7"/>',
+    "model-calls": '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 15v-3m5 3V8m5 7v-5"/>',
     ticks: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
     debug: '<path d="m8 7-4 5 4 5m8-10 4 5-4 5m-3-14-2 18"/>',
     map: '<path d="m3 6 6-3 6 3 6-3v15l-6 3-6-3-6 3zM9 3v15M15 6v15"/>',

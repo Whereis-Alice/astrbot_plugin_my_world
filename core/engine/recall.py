@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..model_calls import model_operation
+
 import time
 from typing import Any
 from ..state import (
@@ -168,6 +170,7 @@ class RecallMixin:
             + "\n".join(lines)
         )
 
+    @model_operation("consolidate", "睡眠达到记忆整理时机")
     async def maybe_consolidate(self, state: WorldState) -> dict[str, Any] | None:
         """她睡着时整理这段经历；**一段睡眠最多两次**，不满足条件就什么都不做。
 
@@ -224,6 +227,7 @@ class RecallMixin:
             self._sleep_passes[key] = passes + 1
         return result
 
+    @model_operation("consolidate", "整理记忆与画像")
     async def consolidate_now(
         self, state: WorldState, *, mode: str = "full", dry_run: bool = False
     ) -> dict[str, Any] | None:

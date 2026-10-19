@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from ..core.model_call_runtime import tracked_generate
+
 import asyncio
 import hashlib
 import re
@@ -281,7 +283,7 @@ class AstrBotVision:
             if str(item).strip()
         ]
         try:
-            response = await self.plugin.context.llm_generate(
+            response = await tracked_generate(self.plugin, purpose="forward", reason="转发消息摘要", role="vision",
                 chat_provider_id=self.provider_id,
                 system_prompt=self._forward_prompt(),
                 prompt=f"这段转发的内容：\n{body}",
@@ -395,7 +397,7 @@ class AstrBotVision:
             count=len(sources)
         ).strip()
         try:
-            response = await self.plugin.context.llm_generate(
+            response = await tracked_generate(self.plugin, purpose="vision", reason="多张图片转述", role="vision",
                 chat_provider_id=self.provider_id,
                 system_prompt=self._system_prompt(),
                 prompt=prompt,
@@ -420,7 +422,7 @@ class AstrBotVision:
         provider = self._relation_provider()
         prompt = (scene + "\n\n" if scene else "") + "图片转述：\n" + "\n".join(lines)
         try:
-            response = await self.plugin.context.llm_generate(
+            response = await tracked_generate(self.plugin, purpose="vision_relation", reason="分析图片与当前话题的关系", role="vision",
                 chat_provider_id=provider,
                 system_prompt=self._relation_prompt(),
                 prompt=prompt,
@@ -548,7 +550,7 @@ class AstrBotVision:
 
     async def _describe_one(self, source: str, scene: str) -> str:
         try:
-            response = await self.plugin.context.llm_generate(
+            response = await tracked_generate(self.plugin, purpose="vision", reason="单张图片转述", role="vision",
                 chat_provider_id=self.provider_id,
                 system_prompt=self._system_prompt(),
                 prompt=(scene + "\n\n" if scene else "") + "请描述这张图片。",

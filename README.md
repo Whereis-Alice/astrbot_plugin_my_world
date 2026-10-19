@@ -72,6 +72,8 @@
 
 与 Anamnesis 等长期记忆插件一起使用时，可在记忆库选择“分工记录”，由它保存聊天，本插件保存生活经历。两边不会自动合并数据库，见 [记忆共存说明](docs/memory-compatibility.md)。
 
+编辑器的 **模型调用** 页面可查看调用原因、触发路径与已返回的 Token 用量，详见 [模型调用与用量](docs/model-calls.md)。
+
 ## 进一步了解
 
 [文档目录](docs/README.md) · [编辑器与外观](docs/webui.md) · [自动生活](docs/autonomous-life.md) · [通讯录与关系](docs/relationships.md) · [地图](docs/world.md) · [动作](docs/actions.md) · [常见问题](docs/faq.md) · [数据与迁移](docs/data-and-migration.md) · [开发说明](docs/dev.md) · [更新日志](changelog.md)

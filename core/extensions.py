@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+from .model_calls import model_operation
+
 import json
 import re
 from dataclasses import dataclass, field
@@ -1047,6 +1049,7 @@ class ExtensionHost:
         except Exception:
             return {}
 
+    @model_operation("extension", "扩展模块请求模型生成")
     async def generate(
         self,
         session_id: str,

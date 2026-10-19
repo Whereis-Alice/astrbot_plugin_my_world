@@ -14,6 +14,7 @@ from astrbot.api import logger
 
 from . import profile_weaver as legacy_bridge
 from .constants import PLUGIN_VERSION
+from .model_call_runtime import tracked_generate
 from .contact_knowledge import contact_knowledge, profile_summary
 from .profile_weaver_store import (
     BLOCKED_PROFILE_NAME_VALUES,
@@ -1605,7 +1606,9 @@ class ProfileWeaverService:
                 f"当前消息：{message}\n"
                 "没有明确、稳定、适合长期记忆的信息时，直接回复 NOOP。"
             )
-            await tool_loop(
+            await tracked_generate(self.plugin, invoke=tool_loop, session_id=self.event_session(event),
+                purpose="profile", reason="对话出现适合长期保留的信息，自动提取画像",
+                role="context", coverage="tool_loop_final",
                 event=event,
                 chat_provider_id=provider_id,
                 prompt=prompt,

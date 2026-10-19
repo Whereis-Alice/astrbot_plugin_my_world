@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..model_calls import model_operation
+
 import asyncio
 import time
 from typing import Any
@@ -522,6 +524,7 @@ class ReplyMixin:
         self._interrupt_streak[scope] = (int(count) + 1, now)
 
     @session_scoped
+    @model_operation("chat", "收到消息，准备对话回复")
     async def handle_reply(
         self,
         ctx: MessageContext,

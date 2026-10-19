@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..model_calls import model_operation
+
 from typing import Any
 from ..generator import (
     MAX_ACTIONS_PER_NODE,
@@ -57,6 +59,7 @@ class InterruptMixin:
 
     # ================= 打断 / 唤醒 =================
 
+    @model_operation("creation", "编辑器或指令请求生成世界内容")
     async def _ask_creator(
         self, session_id: str, system_prompt: str, prompt: str, *, raise_errors: bool = False
     ) -> str | None:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..model_calls import model_operation
+
 from typing import Any
 from ..json_actions import (
     PlannedAction,
@@ -235,6 +237,7 @@ class ActionsRunMixin:
             # 工具本身不可用才换：参数问题的重试已经在 _call_one_tool 里做过了
             remaining = [item for item in remaining if item != picked]
 
+    @model_operation("judge", "为当前动作选择工具")
     async def _pick_tool_for_action(
         self,
         state: WorldState,
@@ -1071,6 +1074,7 @@ class ActionsRunMixin:
             return "partial" if completed else "skipped"
         return "completed" if chain else "skipped"
 
+    @model_operation("action", "当前动作需要生成文字或后续行为")
     async def _generate_text_actions(
         self,
         state: WorldState,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..model_calls import model_operation
+
 from typing import Any
 from ..defaults import DEFAULT_WEATHER_PROMPT
 from ..json_actions import (
@@ -471,6 +473,7 @@ class WeatherMixin:
         )
         return record
 
+    @model_operation("weather", "天气工具结果需要转成统一格式")
     async def _normalize_weather(
         self, state: WorldState, raw: str, images: list[str]
     ) -> str:

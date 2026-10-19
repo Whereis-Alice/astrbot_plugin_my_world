@@ -120,6 +120,8 @@ from .core.request_context import (
 )
 from .adapters.commands import AstrBotCommands
 from .adapters.llm import AstrBotLLM
+from .core.model_call_runtime import observe_native_response
+from .core.model_calls import call_context, model_operation
 from .adapters.messenger import AstrBotMessenger
 from .adapters.persona import AstrBotPersona
 from .adapters.profile_commands import (
@@ -434,12 +436,12 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, Star):
             store=self.store,
             db=self.db,
             llm=AstrBotLLM(self, sampling=self.sampling_params()),
-            helper_llm=AstrBotLLM(self, self.helper_provider_id, sampling=self.sampling_params()),
-            judge_llm=AstrBotLLM(self, self.judge_provider_id, sampling=self.sampling_params()),
-            context_llm=AstrBotLLM(self, self.utility_provider_id, sampling=self.sampling_params()),
-            creator_llm=AstrBotLLM(self, self.creator_provider_id, sampling=self.sampling_params()),
-            event_llm=AstrBotLLM(self, self.event_provider_id, sampling=self.sampling_params()),
-            consolidate_llm=AstrBotLLM(self, self.consolidate_provider_id, sampling=self.sampling_params()),
+            helper_llm=AstrBotLLM(self, self.helper_provider_id, role="helper", sampling=self.sampling_params()),
+            judge_llm=AstrBotLLM(self, self.judge_provider_id, role="judge", sampling=self.sampling_params()),
+            context_llm=AstrBotLLM(self, self.utility_provider_id, role="context", sampling=self.sampling_params()),
+            creator_llm=AstrBotLLM(self, self.creator_provider_id, role="creator", sampling=self.sampling_params()),
+            event_llm=AstrBotLLM(self, self.event_provider_id, role="event", sampling=self.sampling_params()),
+            consolidate_llm=AstrBotLLM(self, self.consolidate_provider_id, role="consolidate", sampling=self.sampling_params()),
             describer=self.vision,
             messenger=self.messenger,
             tools=AstrBotTools(self),
@@ -1338,6 +1340,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, Star):
 
     @filter.on_llm_request(priority=LLM_HOOK_PRIORITY)
     @session_scoped
+    @model_operation("chat", "收到用户消息，进入回复流程")
     async def on_llm_request(self, event: AstrMessageEvent, req) -> None:
         """消息走到大模型时触发。
 
@@ -1573,6 +1576,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, Star):
                 "user_text": ctx.text,
                 "persona_id": ctx.persona_id,
                 "started_at": time.time(),
+                "model_attribution": call_context(),
                 "tools": [],
             },
         )
@@ -1752,6 +1756,8 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, Star):
         这里**不改内容、不改结果**：正文由原生管线发送，工具循环也早就跑完了。
         """
 
+        turn = event.get_extra(MW_TURN_EXTRA, None)
+        await observe_native_response(self, event, response, turn)
         service = getattr(self, "profile_weaver_service", None)
         if (
             service is not None
@@ -1762,7 +1768,6 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, Star):
                 await service.maybe_extract(event, response)
             except Exception as exc:
                 self.logger.debug(f"[my_world] 自动画像提取失败：{exc}")
-        turn = event.get_extra(MW_TURN_EXTRA, None)
         if not isinstance(turn, dict):
             return
         if response is not None:

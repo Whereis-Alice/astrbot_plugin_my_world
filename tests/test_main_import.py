@@ -28,7 +28,11 @@ def load_plugin_module():
     """把插件目录当作包加载，这样 main.py 里的相对导入才能生效。"""
 
     if "mw_plugin_under_test" in sys.modules:
-        return sys.modules["mw_plugin_under_test"]
+        module = sys.modules["mw_plugin_under_test"]
+        # API tests may have loaded this shared package first. These tests still
+        # exercise the legacy takeover path regardless of collection order.
+        module.DEFAULT_REPLY_MODE = "takeover"
+        return module
     spec = importlib.util.spec_from_file_location(
         "mw_plugin_under_test",
         os.path.join(PLUGIN_DIR, "main.py"),

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..model_calls import model_operation
+
 from typing import Any
 from ..config_scope import session_scoped
 from ..json_actions import parse_plan_payload
@@ -275,6 +277,7 @@ class AutonomyMixin:
         await self._apply_plan(state, node, outcome, plan)
         await self._tick_plan(state, node, outcome, depth=0)
 
+    @model_operation("plan", "自主决策需要选择接下来做什么")
     async def _ask_llm_for_plan(
         self,
         state: WorldState,

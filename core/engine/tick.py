@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..model_calls import model_operation
+
 from typing import Any
 from ..config_scope import session_scoped
 from ..json_actions import (
@@ -88,6 +90,7 @@ class TickMixin:
         return outcomes
 
     @session_scoped
+    @model_operation("tick", "生活时钟推进")
     async def _tick_session(self, session_id: str) -> TickOutcome | None:
         outcome = TickOutcome(session_id=session_id)
         # 自主行为默认落在这一组的代表会话；动作续说会临时改成"她当时说话的地方"
@@ -691,6 +694,7 @@ class TickMixin:
         )
         return True
 
+    @model_operation("context", "整理外部状态的文字摘要")
     async def _summarize_state_text(
         self, state: WorldState, definition: ActionDef, raw: str
     ) -> str:
@@ -813,6 +817,7 @@ class TickMixin:
             valence=state.valence,
         )
 
+    @model_operation("followup", "动作或工具完成后生成回应")
     async def _llm_followup(
         self,
         state: WorldState,

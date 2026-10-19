@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..model_calls import model_operation
+
 import asyncio
 import math
 from typing import Any
@@ -1116,6 +1118,7 @@ class ActionsMixin:
                 result.append(candidates[0])
         return result
 
+    @model_operation("helper", "动作执行前补全工具参数")
     async def fill_tool_params(
         self,
         state: WorldState,

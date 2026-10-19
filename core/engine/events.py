@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..model_calls import model_operation
+
 from datetime import (
     datetime,
     timedelta,
@@ -921,6 +923,7 @@ class EventsMixin:
             send_to=str(raw.get("send_to") or ""),
         )
 
+    @model_operation("event", "事件推进到需要回应的一幕")
     async def _run_event_step(
         self,
         state: WorldState,
@@ -1114,6 +1117,7 @@ class EventsMixin:
         )
         state.add_event("event_help", {"title": package.title})
 
+    @model_operation("event", "事件需要向对方求助")
     async def _compose_help_lines(
         self, state: WorldState, package: EventPackage
     ) -> list[str]:
@@ -1620,6 +1624,7 @@ class EventsMixin:
             outcome=outcome,
         )
 
+    @model_operation("event", "事件结束，生成结算与影响")
     async def _settle_event(
         self,
         state: WorldState,

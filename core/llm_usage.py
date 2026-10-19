@@ -1,4 +1,4 @@
-"""LLM token 用量统计：只在需要汇总的一次 Web 生成请求里生效。"""
+"""Normalize Provider token usage and collect totals for Web generation tasks."""
 
 from __future__ import annotations
 
@@ -10,11 +10,36 @@ from typing import Any, Iterator
 
 
 def _number(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
     try:
         number = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return max(0, number)
+
+
+def normalized_usage(usage: Any) -> dict[str, Any]:
+    other = _field(usage, "input_other")
+    cached = _field(usage, "input_cached", "cached_tokens")
+    if cached is None:
+        details = (usage.get("prompt_tokens_details") or usage.get("input_tokens_details")) if isinstance(usage, Mapping) else (getattr(usage, "prompt_tokens_details", None) or getattr(usage, "input_tokens_details", None))
+        cached = _field(details, "cached_tokens")
+    input_total = _field(usage, "input", "prompt_tokens", "input_tokens")
+    output = _field(usage, "output", "completion_tokens", "output_tokens")
+    total = _field(usage, "total", "total_tokens")
+    if other is None and input_total is not None:
+        other = max(0, input_total - (cached or 0))
+    if input_total is None and (other is not None or cached is not None):
+        input_total = (other or 0) + (cached or 0)
+    if input_total is None and total is not None and output is not None:
+        input_total = max(0, total - output)
+        other = max(0, input_total - (cached or 0))
+    if total is None and (input_total is not None or output is not None):
+        total = (input_total or 0) + (output or 0)
+    return {"available": total is not None, "partial": total is not None and (input_total is None or output is None),
+            "input": input_total, "input_other": other, "input_cached": cached,
+            "output": output, "total": total}
 
 
 def _field(value: Any, *names: str) -> int | None:
@@ -35,6 +60,8 @@ class LLMUsage:
     input_other: int = 0
     input_cached: int = 0
     output: int = 0
+    tokens_total: int = 0
+    incomplete: bool = False
 
     @property
     def input(self) -> int:
@@ -42,39 +69,27 @@ class LLMUsage:
 
     @property
     def total(self) -> int:
-        return self.input + self.output
+        return self.tokens_total
 
     def add(self, usage: Any) -> None:
         """记录一次模型响应；有些 Provider 不返回 usage，也要计入响应次数。"""
 
         self.responses += 1
-        if usage is None:
-            return
-        input_other = _field(usage, "input_other", "prompt_tokens")
-        input_cached = _field(usage, "input_cached", "cached_tokens")
-        output = _field(usage, "output", "completion_tokens", "output_tokens")
-        total = _field(usage, "total", "total_tokens")
-        if input_other is None and input_cached is None:
-            prompt = _field(usage, "input", "prompt_tokens")
-            if prompt is not None:
-                input_other = prompt
-        if input_other is None and total is not None:
-            input_other = max(
-                0,
-                total - (output or 0) - (input_cached or 0),
-            )
-        if input_other is None and input_cached is None and output is None:
+        parsed = normalized_usage(usage)
+        if not parsed["available"]:
             return
         self.reported_responses += 1
-        self.input_other += input_other or 0
-        self.input_cached += input_cached or 0
-        self.output += output or 0
+        self.input_other += parsed["input_other"] or 0
+        self.input_cached += parsed["input_cached"] or 0
+        self.output += parsed["output"] or 0
+        self.tokens_total += parsed["total"] or 0
+        self.incomplete = self.incomplete or parsed["partial"]
 
     def payload(self) -> dict[str, Any]:
         available = self.reported_responses > 0
         return {
             "available": available,
-            "partial": available and self.reported_responses < self.responses,
+            "partial": available and (self.incomplete or self.reported_responses < self.responses),
             "responses": self.responses,
             "reported_responses": self.reported_responses,
             "input": self.input,

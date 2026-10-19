@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..model_calls import model_operation
+
 import asyncio
 import time
 from typing import Any
@@ -203,6 +205,7 @@ class SearchMixin:
         generated = await self._ask_search_topic(state)
         return generated or DEFAULT_SEARCH_TOPIC
 
+    @model_operation("search", "准备搜索，需要确定主题")
     async def _ask_search_topic(self, state: WorldState) -> str:
         """规则触发、她自己又没写意图时，问一句"你现在想查什么"。
 
@@ -496,6 +499,7 @@ class SearchMixin:
             tool = nxt
         return tool
 
+    @model_operation("search", "搜索结果返回后决定是否继续")
     async def _search_continue(
         self,
         state: WorldState,
@@ -563,6 +567,7 @@ class SearchMixin:
                 break
         return (not result), result
 
+    @model_operation("search", "搜索仍有信息缺口，生成补充查询")
     async def _search_gap_queries(
         self,
         state: WorldState,
@@ -875,6 +880,7 @@ class SearchMixin:
             )
         await self._remember_search(state.session_id, asked, len(items))
 
+    @model_operation("search", "阅读搜索材料并提炼信息")
     async def _digest_evidence(
         self,
         state: WorldState,

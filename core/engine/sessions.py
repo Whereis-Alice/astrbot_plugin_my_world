@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..model_calls import model_operation
+
 from typing import Any
 from ..models import (
     NodeDef,
@@ -318,6 +320,7 @@ class SessionsMixin:
         chosen = await self._pick_schedule_session(state, schedule, members)
         return chosen or self.schedule_target(schedule, session_id)
 
+    @model_operation("schedule", "为日程选择合适的发送会话")
     async def _pick_schedule_session(
         self, state: WorldState, schedule: Any, members: list[str]
     ) -> str:

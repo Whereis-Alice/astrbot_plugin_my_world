@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..model_calls import model_operation
+
 from typing import Any
 from ..config_scope import session_scoped
 from ..json_actions import (
@@ -45,6 +47,7 @@ class TurnMixin:
             self._count_passive_reply(state)
 
     @session_scoped
+    @model_operation("reflection", "本轮结束，复盘对话与状态")
     async def reflect_turn(
         self,
         session_id: str,

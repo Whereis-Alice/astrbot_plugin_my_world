@@ -16,6 +16,8 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
+from .model_call_store import MODEL_CALL_SCHEMA, ModelCallStoreMixin
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS world_state (
     session_id TEXT PRIMARY KEY,
@@ -234,7 +236,7 @@ def _fact_row(row: sqlite3.Row) -> dict[str, Any]:
     return item
 
 
-class Database:
+class Database(ModelCallStoreMixin):
     """同步 sqlite 封装。调用方应通过 AsyncDatabase 使用，避免阻塞事件循环。"""
 
     def __init__(self, path: str | Path) -> None:
@@ -251,7 +253,7 @@ class Database:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=30000")
         conn.execute("PRAGMA synchronous=NORMAL")
-        conn.executescript(SCHEMA)
+        conn.executescript(SCHEMA + MODEL_CALL_SCHEMA)
         conn.commit()
         self._migrate(conn)
         return conn

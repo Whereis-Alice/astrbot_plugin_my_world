@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..model_calls import model_operation
+
 from typing import Any
 from ..json_actions import (
     PlannedAction,
@@ -252,6 +254,7 @@ class MemoryActionsMixin:
         echo.place = str(getattr(outcome, "place", "") or "")
         return echo
 
+    @model_operation("memory", "动作需要理解记忆查询条件")
     async def _parse_recall_query(
         self, state: WorldState, intent: str, target_node: str = ""
     ) -> dict[str, Any]:

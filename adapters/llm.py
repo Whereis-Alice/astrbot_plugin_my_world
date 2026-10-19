@@ -5,7 +5,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ..core.llm_usage import record_llm_usage
+from uuid import uuid4
+
+from ..core.model_calls import call_context
+from ..core.model_call_runtime import tracked_generate
 from ..core.ports import LLMReply
 
 if TYPE_CHECKING:
@@ -34,12 +37,6 @@ class AstrBotLLM:
         """
         self._sampling_rejected = False
         """Provider 不认这些参数时，退回只传温度，别让主回复跟着挂掉。"""
-
-    @staticmethod
-    def _record_usage(response: Any) -> None:
-        """把 Provider 返回的 usage 记进当前 Web 生成任务（不在任务里时为空操作）。"""
-
-        record_llm_usage(getattr(response, "usage", None))
 
     async def generate(
         self,
@@ -72,9 +69,19 @@ class AstrBotLLM:
                 if key in self.sampling and (key != "temperature" or temperature is None):
                     kwargs[key] = self.sampling[key]
         images = [str(item) for item in (image_urls or []) if str(item).strip()]
+        attempt = 0
+        retry_reason = ""
+        trace_id = call_context().get("trace_id") or uuid4().hex
+
+        async def invoke(**options):
+            nonlocal attempt
+            attempt += 1
+            return await tracked_generate(self.plugin, session_id=session_id, role=self.role,
+                trace_id=trace_id, attempt=attempt, retry_reason=retry_reason, **options)
+
         token = self.plugin.set_self_initiated()
         try:
-            response = await context.llm_generate(
+            response = await invoke(
                 chat_provider_id=provider_id,
                 prompt=prompt,
                 system_prompt=system_prompt,
@@ -82,7 +89,6 @@ class AstrBotLLM:
                 image_urls=images or None,
                 **kwargs,
             )
-            self._record_usage(response)
         except Exception as exc:
             # 上游按内容安全拒了这次生成：同一段内容再要一次还是会被拒，
             # 别再把它当成"Provider 不认采样参数"反复重试——那会把真正的原因埋掉，
@@ -93,6 +99,7 @@ class AstrBotLLM:
             )
             # Provider 不认采样参数：退回只传温度，别让主回复跟着挂掉
             if self.sampling and not self._sampling_rejected and len(kwargs) > 1 and not blocked:
+                retry_reason = "采样参数不兼容，退回只传温度"
                 self._sampling_rejected = True
                 self.plugin.logger.warning(
                     f"[my_world] Provider 不接受采样参数（{exc}），"
@@ -100,7 +107,7 @@ class AstrBotLLM:
                 )
                 kwargs = {key: value for key, value in kwargs.items() if key == "temperature"}
                 try:
-                    response = await context.llm_generate(
+                    response = await invoke(
                         chat_provider_id=provider_id,
                         prompt=prompt,
                         system_prompt=system_prompt,
@@ -108,7 +115,6 @@ class AstrBotLLM:
                         image_urls=images or None,
                         **kwargs,
                     )
-                    self._record_usage(response)
                     if self.role == "main":
                         self.plugin.remember_llm_response(session_id, response)
                     text = getattr(response, "completion_text", "") or ""
@@ -117,15 +123,15 @@ class AstrBotLLM:
                     return LLMReply(ok=False, error=f"LLM 调用失败: {retry_exc}")
             # Provider 不支持图片（或图片取不回来）时，退回纯文字再来一次
             if images:
+                retry_reason = "带图片请求失败，退回纯文字"
                 try:
-                    response = await context.llm_generate(
+                    response = await invoke(
                         chat_provider_id=provider_id,
                         prompt=prompt,
                         system_prompt=system_prompt,
                         contexts=list(contexts) if contexts else None,
                         **kwargs,
                     )
-                    self._record_usage(response)
                     self.plugin.logger.warning(
                         f"[my_world] 带图片调用失败（{exc}），已退回纯文字"
                     )
@@ -143,14 +149,14 @@ class AstrBotLLM:
                 return LLMReply(ok=False, error=str(exc))
             # 历史上下文格式不被某些 Provider 接受时，退化成不带历史再试一次
             if contexts:
+                retry_reason = "历史上下文不兼容，去除历史后重试"
                 try:
-                    response = await context.llm_generate(
+                    response = await invoke(
                         chat_provider_id=provider_id,
                         prompt=prompt,
                         system_prompt=system_prompt,
                         **kwargs,
                     )
-                    self._record_usage(response)
                 except Exception as retry_exc:
                     return LLMReply(ok=False, error=str(retry_exc))
             else:

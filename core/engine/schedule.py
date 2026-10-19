@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..model_calls import model_operation
+
 from datetime import datetime
 import time
 from typing import Any
@@ -308,6 +310,7 @@ class ScheduleMixin:
             wanted.append((index, definition))
         return wanted
 
+    @model_operation("schedule", "日程需要编排动作步骤")
     async def _smart_chain(
         self, state: WorldState, schedule: Any
     ) -> tuple[list[Any], str]:
@@ -514,6 +517,7 @@ class ScheduleMixin:
             return "cancel", f"她自己决定今天不做了（{reason}）"
         return "delay", f"她自己决定先处理手上的事（{reason}）"
 
+    @model_operation("schedule", "日程需要选择下一步")
     async def _ask_schedule_choice(
         self, state: WorldState, schedule: Any, label: str, thread: dict[str, Any]
     ) -> tuple[str, str]:
@@ -541,6 +545,7 @@ class ScheduleMixin:
         reason = " ".join(str(payload.get("reason") or "").split())[:60]
         return choice, reason
 
+    @model_operation("schedule", "定时检查到日程执行时机")
     async def run_schedules(self) -> list[TickOutcome]:
         """检查并触发到点的日程。
 
@@ -740,6 +745,7 @@ class ScheduleMixin:
         return outcomes
 
     @session_scoped
+    @model_operation("schedule", "管理员手动执行日程")
     async def run_schedule_now(
         self, session_id: str, schedule_id: str, *, force: bool = True
     ) -> dict[str, Any]:

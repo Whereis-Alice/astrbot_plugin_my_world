@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..model_calls import model_operation
+
 import asyncio
 from types import SimpleNamespace
 from typing import Any
@@ -102,6 +104,7 @@ class PersonaMixin:
             self._log("warning", f"简易人设存不进去：{exc}")
         return text
 
+    @model_operation("persona", "管理员请求生成人设简报")
     async def generate_persona_brief(self, session_id: str, *, persona_text: str = "") -> str:
         """用生成器模型把主人设压成一段摘要。
 
@@ -142,6 +145,7 @@ class PersonaMixin:
         raw = list(getattr(self.world.persona, "samples", None) or [])
         return [dict(item) for item in raw if isinstance(item, dict) and str(item.get("text") or "").strip()]
 
+    @model_operation("evaluation", "管理员运行角色表现测评")
     async def run_eval(
         self,
         session_id: str,
@@ -398,6 +402,7 @@ class PersonaMixin:
             "results": sorted(results, key=lambda item: item["index"]),
         }
 
+    @model_operation("evaluation", "管理员请求生成测评剧本")
     async def generate_eval_script(self, session_id: str, rounds: int = 20) -> dict[str, Any]:
         """生成测评剧本（**不进提示词**，只给用户拿去比模型）。"""
 
@@ -439,6 +444,7 @@ class PersonaMixin:
 
         return str(getattr(self.world.persona, "text", "") or "")
 
+    @model_operation("persona", "管理员请求复盘角色表现")
     async def review_persona(self, session_id: str) -> dict[str, Any]:
         """体检 + 给可逐条采纳的改动（**不落库**：人设是用户最在意的东西）。"""
 
@@ -572,6 +578,7 @@ class PersonaMixin:
             "chars": len(text),
         }
 
+    @model_operation("persona", "管理员请求生成说话样例")
     async def generate_voice_samples(
         self,
         session_id: str,

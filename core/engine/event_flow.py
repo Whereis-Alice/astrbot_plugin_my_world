@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..model_calls import model_operation
+
 from typing import Any
 from ..events import (
     Decision,
@@ -438,6 +440,7 @@ class EventFlowMixin:
         if picked:
             outcome.session_id = picked
 
+    @model_operation("event", "未结束的事件需要提醒")
     async def _compose_remind_line(
         self,
         state: WorldState,
@@ -567,6 +570,7 @@ class EventFlowMixin:
             state, node, outcome, thread, package, decision, suggestions=None
         )
 
+    @model_operation("judge", "筛选对方给事件的建议")
     async def _filter_suggestions(
         self,
         state: WorldState,

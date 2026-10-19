@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..model_calls import model_operation
+
 from datetime import (
     datetime,
     timedelta,
@@ -191,6 +193,7 @@ class ScheduleActionsMixin:
             image_urls=images,
         )
 
+    @model_operation("schedule", "日程需要生成转发指令参数")
     async def _compose_command(
         self,
         state: WorldState,
@@ -637,6 +640,7 @@ class ScheduleActionsMixin:
             )
         return payload
 
+    @model_operation("schedule", "解析日程里的自然语言意图")
     async def _parse_schedule_intent(
         self, state: WorldState, op: str, intent: str
     ) -> dict[str, Any]:

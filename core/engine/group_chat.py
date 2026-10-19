@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..model_calls import model_operation
+
 from typing import Any
 from ..decider import reply_willingness
 from ..state import (
@@ -735,6 +737,7 @@ class GroupChatMixin:
             },
         )
 
+    @model_operation("context", "聊天窗口达到压缩条件")
     async def _summarize_chat(
         self,
         state: WorldState,

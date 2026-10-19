@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..model_calls import model_operation
+
 from typing import Any
 from ..config_scope import session_scoped
 from ..memory import INTERACTION
@@ -100,6 +102,7 @@ class DialogueMemoryMixin:
         return _clip_text("；".join(parts), 120)
 
     @session_scoped
+    @model_operation("memory", "对话告一段落，整理待存记忆")
     async def flush_pending_memory(self, session_id: str) -> TickOutcome | None:
         """把攒着的对话片段总结成一条记忆（攒够 / 聊完 / 换地点三种触发）。"""
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..model_calls import model_operation
+
 import hashlib
 from typing import Any
 from ..json_actions import extract_json_object
@@ -429,6 +431,7 @@ class AddressingMixin:
                 if isinstance(item, dict)
             }
 
+    @model_operation("judge", "判断当前交谈中的亲近表达")
     async def _classify_intimacy(
         self, state: WorldState, definition: ActionDef
     ) -> float:

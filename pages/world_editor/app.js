@@ -1,5 +1,6 @@
 import { createContactWorkbench } from "./contact-workbench.js";
 import { createRelationshipsPage } from "./relationships.js";
+import { createModelCallsPage } from "./model-calls.js";
 import { personAvatar, personColor, bindPeopleSort } from "./people-ui.js";
 import { openRelationshipRulesEditor } from "./relationship-rules.js";
 import { applyDetailedLevels, DETAILED_LEVELS } from "./relationship-preset.js";
@@ -3917,6 +3918,7 @@ function showTab(name, button) {
   if (name === "memories") loadMemories();
   if (name === "thoughts") loadThoughts();
   if (name === "logs") loadLogs();
+  if (name === "model-calls") modelCallsPage.reload();
   if (name === "schedules") loadScheduleHistory();
   if (name === "ticks") loadTicks();
   if (name === "map") {
@@ -20910,6 +20912,9 @@ const relationshipsPage = createRelationshipsPage({
     await contactWorkbench.select(uid);
   },
 });
+
+const modelCallsPage = createModelCallsPage({root: $("tab-model-calls"), apiGet, el});
+$("log-model-calls").addEventListener("click", () => showTab("model-calls"));
 
 async function openRelationshipRules() {
   return openRelationshipRulesEditor({el, apiGet, apiPost, openCustomDialog,

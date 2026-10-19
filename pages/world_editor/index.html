@@ -10,6 +10,7 @@
     <link rel="stylesheet" href="./workbench.css" />
     <link rel="stylesheet" href="./people.css" />
     <link rel="stylesheet" href="./atelier.css" />
+    <link rel="stylesheet" href="./model-calls.css" />
     <!-- 主题在解析样式前就定下来，避免刷新时先闪一下浅色 -->
     <script>
       (function () {
@@ -60,6 +61,7 @@
           <button data-tab="relationships" title="关系与好感">关系与好感</button>
           <button data-tab="memories" title="记忆库">记忆库</button>
           <button data-tab="logs" title="日志">日志</button>
+          <button data-tab="model-calls" title="模型调用">模型调用</button>
           <button data-tab="ticks" title="运行记录">运行</button>
           <button data-tab="debug" title="调试">调试</button>
           <span class="nav-group">编辑</span>
@@ -778,6 +780,41 @@
           <div id="thoughts-list" class="list" data-keep-text></div>
         </section>
 
+        <section id="tab-model-calls" class="tab">
+          <div class="calls-toolbar">
+            <span id="calls-total" class="calls-count">调用记录</span>
+            <label class="calls-period"><span class="sr-only">时间范围</span><select id="calls-period" aria-label="调用时间范围"><option value="24">最近 24 小时</option><option value="168">最近 7 天</option><option value="720">最近 30 天</option></select></label>
+            <input id="calls-search" type="search" aria-label="搜索模型调用" placeholder="搜索触发原因、模型或会话…" />
+            <details class="command-menu calls-filter-menu">
+              <summary>筛选<span id="calls-filter-count"></span></summary>
+              <div class="command-menu-body">
+                <label>调用用途<select id="calls-purpose" aria-label="调用用途"><option value="">全部用途</option></select></label>
+                <label>所属会话<select id="calls-session" aria-label="调用所属会话"><option value="">全部会话</option></select></label>
+                <label>Provider<select id="calls-provider" aria-label="调用 Provider"><option value="">全部 Provider</option></select></label>
+                <label>请求结果<select id="calls-status" aria-label="调用结果"><option value="">全部结果</option><option value="success">成功</option><option value="error">失败</option><option value="cancelled">已取消</option></select></label>
+                <label class="calls-auto-label"><input id="calls-auto" type="checkbox" />每 15 秒自动刷新</label>
+              </div>
+            </details>
+            <details class="command-menu calls-help">
+              <summary aria-label="模型调用统计说明">ⓘ</summary>
+              <div class="command-menu-body"><strong>这次调用，因何发生</strong><p>展开记录可查看触发路径、重试原因和用量明细。这里只记录本插件参与的模型请求，从更新后开始累计。</p><p>插件直接请求逐次记录；AstrBot 原生聊天和画像工具循环只记录最终响应，中间轮次与内部重试无法通过当前公开钩子获取。</p><p>Token 使用 Provider 返回的数据。未提供的用量不计为零；汇总供排查参考，账单以服务商为准。</p><p>保留最近 30 天，最多 10,000 条。不主动保存提示词和回复正文。</p></div>
+            </details>
+            <button id="calls-refresh" class="ghost" type="button">刷新</button>
+          </div>
+          <p id="calls-error-state" class="calls-error-banner" role="alert" hidden></p>
+          <div id="calls-metrics" class="calls-metrics" aria-label="模型调用概览"></div>
+          <div class="calls-trend">
+            <div class="calls-trend-heading"><strong>用量走势</strong><span id="calls-coverage"></span></div>
+            <div id="calls-chart" class="calls-chart" role="group" aria-label="已知 Token 用量走势"></div>
+            <div class="calls-axis"><span id="calls-chart-start"></span><span id="calls-chart-end"></span></div>
+          </div>
+          <div class="calls-ledger">
+            <div class="calls-ledger-heading"><strong>调用流水</strong><span>展开查看触发路径与用量明细</span><small id="calls-updated"></small></div>
+            <div id="calls-list" aria-live="polite"></div>
+            <div class="calls-pagination"><span>仅汇总已返回的 Token 用量</span><button id="calls-prev" class="ghost" type="button" aria-label="调用记录上一页">←</button><span id="calls-page">1 / 1</span><button id="calls-next" class="ghost" type="button" aria-label="调用记录下一页">→</button></div>
+          </div>
+        </section>
+
         <section id="tab-logs" class="tab">
           <div class="page-head">
             <div class="page-head-left">
@@ -809,6 +846,7 @@
               <div class="toolbar">
                 <button id="log-filter-toggle" class="ghost filter-toggle" type="button">更多筛选 ▾</button>
                 <button id="log-refresh" class="ghost">刷新</button>
+                <button id="log-model-calls" class="ghost" type="button">模型调用 ↗</button>
                 <label class="inline"><input id="log-auto" type="checkbox" /><span>自动刷新</span></label>
               </div>
               <div class="toolbar">

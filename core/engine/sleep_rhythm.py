@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..model_calls import model_operation
+
 import asyncio
 import json
 import math
@@ -96,6 +98,7 @@ class SleepRhythmMixin:
             state.sleep_rhythm["awake_since"] = start
         return max(0.0, (now - start) / 3600)
 
+    @model_operation("sleep", "生活时钟检查到睡眠决策时机")
     async def _tick_sleep_rhythm(self, state: WorldState, outcome: TickOutcome) -> None:
         if self.world.sleep.mode != "autonomous" or state.is_sleeping:
             return

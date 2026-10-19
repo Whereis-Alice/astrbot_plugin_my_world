@@ -29,6 +29,7 @@ from ..core.defaults import (
 from ..core.generator import grid_layout_nodes, spring_layout_zones
 from ..core.json_actions import extract_json_object
 from ..core.llm_usage import collect_llm_usage
+from ..core.model_calls import model_operation
 from ..core.map_inspection import inspect_routes
 from ..core.models import (
     DEFAULT_INTIMACY,
@@ -202,6 +203,7 @@ class WebApiMixin:
         register(f"/{p}/states", self.api_states, ["GET"], "所有会话的简要状态")
         register(f"/{p}/state/action", self.api_state_action, ["POST"], "手动触发动作")
         register(f"/{p}/logs", self.api_logs, ["GET"], "事件日志")
+        register(f"/{p}/model-calls", self.api_model_calls, ["GET"], "模型调用与 token 用量")
         register(f"/{p}/map/inspect", self.api_map_inspect, ["POST"], "检查草稿路线、可达性与单向出口")
         register(f"/{p}/ticks", self.api_ticks, ["GET"], "运行记录：最近几拍 tick 的明细")
         register(f"/{p}/logs/export", self.api_logs_export, ["GET"], "导出事件日志")
@@ -1765,6 +1767,7 @@ class WebApiMixin:
             return error_response(str(result.get("reason") or "导入失败"))
         return json_response(result)
 
+    @model_operation("consolidate", "管理员在记忆库点击立即整理")
     async def api_profile_consolidate(self):
         """立刻整理一次（编辑器上的"现在整理一次"）：消化这段时间的经历。"""
 
@@ -2417,6 +2420,7 @@ class WebApiMixin:
 
         return _generation_timeout_seconds(getattr(self, "config", None))
 
+    @model_operation("creation", "管理员在编辑器请求生成内容")
     async def _generate_drafts_response(self, generate, *args, **kwargs):
         """生成接口统一处理超时与失败，并把原因交给编辑器展示。"""
 
@@ -3038,6 +3042,7 @@ class WebApiMixin:
         snapshot["nickname_owner"] = self.messenger.group_card_owner(session_id)
         return json_response(snapshot)
 
+    @model_operation("action", "管理员在控制台触发运行操作")
     async def api_state_action(self):
         payload = await request.json(default={}) or {}
         guard = self._guard(payload)
@@ -3366,6 +3371,18 @@ class WebApiMixin:
                 "has_more": len(events) >= limit,
             }
         )
+
+    async def api_model_calls(self):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        result = await self.db.call("model_calls", hours=_query_int("hours", 24),
+            page=_query_int("page", 1), size=_query_int("size", 40),
+            **{key: str(request.query.get(key, "")) for key in ("session", "purpose", "provider", "status", "q")})
+        for item in result["items"]:
+            item["session_label"] = self.engine.session_label(item["session_id"]) if item["session_id"] else "编辑器 / 后台任务"
+        result["session_labels"] = {sid: self.engine.session_label(sid) or sid for sid in result["facets"]["sessions"]}
+        return json_response(result)
 
     async def api_logs_export(self):
         guard = self._guard()
