@@ -235,6 +235,7 @@ class RelationshipsBrowserTests(unittest.TestCase):
         self.assertEqual(self.errors, [])
 
     def test_rules_templates_default_to_manual_and_save_only_when_applied(self):
+        self.page.locator(".people-management > summary").click()
         self.page.locator("#relationships-rules").click()
         self.page.get_by_text("从身份模板添加", exact=True).click()
         self.page.get_by_role("button", name="同学 ＋", exact=True).click()

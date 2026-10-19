@@ -629,6 +629,8 @@ class SessionScopeTest(unittest.TestCase):
             + "\n"
             + _grab_function(source, "groupOwning")
             + "\n"
+            + _grab_function(source, "contactSessionLabel")
+            + "\n"
             + _grab_function(source, "scopeOptions")
             + "\n"
             + "console.log(JSON.stringify(scopeOptions({ withMembers: true, onlyFor: "

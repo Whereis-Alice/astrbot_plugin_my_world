@@ -719,15 +719,18 @@ class GenerationBrowserTests(unittest.TestCase):
 
         self.page.locator("#contacts-back").click()
         expect(self.page.locator(".contact-card")).to_be_focused()
+        self.page.locator('#contacts-view-menu > summary').click()
         self.page.locator('[data-contacts-view="overview"]').click()
         expect(self.page.locator(".contacts-metric")).to_have_count(6)
         expect(self.page.locator("#contacts-overview")).to_contain_text("字段覆盖率")
         self.host.screenshot(path=str(self.shots / "contacts-overview.png"))
 
+        self.page.locator('#contacts-view-menu > summary').click()
         self.page.locator('[data-contacts-view="audit"]').click()
         expect(self.page.locator(".contacts-audit-row")).to_have_count(1)
         expect(self.page.locator(".contacts-audit-row")).to_contain_text("喜欢的话题")
 
+        self.page.locator('#contacts-view-menu > summary').click()
         self.page.locator('[data-contacts-view="data"]').click()
         expect(self.page.locator(".contacts-backup-row")).to_have_count(1)
         self.assertEqual(self.errors, [])
@@ -792,6 +795,7 @@ class GenerationBrowserTests(unittest.TestCase):
     def test_action_filters_and_bulk_bar_are_usable(self):
         self.page.locator('button[data-tab="actions"]').click()
         expect(self.page.locator("#action-grid .action-card").first).to_be_visible()
+        self.page.locator(".action-filter-menu > summary").click()
 
         # 筛选是胶囊按钮：点一下亮起来、再点一下关掉；「重置」把它们全清掉
         legacy = self.page.locator("#action-filter-legacy")
@@ -808,6 +812,7 @@ class GenerationBrowserTests(unittest.TestCase):
         expect(self.page.locator("#action-bulk-count")).not_to_contain_text("已选 0 个")
         self.page.locator("#action-bulk-clear").click()
         expect(self.page.locator("#action-bulk-count")).to_contain_text("已选 0 个")
+        self.page.locator(".action-filter-menu > summary").click()
         self.page.locator("#action-select-mode").click()
         expect(self.page.locator("#action-bulk")).to_be_hidden()
         self.assertEqual(self.errors, [])

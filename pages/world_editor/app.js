@@ -3,6 +3,8 @@ import { createRelationshipsPage } from "./relationships.js";
 import { personAvatar, personColor } from "./people-ui.js";
 import { openRelationshipRulesEditor } from "./relationship-rules.js";
 import { applyDetailedLevels, DETAILED_LEVELS } from "./relationship-preset.js";
+import { initialiseAppearance, openAppearancePicker } from "./appearance.js";
+import { initialiseWorkspace } from "./workspace-ui.js";
 
 /**
  * 我的世界编辑器前端。
@@ -3323,7 +3325,11 @@ async function doLogin() {
 
 async function startApp() {
   $("app").classList.remove("hidden");
-  applyTheme(currentTheme(), false);
+  initialiseAppearance({ changed: () => {
+    const canvas = $("history-canvas");
+    if (canvas && Array.isArray(ui.historyPoints)) drawHistoryChart(canvas, ui.historyPoints);
+  } });
+  initialiseWorkspace();
   bindTabs();
   bindButtons();
   applySidebarRail();
@@ -3353,42 +3359,7 @@ async function startApp() {
 /* 主题：深色 / 浅色，选择记在 localStorage（下次刷新还在）              */
 /* ================================================================== */
 
-const THEME_KEY = "mw-theme";
 const ACTION_VIEW_KEY = "mw-action-view";
-
-function currentTheme() {
-  return document.documentElement.dataset.theme === "light" ? "light" : "dark";
-}
-
-/** 切换 / 应用主题。persist=false 用于启动时按缓存回填。 */
-function applyTheme(theme, persist = true) {
-  const next = theme === "light" ? "light" : "dark";
-  document.documentElement.dataset.theme = next;
-  const button = $("theme-toggle");
-  if (button) {
-    button.textContent = next === "light" ? "☀️ 浅色" : "🌙 深色";
-    button.title =
-      next === "light"
-        ? "现在是浅色，点一下切到深色（会记住）"
-        : "现在是深色，点一下切到浅色（会记住）";
-  }
-  if (persist) {
-    try {
-      window.localStorage.setItem(THEME_KEY, next);
-    } catch (error) {
-      /* 隐私模式下写不进缓存，本次仍然生效 */
-    }
-  }
-  // 心情曲线是 canvas 画的，颜色取自 CSS 变量：换主题后按缓存的数据重画一次
-  const canvas = $("history-canvas");
-  if (canvas && Array.isArray(ui.historyPoints)) {
-    drawHistoryChart(canvas, ui.historyPoints);
-  }
-}
-
-function toggleTheme() {
-  applyTheme(currentTheme() === "light" ? "dark" : "light");
-}
 
 async function loadAll(scope = ui.scope) {
   setSaveState("加载中…");
@@ -3928,6 +3899,8 @@ function showTab(name, button) {
   const target = button || document.querySelector(`#tabs button[data-tab="${name}"]`);
   document.querySelectorAll("#tabs button").forEach((item) => {
     item.classList.toggle("active", item === target);
+    if (item === target) item.setAttribute("aria-current", "page");
+    else item.removeAttribute("aria-current");
   });
   document.querySelectorAll(".tab").forEach((section) => {
     section.classList.toggle("active", section.id === `tab-${name}`);
@@ -3999,7 +3972,7 @@ function bindButtons() {
   bindFilterToggle("log-filter-toggle", "#tab-logs");
   bindSegmented("session-seg", { sessions: "session-pane", groups: "group-pane" });
   if ($("theme-toggle")) {
-    $("theme-toggle").addEventListener("click", toggleTheme);
+    $("theme-toggle").addEventListener("click", openAppearancePicker);
   }
   if ($("hero-goto-events")) {
     $("hero-goto-events").addEventListener("click", () => showTab("events"));
@@ -4913,7 +4886,7 @@ function scopeOptions({ withMembers = false, onlyFor = "" } = {}) {
     if (owner && !withMembers) return;
     options.push({
       value: session.session_id,
-      label: `${session.note ? session.note + " · " : ""}${session.session_id}`,
+      label: contactSessionLabel(session),
       desc:
         (session.type === "private" ? "私聊" : "群聊") +
         (owner ? ` · 属于「${owner.name || owner.id}」` : ""),
@@ -14729,8 +14702,13 @@ function setContactsView(view) {
   ui.contactsView = ["contacts", "overview", "audit", "data"].includes(view)
     ? view
     : "contacts";
+  const viewNames = { contacts: "通讯录", overview: "总览", audit: "审计", data: "数据与备份" };
+  $("contacts-view-label").textContent = viewNames[ui.contactsView];
+  $("contacts-view-menu").open = false;
+  $("tab-contacts").dataset.view = ui.contactsView;
   document.querySelectorAll("[data-contacts-view]").forEach((button) => {
     button.classList.toggle("on", button.dataset.contactsView === ui.contactsView);
+    button.setAttribute("aria-pressed", String(button.dataset.contactsView === ui.contactsView));
   });
   ["contacts", "overview", "audit", "data"].forEach((name) => {
     const panel = $(`contacts-view-${name}`);

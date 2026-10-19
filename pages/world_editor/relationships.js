@@ -44,6 +44,7 @@ export function createRelationshipsPage({ root, el, apiGet, apiPost, toast,
       const card = el("button", "social-card");
       card.type = "button";
       card.dataset.qq = item.user_id;
+      card.dataset.startingPoint = String(Boolean(item.baseline));
       card.style.setProperty("--person-color", personColor(item.user_id));
       const head = el("span", "people-card-head");
       const identity = el("span", "people-card-identity");
@@ -53,6 +54,16 @@ export function createRelationshipsPage({ root, el, apiGet, apiPost, toast,
       const score = el("span", "social-score");
       score.append(el("span", "people-eyebrow", item.baseline ? "统一起点好感" : "各会话好感"),
         el("strong", "", item.baseline ? String(item.baseline.affinity) : socialRange(item.sessions)));
+      const track = el("span", "social-affinity-track");
+      track.setAttribute("aria-hidden", "true");
+      const values = item.baseline ? [Number(item.baseline.affinity)] : item.sessions.map(scope => Number(scope.affinity));
+      const minimum = Number(data.rules?.affinity_min ?? -100), maximum = Number(data.rules?.affinity_max ?? 100);
+      const position = value => `${Math.max(0, Math.min(100, (value - minimum) / Math.max(1, maximum - minimum) * 100))}%`;
+      track.style.setProperty("--neutral-position", position(0));
+      for (const value of values.filter(Number.isFinite).slice(0, 12)) {
+        const mark = el("i"); mark.style.left = position(value); track.append(mark);
+      }
+      score.append(track);
       const names = item.baseline?.relations || [...new Set(item.sessions.flatMap(s => s.relations))];
       const identities = chips(names.slice(0, 4));
       if (names.length > 4) identities.append(el("span", "social-chip", `+${names.length - 4}`));

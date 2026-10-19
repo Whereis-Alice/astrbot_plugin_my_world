@@ -47,6 +47,8 @@ python -m pytest tests/test_contacts_browser.py -q  # 需要 Playwright + Chromi
 通讯录的加载和切换状态在 `pages/world_editor/contact-workbench.js`，布局在 `contacts.css`。
 它通过依赖注入复用编辑器的 API 与字段编辑入口，不依赖打包器。浏览器回归使用合成资料，覆盖长详情、66 人列表、短视口、手机布局、异步请求竞态与侧栏图标。
 
+界面的主题与材质集中在 `atelier.css`，六套本机外观由 `appearance.js` 管理，工作区的次要操作菜单由 `workspace-ui.js` 初始化。`data-theme` 保留深浅语义，`data-palette` 指定配色；不要在组件里为每个主题复制颜色。可用 `python -m pytest tests/test_visual_workspace_browser.py -q` 验证六套主题、键盘关闭与恢复、文字对比度，以及十五个模块在四种屏幕宽度下的布局；合成截图输出到 `.pytest_cache/generation-ui/`。
+
 ## 两个版本开关
 
 - `reply_mode=inject`（默认）：只注入；`takeover` 是旧版接管（自己调模型自己发），

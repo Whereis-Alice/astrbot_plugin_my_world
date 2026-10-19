@@ -112,6 +112,8 @@ class ContactsBrowserTests(unittest.TestCase):
         expect(self.page.locator("#contact-drawer")).to_be_hidden()
         if self.page.evaluate("document.documentElement.dataset.theme") != "dark":
             self.page.locator("#theme-toggle").click()
+            self.page.locator('[data-appearance="nocturne"]').click()
+            self.page.get_by_label("关闭外观设置").click()
 
     def open_person(self, uid="10001"):
         self.page.locator(f'[data-user="{uid}"]').click()
@@ -253,6 +255,8 @@ class ContactsBrowserTests(unittest.TestCase):
     def test_mobile_select_back_and_light_theme(self):
         self.host.set_viewport_size({"width": 390, "height": 844})
         self.page.locator('#theme-toggle').click()
+        self.page.locator('[data-appearance="cloud"]').click()
+        self.page.get_by_label("关闭外观设置").click()
         self.page.locator('[data-user="10002"]').click()
         expect(self.page.locator('#contacts-back')).to_be_visible()
         expect(self.page.locator('#contact-tab-profile')).to_be_visible()
