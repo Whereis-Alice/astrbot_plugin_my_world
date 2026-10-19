@@ -61,7 +61,7 @@ def worker(args):
         return checkpoints
 
     checkpoints = asyncio.run(exercise())
-    print(json.dumps({"scope": "isolated_core_without_models_or_sandbox",
+    print(json.dumps({"scope": "isolated_core_without_model_calls",
                       "address_space_limit_mib": args.memory_mib, "sessions": len(sessions),
                       "rounds": args.rounds, "baseline_rss_kib": initial,
                       "after_import_rss_kib": imported, "after_init_rss_kib": initialized,

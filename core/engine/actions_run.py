@@ -444,6 +444,8 @@ class ActionsRunMixin:
                 payload["plan_index"] = int(state.current_plan.get("current_step") or 0)
                 payload["matter_id"] = state.current_plan.get("matter_id", "")
                 payload["matter_step_id"] = state.current_plan.get("matter_step_id", "")
+                if definition.id == "life_simulation":
+                    payload["desc"] = action.intent or definition.name
             if definition.id == "walk_to":
                 target = action.target_node or action.target
                 if target in self.world.node_map():

@@ -85,8 +85,6 @@ class LifeApiMixin:
                     "semantic": self.engine.memory.semantic.status,
                     "active": sum(item.get("status") not in CLOSED for item in items)})
         result["budget"] = await self.db.call("kv_get", "background_budget:" + self.engine._today_key(self.engine._now()), {})
-        with self.engine.config_scope(session_id):
-            result["execution"] = await self.engine.life_capabilities(session_id)
         return json_response(result)
 
     async def api_life_update(self):

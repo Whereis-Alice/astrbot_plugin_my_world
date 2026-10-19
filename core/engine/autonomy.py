@@ -32,10 +32,7 @@ class AutonomyMixin:
 
         if not self.is_enabled(session_id):
             return None
-        if self.life_executor is None:
-            await self.advance_life_matters(session_id)
-        else:
-            self.queue_background("matter:" + self.state_key(session_id), lambda: self.advance_life_matters(session_id))
+        await self.advance_life_matters(session_id)
         now = self._now()
         # 节流按"这一整个她"算，不按会话：同一个组的几个会话共用一个她
         pace_key = self.state_key(session_id)

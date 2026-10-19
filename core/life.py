@@ -84,11 +84,6 @@ def activity_view(state: WorldState, world: WorldConfig) -> dict[str, Any]:
         }
     if state.is_sleeping:
         return {"kind": "rest", "label": "睡觉" if state.state == "sleeping" else "小睡"}
-    native = next((item for item in state.life_matters if item.get("status") == "working" and
-                   any(run.get("status") == "running" for run in item.get("executions", []))), None)
-    if native:
-        return {"kind": "life_execution", "label": "在生活沙盒里继续一件自己的事", "id": native["id"],
-                "detail": "原生 Agent 正在执行，正常聊天仍可继续"}
     idle = idle_definition(state, world)
     if idle:
         return {

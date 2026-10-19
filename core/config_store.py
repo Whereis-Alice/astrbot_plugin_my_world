@@ -149,7 +149,7 @@ class ConfigStore:
         raw = self._read_json(self.world_path, default_world())
         cleaned = clean_memory_settings(raw)
         if cleaned != raw:
-            self.snapshot_before("记忆职责调整前备份")
+            self.snapshot_before("清理已停用设置前备份")
             raw = cleaned
             self._write_json(self.world_path, raw)
         if self._migrate_life_cadence(raw):
@@ -291,7 +291,7 @@ class ConfigStore:
         现在按校验后的结果落盘，并把提示交回给调用方。
         """
 
-        parsed, warnings = parse_sessions(data if isinstance(data, dict) else {})
+        parsed, warnings = parse_sessions(clean_memory_settings(data if isinstance(data, dict) else {}))
         if snapshot:
             self.snapshot_before(reason)
         self._write_json(self.sessions_path, parsed.model_dump(mode="json"))

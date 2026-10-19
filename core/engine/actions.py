@@ -71,9 +71,7 @@ class ActionsMixin:
         from ..life import idle_definition, safe_idle_action
 
         self._settle_idle_practice(state)
-        native_work = any(item.get("status") == "working" and any(run.get("status") == "running"
-            for run in item.get("executions", [])) for item in state.life_matters)
-        if not self.world.idle_life.enabled or state.current_action or state.state != "idle" or native_work:
+        if not self.world.idle_life.enabled or state.current_action or state.state != "idle":
             state.idle_activity = {}
             return
         if idle_definition(state, self.world):

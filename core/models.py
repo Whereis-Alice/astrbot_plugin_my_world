@@ -870,20 +870,6 @@ class StateDynamics(Permissive):
         return _rename_keys(data, {"social_decay_per_min": "affect_decay_per_min"})
 
 
-class LifeExecutionConfig(Permissive):
-    enabled: bool = True
-    sandbox: Literal["inherit", "shipyard", "shipyard_neo", "boxlite", "cua"] = "inherit"
-    max_steps: int = Field(default=8, ge=1, le=30)
-    timeout_seconds: int = Field(default=300, ge=30, le=1800)
-    tool_timeout_seconds: int = Field(default=90, ge=5, le=300)
-    max_sandboxes: int = Field(default=1, ge=1, le=8)
-    """Global limit for My World's sandbox slots, independent of normal QQ tools."""
-    idle_release_seconds: int = Field(default=300, ge=0, le=86400)
-    """Release disposable project environments after inactivity; 0 disables timed release."""
-    trusted_tools: dict[str, str] = Field(default_factory=dict)
-    """Explicitly trusted host/plugin tools, keyed by name with their schema fingerprint."""
-
-
 class Limits(Permissive):
     background_daily_calls: int = Field(default=120, ge=0, le=10000)
     background_daily_tokens: int = Field(default=0, ge=0, le=100000000)
@@ -2290,7 +2276,22 @@ class IdleLifeConfig(Permissive):
     generation_prompt: str = ""
 
 
+LIFE_SIMULATION_ACTION = ActionDef(
+    id="life_simulation", name="继续自己的生活事项", category="continuous",
+    llm_level="template", scope="global", life_role="interest", visible=False,
+    duration_mode="llm", duration_min=300, duration_max=3600,
+    description="在角色世界内模拟个人活动；只推进文字经历，不操作电脑或真实文件。",
+)
+
+
 class WorldConfig(Permissive):
+    @model_validator(mode="before")
+    @classmethod
+    def _retired_settings(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "life_execution" in data:
+            return {key: value for key, value in data.items() if key != "life_execution"}
+        return data
+
     proactive_chat_paused: bool = False
     """全局暂停自主搭话；所有会话都生效，日程、事件和被动回复保留。"""
     proactive_chat_enabled: bool = True
@@ -2402,7 +2403,6 @@ class WorldConfig(Permissive):
     default_state: DefaultState = Field(default_factory=DefaultState)
     state_dynamics: StateDynamics = Field(default_factory=StateDynamics)
     limits: Limits = Field(default_factory=Limits)
-    life_execution: LifeExecutionConfig = Field(default_factory=LifeExecutionConfig)
     engagement: Engagement = Field(default_factory=Engagement)
     sleep: SleepConfig = Field(default_factory=SleepConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
@@ -2491,7 +2491,11 @@ class WorldConfig(Permissive):
         return {node.id: node for node in self.nodes}
 
     def action_map(self) -> dict[str, ActionDef]:
-        return {action.id: action for action in self.actions}
+        # Internal, text-only activity: available to life matters even when the
+        # optional action library is empty. It never invokes tools or commands.
+        actions = {action.id: action for action in self.actions}
+        actions[LIFE_SIMULATION_ACTION.id] = LIFE_SIMULATION_ACTION
+        return actions
 
     def actions_in(self, node_id: str) -> list[ActionDef]:
         sleeping_place = self.sleep_node_id()

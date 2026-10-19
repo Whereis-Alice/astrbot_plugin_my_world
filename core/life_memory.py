@@ -28,8 +28,9 @@ def is_life_memory(row: dict) -> bool:
 
 
 def clean_memory_settings(data: dict) -> dict:
-    """Drop retired keys even when models allow unknown keys; also clean overrides."""
+    """Drop retired settings even when models allow unknown keys; clean overrides too."""
     result = copy.deepcopy(data)
+    result.pop("life_execution", None)
     memory = result.get("memory")
     if isinstance(memory, dict):
         for key in RETIRED_MEMORY:

@@ -131,7 +131,6 @@ from .adapters.profile_commands import (
 )
 from .adapters.profile_weaver_tools import register_profile_tools, unregister_profile_tools
 from .adapters.tools import AstrBotTools, _clip_brief, _tool_result_text
-from .adapters.life_agent import AstrBotLifeAgent
 from .adapters.vision import AstrBotVision, _images_head
 from .web.api import WebApiMixin
 from .web.auth import EditorAuth
@@ -446,7 +445,6 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
             describer=self.vision,
             messenger=self.messenger,
             tools=AstrBotTools(self),
-            life_executor=AstrBotLifeAgent(self),
             commands=AstrBotCommands(self),
             persona=self.persona_port,
             clock=None,
@@ -609,9 +607,6 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
                 pass
         self._reflection_tasks.clear()
         await self.engine.close_background()
-        close_life = getattr(self.engine.life_executor, "close", None)
-        if callable(close_life):
-            await close_life()
         unregister_profile_tools(self)
         try:
             await self.db.close()

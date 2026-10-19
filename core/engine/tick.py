@@ -798,6 +798,8 @@ class TickMixin:
     def _remember_action(
         self, state: WorldState, definition: ActionDef, action: dict[str, Any]
     ) -> None:
+        if definition.id == "life_simulation":
+            return  # The matter records its scoped, explicitly simulated memory.
         label = definition.name or definition.id
         if definition.id == "think":
             content = str(action.get("content", "") or "")

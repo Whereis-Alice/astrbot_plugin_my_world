@@ -1,4 +1,4 @@
-"""Persistent personal projects. Only execution receipts can advance a step."""
+"""Persistent projects in the character's world, with dated activity records."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 CLOSED = {"completed", "abandoned", "expired"}
+RETIRED_COMPUTER_KEYS = frozenset({"executions", "artifacts", "execution_review_required", "capability_key", "failure_count"})
 
 
 def stable_interests(state, *, now: float = 0) -> list[dict]:
@@ -59,8 +60,49 @@ def ensure(state, now: float) -> list[dict]:
             item["legacy"] = True
             state.life_matters.append(item)
         state.life_migrated = True
+    for item in state.life_matters:
+        _retire_computer_work(item, now)
+        if (item.get("kind") == "promise" and item.get("status") == "blocked"
+                and item.get("steps") and not item.get("needs_replan")
+                and all(step.get("status") == "done" for step in item["steps"])):
+            item["blocker"] = "evidence"
+    for key, value in list(state.life_artifacts.items()):
+        if value.get("scope") == "sandbox":
+            del state.life_artifacts[key]
+        else:
+            value.pop("artifacts", None)
     sync(state)
     return state.life_matters
+
+
+def _retire_computer_work(item: dict, now: float) -> None:
+    """One-way save cleanup: keep the goal, retire tool state, replan in-world."""
+    steps = item.get("steps", [])
+    legacy = any(key in item for key in RETIRED_COMPUTER_KEYS) or any(s.get("action") == "native_agent" for s in steps)
+    legacy = legacy or bool(item.get("remaining_condition")) or item.get("blocker") in {"environment", "capability", "materials", "uncertain"}
+    for key in RETIRED_COMPUTER_KEYS | {"remaining_condition", "previous_condition"}:
+        item.pop(key, None)
+    if not legacy:
+        return
+    item.pop("recovery_condition", None)
+    item["steps"] = [s for s in steps if s.get("action") != "native_agent"]
+    item["history"] = [event for event in item.get("history", [])
+                       if not str(event.get("kind", "")).startswith(("agent_", "execution_", "environment_"))
+                       and event.get("receipt", {}).get("kind") != "native_agent"]
+    if item.get("status") not in CLOSED:
+        if item.get("status") != "paused":
+            item["status"] = "active"
+        item.update(needs_replan=True, needs_review=False, obstacle="", blocker="", resume_at=0,
+                    last_attempt_at=0, plan_attempts=0, next_step="有空时在自己的世界里继续这件事")
+        item["progress"] = 0
+    else:
+        item.pop("blocker", None)
+    history(item, "simulation_mode", "这件事改为世界内模拟，保留原有目标与生活经过", now)
+
+
+def progress_label(item: dict) -> str:
+    steps = item.get("steps", [])
+    return f"已进行 {sum(s.get('status') == 'done' for s in steps)}/{len(steps)} 步" if steps else "尚待安排"
 
 
 def make(text: str, *, now: float, session: str, who: str = "", who_name: str = "",
@@ -108,16 +150,17 @@ def complete_step(state, matter_id: str, step_id: str, *, now: float,
     if not remaining:
         if item.get("kind") == "promise":
             item.update(status="blocked", progress=99, next_step="等待真实结果或管理员确认",
-                        obstacle="准备步骤已做完，尚未取得约定已兑现的依据")
+                        obstacle="准备步骤已做完，尚未取得约定已兑现的依据", blocker="evidence",
+                        recovery_condition="在来源聊天中实际兑现，或由管理员确认结果")
             history(item, "awaiting_evidence", item["obstacle"], now)
             sync(state)
             return True
         item.update(status="active", progress=99, needs_review=True, next_step="这一阶段已做完，核对结果后再安排")
-        history(item, "stage_done", "本阶段步骤均已实际执行，尚未确认整个目标完成", now, receipt=receipt)
+        history(item, "stage_done", "本阶段的世界内活动已进行完，尚未确认整个目标完成", now, receipt=receipt)
         # An in-world work product, explicitly labelled; never an external file/operation.
         state.life_artifacts[item["id"]] = {"label": item["text"], "result": str(receipt.get("result") or "已执行本阶段步骤"),
-                                            "at": now, "scope": "sandbox" if receipt.get("kind") == "native_agent" else "in_world",
-                                            "artifacts": receipt.get("artifacts", []), "session": item["session"]}
+                                            "at": now, "scope": "simulation" if any(s.get("result", {}).get("kind") == "life_simulation" for s in item["steps"]) else "in_world",
+                                            "session": item["session"]}
         state.life_artifacts = dict(list(state.life_artifacts.items())[-40:])
     else:
         item["resume_at"] = float(remaining[0].get("not_before") or 0)
@@ -134,11 +177,11 @@ def context_block(state, *, session_id: str, user_id: str = "", now: float = 0) 
             continue
         if user_id and item.get("who") and item["who"] != user_id:
             continue
-        from .life_execution import progress_label
         rows.append(f"- [{item['id']}] {item['text']}；动机：{item.get('motivation') or '原先想做的事'}；"
                     f"状态：{item['status']}；{progress_label(item)}；"
                     f"下一步：{item.get('next_step') or '尚待安排'}；阻碍：{item.get('obstacle') or '无'}")
-    block = ("# 你一直在推进的生活事项\n只记得真实进展；打算、想象、梦和口头声称都不算做成。"
+    block = ("# 你一直在推进的生活事项\n这些是角色世界内的活动；标为生活模拟的进展属于AI模拟经历，不能当作现实操作依据。"
+            "只依据已记录的活动回忆进展，未开始的打算、梦和口头声称都不算完成。"
             "可以自然提起，不要逐条念清单。涉及他人的事情只能在来源会话提及。\n" + "\n".join(rows[:6])) if rows else ""
     interests = stable_interests(state, now=now)
     if interests:
@@ -151,6 +194,6 @@ def context_block(state, *, session_id: str, user_id: str = "", now: float = 0) 
             f"- {item['label']}曾在{len(item['days'])}个日期的{item['period']}进行，可以考虑沿用，也可以换一种安排。" for item in routines)
     artifacts = [item for item in state.life_artifacts.values() if item.get("session") == session_id][-3:]
     if artifacts:
-        block += "\n# 已留下的生活阶段记录\n严格区分世界内活动与沙盒工具结果；沙盒文件不代表服务器素材、寄送或向聊天发送成功。\n" + "\n".join(
+        block += "\n# 已留下的生活阶段记录\n这些活动和模拟成果只属于角色世界，不代表操作了现实文件、完成真实测试、寄送或向聊天发送成功。\n" + "\n".join(
             f"- [{item.get('scope', 'in_world')}] {item['label']}：{item['result']}" for item in artifacts)
     return block

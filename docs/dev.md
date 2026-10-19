@@ -66,9 +66,9 @@ python -m pytest tests/test_contacts_browser.py -q  # 需要 Playwright + Chromi
 
 ## 原生 Agent 与插件共存验证
 
-生活执行的离线 SDK 契约复现脚本为 `tools/verify_life_sdk.py`。将仓库与 AstrBot SDK 放到 `PYTHONPATH`，从一次性临时目录运行，避免 SDK 的默认配置初始化写入开发目录。脚本运行真实原生 Runner 与 Shell 工具，仅模型和沙盒传输使用合成桩，不连接服务器或执行宿主命令；这不能替代实际沙盒服务的隔离测试。
+生活事项只推进世界内活动与 AI 模拟，测试见 `tests/test_life_simulation.py`，覆盖计时、暂停、旧存档清理及现实约定的完成边界。
 
-共存测试可设置 `MY_WORLD_MOTION_VISION_SOURCE`、`MY_WORLD_ANAMNESIS_SOURCE` 为对应源码目录，复用实际媒体注入与聊天记忆注入代码。浏览器测试使用合成数据；执行账本的失败、暂停、重启与防重场景见 `tests/test_life_execution.py`。
+共存测试可设置 `MY_WORLD_MOTION_VISION_SOURCE`、`MY_WORLD_ANAMNESIS_SOURCE` 为对应源码目录，复用实际媒体注入与聊天记忆注入代码。浏览器测试使用合成数据，不连接真实会话。
 
 ## 推送到 GitHub
 

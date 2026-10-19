@@ -25,7 +25,6 @@ from ..models import (
     WorldConfig,
 )
 
-from .life_execution import LifeExecutionMixin
 from .constants import (
     DEFAULT_TICK_SECONDS,
     EXTENSION_LAYER_HEADING,
@@ -215,7 +214,6 @@ __all__ = [
 
 
 class MyWorldEngine(
-    LifeExecutionMixin,
     ConfigMixin,
     SessionsMixin,
     StateStoreMixin,
@@ -270,7 +268,6 @@ class MyWorldEngine(
         describer=None,
         messenger=None,
         tools=None,
-        life_executor=None,
         commands=None,
         persona=None,
         clock=None,
@@ -306,7 +303,6 @@ class MyWorldEngine(
         self.describer = describer
         self.messenger = messenger
         self.tools = tools
-        self.life_executor = life_executor
         # 指令通道：把别家插件的指令转发出去（「指令触发」型动作用）
         self.commands = commands
         self.persona = persona

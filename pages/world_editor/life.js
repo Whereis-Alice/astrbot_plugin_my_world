@@ -1,10 +1,10 @@
-/** A reading-first life board. Planning never masquerades as an execution receipt. */
+/** A reading-first life board for activities in the character's world. */
 const CLOSED = new Set(["completed", "abandoned", "expired"]);
 const STATUS = {active: "待继续", working: "正在推进", waiting: "等合适的时候", blocked: "遇到了阻碍", paused: "暂时放下", completed: "已经完成", abandoned: "决定放下", expired: "念头淡去了"};
 const KIND = {project: "个人项目", promise: "与人的约定", idea: "一时的念头"};
 const TIME = value => value ? new Date(value * 1000).toLocaleString("zh-CN", {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false}) : "尚未安排";
-const PROGRESS = item => item.steps?.length ? `已验证 ${item.steps.filter(s => s.status === "done").length}/${item.steps.length} 步` : "尚待安排";
-const STATE = item => item.execution_review_required ? "等待核对执行" : ({environment: "等待执行环境", materials: "等待资料或素材", capability: "等待所需能力", uncertain: "等待核对执行", transient: "稍后重试"}[item.blocker] || STATUS[item.status] || item.status);
+const PROGRESS = item => item.steps?.length ? `已进行 ${item.steps.filter(s => s.status === "done").length}/${item.steps.length} 步` : "尚待安排";
+const STATE = item => ({evidence: "等待约定兑现", transient: "稍后再想"}[item.blocker] || STATUS[item.status] || item.status);
 
 export function createLifePage({root, apiGet, apiPost, el, getSession, toast, openCalls, openMemories, openSettings}) {
   const $ = id => root.querySelector(`#${id}`);
@@ -18,10 +18,10 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
     const field = el("div", "life-field"); field.append(el("span", "people-eyebrow", label), el("p", "", text || "尚未记录")); return field;
   }
   function bar(item) {
-    if (!item.steps?.length) return el("span", "life-unplanned", "✧ 想法正在酝酿，尚无可验证步骤");
+    if (!item.steps?.length) return el("span", "life-unplanned", "✧ 想法正在酝酿，尚待安排小步");
     const outer = el("div", "life-progress"), inner = el("span");
     const progress = Math.max(0, Math.min(100, Number(item.progress) || 0));
-    outer.setAttribute("role", "progressbar"); outer.setAttribute("aria-label", "实际完成步骤"); outer.setAttribute("aria-valuenow", progress);
+    outer.setAttribute("role", "progressbar"); outer.setAttribute("aria-label", "世界内活动进度"); outer.setAttribute("aria-valuenow", progress);
     outer.setAttribute("aria-valuemin", "0"); outer.setAttribute("aria-valuemax", "100"); inner.style.width = `${progress}%`; outer.append(inner); return outer;
   }
   function render() {
@@ -45,7 +45,8 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
     }
     for (const item of shown) {
       const card = el("button", `life-card is-${item.status}`); card.type = "button"; card.dataset.id = item.id;
-      const top = el("div", "life-card-top"); top.append(el("span", "people-eyebrow", KIND[item.kind] || "生活事项"), el("span", "life-badge", STATE(item)));
+      const simulated = item.steps?.some(step => step.action === "life_simulation");
+      const top = el("div", "life-card-top"); top.append(el("span", "people-eyebrow", `${KIND[item.kind] || "生活事项"}${simulated ? " · AI 模拟" : ""}`), el("span", "life-badge", STATE(item)));
       const title = el("h3", "", item.text), motive = el("p", "life-motivation", item.motivation || "一直记着，想找个合适的时候继续。 ");
       const next = el("div", "life-card-next"); next.append(el("span", "people-eyebrow", item.obstacle ? "此刻的阻碍" : "下一小步"), el("p", "", item.obstacle || item.next_step || "还在想，从哪里开始"));
       title.title = item.text;
@@ -90,42 +91,23 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
     body.append(line("为什么想做", item.motivation), line("接下来", item.next_step), bar(item));
     if (item.obstacle) body.append(line("阻碍", item.obstacle));
     if (item.recovery_condition) body.append(line("怎样继续", item.recovery_condition));
-    if (item.remaining_condition) body.append(line("还有一部分需要条件", item.remaining_condition));
     if (item.resume_at) body.append(line("适合继续的时间", TIME(item.resume_at)));
     if (item.result) body.append(line("留下的结果", item.result));
     const steps = el("ol", "life-steps");
     for (const step of item.steps || []) {
-      const row = el("li", step.status === "done" ? "done" : ""); row.append(el("b", "", step.text), el("small", "muted", step.status === "done" ? `实际做过 · ${TIME(step.finished_at)}` : step.action === "native_agent" ? "原生 Agent · 独立生活沙盒" : `安排中 · ${step.minutes} 分钟`)); steps.append(row);
+      const row = el("li", step.status === "done" ? "done" : ""); row.append(el("b", "", step.text), el("small", "muted", `${step.action === "life_simulation" ? "AI 模拟" : "世界内活动"} · ${step.status === "done" ? TIME(step.finished_at) : `安排中 · ${step.minutes} 分钟`}`)); steps.append(row);
     }
-    if (steps.children.length) body.append(line("一件事，分成几小步", "进度按已执行步骤计算。"), steps);
-    const artifacts = el("div", "life-artifacts");
-    for (const artifact of item.artifacts || []) {
-      const row = el("div", "life-artifact"); row.append(el("span", "people-eyebrow", "沙盒文件 · 已读回"), el("code", "", artifact.path), el("small", "muted", artifact.verification || TIME(artifact.verified_at))); artifacts.append(row);
-    }
-    if (artifacts.children.length) body.append(line("实际留下了什么", "文件保存在独立沙盒，沙盒过期后需要重新检查。样例不代表真实素材。"), artifacts);
-    for (const execution of [...(item.executions || [])].reverse()) {
-      const details = el("details", "life-execution"), summary = el("summary", "", `${TIME(execution.at)} · ${{running:"正在执行",succeeded:"小步已验证",unknown:"结果待核对",partial_failed:"部分成功",partial_waiting:"已有部分操作，待核对",returned:"已返回",failed:"本次失败"}[execution.status] || "历史执行"}`);
-      details.append(summary);
-      if (execution.accepted === false) details.append(el("p", "muted", "运行期间条件已变化，结果仅存档，没有覆盖当前安排。"));
-      for (const event of execution.events || []) {
-        const text = event.kind === "tool_start" ? `开始 · ${event.tool}` : event.kind === "tool_end" ? `${event.ok ? "已返回" : "未确认成功"} · ${event.tool}\n${event.result || ""}` : event.kind === "tool_unknown" ? `结果未知 · ${event.tool}\n${event.error}` : event.kind === "artifact" ? `文件已读回 · ${event.path}` : event.kind === "environment" ? `独立沙盒 · ${event.booter}` : "";
-        if (text) details.append(el("p", "life-execution-line", text));
-      }
-      body.append(details);
-    }
+    body.append(line("世界内的生活", "编程、创作等个人活动由 AI 模拟，不操作真实电脑或文件；对现实用户的约定仍需实际兑现。"));
+    if (steps.children.length) body.append(line("一件事，分成几小步", "进度按已进行的世界内活动计算。"), steps);
     const timeline = el("div", "life-timeline");
     for (const event of [...(item.history || [])].reverse()) {
       const row = el("div", "life-timeline-item"); row.append(el("time", "", TIME(event.at)), el("p", "", event.text));
-      if (event.receipt) row.append(el("small", "muted", event.receipt.kind === "in_world_action" ? `世界内的实际活动 · ${event.receipt.minutes || 0} 分钟` : "已保存执行依据"));
+      if (event.receipt) row.append(el("small", "muted", event.receipt.kind === "life_simulation" ? `AI 模拟 · ${event.receipt.minutes || 0} 分钟` : event.receipt.kind === "in_world_action" ? `世界内活动 · ${event.receipt.minutes || 0} 分钟` : "已保存兑现依据"));
       if (event.manual) row.append(el("small", "muted", "管理员调整")); timeline.append(row);
     }
     body.append(line("这件事怎样走到了现在", ""), timeline);
     const actions = el("div", "life-drawer-actions");
     if (!CLOSED.has(item.status)) {
-      if (item.execution_review_required) actions.append(button("核对后继续…", () => {
-        drawerRevision++; body.replaceChildren(); const reason = field("核对到的实际执行情况", "", "textarea");
-        body.append(reason.wrap, el("p", "muted", "请先查看沙盒与上面的记录。继续后会保留历史，重新规划余下步骤，不会自动重放原步骤。"), button("记录核对并安排后续", () => mutate("acknowledge_execution", {reason: reason.input.value}), "primary"));
-      }));
       actions.append(button(item.status === "paused" ? "继续这件事" : "暂时放下", () => mutate(item.status === "paused" ? "resume" : "pause")),
         button("晚一点继续", () => defer(item)), button("编辑", () => form(item)), button("确认结果…", () => outcome(item)));
     }
@@ -144,7 +126,7 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
     const title = field("想做什么", item?.text), motive = field("为什么想做", item?.motivation, "textarea");
     const kind = el("select"); kind.setAttribute("aria-label", "事项类型"); for (const [value, name] of Object.entries(KIND)) kind.add(new Option(name, value));
     body.append(title.wrap, motive.wrap); if (!item) body.append(kind);
-    body.append(el("p", "muted", "她会在清醒、有精力且空闲时，尝试安排能实际执行的小步。需要外部能力的约定会等待真实结果。"),
+    body.append(el("p", "muted", "她会在清醒、有精力且空闲时，安排世界内活动或 AI 模拟的小步。对现实用户的约定会等待实际兑现依据。"),
       button("保存事项", () => { if (!title.input.value.trim()) { title.input.reportValidity(); return; } mutate(item ? "edit" : "create", {text: title.input.value, motivation: motive.input.value, kind: kind.value}); }, "primary"));
     title.input.required = true; if (!drawer.open) drawer.showModal(); title.input.focus();
   }
@@ -176,7 +158,7 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
     if (event.target === drawer && (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom)) drawer.close();
   });
   $("life-refresh").addEventListener("click", () => { $("life-tools").removeAttribute("open"); reload(); }); $("life-add").addEventListener("click", () => form());
-  $("life-settings").addEventListener("click", () => { $("life-tools").removeAttribute("open"); openSettings(data.execution); });
+  $("life-settings").addEventListener("click", () => { $("life-tools").removeAttribute("open"); openSettings(); });
   $("life-collection").addEventListener("click", event => {
     $("life-tools").removeAttribute("open");
     selected = null; opener = event.currentTarget; body.replaceChildren(); $("life-drawer-title").textContent = "日子留下的东西";
@@ -221,9 +203,8 @@ export function renderLifeFocus(container, data, {el, open}) {
   }
 }
 
-export function openLifeSettings({world, execution = {}, el, openCustomDialog, markDirty}) {
+export function openLifeSettings({world, el, openCustomDialog, markDirty}) {
   const limits = {...world.limits}, memory = {...world.memory};
-  const life = {...world.life_execution, trusted_tools: {...world.life_execution?.trusted_tools}};
   const controls = [];
   openCustomDialog({title: "生活的节奏与后台预算", confirmText: "应用设置", hint: "应用后使用顶栏「保存」写入配置。0 表示不设对应预算上限。", build: body => {
     for (const [key, label, fallback, min, max] of [
@@ -237,32 +218,9 @@ export function openLifeSettings({world, execution = {}, el, openCustomDialog, m
       const wrap = el("label", "field"), input = el("input"); input.type = "checkbox"; input.checked = object[key] ?? fallback; wrap.append(input, el("span", "", label)); body.append(wrap); controls.push(() => { object[key] = input.checked; });
     }
     body.append(el("p", "muted", "Token 缺失时保留保守的预算占位，界面仍标为未知。语义索引失败时保留记忆并使用关键词检索。"));
-    body.append(el("h3", "", "生活的独立执行环境"), el("p", "muted", execution.ready ? `原生沙盒 · ${execution.booter}，执行时会检查连接。` : execution.reason || "等待接入 AstrBot 原生沙盒"));
-    const enabled = el("input"); enabled.type = "checkbox"; enabled.checked = life.enabled ?? true;
-    const enabledLabel = el("label", "field"); enabledLabel.append(enabled, el("span", "", "允许自主生活使用独立沙盒")); body.append(enabledLabel);
-    const sandbox = el("select"); sandbox.setAttribute("aria-label", "生活沙盒环境");
-    for (const [value, label] of [["inherit", "沿用 AstrBot 沙盒服务设置"], ["shipyard_neo", "Shipyard Neo"], ["shipyard", "Shipyard"], ["boxlite", "BoxLite（需要宿主安装支持）"], ["cua", "CUA 独立电脑沙盒"]]) sandbox.add(new Option(label, value));
-    sandbox.value = life.sandbox || "inherit"; body.append(sandbox);
-    controls.push(() => { life.enabled = enabled.checked; life.sandbox = sandbox.value; });
-    for (const [key, label, fallback, min, max] of [["max_steps", "每次原生 Agent 最多轮数", 8, 1, 30], ["timeout_seconds", "每次生活执行最长等待（秒）", 300, 30, 1800], ["tool_timeout_seconds", "单个工具最长等待（秒）", 90, 5, 300], ["max_sandboxes", "生活沙盒总上限（以全局设置为准）", 1, 1, 8], ["idle_release_seconds", "生活沙盒空闲回收（秒，0 关闭）", 300, 0, 86400]]) {
-      const wrap = el("label", "field"), input = el("input"); input.type = "number"; input.min = min; input.max = max; input.value = life[key] ?? fallback;
-      wrap.append(el("span", "", label), input); body.append(wrap); controls.push(() => { if (!input.checkValidity()) throw new Error(`${label}超出范围`); life[key] = Number(input.value); });
-    }
-    body.append(el("p", "muted", "默认只保留一个生活环境，空闲五分钟后回收；需要腾出名额时优先回收闲置环境。回收可能丢失临时文件，后续会先检查再继续。重要产物请另行保存。旧 Shipyard 还依赖服务端 TTL，不能保证立即释放内存。"));
-    body.append(el("p", "muted", "QQ 继续使用原来的电脑配置。生活始终创建独立沙盒，连接失败不会转用服务器 Shell。沙盒服务应避免挂载服务器业务目录或注入无关凭据。"));
-    const toolSection = el("details", "life-tool-settings"); toolSection.append(el("summary", "", "生活可用工具与宿主授权"));
-    toolSection.append(el("p", "muted", "原生电脑工具在沙盒内执行。其他插件和 MCP 工具仍在宿主或外部服务执行；勾选表示信任其真实权限，无法通过生活沙盒约束它。只授权已经了解的工具。工具定义变化会自动撤销旧授权。"));
-    for (const tool of execution.tools || []) {
-      const wrap = el("label", "life-tool-option"), check = el("input"); check.type = "checkbox";
-      check.checked = tool.scope === "sandbox" || life.trusted_tools[tool.name] === tool.fingerprint;
-      check.disabled = tool.scope === "sandbox" || (tool.reason && !tool.reason.startsWith("需要单独信任"));
-      const text = el("span"); text.append(el("b", "", tool.name), el("small", "muted", tool.scope === "sandbox" ? "独立沙盒" : tool.reason || "已信任 · 在宿主执行"));
-      wrap.append(check, text); toolSection.append(wrap);
-      if (tool.scope !== "sandbox" && !check.disabled) controls.push(() => { if (check.checked) life.trusted_tools[tool.name] = tool.fingerprint; else delete life.trusted_tools[tool.name]; });
-    }
-    body.append(toolSection);
+    body.append(el("p", "muted", "生活事项在角色世界内模拟推进，无需电脑环境。日程、睡眠、精力和后台预算共同决定她何时继续。"));
     for (const [key, label] of [["semantic_endpoint", "嵌入服务 API 基址（含 /v1）"], ["semantic_model", "嵌入模型名称"], ["semantic_api_key_env", "保存 API Key 的服务器环境变量名"]]) {
       const wrap = el("label", "field"), input = el("input"); input.value = memory[key] || ""; wrap.append(el("span", "", label), input); body.append(wrap); controls.push(() => { memory[key] = input.value.trim(); });
     }
-  }, onSubmit: () => { controls.forEach(read => read()); world.limits = limits; world.memory = memory; world.life_execution = life; markDirty(); return true; }});
+  }, onSubmit: () => { controls.forEach(read => read()); world.limits = limits; world.memory = memory; markDirty(); return true; }});
 }
