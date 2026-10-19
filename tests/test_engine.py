@@ -6104,7 +6104,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             )
             plan = live.current_plan or {}
             # 被顶掉的"瘫着"已经划掉，剩下的是"回一句 → 想事情"
-            self.assertEqual(str((plan.get("steps") or [{}])[0].get("status")), "done")
+            self.assertEqual(str((plan.get("steps") or [{}])[0].get("status")), "skipped")
             self.assertEqual(
                 [step.get("action") for step in (plan.get("steps") or [])],
                 ["lounge", "say", "think"],

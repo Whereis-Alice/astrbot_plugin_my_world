@@ -86,3 +86,31 @@ class LifeBrowserTests(unittest.TestCase):
             self.host.screenshot(path=str(self.shots/f'life-drawer-{width}.png'))
             self.page.locator('#life-close').click()
         self.assertEqual(self.errors, [])
+
+    def test_old_save_cannot_close_a_new_session_drawer(self):
+        self.page.evaluate("""() => {
+          const read=AstrBotPluginPage.apiGet, write=AstrBotPluginPage.apiPost;
+          window.secondLife={...structuredClone(lifeData),session:'aiocqhttp:GroupMessage:2002',
+            items:[{...structuredClone(lifeData.items[0]),id:'lm_second',text:'另一个会话的生活事项'}]};
+          AstrBotPluginPage.apiGet=(endpoint,params)=>endpoint==='life'&&params.session===secondLife.session
+            ?Promise.resolve(structuredClone(secondLife)):read(endpoint,params);
+          AstrBotPluginPage.apiPost=(endpoint,payload)=>endpoint==='life/update'
+            ?new Promise(resolve=>{lifeWrites.push(structuredClone(payload));window.finishLifeSave=resolve})
+            :write(endpoint,payload);
+        }""")
+        self.page.locator('.life-card[data-id="lm_book"]').click()
+        self.page.get_by_role('button', name='暂时放下', exact=True).click()
+        expect(self.page.get_by_role('button', name='暂时放下', exact=True)).to_be_disabled()
+        self.host.keyboard.press('Escape')
+        self.page.evaluate("""() => {
+          const picker=document.querySelector('#status-session');
+          picker.add(new Option('另一个会话','aiocqhttp:GroupMessage:2002'));
+          picker.value='aiocqhttp:GroupMessage:2002';picker.dispatchEvent(new Event('change'));
+        }""")
+        self.page.locator('.life-card[data-id="lm_second"]').click()
+        self.page.evaluate('finishLifeSave({ok:true})')
+        expect(self.page.locator('#life-drawer')).to_be_visible()
+        expect(self.page.locator('#life-drawer-title')).to_have_text('另一个会话的生活事项')
+        self.assertEqual(self.page.evaluate('lifeWrites.length'), 1)
+        self.assertNotEqual(self.page.evaluate('lifeWrites[0].session'), 'aiocqhttp:GroupMessage:2002')
+        self.assertEqual(self.errors, [])

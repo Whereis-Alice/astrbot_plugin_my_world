@@ -85,15 +85,37 @@ class MattersMixin:
                 matters.history(item, "interrupted", item["obstacle"], self._now())
         matters.sync(state)
 
-    def pause_matter_action(self, state, action: dict) -> None:
+    def settle_matter_work(self, state, action: dict, *, at: float | None = None) -> float:
+        """Settle online ticks once, assigning midnight work to its actual day."""
         item = matters.find(state, str(action.get("matter_id") or ""))
         if item is None or action.get("type") == "walk_to":
-            return
+            return 0
         step = next((s for s in item.get("steps", []) if s["id"] == action.get("matter_step_id")), None)
-        if step and step.get("status") != "done":
-            minutes = max(0, int(action.get("elapsed_ticks") or 0) * self.tick_seconds / 60)
-            step["worked_minutes"] = min(step["minutes"], step.get("worked_minutes", 0) + minutes)
+        if not step or step.get("status") == "done":
+            return 0
+        elapsed = max(0, int(action.get("elapsed_ticks") or 0))
+        accounted = max(0, int(action.get("matter_accounted_ticks") or 0))
+        total = 0.0
+        # Usually one tick; legacy running saves may contain several unsettled ticks.
+        for tick in range(accounted + 1, elapsed + 1):
+            minutes = min(self.tick_seconds / 60, max(0, step["minutes"] - step.get("worked_minutes", 0)))
+            if minutes <= 0:
+                break
+            day = self._today_key((self._now() if at is None else at) - (elapsed - tick + .5) * self.tick_seconds)
+            if item.get("work_day") != day:
+                item.update(work_day=day, worked_minutes=0, plan_attempts=0)
             item["worked_minutes"] = item.get("worked_minutes", 0) + minutes
+            step["worked_minutes"] = step.get("worked_minutes", 0) + minutes
+            total += minutes
+        action["matter_accounted_ticks"] = elapsed
+        if total:
+            matters.sync(state)
+        return total
+
+    def pause_matter_action(self, state, action: dict, *, at: float | None = None) -> None:
+        if self.settle_matter_work(state, action, at=at):
+            item = matters.find(state, str(action.get("matter_id") or ""))
+            step = next(s for s in item["steps"] if s["id"] == action.get("matter_step_id"))
             matters.history(item, "paused_step", f"暂时放下，已经投入 {step['worked_minutes']:g} 分钟", self._now())
 
     def add_life_matter(self, state, text: str, **kwargs) -> dict | None:
@@ -126,6 +148,10 @@ class MattersMixin:
         if operation in {"pause", "resume", "postpone", "abandon"}:
             if item["status"] in matters.CLOSED:
                 raise ValueError("已经结束的事项不能再次执行，请新建事项")
+            if operation in {"resume", "postpone"} and item["status"] == "paused" and sum(
+                m["status"] not in matters.CLOSED | {"paused"} for m in state.life_matters
+            ) >= self.world.limits.life_matter_active_max:
+                raise ValueError("进行中的生活事项已达上限，请先暂停或结束其他事项")
             item["status"] = {"pause": "paused", "resume": "active", "postpone": "waiting", "abandon": "abandoned"}[operation]
             item["resume_at"] = resume_at if operation == "postpone" else 0
             item["obstacle"] = str(reason)[:300]
@@ -143,7 +169,8 @@ class MattersMixin:
                 if key in changes:
                     item[key] = str(changes[key]).strip()[:160 if key == "text" else 300]
             if changed_goal:
-                item.update(needs_replan=True, last_attempt_at=0, plan_attempts=0,
+                item.update(needs_replan=True, needs_review=False, last_attempt_at=0, plan_attempts=0,
+                            resume_at=0, obstacle="",
                             next_step="目标已调整，保留已做步骤，重新安排后续")
         else:
             raise ValueError("支持暂停、继续、延期、放弃和编辑；完成需要真实执行依据")
@@ -189,24 +216,28 @@ class MattersMixin:
             self.reconcile_matters(state)
             if not self._matter_can_work(state):
                 return
-            eligible = [m for m in state.life_matters if m["status"] in {"active", "waiting", "blocked", "working"}
-                        and (not m.get("resume_at") or float(m["resume_at"]) <= now)]
+            day = self._today_key(now)
+            eligible = []
+            for candidate in state.life_matters:
+                if candidate["status"] not in {"active", "waiting", "blocked", "working"}:
+                    continue
+                if candidate.get("work_day") != day:
+                    candidate.update(work_day=day, worked_minutes=0, plan_attempts=0)
+                if (float(candidate.get("resume_at") or 0) > now
+                        or now - float(candidate.get("last_attempt_at") or 0) < self.world.limits.life_matter_interval_minutes * 60
+                        or candidate.get("worked_minutes", 0) >= self.world.limits.life_matter_daily_minutes):
+                    continue
+                needs_inference = not candidate.get("steps") or candidate.get("needs_replan") or candidate.get("needs_review")
+                if needs_inference and int(candidate.get("plan_attempts", 0)) >= 3:
+                    continue
+                eligible.append(candidate)
             if not eligible:
                 return
             item = min(eligible, key=lambda m: (float(m.get("last_attempt_at") or 0), float(m.get("at") or 0)))
-            if now - float(item.get("last_attempt_at") or 0) < self.world.limits.life_matter_interval_minutes * 60:
-                return
-            day = self._today_key(now)
-            if item.get("work_day") != day:
-                item.update(work_day=day, worked_minutes=0, plan_attempts=0)
-            if item.get("worked_minutes", 0) >= self.world.limits.life_matter_daily_minutes:
-                return
             item["last_attempt_at"] = now
             review = bool(item.get("needs_review"))
             if item.get("steps") and not item.get("needs_replan") and not review:
                 await self._start_matter_step(state, item)
-                return
-            if int(item.get("plan_attempts", 0)) >= 3:
                 return
             item["plan_attempts"] = int(item.get("plan_attempts", 0)) + 1
             snapshot = copy.deepcopy(item)
@@ -339,13 +370,13 @@ class MattersMixin:
             return
         if definition is None or definition.llm_level != "template":
             return  # External success must come from an explicit result, never elapsed time.
-        item["worked_minutes"] = item.get("worked_minutes", 0) + minutes
+        self.settle_matter_work(state, action)
         step = next((s for s in item.get("steps", []) if s["id"] == step_id), None)
         if step is None:
             return
-        step["worked_minutes"] = step.get("worked_minutes", 0) + minutes
         receipt = {"ok": True, "kind": "in_world_action", "action": definition.id,
-                   "at": self._now(), "minutes": minutes, "result": f"实际进行了「{definition.name}」，投入 {minutes:g} 分钟"}
+                   "at": self._now(), "minutes": step.get("worked_minutes", 0), "attempt_minutes": minutes,
+                   "result": f"实际进行了「{definition.name}」，累计投入 {step.get('worked_minutes', 0):g} 分钟"}
         if step["worked_minutes"] + .01 < step["minutes"]:
             item["status"] = "active"
             matters.history(item, "progress", f"这一小步已投入 {step['worked_minutes']:g} 分钟，稍后继续", self._now(), receipt=receipt)

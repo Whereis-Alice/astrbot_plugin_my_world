@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 import math
+from uuid import uuid4
 
 
 def _read_pages(value: Any) -> int:
@@ -67,6 +68,7 @@ def create_plan(
     if not normalized:
         return None
     return {
+        "id": uuid4().hex,
         "steps": normalized,
         "current_step": 0,
         "created_at": world_time,
@@ -79,6 +81,19 @@ def create_plan(
         # 她想把这些话说给谁（会话组里的哪个群 / 私聊）；空 = 落点默认
         "send_to": str(send_to or ""),
     }
+
+
+def same_plan(action: dict, plan: dict) -> bool:
+    """New plans use an immutable identity; timestamps are legacy-only fallback."""
+    if action.get("plan_id") or plan.get("id"):
+        return bool(action.get("plan_id")) and action["plan_id"] == plan.get("id")
+    recorded = action.get("plan_created_at")
+    if recorded is None:
+        return True  # Legacy action and legacy plan, neither has an identity.
+    try:
+        return int(recorded) == int(plan.get("created_at") or 0)
+    except (TypeError, ValueError):
+        return False
 
 
 def active_plan(state, *, world_time: int | None = None) -> dict[str, Any] | None:
@@ -123,13 +138,13 @@ def peek_step(state) -> dict[str, Any] | None:
         state.current_plan = None
         return None
     step = steps[index]
-    if step.get("status") == "done":
+    if step.get("status") in {"done", "skipped", "deferred"}:
         return advance(state)
     return step
 
 
-def advance(state) -> dict[str, Any] | None:
-    """把当前步骤标记完成并前进，返回新的当前步骤（没有则 None）。"""
+def advance(state, *, status: str = "done") -> dict[str, Any] | None:
+    """Record the execution outcome and move forward; skipping is not completion."""
 
     plan = state.current_plan
     if not isinstance(plan, dict):
@@ -137,7 +152,8 @@ def advance(state) -> dict[str, Any] | None:
     steps = plan.get("steps") or []
     index = int(plan.get("current_step", 0))
     if index < len(steps):
-        steps[index]["status"] = "done"
+        if steps[index].get("status") not in {"done", "skipped", "deferred"}:
+            steps[index]["status"] = status
     plan["current_step"] = index + 1
     if plan["current_step"] >= len(steps):
         state.current_plan = None
@@ -169,10 +185,12 @@ def describe(state) -> str:
         return "（没有计划）"
     steps = plan.get("steps") or []
     index = int(plan.get("current_step", 0))
-    done = [s.get("action") for s in steps[:index]]
+    done = [s.get("action") for s in steps[:index] if s.get("status") == "done"]
+    skipped = [s.get("action") for s in steps[:index] if s.get("status") in {"skipped", "deferred"}]
     todo = [s.get("action") for s in steps[index:]]
     return (
         f"来源={plan.get('source')} 原因={plan.get('reason')} "
         f"已完成={'/'.join(str(d) for d in done) or '无'} "
+        f"跳过或转交={'/'.join(str(d) for d in skipped) or '无'} "
         f"待执行={'/'.join(str(t) for t in todo) or '无'}"
     )

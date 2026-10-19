@@ -7,6 +7,7 @@ const TIME = value => value ? new Date(value * 1000).toLocaleString("zh-CN", {mo
 export function createLifePage({root, apiGet, apiPost, el, getSession, toast, openCalls, openMemories, openSettings}) {
   const $ = id => root.querySelector(`#${id}`);
   let data = {}, filter = "active", sort = "recent", request = 0, selected = null, opener = null;
+  let drawerSession = "", drawerRevision = 0;
   const grid = $("life-grid"), drawer = $("life-drawer"), body = $("life-detail");
   function button(label, callback, cls = "ghost small") {
     const node = el("button", cls, label); node.type = "button"; node.addEventListener("click", callback); return node;
@@ -50,7 +51,11 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
   }
   async function reload() {
     const revision = ++request, session = getSession();
-    if (data.session && data.session !== session && drawer.open) drawer.close();
+    if (data.session && data.session !== session) {
+      if (drawer.open) drawer.close();
+      selected = null; data = {}; render();
+      grid.replaceChildren(el("div", "life-empty", "正在读取这个会话的生活…"));
+    }
     if (!session) { data = {}; render(); $("life-now-reason").textContent = "先在顶栏选择一个会话，看看她正在过怎样的一天。"; return; }
     try {
       const response = await apiGet("life", {session});
@@ -59,14 +64,24 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
     } catch (error) { if (revision === request) { grid.replaceChildren(el("div", "life-empty", `读取失败：${error.message}`)); } }
   }
   async function mutate(operation, values = {}) {
-    if (selected && !(data.items || []).some(item => item.id === selected.id)) { toast("会话已切换，请重新选择事项"); return; }
+    const session = drawerSession, revision = drawerRevision, id = selected?.id;
+    if (!session || session !== getSession() || data.session !== session ||
+        (selected && !(data.items || []).some(item => item.id === id))) { toast("会话已切换，请重新选择事项"); return; }
+    const controls = [...body.querySelectorAll("button")];
+    if (controls.some(node => node.disabled)) return;
+    controls.forEach(node => { node.disabled = true; });
     try {
-      const response = await apiPost("life/update", {session: getSession(), id: selected?.id, operation, ...values});
+      const response = await apiPost("life/update", {session, id, operation, ...values});
       if (!response.ok) throw new Error(response.error || response.message || "未能保存");
-      await reload(); if (drawer.open) drawer.close(); toast("生活事项已保存");
-    } catch (error) { toast(error.message || String(error)); }
+      if (getSession() !== session) return;
+      await reload();
+      if (getSession() !== session || revision !== drawerRevision) return;
+      if (drawer.open) drawer.close(); toast("生活事项已保存");
+    } catch (error) { if (getSession() === session && revision === drawerRevision) toast(error.message || String(error)); }
+    finally { controls.forEach(node => { node.disabled = false; }); }
   }
   function open(item, source) {
+    drawerSession = data.session; drawerRevision++;
     selected = item; opener = source; body.replaceChildren(); $("life-drawer-title").textContent = item.text;
     body.append(line("为什么想做", item.motivation), line("接下来", item.next_step), bar(item));
     if (item.obstacle) body.append(line("阻碍", item.obstacle));
@@ -99,6 +114,7 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
     input.value = value; input.maxLength = 300; wrap.append(el("span", "", label), input); return {wrap, input};
   }
   function form(item = null) {
+    drawerSession = data.session; drawerRevision++;
     selected = item; body.replaceChildren(); $("life-drawer-title").textContent = item ? "继续写这件事" : "添一件想做的事";
     const title = field("想做什么", item?.text), motive = field("为什么想做", item?.motivation, "textarea");
     const kind = el("select"); kind.setAttribute("aria-label", "事项类型"); for (const [value, name] of Object.entries(KIND)) kind.add(new Option(name, value));
@@ -108,6 +124,7 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
     title.input.required = true; if (!drawer.open) drawer.showModal(); title.input.focus();
   }
   function defer(item) {
+    drawerRevision++;
     body.replaceChildren(); $("life-drawer-title").textContent = "留到合适的时候";
     const time = field("什么时候再继续", "", "datetime-local"), reason = field("为什么先放一放", item.obstacle, "textarea");
     body.append(time.wrap, reason.wrap, button("保存时间", () => {
@@ -117,6 +134,7 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
     }, "primary"));
   }
   function outcome(item) {
+    drawerRevision++;
     body.replaceChildren(); $("life-drawer-title").textContent = "留下真实的结果";
     const reason = field("实际结果或放下的原因", "", "textarea");
     body.append(reason.wrap, el("p", "muted", "手动确认会明确记录为管理员调整，不会被写成模型或工具完成的成果。"),
@@ -137,6 +155,7 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
   $("life-collection").addEventListener("click", event => {
     $("life-tools").removeAttribute("open");
     selected = null; opener = event.currentTarget; body.replaceChildren(); $("life-drawer-title").textContent = "日子留下的东西";
+    drawerSession = data.session; drawerRevision++;
     const interests = Object.values(data.interests || {}).filter(item => (item.days || []).length >= 3 && item.sessions >= 3 && item.minutes >= 45);
     body.append(line("慢慢形成的兴趣", interests.length ? "至少三个不同日子里的实际投入，才会在后续选择中成为参考。" : "还在积累；一时兴起不会改变她的长期喜好。"));
     for (const item of interests) body.append(line(item.label, `${item.days.length} 天 · ${item.sessions} 次 · 累计 ${Math.round(item.minutes)} 分钟`));

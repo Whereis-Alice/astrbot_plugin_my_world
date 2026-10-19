@@ -327,7 +327,7 @@ class ActionsRunMixin:
         ):
             outcome.notes.append(f"自主搭话已暂停，跳过发言动作 {definition.id}")
             if from_plan and state.current_plan is not None:
-                advance(state)
+                advance(state, status="skipped")
             return False
         blocked = self._extension_gate(definition, state)
         if blocked:
@@ -438,6 +438,7 @@ class ActionsRunMixin:
                 # 记下"这一步属于哪份计划的第几步"：计划中途可能被插进新的安排，
                 # 只凭下标认不出自己，做完时就可能把别人的步骤当成自己的推掉
                 payload["plan_created_at"] = int(state.current_plan.get("created_at") or 0)
+                payload["plan_id"] = state.current_plan.get("id", "")
                 payload["plan_index"] = int(state.current_plan.get("current_step") or 0)
                 payload["matter_id"] = state.current_plan.get("matter_id", "")
                 payload["matter_step_id"] = state.current_plan.get("matter_step_id", "")
@@ -498,7 +499,7 @@ class ActionsRunMixin:
                 # 否则新动作做完之后又会回到旧动作，看着像"同一件事做了两遍"
                 index = self._running_plan_index(state, state.current_plan)
                 if index is not None:
-                    advance(state)
+                    advance(state, status="skipped")
                     outcome.notes.append(
                         f"「{previous.get('desc') or previous.get('type')}」被打断，"
                         "计划里那一步不再接着做"

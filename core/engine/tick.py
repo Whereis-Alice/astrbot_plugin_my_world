@@ -25,6 +25,7 @@ from ..planner import (
     active_plan,
     advance,
     peek_step,
+    same_plan,
 )
 from ..speech_policy import speech_origin
 from ..state import (
@@ -105,17 +106,21 @@ class TickMixin:
             # 正在做的动作被停用了：立刻停下（否则"停用"看起来没生效）
             current = state.current_action or {}
             current_def = self.world.action_map().get(str(current.get("type") or ""))
-            if current and current_def is not None and (not current_def.enabled or current_def.idle):
-                if current_def.id in {"sleep", "nap"}:
+            if current and (current_def is None or not current_def.enabled or current_def.idle):
+                action_id = str(current.get("type") or "")
+                if action_id in {"sleep", "nap"}:
                     self._finish_sleep_rhythm(state, current, interrupted=True)
+                self.pause_matter_action(state, current)
+                if (state.current_plan or {}).get("matter_id") and (state.current_plan or {}).get("matter_id") == current.get("matter_id"):
+                    state.current_plan = None
                 state.current_action = None
                 state.state = STATE_IDLE
                 await self._log_event(
                     state,
                     "skip",
                     {
-                        "action": current_def.id,
-                        "note": f"「{current_def.name or current_def.id}」已停用，动作中止",
+                        "action": action_id,
+                        "note": f"「{current_def.name if current_def else action_id}」已删除或停用，动作中止",
                     },
                 )
 
@@ -322,6 +327,7 @@ class TickMixin:
         if not isinstance(action, dict):
             return
         action["elapsed_ticks"] = int(action.get("elapsed_ticks", 0)) + 1
+        self.settle_matter_work(state, action)
         if int(action.get("elapsed_ticks", 0)) < int(action.get("duration_ticks", 0) or 0):
             return
         await self._finish_action(
@@ -513,18 +519,18 @@ class TickMixin:
         if action.get("from_plan") and state.current_plan is not None:
             plan = state.current_plan
             recorded = action.get("plan_created_at")
-            if recorded is None:
+            if recorded is None and not action.get("plan_id") and not plan.get("id"):
                 # 没记下自己属于哪份计划（老存档、别的来源起跑的）：保持原来的做法
                 advance(state)
             else:
                 try:
-                    same_plan = int(plan.get("created_at") or 0) == int(recorded)
+                    matching_plan = same_plan(action, plan)
                     same_step = plan.get("current_step") is not None and int(
                         plan.get("current_step")
                     ) == int(action.get("plan_index", -1))
                 except (TypeError, ValueError):
-                    same_plan = same_step = False
-                if same_plan and same_step:
+                    matching_plan = same_step = False
+                if matching_plan and same_step:
                     # 计划还是带它起跑的那一份、也还指着它：推掉这一步
                     advance(state)
                 else:
@@ -1037,4 +1043,4 @@ class TickMixin:
         if not executed:
             # 这一步被跳过了（地点/前置条件/缺工具…）。不推进的话它会每个 tick 重试一次。
             outcome.notes.append(f"计划里的「{action.type}」没做成，跳过这一步")
-            advance(state)
+            advance(state, status="skipped")

@@ -100,10 +100,10 @@ def _strip_image_index(text: str) -> str:
 
 
 def _image_fingerprint(source: str) -> str:
-    """一张图的稳定指纹：同一个文件换链接也能认出来。
+    """图片缓存指纹：内容型来源可复用，URL 保留影响内容的参数。
 
     - ``base64://`` 直接对内容算 sha1（协议端把图转成 base64 时最可靠）；
-    - http(s) 去掉 query（临时签名/token 每次都变）、只留路径；
+    - http(s) 保留 query：file、id、尺寸等参数可能决定图片内容；
     - 其它（本地文件、协议端给的 md5 名）原样取用。
     """
 
@@ -119,8 +119,10 @@ def _image_fingerprint(source: str) -> str:
     elif raw.startswith(("http://", "https://")):
         parsed = urllib.parse.urlsplit(raw)
         digest = hashlib.sha1(
-            f"{parsed.netloc}{parsed.path}".encode("utf-8", "ignore")
+            urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, parsed.query, "")).encode("utf-8", "ignore")
         ).hexdigest()
+        # Do not reuse older URL cache rows that discarded content parameters.
+        return f"img:url2:{digest}"
     else:
         digest = hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()
     return f"img:{digest}"
@@ -472,20 +474,21 @@ class AstrBotVision:
             self._inflight[fingerprint] = future
         try:
             caption = await self._describe_one(source, scene)
+            if not caption:
+                # Failed perception is transient, never a durable description.
+                if fingerprint:
+                    self._negative[fingerprint] = time.time()
+                return ""
+            await self._store_look(source, caption)
+            if not future.done():
+                future.set_result(caption)
+            return caption
         finally:
             if fingerprint:
                 self._inflight.pop(fingerprint, None)
-        if not caption:
-            # 失败不写持久缓存：偶发超时不该被永久记成"看不出"
-            if fingerprint:
-                self._negative[fingerprint] = time.time()
+            # Owner cancellation or a storage exception must also release followers.
             if not future.done():
                 future.set_result("")
-            return ""
-        await self._store_look(source, caption)
-        if not future.done():
-            future.set_result(caption)
-        return caption
 
     def _cache_config(self) -> dict[str, Any]:
         try:

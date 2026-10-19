@@ -3710,14 +3710,55 @@ class TestCaptionPrompt(unittest.TestCase):
             plugin.engine.reload_config()
             plugin.db.raw.close()
 
-    def test_fingerprint_ignores_temporary_tokens(self):
-        """同一张图换个临时链接（带 token）也要认成同一张。"""
+    def test_cancelled_or_failed_vision_owner_releases_concurrent_waiters(self):
+        plugin, _ = self._vision_plugin()
+
+        async def check():
+            for cancel in (True, False):
+                entered, release = asyncio.Event(), asyncio.Event()
+
+                async def slow(source, scene):
+                    entered.set()
+                    await release.wait()
+                    raise RuntimeError("识图失败")
+
+                plugin.vision._describe_one = slow
+                source = f"base64://concurrent-{cancel}"
+                owner = asyncio.create_task(plugin.vision._describe_cached(source, ""))
+                await entered.wait()
+                follower = asyncio.create_task(plugin.vision._describe_cached(source, ""))
+                await asyncio.sleep(0)
+                if cancel:
+                    owner.cancel()
+                else:
+                    release.set()
+                with self.assertRaises(asyncio.CancelledError if cancel else RuntimeError):
+                    await owner
+                self.assertEqual(await asyncio.wait_for(follower, .5), "")
+                self.assertFalse(plugin.vision._inflight)
+
+                async def succeeds(source, scene):
+                    return "重新识别的真实画面"
+
+                plugin.vision._describe_one = succeeds
+                self.assertEqual(await plugin.vision._describe_cached(source, ""), "重新识别的真实画面")
+
+        try:
+            asyncio.run(check())
+        finally:
+            plugin.db.raw.close()
+
+    def test_url_fingerprint_preserves_content_parameters(self):
+        """A shared URL path can return different images selected by its query."""
 
         fingerprint = self.module._image_fingerprint
-        self.assertEqual(
+        self.assertNotEqual(
             fingerprint("https://cdn.example/a.jpg?token=1&t=2"),
             fingerprint("https://cdn.example/a.jpg?token=9"),
         )
+        self.assertNotEqual(fingerprint("https://cdn.example/image?id=1"), fingerprint("https://cdn.example/image?id=2"))
+        self.assertNotEqual(fingerprint("https://cdn.example/a.jpg?w=40"), fingerprint("https://cdn.example/a.jpg?w=400"))
+        self.assertEqual(fingerprint("https://cdn.example/a.jpg?id=1#one"), fingerprint("https://cdn.example/a.jpg?id=1#two"))
         self.assertNotEqual(
             fingerprint("https://cdn.example/a.jpg"), fingerprint("https://cdn.example/b.jpg")
         )

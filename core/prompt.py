@@ -1255,7 +1255,7 @@ class PromptBuilder:
         done = [
             self.action_label(step.get("action"))
             for step in steps[:current]
-            if isinstance(step, dict) and step.get("action")
+            if isinstance(step, dict) and step.get("action") and step.get("status") == "done"
         ]
         # 「下一步」如果就是她手上正在做的这件事，它已经在第一行写过了，这里别重复
         running = -1
@@ -1292,7 +1292,8 @@ class PromptBuilder:
                 if last.get("reason"):
                     line += f"（原因：{_one_line(last.get('reason'), 30)}）"
                 if last.get("at"):
-                    line += f"，那是 t={int(last.get('at'))} 的事，已经做完了"
+                    line += f"（安排于 t={int(last.get('at'))}）"
+                line += "；这是当时的打算，是否完成须以实际执行记录为准。"
                 lines.append(line)
         if not lines:
             return ""

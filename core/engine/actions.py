@@ -20,6 +20,7 @@ from ..planner import (
     active_plan,
     advance,
     create_plan,
+    same_plan,
 )
 from ..speech_policy import speech_origin
 from ..state import (
@@ -407,10 +408,10 @@ class ActionsMixin:
         if not action or not action.get("from_plan"):
             return None
         recorded = action.get("plan_created_at")
-        if recorded is None:
+        if recorded is None and not action.get("plan_id"):
             return None
         try:
-            if int(recorded) != int(plan.get("created_at") or 0):
+            if not same_plan(action, plan):
                 return None
             index = int(action.get("plan_index") or 0)
         except (TypeError, ValueError):
@@ -764,7 +765,7 @@ class ActionsMixin:
                 # 这一步没真做，被揣进临睡期了：得从计划里划掉，否则醒来还会再做一遍。
                 # 同一串里排在它后面的动作接在睡觉之后，等她睡下再继续。
                 if from_plan:
-                    advance(state)
+                    advance(state, status="deferred")
                 rest = queued_actions[index + 1 :]
                 if rest:
                     self._queue_steps(

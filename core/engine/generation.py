@@ -1211,6 +1211,7 @@ class GenerationMixin:
                 stopped = str(action.get("type") or "")
                 if stopped in {"sleep", "nap"}:
                     self._finish_sleep_rhythm(state, action, interrupted=True)
+                self.pause_matter_action(state, action)
                 state.current_action = None
                 state.state = STATE_IDLE
             else:

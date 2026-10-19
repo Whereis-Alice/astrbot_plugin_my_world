@@ -225,6 +225,12 @@ class SleepRhythmMixin:
             state.sleep_rhythm["retry_at"] = self._now() + 3600
             await self._log_event(state, "skip", {"action": "sleep", "note": "自主作息需要启用睡觉动作并配置可用的睡眠地点"})
             return
+        if state.node_id != target:
+            movement = self.world.action_map().get("walk_to")
+            if movement is None or not movement.enabled or find_path(self.world.adjacent(), state.node_id, target) is None:
+                state.sleep_rhythm["retry_at"] = self._now() + 900
+                await self._log_event(state, "skip", {"action": "sleep", "note": "无法走到睡眠地点，请检查地图连线与移动动作；15 分钟后重试"})
+                return
         current = state.current_action or {}
         if current or active_plan(state):
             # 普通睡意先收尾；过劳时可以终止持续动作，但先走完正在行走的这一段。
@@ -236,17 +242,13 @@ class SleepRhythmMixin:
                 return
             if not force or current.get("type") == "walk_to":
                 return
+            self.pause_matter_action(state, current)
             state.current_action = None
             state.current_plan = None
             state.state = STATE_IDLE
             await self._log_event(state, "interrupt", {"action": current.get("type"), "note": "过劳保护，结束当前事情去休息"})
         steps = []
         if state.node_id != target:
-            movement = self.world.action_map().get("walk_to")
-            if movement is None or not movement.enabled or find_path(self.world.adjacent(), state.node_id, target) is None:
-                state.sleep_rhythm["retry_at"] = self._now() + 900
-                await self._log_event(state, "skip", {"action": "sleep", "note": "无法走到睡眠地点，请检查地图连线与移动动作；15 分钟后重试"})
-                return
             steps.append({"action": "walk_to", "target_node": target})
         steps.append({"action": "sleep", "duration": int(state.sleep_rhythm["duration_seconds"])})
         plan = create_plan(steps=steps, world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds,

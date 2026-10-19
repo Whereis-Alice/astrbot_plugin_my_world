@@ -369,6 +369,7 @@ class SleepMixin:
         state.drowsy_started_world_time = int(state.world_time or 0)
         state.drowsy_started_at = float(now)
         state.drowsy_day = self._today_key(now)
+        self.pause_matter_action(state, state.current_action or {})
         state.current_action = None
         state.state = STATE_DROWSY
         state.pending_arrival = False

@@ -127,7 +127,7 @@ class BackgroundMixin:
                 state.goodmorning_day = self._today_key(now)
         elif current:
             # Preserve project identity; a missing runtime cannot prove work actually happened.
-            self.pause_matter_action(state, current)
+            self.pause_matter_action(state, current, at=previous)
             state.current_action = None
             state.current_plan = None
             state.state = "idle"

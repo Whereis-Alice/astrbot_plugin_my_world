@@ -37,6 +37,7 @@
 | --- | --- |
 | [设计理念](design-philosophy.md) | 世界与角色行为的目标。 |
 | [生活与关系设计审视](life-design-review.md) | 各模块的职责、改进方向与实际边界。 |
+| [从 Giftia 学习什么](giftia-comparison.md) | 固定源码对照、可借鉴细节与本插件应保留的方向。 |
 | [开发说明](dev.md) | 代码结构、本地测试与 GitHub API 提交。 |
 
 界面示例见 [images](images)。

@@ -4141,7 +4141,7 @@ class TestPromptBuilder(unittest.TestCase):
             },
             current_plan={
                 "steps": [
-                    {"action": "walk_to"},
+                    {"action": "walk_to", "status": "done"},
                     {"action": "walk_to"},
                     {"action": "take_photo"},
                 ],
@@ -4157,6 +4157,15 @@ class TestPromptBuilder(unittest.TestCase):
         self.assertIn("写进安排 ≠ 已经做完", text)
         # 手上这件已经在第一行写过，不该在排队那一行重复
         self.assertEqual(text.count("正在走去天台"), 1)
+
+    def test_in_progress_never_infers_success_from_position_alone(self):
+        state = WorldState(session_id="s1", current_plan={
+            "steps": [{"action":"walk_to", "status":"skipped"},
+                      {"action":"sleep", "status":"deferred"},
+                      {"action":"take_photo"}, {"action":"say", "status":"pending"}],
+            "current_step":3,
+        })
+        self.assertNotIn("已经做完的", self.builder._in_progress_block(state))
 
     def test_soft_wake_prompt_says_nobody_at_her(self):
         """顺着话题对她说的话：不能写成「有人 @ 你」。"""
