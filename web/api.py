@@ -526,7 +526,8 @@ class WebApiMixin:
             return guard
         data = SocialDirectory(self.engine).catalog(q=str(request.query.get("q", "")),
             page=_query_int("page", 1), size=_query_int("size", 24),
-            filter_by=str(request.query.get("filter", "all")))
+            filter_by=str(request.query.get("filter", "all")),
+            sort=str(request.query.get("sort", "recent")))
         data["rules"] = self._relationship_rules()
         return json_response(data)
 

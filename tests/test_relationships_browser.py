@@ -19,6 +19,7 @@ SOCIAL_BRIDGE = r"""
   window.socialRules = __SOCIAL_RULES__;
   window.socialWrites = [];
   window.socialReads = [];
+  window.socialCatalogReads = [];
   window.socialPending = [];
   window.socialDelay = false;
   window.socialFailure = false;
@@ -28,10 +29,18 @@ SOCIAL_BRIDGE = r"""
   window.AstrBotPluginPage = {...original,
     apiGet: async (endpoint, params = {}) => {
       if (endpoint === 'relationships') {
+        socialCatalogReads.push(clone(params));
         const query = String(params.q || '');
         const people = socialPeople.filter(item => (!query || [item.name, item.user_id].some(x => x.includes(query)))
           && (params.filter !== 'configured' || item.baseline)
           && (params.filter !== 'unconfigured' || !item.baseline));
+        const average = item => item.sessions.length ? item.sessions.reduce((sum, s) => sum + s.affinity, 0) / item.sessions.length : item.baseline?.affinity || 0;
+        people.sort((a, b) => {
+          const key = item => ({affinity: -average(item), affinity_asc: average(item), sessions: -item.sessions.length,
+            name: item.name, recent: -Math.max(0, ...item.sessions.map(s => s.last_seen_at || 0))})[params.sort || 'recent'];
+          const x = key(a), y = key(b);
+          return (x < y ? -1 : x > y ? 1 : 0) || a.user_id.localeCompare(b.user_id);
+        });
         return {people: clone(people), page: 1, pages: 1, total: people.length,
           people_total: socialPeople.length, baselines_total: socialPeople.filter(x => x.baseline).length,
           sessions_total: 2, rules: rules()};
@@ -162,6 +171,111 @@ class RelationshipsBrowserTests(unittest.TestCase):
         self.assertEqual(posted["params"]["config_scope"], "")
         expect(self.page.locator(".social-scope-score")).to_have_text(["51", "51"])
         self.host.screenshot(path=str(self.shots / "social-detail-desktop.png"))
+        self.assertEqual(self.errors, [])
+
+    def test_affinity_preview_explains_caps_and_accepts_precise_values(self):
+        self.page.locator('#relationships-add').click()
+        self.page.get_by_label('QQ 号', exact=True).fill('987654321')
+        self.page.get_by_role('button', name='继续设置 →', exact=True).click()
+        editor = self.page.locator('.social-start-section')
+        number = editor.get_by_label('统一起点好感', exact=True)
+        preview = editor.locator('.social-distance-preview')
+        reason = editor.locator('.social-distance-reason')
+        number.fill('31.15')
+        expect(preview).to_have_text('预计相处档位 · 客气')
+        expect(reason).to_contain_text('好感对应「朋友」')
+        expect(reason).to_contain_text('默认关系「陌生人」上限')
+        editor.get_by_role('button', name='朋友', exact=True).click()
+        expect(preview).to_have_text('预计相处档位 · 朋友')
+        slider = editor.get_by_label('拖动调整好感')
+        slider.focus()
+        slider.press('End')
+        expect(number).to_have_value('100')
+        expect(reason).to_contain_text('关系「朋友」上限')
+        slider.press('Home')
+        expect(preview).to_have_text('预计相处档位 · 敌意')
+        number.fill('')
+        expect(preview).to_have_text('等待有效好感值')
+        number.fill('31.15')
+        self.host.screenshot(path=str(self.shots / 'affinity-distance-explanation.png'))
+        editor.get_by_role('button', name='保存并应用到所有会话', exact=True).click()
+        self.page.wait_for_function('socialWrites.length === 1')
+        self.assertEqual(self.page.evaluate('socialWrites[0].params.affinity'), 31.15)
+        self.assertEqual(self.errors, [])
+
+    def test_distance_preview_matches_backend_for_boundaries_and_identity_limits(self):
+        profile = parse_world(default_world())[0].profile
+        cases = []
+        for crossing in (False, True):
+            config = profile.model_copy(deep=True)
+            config.bond_by_name('朋友').allow_boundary_crossing = crossing
+            for names in ([], ['陌生人'], ['朋友'], ['主人'], ['朋友', '主人'], ['朋友', '讨厌的人'], ['敌人']):
+                for value in (-100, -40, -10, 0, 9.9, 10, 30, 31.15, 55, 80, 100):
+                    expected = config.level_for(value, cap=config.bond_cap(names), floor=config.bond_floor(names)).name
+                    cases.append({'rules': config.model_dump(mode='json'), 'names': names, 'value': value, 'expected': expected})
+        results = self.page.evaluate('''async cases => {
+          const {distancePreview} = await import('./people-ui.js');
+          return cases.map(c => distancePreview(c.rules, c.value, c.names).name);
+        }''', cases)
+        self.assertEqual(results, [c['expected'] for c in cases])
+
+    def test_sort_menu_orders_current_affinity_and_restores_preference(self):
+        menu = self.page.locator('#relationships-sort')
+        menu.locator('summary').click()
+        menu.get_by_role('radio', name='好感 · 从高到低', exact=True).check()
+        expect(menu).not_to_have_attribute('open', '')
+        expect(self.page.locator('.social-card').first).to_have_attribute('data-qq', '10002')
+        expect(self.page.locator('.social-card').first.locator('.social-sort-value')).to_have_text('平均好感 · 66')
+        menu.locator('summary').click()
+        menu.get_by_role('radio', name='好感 · 从低到高', exact=True).check()
+        expect(self.page.locator('.social-card').first).to_have_attribute('data-qq', '10004')
+        self.assertEqual(self.page.evaluate('socialCatalogReads.at(-1).sort'), 'affinity_asc')
+        self.assertEqual(self.page.evaluate('socialCatalogReads.at(-1).page'), 1)
+        menu.locator('summary').click()
+        self.host.screenshot(path=str(self.shots / 'relationships-sort-desktop.png'))
+        self.host.reload()
+        self.page = self.host.frame(name='editor')
+        menu = self.page.locator('#relationships-sort')
+        self.page.locator('#tabs [data-tab="relationships"]').click()
+        expect(self.page.locator('.social-card').first).to_have_attribute('data-qq', '10004')
+        menu.locator('summary').click()
+        expect(menu.get_by_role('radio', name='好感 · 从低到高', exact=True)).to_be_checked()
+        self.host.set_viewport_size({'width': 390, 'height': 844})
+        bounds = menu.locator('.people-sort-options').bounding_box()
+        self.assertGreaterEqual(bounds['x'], 0)
+        self.assertLessEqual(bounds['x'] + bounds['width'], 390)
+        self.assertGreater(bounds['y'], menu.locator('summary').bounding_box()['y'])
+        self.assertTrue(menu.locator('.people-sort-options').evaluate('''panel => {
+          const b = panel.getBoundingClientRect();
+          return panel.contains(document.elementFromPoint(b.right - 35, b.top + 25));
+        }'''))
+        self.host.screenshot(path=str(self.shots / 'relationships-sort-mobile.png'))
+        self.assertEqual(self.page.evaluate('socialWrites'), [])
+        self.assertEqual(self.errors, [])
+
+    def test_contacts_sort_by_affinity_messages_and_profile(self):
+        self.page.evaluate('''() => {
+          const original = AstrBotPluginPage.apiGet;
+          AstrBotPluginPage.apiGet = async (url, params) => {
+            const result = await original(url, params);
+            if (url !== 'profile/contacts') return result;
+            return {...result, people: result.people.slice(0, 4).map((item, i) => ({...item,
+              affinity: [10, -10, 50, 10][i], message_count: [1, 4, 2, 3][i],
+              weaver: {...item.weaver, completeness: [10, 80, 30, 60][i]}}))};
+          };
+        }''')
+        self.page.locator('#tabs [data-tab="contacts"]').click()
+        expect(self.page.locator('.contact-card')).to_have_count(4)
+        menu = self.page.locator('#contacts-sort')
+        for label, uid in [('好感 · 从高到低', '10003'), ('好感 · 从低到高', '10002'),
+                           ('交谈次数 · 从多到少', '10002'), ('画像完整度 · 从高到低', '10002')]:
+            menu.locator('summary').click()
+            menu.get_by_role('radio', name=label, exact=True).check()
+            expect(self.page.locator('.contact-card').first).to_have_attribute('data-user', uid)
+            expect(menu).not_to_have_attribute('open', '')
+        menu.locator('summary').click()
+        self.host.screenshot(path=str(self.shots / 'contacts-sort-desktop.png'))
+        self.assertEqual(self.page.evaluate('contactWrites'), [])
         self.assertEqual(self.errors, [])
 
     def test_local_editor_does_not_change_starting_point_or_another_conversation(self):

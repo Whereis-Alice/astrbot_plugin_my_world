@@ -1,6 +1,6 @@
 import { createContactWorkbench } from "./contact-workbench.js";
 import { createRelationshipsPage } from "./relationships.js";
-import { personAvatar, personColor } from "./people-ui.js";
+import { personAvatar, personColor, bindPeopleSort } from "./people-ui.js";
 import { openRelationshipRulesEditor } from "./relationship-rules.js";
 import { applyDetailedLevels, DETAILED_LEVELS } from "./relationship-preset.js";
 import { initialiseAppearance, openAppearancePicker } from "./appearance.js";
@@ -4133,10 +4133,13 @@ function bindButtons() {
     });
   });
   if ($("contacts-sort")) {
-    $("contacts-sort").addEventListener("change", () => {
-      ui.contactsSort = $("contacts-sort").value || "recent";
+    ui.contactsSort = bindPeopleSort($("contacts-sort"), [
+      ["recent", "最近联系"], ["affinity", "好感 · 从高到低"], ["affinity_asc", "好感 · 从低到高"],
+      ["name", "称呼顺序"], ["messages", "交谈次数 · 从多到少"], ["profile", "画像完整度 · 从高到低"],
+    ], value => {
+      ui.contactsSort = value;
       renderContactsList();
-    });
+    }, "按当前会话中的联系人数据排序，切换会话后沿用所选方式。");
   }
   document.querySelectorAll("[data-contact-detail-tab]").forEach((button) => {
     button.addEventListener("click", () =>
@@ -15217,16 +15220,19 @@ function renderContactsList() {
       ].some((value) => String(value || "").includes(keyword));
     })
     .sort((left, right) => {
+      const byName = String(left.name || left.user_id || "").localeCompare(String(right.name || right.user_id || ""), "zh-CN")
+        || String(left.user_id).localeCompare(String(right.user_id));
       if (ui.contactsSort === "name") {
-        return String(left.name || "").localeCompare(String(right.name || ""), "zh-CN");
+        return byName;
       }
-      if (ui.contactsSort === "affinity") {
-        return num(right.affinity) - num(left.affinity);
+      if (ui.contactsSort === "affinity" || ui.contactsSort === "affinity_asc") {
+        return (num(right.affinity) - num(left.affinity)) * (ui.contactsSort === "affinity_asc" ? -1 : 1) || byName;
       }
       if (ui.contactsSort === "profile") {
-        return num((right.weaver || {}).completeness) - num((left.weaver || {}).completeness);
+        return num((right.weaver || {}).completeness) - num((left.weaver || {}).completeness) || byName;
       }
-      return num(right.last_seen_at) - num(left.last_seen_at);
+      if (ui.contactsSort === "messages") return num(right.message_count) - num(left.message_count) || byName;
+      return num(right.last_seen_at) - num(left.last_seen_at) || byName;
     });
   if ($("contacts-count")) $("contacts-count").textContent = `${rows.length} 人`;
   if (!rows.length) {
@@ -16190,32 +16196,43 @@ function renderTicks(data) {
 
 /* ---------------- 左侧导航：收成图标栏 ---------------- */
 
-function setSidebarRail(collapsed) {
+const sidebarRailMedia = matchMedia("(min-width: 761px) and (max-width: 1280px)");
+let sidebarRailPreference = null;
+
+function setSidebarRail(collapsed, persist = true) {
   const app = $("app");
   if (!app) return;
   app.classList.toggle("side-rail", Boolean(collapsed));
   const toggle = $("sidebar-toggle");
   if (toggle) {
     toggle.textContent = collapsed ? "»" : "«";
+    toggle.setAttribute("aria-expanded", String(!collapsed));
     toggle.title = collapsed
       ? "展开左侧导航"
       : "收起左侧导航（收起来只剩图标，鼠标停上去看名字）";
   }
-  try {
-    window.localStorage.setItem("mw-sidebar-rail", collapsed ? "1" : "0");
-  } catch (error) {
-    /* 隐私模式下写不进缓存，本次仍然生效 */
+  if (persist) {
+    sidebarRailPreference = Boolean(collapsed);
+    try {
+      window.localStorage.setItem("mw-sidebar-rail", collapsed ? "1" : "0");
+    } catch (error) {
+      /* 隐私模式下写不进缓存，本次仍然生效 */
+    }
   }
 }
 
 function applySidebarRail() {
-  let saved = "0";
+  let saved = null;
   try {
-    saved = window.localStorage.getItem("mw-sidebar-rail") || "0";
+    saved = window.localStorage.getItem("mw-sidebar-rail");
   } catch (error) {
-    saved = "0";
+    /* 未选择偏好时，跟随可用宽度。 */
   }
-  setSidebarRail(saved === "1");
+  sidebarRailPreference = saved === "1" ? true : saved === "0" ? false : null;
+  setSidebarRail(sidebarRailPreference ?? sidebarRailMedia.matches, false);
+  sidebarRailMedia.addEventListener("change", () => {
+    if (sidebarRailPreference === null) setSidebarRail(sidebarRailMedia.matches, false);
+  });
 }
 
 async function loadMemories() {

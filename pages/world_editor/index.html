@@ -527,6 +527,7 @@
               <button type="button" data-relationship-filter="unconfigured" aria-pressed="false">未设起点</button>
             </div>
             <span class="people-toolbar-spacer"></span>
+            <details id="relationships-sort" class="command-menu people-sort-menu"></details>
             <div id="relationships-pagination" class="people-pagination" aria-label="联系人分页" hidden>
               <button id="relationships-prev" type="button" class="ghost small" aria-label="上一页">‹</button><span id="relationships-page"></span><button id="relationships-next" type="button" class="ghost small" aria-label="下一页">›</button>
             </div>
@@ -555,12 +556,9 @@
               <button id="contacts-filter-detailed" class="pill" type="button">有详细画像</button>
               <button id="contacts-filter-locked" class="pill" type="button">有字段锁</button>
               <button id="contacts-filter-duplicates" class="pill" type="button">多条记录</button>
-              <select id="contacts-sort" aria-label="联系人排序">
-                <option value="recent">最近联系</option><option value="name">称呼</option>
-                <option value="affinity">好感度</option><option value="profile">画像完整度</option>
-              </select>
             </div></details>
             <span class="people-toolbar-spacer"></span>
+            <details id="contacts-sort" class="command-menu people-sort-menu"></details>
             <details id="contacts-view-menu" class="command-menu contacts-view-menu"><summary><span id="contacts-view-label">通讯录</span></summary>
             <div id="contacts-views-bar" class="command-menu-body contacts-subtabs" aria-label="通讯录视图">
               <button type="button" class="on" data-contacts-view="contacts">通讯录</button>

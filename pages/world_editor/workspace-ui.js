@@ -20,6 +20,12 @@ export function initialiseWorkspace() {
   };
   document.querySelectorAll("#tabs button[data-tab]").forEach(button => {
     if (button.classList.contains("active")) button.setAttribute("aria-current", "page");
+    const label = document.createElement("span");
+    label.className = "nav-label";
+    label.textContent = button.textContent.trim();
+    button.replaceChildren(label);
+    button.setAttribute("aria-label", label.textContent);
+    button.title = label.textContent;
     const icon = document.createElement("span");
     icon.className = "nav-icon";
     icon.setAttribute("aria-hidden", "true");

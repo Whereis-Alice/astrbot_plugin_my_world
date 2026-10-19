@@ -305,12 +305,49 @@ class ContactsBrowserTests(unittest.TestCase):
         self.page.locator('#sidebar-toggle').click()
         button = self.page.locator('button[data-tab="contacts"]')
         def style():
-            return button.evaluate("node => {const s = getComputedStyle(node, '::before'); return [s.position, s.width, s.height, s.fontSize, s.backgroundColor]}")
+            return button.locator('.nav-icon').bounding_box()
         before = style()
         self.page.locator('button[data-tab="status"]').click()
         self.assertEqual(style(), before)
         button.click()
         self.assertEqual(style(), before)
-        self.assertEqual(before[0], 'static')
+        self.assertEqual(before['width'], 18)
         self.host.screenshot(path=str(self.shots / "contacts-rail.png"))
+        self.assertEqual(self.errors, [])
+
+    def test_sidebar_manual_and_automatic_rails_share_one_centerline(self):
+        def geometry(width, collapsed, expected_width):
+            self.host.set_viewport_size({"width": width, "height": 900})
+            is_collapsed = self.page.locator('#app').evaluate("node => node.classList.contains('side-rail')")
+            if collapsed != is_collapsed:
+                self.page.locator('#sidebar-toggle').click()
+            self.assertEqual(self.page.locator('.sidebar').bounding_box()['width'], expected_width)
+            icons = self.page.locator('#tabs .nav-icon').evaluate_all("nodes => nodes.map(n => {const b=n.getBoundingClientRect(); return [b.x+b.width/2,b.width,b.height]})")
+            center = icons[0][0]
+            for x, w, h in icons:
+                self.assertAlmostEqual(x, center, delta=.1)
+                self.assertEqual((w, h), (18, 18))
+            logo = self.page.locator('.brand-logo').bounding_box()
+            self.assertAlmostEqual(logo['x'] + logo['width']/2, center, delta=.1)
+            widths = [self.page.locator(s).bounding_box()['width'] for s in ('.sidebar .brand', '.sidebar .tabs', '.sidebar-foot')]
+            self.assertLess(max(widths) - min(widths), .1)
+            for button in self.page.locator('#tabs button').all():
+                self.assertEqual(button.bounding_box()['width'], widths[0])
+            return self.page.locator('.sidebar .tabs').bounding_box()['width']
+        geometry(1600, False, 208)
+        manual = geometry(1600, True, 64)
+        self.host.screenshot(path=str(self.shots / 'sidebar-manual-rail.png'))
+        self.page.evaluate("localStorage.removeItem('mw-sidebar-rail')")
+        self.host.set_viewport_size({"width": 1024, "height": 900})
+        self.host.reload()
+        self.page = self.host.frame(name='editor')
+        expect(self.page.locator('#app')).to_have_class('app side-rail')
+        self.assertEqual(manual, geometry(1024, True, 64))
+        geometry(1024, False, 208)
+        expect(self.page.locator('#sidebar-toggle')).to_have_attribute('aria-expanded', 'true')
+        self.host.reload()
+        self.page = self.host.frame(name='editor')
+        expect(self.page.locator('.sidebar')).to_have_css('width', '208px')
+        geometry(1600, False, 208)
+        self.host.screenshot(path=str(self.shots / 'sidebar-expanded.png'))
         self.assertEqual(self.errors, [])

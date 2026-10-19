@@ -211,6 +211,43 @@ class SocialDirectoryApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["status_code"], 400)
         self.assertIsNone(self.plugin.engine.profiles.db.relationship_baseline(self.uid))
 
+    async def test_catalog_sorts_all_people_before_paging_by_current_session_average(self):
+        db = self.plugin.db.raw
+        with db.atomic():
+            for index in range(30):
+                db.upsert_user_profile(group_id=self.session, user_id=str(30000 + index),
+                    payload={"qq_name": f"Person {index:02d}"}, affinity=index - 15,
+                    first_seen_at=1, last_seen_at=index + 1, message_count=1, digest="")
+            db.upsert_user_profile(group_id=self.other, user_id="30000", payload={},
+                affinity=100, first_seen_at=1, last_seen_at=2, message_count=1, digest="")
+            # A stale seed must not override the current session's low score.
+            db.save_relationship_baseline("30001", {"name": "Person 01", "affinity": 99, "relations": []})
+            # A preconfigured stranger has no sessions: use the seed as fallback.
+            db.save_relationship_baseline("40000", {"name": "Future", "affinity": 60, "relations": []})
+        SocialDirectory = self.plugin.api_relationships.__func__.__globals__["SocialDirectory"]
+        from unittest.mock import patch
+        with patch.object(SocialDirectory, "person", wraps=SocialDirectory(self.plugin.engine).person) as person:
+            first = (await self.call("relationships", sort="affinity"))["data"]
+            self.assertEqual(person.call_count, 24)  # Hidden pages don't need views.
+        self.assertEqual([item["user_id"] for item in first["people"][:3]], ["40000", "30000", "30029"])
+        second = (await self.call("relationships", sort="affinity", page=2))["data"]
+        self.assertEqual(second["pages"], 2)
+        ids = [item["user_id"] for item in first["people"] + second["people"]]
+        self.assertEqual(len(set(ids)), 31)
+        self.assertEqual(ids[-1], "30001")
+        ascending = (await self.call("relationships", sort="affinity_asc"))["data"]
+        self.assertEqual(ascending["people"][0]["user_id"], "30001")
+        recent = (await self.call("relationships", sort="recent"))["data"]
+        self.assertEqual(recent["people"][0]["user_id"], "30029")
+        sessions = (await self.call("relationships", sort="sessions"))["data"]
+        self.assertEqual(sessions["people"][0]["user_id"], "30000")
+        named = (await self.call("relationships", sort="name"))["data"]
+        self.assertEqual(named["people"][0]["user_id"], "40000")
+        filtered = (await self.call("relationships", sort="affinity", filter="configured", q="Person"))["data"]
+        self.assertEqual([row["user_id"] for row in filtered["people"]], ["30001"])
+        fallback = (await self.call("relationships", sort="unknown"))["data"]
+        self.assertEqual(fallback["sort"], "recent")
+
     async def test_global_apply_ignores_the_config_scope_selected_on_other_pages(self):
         self.add_session()
         result = await self.apply(config_scope=self.other)

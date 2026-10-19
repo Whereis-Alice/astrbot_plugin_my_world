@@ -1,4 +1,4 @@
-import { personAvatar, personColor, socialRange, distanceFor } from "./people-ui.js";
+import { personAvatar, personColor, socialRange, distancePreview, bindPeopleSort } from "./people-ui.js";
 import { renderRelationshipOverview, renderRelationshipHistory, describeMiss } from "./contact-relationship.js";
 
 /** One identity, many independent conversations. No model calls or writes on read. */
@@ -6,7 +6,7 @@ export function createRelationshipsPage({ root, el, apiGet, apiPost, toast,
   formatStamp, confirm, openRules, openContact }) {
   const $ = id => root.querySelector(`#${id}`);
   let data = null, person = null, revision = 0, detailRevision = 0;
-  let page = 1, filter = "all", searchTimer, busy = false, dirty = false, opener = null;
+  let page = 1, filter = "all", sort = "recent", searchTimer, busy = false, dirty = false, opener = null;
   const grid = $("relationships-grid"), drawer = $("relationship-drawer");
   const body = $("relationship-body"), scrim = $("relationship-scrim");
   const globalGet = (url, params = {}) => apiGet(url, { ...params, config_scope: "" });
@@ -71,6 +71,11 @@ export function createRelationshipsPage({ root, el, apiGet, apiPost, toast,
       const changed = item.baseline && item.sessions.some(s => Number(s.affinity) !== Number(item.baseline.affinity)
         || [...s.relations].sort().join("|") !== [...item.baseline.relations].sort().join("|"));
       sessions.append(el("span", "social-card-scope", `${item.sessions.length} 个会话${changed ? " · 已有独立变化" : ""}`));
+      if (sort.startsWith("affinity")) {
+        const scores = item.sessions.map(scope => Number(scope.affinity)).filter(Number.isFinite);
+        const average = scores.length ? scores.reduce((sum, value) => sum + value, 0) / scores.length : Number(item.baseline?.affinity || 0);
+        sessions.append(el("span", "social-sort-value", `${scores.length ? "平均好感" : "起点好感"} · ${Number(average.toFixed(2))}`));
+      }
       for (const scope of item.sessions.slice(0, 2)) {
         const row = el("span", "social-session-line");
         row.append(el("span", "", scope.label), el("b", "", String(Number(Number(scope.affinity).toFixed(1)))));
@@ -94,7 +99,7 @@ export function createRelationshipsPage({ root, el, apiGet, apiPost, toast,
     grid.setAttribute("aria-busy", "true");
     if (!data) empty(grid, "正在整理她认识的人…");
     try {
-      const result = await globalGet("relationships", { q: $("relationships-search").value.trim(), page, filter });
+      const result = await globalGet("relationships", { q: $("relationships-search").value.trim(), page, filter, sort });
       if (request !== revision) return;
       data = result;
       page = result.page || 1;
@@ -149,7 +154,7 @@ export function createRelationshipsPage({ root, el, apiGet, apiPost, toast,
     number.type = "number";
     number.min = rules.affinity_min ?? -100;
     number.max = rules.affinity_max ?? 100;
-    number.step = "0.1";
+    number.step = "any";
     number.value = String(value);
     number.required = true;
     number.setAttribute("aria-label", baseline ? "统一起点好感" : "此会话好感");
@@ -158,14 +163,25 @@ export function createRelationshipsPage({ root, el, apiGet, apiPost, toast,
     score.append(numberLabel, distance);
     const range = el("input", "social-slider");
     range.type = "range";
-    range.min = number.min; range.max = number.max; range.step = number.step; range.value = number.value;
+    range.min = number.min; range.max = number.max; range.step = "0.1"; range.value = number.value;
     range.setAttribute("aria-label", "拖动调整好感");
     const limits = el("div", "social-scale");
     limits.append(el("span", "", range.min), el("span", "", "中性"), el("span", "", range.max));
     const group = el("fieldset", "social-identity-picker");
     group.append(el("legend", "", "关系身份"), el("p", "people-muted", "可选择多个能并存的身份。同一替代组或槽位只保留一种。"));
     const picker = el("div", "social-picker-options");
-    const sync = () => { distance.textContent = `预计相处档位 · ${distanceFor(rules, value, names)}`; };
+    const explanation = el("p", "social-distance-reason");
+    distance.setAttribute("aria-live", "polite");
+    const sync = () => {
+      if (!Number.isFinite(value) || value < Number(number.min) || value > Number(number.max)) {
+        distance.textContent = "等待有效好感值";
+        explanation.textContent = `请输入 ${number.min} 至 ${number.max} 之间的好感度。`;
+        return;
+      }
+      const preview = distancePreview(rules, value, names);
+      distance.textContent = `预计相处档位 · ${preview.name}`;
+      explanation.textContent = preview.reason;
+    };
     const render = () => {
       picker.replaceChildren();
       for (const bond of rules.bonds || []) {
@@ -194,10 +210,10 @@ export function createRelationshipsPage({ root, el, apiGet, apiPost, toast,
     error.setAttribute("role", "alert");
     const save = el("button", "primary social-apply", baseline ? "保存并应用到所有会话" : "保存此会话");
     save.type = "submit";
-    const onNumber = () => { value = Number(number.value); range.value = number.value; mark(); sync(); };
+    const onNumber = () => { value = number.valueAsNumber; if (Number.isFinite(value)) range.value = number.value; mark(); sync(); };
     number.addEventListener("input", onNumber);
     range.addEventListener("input", () => { number.value = range.value; onNumber(); });
-    form.append(score, range, limits, group);
+    form.append(score, range, limits, explanation, group);
     if (baseline) form.append(el("p", "social-apply-note", "保存后，所有现有会话的当前好感与关系会被替换为以上设定；新会话也以此起步。之后各自发展，经历与历史记录保留。"));
     form.append(error, save);
     form.addEventListener("submit", async event => {
@@ -362,6 +378,10 @@ export function createRelationshipsPage({ root, el, apiGet, apiPost, toast,
     form.addEventListener("submit", event => { event.preventDefault(); if (form.reportValidity()) select(input.value.trim()); });
     body.replaceChildren(form); input.focus();
   }
+  sort = bindPeopleSort($("relationships-sort"), [
+    ["recent", "最近互动"], ["affinity", "好感 · 从高到低"], ["affinity_asc", "好感 · 从低到高"],
+    ["sessions", "会话数量 · 从多到少"], ["name", "名称顺序"],
+  ], value => { sort = value; page = 1; reload(); }, "好感按各会话当前值的平均数排序；尚无会话时使用统一起点。最近互动按最后联系时间排序，未交谈的人排在末尾。");
   $("relationships-search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => {page = 1; reload();}, 250); });
   root.querySelectorAll("[data-relationship-filter]").forEach(button => button.addEventListener("click", () => {
     filter = button.dataset.relationshipFilter; page = 1;

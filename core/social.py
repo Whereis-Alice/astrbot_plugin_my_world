@@ -194,36 +194,50 @@ class SocialDirectory:
         return {"user_id": user_id, "name": name or user_id, "baseline": baseline, "sessions": scopes}
 
     def catalog(self, *, q: str = "", page: int = 1, size: int = 24,
-                filter_by: str = "all") -> dict[str, Any]:
+                filter_by: str = "all", sort: str = "recent") -> dict[str, Any]:
         # Index once before reading the visible cards; hidden pages don't incur
         # profile/view queries. There is no arbitrary first-200-people cutoff.
         index: dict[str, dict[str, Any]] = {}
         for baseline in self.db.relationship_baselines():
             index[baseline["user_id"]] = {"name": baseline.get("name", ""), "baseline": True,
-                                           "updated_at": baseline["updated_at"], "texts": []}
+                "affinity": baseline["affinity"], "last_seen_at": 0, "scores": [], "texts": []}
         for row in self.db.all_user_profiles():
             uid = row["user_id"]
             if not re.fullmatch(r"[1-9][0-9]{0,19}", uid):
                 continue
-            item = index.setdefault(uid, {"name": "", "baseline": False, "updated_at": 0, "texts": []})
+            item = index.setdefault(uid, {"name": "", "baseline": False, "affinity": 0,
+                "last_seen_at": 0, "scores": [], "texts": []})
             payload = row["payload"]
             item["name"] = item["name"] or payload.get("call_me") or payload.get("qq_name") or uid
             item["texts"].extend([str(payload.get("qq_name", "")), str(payload.get("call_me", "")),
                                    str(payload.get("note", ""))])
-            item["updated_at"] = max(item["updated_at"], row["last_seen_at"])
+            item["last_seen_at"] = max(item["last_seen_at"], row["last_seen_at"])
+            item["scores"].append(float(row["affinity"]))
         query = q.casefold().strip()
         users = [uid for uid, item in index.items()
                  if (not query or query in " ".join([uid, str(item["name"]), *item["texts"]]).casefold())
                  and (filter_by != "configured" or item["baseline"])
                  and (filter_by != "unconfigured" or not item["baseline"])]
-        users.sort(key=lambda uid: (-index[uid]["updated_at"], uid))
+        if sort not in {"recent", "affinity", "affinity_asc", "sessions", "name"}:
+            sort = "recent"
+
+        def order(uid: str) -> tuple:
+            item = index[uid]
+            scores = item["scores"]
+            average = sum(scores) / len(scores) if scores else float(item["affinity"])
+            primary = {"recent": -item["last_seen_at"], "affinity": -average,
+                       "affinity_asc": average, "sessions": -len(scores),
+                       "name": str(item["name"] or uid).casefold()}[sort]
+            return primary, uid
+
+        users.sort(key=order)
         size = max(1, min(60, size))
         pages = max(1, math.ceil(len(users) / size))
         page = max(1, min(page, pages))
         return {"people": [self.person(uid) for uid in users[(page - 1) * size:page * size]],
                 "total": len(users), "people_total": len(index),
                 "baselines_total": sum(bool(x["baseline"]) for x in index.values()),
-                "page": page, "pages": pages,
+                "page": page, "pages": pages, "sort": sort,
                 "sessions_total": len(self.engine.sessions.sessions)}
 
     def apply(self, payload: dict[str, Any], *, only_session: str = "") -> dict[str, Any]:
