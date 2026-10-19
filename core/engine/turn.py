@@ -103,7 +103,7 @@ class TurnMixin:
                 other_context="",
                 pronoun=pronounce_for(getattr(self.world, "gender", "female")),
             )
-            prompt += "\n\n# 基础人设（判断行为的依据，不得改写）\n" + persona_text[:6000]
+            prompt += "\n\n# 基础人设（判断行为的依据，不得改写）\n" + persona_text
             prompt += "\n\n# 本轮可用的直接发言证据\n" + json.dumps(sources, ensure_ascii=False)
             prompt += "\n\n" + self._own_topic_block(state, ctx)
         if tool_trace:
@@ -134,13 +134,14 @@ class TurnMixin:
                     or state.session_id != state_key or not self.is_enabled(session_id)):
                 return None
             if parsed.reasoning:
-                state.note_reasoning(parsed.reasoning, source="reflect")
+                state.note_reasoning(parsed.reasoning, source="reflect", session_id=session_id)
             # 复盘里那句「心里冒出来的一两句」也存下来：这样每聊一轮，
             # 「内心活动」都会跟着动，而不是等她自己想起来写 think 动作。
             self._remember_inner_thought(
                 state,
                 str((parsed.reasoning or {}).get("inner") or ""),
                 source="聊完一轮",
+                dialogue_session=session_id,
                 # 这一轮是回谁的、对方说了什么、她回了什么：内心活动那一页要看得见
                 target=str(user_name or user_id or ""),
                 quote=str(user_text or ""),

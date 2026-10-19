@@ -109,6 +109,14 @@ class RecalledMemory:
     source: str = ""
     session_id: str = ""
 
+    @property
+    def private_matter(self) -> bool:
+        return self.source == "life_matter" and bool(self.participants or self.related_users)
+
+    @property
+    def source_scoped(self) -> bool:
+        return self.source == "chat_browse" or self.private_matter
+
     def render(self, *, stamp: str = "") -> str:
         """渲染成提示词里的一行；``stamp`` 是日期标签，例如 ``09-11``。"""
 
@@ -295,7 +303,7 @@ class MemoryEngine:
         )
         if len(rows) <= max_per_scope:
             return
-        ordered = sorted(rows, key=lambda item: float(item.get("weight", 0.0)))
+        ordered = sorted((row for row in rows if not row.get("pinned")), key=lambda item: float(item.get("weight", 0.0)))
         for item in ordered[: len(rows) - max_per_scope]:
             self.db.delete_memories(memory_id=int(item["id"]))
 
@@ -319,6 +327,7 @@ class MemoryEngine:
         strict_keyword: bool = False,
         record_hits: bool = True,
         include_reading: bool = False,
+        include_private_matters: bool = False,
     ) -> list[RecalledMemory]:
         """召回记忆。返回按分数降序的结果。
 
@@ -360,7 +369,10 @@ class MemoryEngine:
                     nodes=wanted_nodes, memory_type=memory_type,
                     session_ids=wanted_sessions, text_terms=terms,
                 )
-            return [row for row in rows if include_reading or row.get("source") != "chat_browse"]
+            return [row for row in rows
+                    if (include_reading or row.get("source") != "chat_browse")
+                    and (include_private_matters or row.get("source") != "life_matter"
+                         or not (row.get("participants") or row.get("related_users")))]
 
         semantic = self.semantic.cached(session_id, persona_id, keyword, mode=mode, automatic=automatic) if config and config.semantic_enabled and keyword else {}
         semantic = {mid: score for mid, score in semantic.items() if score >= config.semantic_min_similarity}
@@ -439,11 +451,12 @@ class MemoryEngine:
         """Per-speaker retrieval, fair merge, one shared injection budget and no premature hits."""
         queries = self.participant_queries(records, session_id)
         groups = [self.recall(session_id=session_id, persona_id=persona_id, node_id=node_id,
-                  focus_user=uid, keyword=query, limit=limit, automatic=True, record_hits=False, include_reading=True)
+                  focus_user=uid, keyword=query, limit=limit, automatic=True, record_hits=False,
+                  include_reading=True, include_private_matters=True)
                   for uid, query in queries.items()]
         if not groups:
             groups = [self.recall(session_id=session_id, persona_id=persona_id, node_id=node_id,
-                      limit=limit, automatic=True, record_hits=False, include_reading=True)]
+                      limit=limit, automatic=True, record_hits=False, include_reading=True, include_private_matters=True)]
         result, seen, bodies, cost = [], set(), set(), 0
         budget = self.world.memory.recall_max_chars if self.world else 1200
         for index in range(max((len(group) for group in groups), default=0)):
@@ -495,6 +508,7 @@ class MemoryEngine:
             # 节点专属记忆只属于「这个会话的这个地点」，必须按会话过滤，
             # 否则 A 群的房间记忆会漏进 B 群（真实环境实测到的 bug）。
             node_rows = self.db.query_memories(
+                source_session=session_id,
                 session_ids=scoped or None,
                 node_id=where,
                 scope=SCOPE_NODE,
@@ -517,6 +531,7 @@ class MemoryEngine:
             for scope in (SCOPE_GLOBAL, SCOPE_GROUP, SCOPE_PERSONA, SCOPE_GROUP_PERSONA):
                 rows.extend(
                     self.db.query_memories(
+                        source_session=session_id,
                         scope=scope, memory_type=memory_type or None,
                         text_terms=text_terms, limit=500
                     )
@@ -526,6 +541,7 @@ class MemoryEngine:
             rows.extend(
                 item
                 for item in self.db.query_memories(
+                    source_session=session_id,
                     session_ids=scoped, memory_type=memory_type or None,
                     text_terms=text_terms, limit=500
                 )
@@ -535,6 +551,7 @@ class MemoryEngine:
             rows.extend(
                 item
                 for item in self.db.query_memories(
+                    source_session=session_id,
                     persona_id=persona_id, memory_type=memory_type or None,
                     text_terms=text_terms, limit=500
                 )
@@ -542,6 +559,7 @@ class MemoryEngine:
             )
         rows.extend(
             self.db.query_memories(
+                source_session=session_id,
                 scope=SCOPE_GLOBAL, memory_type=memory_type or None,
                 text_terms=text_terms, limit=200
             )
@@ -551,9 +569,7 @@ class MemoryEngine:
             # 不按这个过滤的话，"回忆厨房"会把书房的事也捞进来。
             allowed = set(wanted_nodes)
             rows = [item for item in rows if str(item.get("node_id") or "") in allowed]
-        # Reading feelings retain their actual source even under global/persona recall.
-        return _dedupe([row for row in rows if row.get("source") != "chat_browse"
-                        or row.get("session_id") == session_id])
+        return _dedupe(rows)
 
     def _score(
         self, item: dict[str, Any], *, focus_user: str, node_id: str, now: float
@@ -646,14 +662,18 @@ class MemoryEngine:
     ) -> list[dict[str, Any]]:
         """到点该"想起来一次"的记忆（间隔重复的回访队列）。"""
 
+        scoped = [str(item) for item in (session_ids or []) if item]
+        if not scoped or limit <= 0:
+            return []
         stamp = float(now if now is not None else time.time())
         rows = self.db.query_memories(
-            session_ids=[str(item) for item in (session_ids or []) if str(item)],
+            session_ids=scoped,
             due_review_before=stamp,
+            exclude_source_scoped=True,
             limit=max(1, int(limit)),
             order="next_review_at ASC",
         )
-        return [row for row in rows if row.get("source") != "chat_browse"]
+        return rows
 
     def schedule_review(self, memory_id: int, *, next_at: float) -> None:
         """排下一次回访（1 天 / 3 天 / 7 天 / 30 天……由整理那一步决定）。"""

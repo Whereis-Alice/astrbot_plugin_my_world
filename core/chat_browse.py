@@ -1,4 +1,4 @@
-"""Bounded reading views and scoped feelings, independent of reply watermarks."""
+"""Source-scoped thoughts and bounded reading, independent of reply watermarks."""
 from __future__ import annotations
 
 from .evidence import split_external_memory
@@ -29,7 +29,18 @@ def reading_view(state, session: str, config, now: float) -> list[dict]:
     return kept if any(not row["self"] for row in kept) else []
 
 
+def dialogue_origin(item: dict) -> str | None:
+    if item.get("dialogue_session"):
+        return str(item["dialogue_session"])
+    if item.get("source") == "聊完一轮" or item.get("quote") or item.get("reply"):
+        return None  # Legacy conversation content with no provable source.
+    return ""
+
+
 def thought_visible(item: dict, session: str, now: float) -> bool:
+    origin = dialogue_origin(item)
+    if origin is None or (origin and origin != session):
+        return False
     return not item.get("browse_session") or (
         item["browse_session"] == session and float(item.get("expires_at") or 0) > now)
 

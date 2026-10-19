@@ -1,5 +1,6 @@
 """自主作息的状态机回归，使用真实存储与模型替身。"""
 
+import asyncio
 import unittest
 from datetime import datetime
 
@@ -523,17 +524,28 @@ class SleepRhythmTests(unittest.IsolatedAsyncioTestCase):
     async def test_shared_life_evaluates_and_records_sleep_once_for_both_sessions(self):
         fixture.EngineTestCase.add_group(self, sessions=[fixture.SESSION, fixture.OTHER_SESSION])
         self.llm.replies = ['{"decision":"sleep","hours":7,"reason":"休息"}']
+
+        async def tick_and_settle():
+            await self.engine.tick()
+            # tick deliberately returns early for slow life work. Verify the
+            # completed shared cycle rather than racing its background commit.
+            pending = list(getattr(self.engine, "_life_clock_jobs", {}).values())
+            if pending:
+                await asyncio.wait_for(asyncio.gather(*pending), 2)
+
         before = (await self.get_state()).world_time
-        await self.engine.tick()
+        await tick_and_settle()
         shared = await self.engine.load_state(fixture.OTHER_SESSION, cold_start=False)
         self.assertEqual(shared.world_time, before+1)
         self.assertEqual(len(self.llm.calls), 1)
         self.assertEqual(shared.sleep_rhythm, (await self.get_state()).sleep_rhythm)
-        await self.engine.tick()
-        await self.engine.tick()
+        await tick_and_settle()
+        await tick_and_settle()
         async with self.engine.session_state(fixture.OTHER_SESSION) as state:
+            self.assertEqual(state.current_action["type"], "sleep")
+            self.assertEqual(state.current_action["duration_ticks"], 420)
             state.current_action["elapsed_ticks"] = 419
-        await self.engine.tick()
+        await tick_and_settle()
         self.assertEqual(len((await self.get_state()).sleep_history), 1)
         self.assertEqual((await self.engine.load_state(fixture.OTHER_SESSION)).sleep_history,
             (await self.get_state()).sleep_history)

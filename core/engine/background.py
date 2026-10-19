@@ -106,7 +106,8 @@ class BackgroundMixin:
         failure_key = (id(channel), purpose)
         failure = failures.get(failure_key, {})
         if failure.get("until", 0) > now:
-            return LLMReply(ok=False, error="后台模型暂时退避，规则继续运行")
+            reason = str(failure.get("error") or "")
+            return LLMReply(ok=False, error="后台模型暂时退避，规则继续运行" + (f"；上次失败：{reason}" if reason else ""))
         active = getattr(self, "_background_active", 0)
         if active >= self.world.limits.background_concurrency:
             return LLMReply(ok=False, error="后台通道忙，留待下一次")
@@ -130,14 +131,15 @@ class BackgroundMixin:
                     async with asyncio.timeout(timeout):
                         reply = await channel.generate(**kwargs)
             if reply is None or not getattr(reply, "ok", True):
-                raise RuntimeError("后台模型未返回有效内容")
+                raise RuntimeError(str(getattr(reply, "error", "") or "后台模型未返回有效内容")[:500])
             failures.pop(failure_key, None)
             return reply
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             count = min(8, int(failure.get("count", 0)) + 1)
-            failures[failure_key] = {"count": count, "until": now + min(3600, 30 * 2 ** (count - 1))}
+            failures[failure_key] = {"count": count, "until": now + min(3600, 30 * 2 ** (count - 1)),
+                                     "error": str(exc)[:500] or type(exc).__name__}
             raise
         finally:
             self._background_active -= 1

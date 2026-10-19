@@ -137,12 +137,13 @@ class ConfigMixin:
             world.state_dynamics,
             now_provider=self._now,
             hour_provider=lambda: self.local_now().hour,
+            datetime_provider=self.local_at,
         )
         # 记忆按会话各存一份，召回时把同组的会话一起当条件（改组不会把记忆挂错地方）
         memory = MemoryEngine(self.db.raw, world, sessions_of=self.group_sessions)
         # 用户画像：按实际会话各存一份，记忆回答"发生过什么"，它回答"这个人是谁"
         profiles = ProfileStore(
-            self.db.raw, world, group_of=self.state_key
+            self.db.raw, world, group_of=self.state_key, day_provider=self._today_key
         )
         # 睡眠整理：消化记忆 + 更新画像 + 写梦（小睡只做轻整理）
         consolidator = Consolidator(
@@ -152,6 +153,7 @@ class ConfigMixin:
             sessions_of=self.group_sessions,
             # 整理材料要标来源会话（群 / 私聊）：用和人话提示词同一套标签口径
             session_label=self.session_label,
+            datetime_provider=self.local_at,
         )
         decider = Decider(
             world,

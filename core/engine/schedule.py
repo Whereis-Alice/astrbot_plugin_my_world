@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from ..model_calls import model_operation
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 from typing import Any
 from ..config_scope import session_scoped
@@ -41,18 +41,16 @@ class ScheduleMixin:
         except Exception:
             return None
 
-    def local_now(self) -> datetime:
+    def local_at(self, stamp: float) -> datetime:
+        """One world calendar for both current and historical timestamps."""
         if self.clock is not None and hasattr(self.clock, "now_struct"):
             struct = self.clock.now_struct()
             if isinstance(struct, datetime):
-                return struct
-        tz = self._resolve_tz()
-        if tz is None:
-            return datetime.now()
-        try:
-            return datetime.now(tz)
-        except Exception:
-            return datetime.now()
+                return struct + timedelta(seconds=float(stamp) - self._now())
+        return datetime.fromtimestamp(float(stamp), self._resolve_tz())
+
+    def local_now(self) -> datetime:
+        return self.local_at(self._now())
 
     # 日程检查游标最多往前回看多久（现实秒）。用于重启 / 刚启用时不要把很久以前
     # 的日程翻出来补跑。

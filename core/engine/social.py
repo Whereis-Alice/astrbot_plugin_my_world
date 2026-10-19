@@ -173,7 +173,7 @@ class SocialMixin:
                         '单次冷淡、玩笑和反复提及不能直接推翻长期结论，明确纠正或持续变化才可作废。',
                         json.dumps(
                             {
-                                "persona": persona[:6000],
+                                "persona": persona,
                                 "previous": detail["habits"],
                                 "new_interactions": material,
                             },

@@ -166,7 +166,7 @@ class SleepRhythmMixin:
             }
             persona = await self._persona_text(state.session_id)
             prompt = (
-                f"人设：\n{persona[:6000]}\n作息偏好：{config.rhythm_prompt[:1200]}\n"
+                f"人设：\n{persona}\n作息偏好：{config.rhythm_prompt[:1200]}\n"
                 + json.dumps(context, ensure_ascii=False, default=str)
                 + f"\n决定现在入睡还是继续活动。不是必须到固定钟点才睡；"
                 f"根据真实疲劳、睡眠不足、当日事情与人设作决定，不为了每天不同随便掷时间。"

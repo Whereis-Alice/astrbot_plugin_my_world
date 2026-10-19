@@ -838,7 +838,7 @@ class WorldState:
                 rows[str(session_id)] = {"text": text, "at": 0.0}
         return state
 
-    def note_reasoning(self, reasoning: dict[str, Any] | None, *, source: str = "") -> None:
+    def note_reasoning(self, reasoning: dict[str, Any] | None, *, source: str = "", session_id: str = "") -> None:
         """记下最近一次推理草稿（编辑器「实时状态」会显示它）。"""
 
         if not reasoning:
@@ -848,7 +848,17 @@ class WorldState:
             return
         payload["_source"] = source
         payload["_at"] = int(self.world_time)
+        if source in {"reply", "reflect"}:
+            payload["_session"] = str(session_id or self.session_id)
         self.last_reasoning = payload
+
+    def reasoning_for(self, session_id: str = "") -> dict[str, Any]:
+        """Conversation drafts belong to their origin; autonomous thoughts remain shared."""
+        reasoning = self.last_reasoning or {}
+        origin = str(reasoning.get("_session") or "")
+        if not origin and reasoning.get("_source") in {"reply", "reflect"}:
+            return {}  # A legacy shared save does not prove the actual dialogue origin.
+        return reasoning if not origin or origin == session_id else {}
 
     # ---------------- 便捷方法 ----------------
 
@@ -1216,6 +1226,7 @@ class WorldState:
         quote: str = "",
         reply: str = "",
         detail: dict[str, Any] | None = None,
+        dialogue_session: str = "",
     ) -> None:
         """留下她的一句心里话。
 
@@ -1252,6 +1263,7 @@ class WorldState:
                 "quote": " ".join(str(quote or "").split())[:300],
                 "reply": " ".join(str(reply or "").split())[:500],
                 "detail": detail_payload,
+                **({"dialogue_session": dialogue_session} if dialogue_session else {}),
             }
         )
         if len(self.thoughts) > keep:

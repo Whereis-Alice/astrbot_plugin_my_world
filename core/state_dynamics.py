@@ -311,10 +311,12 @@ class StateDynamics:
         *,
         now_provider: Callable[[], float] | None = None,
         hour_provider: Callable[[], int] | None = None,
+        datetime_provider: Callable[[float], datetime] | None = None,
     ) -> None:
         self.config = config or DynamicsConfig()
         self._now_provider = now_provider
         self._hour_provider = hour_provider
+        self._datetime_provider = datetime_provider
 
     # ---------------- 时间 ----------------
 
@@ -327,6 +329,8 @@ class StateDynamics:
         return time.time()
 
     def _hour(self, now: float | None = None) -> int:
+        if self._datetime_provider is not None:
+            return self._datetime_provider(self._now() if now is None else now).hour
         if self._hour_provider is not None:
             try:
                 return int(self._hour_provider()) % 24
@@ -337,6 +341,10 @@ class StateDynamics:
             return datetime.fromtimestamp(stamp).hour
         except (OverflowError, OSError, ValueError):
             return 12
+
+    def _date(self, stamp: float) -> str:
+        moment = self._datetime_provider(stamp) if self._datetime_provider else datetime.fromtimestamp(stamp)
+        return moment.date().isoformat()
 
     # ---------------- 自然演化 ----------------
 
@@ -724,7 +732,7 @@ class StateDynamics:
             return False
         stamp = self._now() if now is None else float(now)
         try:
-            day = datetime.fromtimestamp(stamp).strftime("%Y-%m-%d")
+            day = self._date(stamp)
         except (OverflowError, OSError, ValueError):
             day = ""
         log = [
@@ -1187,7 +1195,7 @@ class StateDynamics:
             return value
         stamp = self._now() if now is None else float(now)
         try:
-            today = datetime.fromtimestamp(stamp).strftime("%Y-%m-%d")
+            today = self._date(stamp)
         except (OverflowError, OSError, ValueError):
             today = ""
         if str(state.chat_day or "") != today:

@@ -85,7 +85,8 @@ class LifeApiMixin:
                     "artifacts": [item for item in state.life_artifacts.values() if item.get("session") == session_id],
                     "semantic": self.engine.memory.semantic.status,
                     "active": sum(item.get("status") not in CLOSED for item in items)})
-        result["budget"] = await self.db.call("kv_get", "background_budget:" + self.engine._today_key(self.engine._now()), {})
+            budget_day = self.engine._today_key(self.engine._now())
+        result["budget"] = await self.db.call("kv_get", "background_budget:" + budget_day, {})
         return json_response(result)
 
     async def api_life_update(self):

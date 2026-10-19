@@ -20,7 +20,7 @@ from .model_call_store import MODEL_CALL_SCHEMA, ModelCallStoreMixin
 from .background import BackgroundStoreMixin
 from .evidence import EVIDENCE_SCHEMA, EvidenceStoreMixin
 from .social_learning import SOCIAL_SCHEMA, SocialStoreMixin
-from .life_memory import LIFE_SQL, LIFE_TYPES, LIFE_SOURCES, migrate_life_memory
+from .life_memory import LIFE_SQL, LIFE_TYPES, LIFE_SOURCES, SOURCE_SCOPED_SQL, migrate_life_memory
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS world_state (
@@ -552,11 +552,18 @@ class Database(ModelCallStoreMixin, BackgroundStoreMixin, EvidenceStoreMixin, So
         participants: list[str] | None = None,
         text_terms: list[str] | None = None,
         due_review_before: float | None = None,
+        source_session: str | None = None,
+        exclude_source_scoped: bool = False,
         limit: int = 200,
         order: str = "created_at DESC",
     ) -> list[dict[str, Any]]:
         sql = "SELECT * FROM node_memory WHERE " + LIFE_SQL
         params: list[Any] = []
+        if exclude_source_scoped:
+            sql += " AND NOT " + SOURCE_SCOPED_SQL
+        elif source_session is not None:
+            sql += " AND (NOT " + SOURCE_SCOPED_SQL + " OR session_id=?)"
+            params.append(source_session)
         if session_id is not None:
             sql += " AND session_id = ?"
             params.append(session_id)

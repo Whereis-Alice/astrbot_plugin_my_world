@@ -28,7 +28,8 @@ class RecallMixin:
         await self.memory.semantic.prepare(session_id, persona_id, topic, mode="group")
         rerank = self.world.memory.life_rerank and bool(topic)
         items = self.memory.recall(session_id=session_id, persona_id=persona_id, keyword=topic,
-                                   strict_keyword=bool(topic), mode="group", limit=12 if rerank else 5, include_reading=True)
+                                   strict_keyword=bool(topic), mode="group", limit=12 if rerank else 5,
+                                   include_reading=True, include_private_matters=True)
         fields = ("content", "type", "source", "session_id", "persona_id", "scope", "node_id", "created_at")
         snapshots = {}
         allowed_sessions = set(self.group_sessions(session_id))
@@ -108,14 +109,14 @@ class RecallMixin:
             return []
         if not bool(getattr(config, "enabled", True)):
             return []
-        now = time.time()
+        now = self._now()
         daily_max = max(0, int(getattr(config, "recall_daily_max", 5) or 0))
         per_user_max = max(0, int(getattr(config, "recall_per_user_daily_max", 2) or 0))
         gap_days = max(0, int(getattr(config, "recall_topic_gap_days", 7) or 0))
         if daily_max <= 0:
             return []
         log = [item for item in list(getattr(state, "review_visits", None) or []) if isinstance(item, dict)]
-        today = time.strftime("%Y-%m-%d", time.localtime(now))
+        today = self._today_key(now)
         today_rows = [
             item for item in log if str(item.get("day") or "") == today
         ]
@@ -673,7 +674,7 @@ class RecallMixin:
         cap = max(0, int(getattr(self.world.profile, "miss_push_daily_max", 0) or 0))
         if cap <= 0:
             return 0
-        today = time.strftime("%Y-%m-%d", time.localtime(self._now()))
+        today = self._today_key(self._now())
         if str(state.miss_push_day or "") != today:
             state.miss_push_day = today
             state.miss_push_count = 0

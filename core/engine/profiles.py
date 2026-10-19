@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from typing import Any
 from .. import profile_weaver as profile_weaver_bridge
 from ..contact_knowledge import contact_knowledge
@@ -31,8 +30,7 @@ class ProfilesMixin:
 
     # ---------------- 用户画像：提示词那一段 ----------------
 
-    @staticmethod
-    def _date_text(stamp: Any) -> str:
+    def _date_text(self, stamp: Any) -> str:
         """画像里的日期说成人话（``2026-09-17``）。"""
 
         try:
@@ -41,7 +39,7 @@ class ProfilesMixin:
             return ""
         if value <= 0:
             return ""
-        return time.strftime("%Y-%m-%d", time.localtime(value))
+        return self._today_key(value)
 
     def _next_level_name(self, index: int) -> str:
         """比当前档位再高一档叫什么（到顶了返回空串）。"""

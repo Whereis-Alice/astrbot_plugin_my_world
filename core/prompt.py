@@ -478,10 +478,10 @@ class PromptBuilder:
         lines.append(
             "针对群友的动作可以表现出来，自己换位置、发呆、睡觉等行为默认静默。\n"
             "关系不是只能往上走：处得来就更近，心里凉了也可以往后退——"
-            "朋友退回群友、恋人退回朋友、甚至翻脸，都由你自己判断，不用替谁硬撑。\n"
-            "**你能做到哪一步，看关系与好感**：亲昵的上限取「关系类型允许的」和"
-            "「好感够不够」里更严的那个——群友怎么聊都到不了抱抱亲亲，"
-            "得关系真的更近了才放宽。\n"
+            "你可以表达亲近、疏远或不满；身份关系的形成与解除仍遵守本轮关系规则，"
+            "不把一次情绪变化当作身份已经改变。\n"
+            "**你能做到哪一步，看本轮关系与好感给出的实际边界**：身份、相处距离、"
+            "动作权限及越界例外以配置和当前人设为准，不凭关系名称自行放宽或收紧。\n"
             "**排好的日程到点会自己执行**（你做的那一串动作，包括只是一句提醒），"
             "不用你盯着；到点时会带着当初写的前因再问你一次。日程只会落在你能说话的地方。\n"
             "**睡着的时候**，系统会替你把这段时间的经历整理成记忆与画像——不用你操心，也不用你复述。\n"
@@ -870,7 +870,7 @@ class PromptBuilder:
             replied_seq = int(getattr(state, "chat_replied_seq", 0) or 0)
         # 记忆按时间从早到晚排，越靠下越新——模型读提示词时最后的更"近"。
         ordered = sorted(
-            [item for item in (memories or []) if item.source != "chat_browse"],
+            [item for item in (memories or []) if not item.source_scoped],
             key=lambda item: float(getattr(item, "created_at", 0.0))
         )
         memory_text = (
@@ -1353,10 +1353,13 @@ class PromptBuilder:
         )
 
     @staticmethod
-    def _inner_voice(state: WorldState) -> str:
+    def _inner_voice(state: WorldState, session_id: str = "", *, dialogue_only: bool = False) -> str:
         """内心活动 = 最近一次推理草稿；模型没写草稿时退回她留下的心里话。"""
 
-        reasoning = state.last_reasoning or {}
+        from .chat_browse import dialogue_origin, thought_visible
+        reasoning = state.reasoning_for(session_id)
+        if dialogue_only and not (reasoning.get("_session") or reasoning.get("_source") in {"reply", "reflect"}):
+            reasoning = {}
         if reasoning:
             lines = [
                 f"- {_REASONING_LABELS.get(key, key)}：{reasoning[key]}"
@@ -1369,10 +1372,12 @@ class PromptBuilder:
             str(item.get("content"))
             for item in state.thoughts
             if item.get("content") and not item.get("browse_session")
+            and thought_visible(item, session_id, 0)
+            and (not dialogue_only or dialogue_origin(item))
         ][-3:]
         if thoughts:
             return "\n".join(f"- {text}" for text in thoughts)
-        return "（你还没细想这件事）"
+        return "" if dialogue_only else "（你还没细想这件事）"
 
     def render_chat_rows(
         self,
@@ -2697,6 +2702,9 @@ class PromptBuilder:
         from .chat_browse import feeling_context
         now = self._now()
         sid = current_session or state.session_id
+        inner = self._inner_voice(state, sid, dialogue_only=True)
+        if inner:
+            runtime += "\n\n# 本会话留下的内心活动（只供当前交谈参考，不直接复述）\n" + inner
         feelings = feeling_context(state, sid, now.timestamp() if now else 0)
         older = list(dict.fromkeys(item.content for item in (memories or [])
                  if item.source == "chat_browse" and item.session_id == sid
@@ -2706,6 +2714,11 @@ class PromptBuilder:
                          + "\n".join("- " + text[:160] for text in older[:2]))
         if feelings:
             runtime += "\n\n" + feelings
+        private = [item for item in (memories or []) if item.private_matter and item.session_id == sid]
+        if private:
+            runtime += ("\n\n# 本会话约定的生活进展\n只在本会话的相关交谈中参考；"
+                        "准备与世界内模拟不等于现实兑现，不转述到其他会话。\n"
+                        + "\n".join(item.render(stamp=self._memory_stamp(item.created_at, now)) for item in private))
         sample_text = self.samples_layer(
             samples, pronoun=pronoun_for(getattr(self.world, "gender", "female"))
         )
@@ -4740,7 +4753,7 @@ class PromptBuilder:
         )
         prompt = (
             "# 完整人设\n"
-            f"{str(persona_text or '').strip()[:4000]}\n\n"
+            f"{str(persona_text or '').strip()}\n\n"
             "请输出摘要，只写这段摘要本身。"
         )
         return system, prompt
@@ -4795,7 +4808,7 @@ class PromptBuilder:
         )
         prompt = (
             "# 角色卡原文\n"
-            f"{str(persona_text or '').strip()[:8000]}\n\n"
+            f"{str(persona_text or '').strip()}\n\n"
             "# 输出格式（只输出 JSON）\n"
             "{\n"
             '  "ok": ["原文里写得好的地方，最多 3 条（给用户信心，也提示你别乱动）"],\n'
@@ -5128,7 +5141,7 @@ class PromptBuilder:
         )
         prompt = (
             "# 角色卡\n"
-            f"{str(persona_text or '').strip()[:6000]}\n\n"
+            f"{str(persona_text or '').strip()}\n\n"
             f"# 要求\n写 {max(4, int(rounds))} 轮。\n\n"
             "# 输出格式（只输出 JSON）\n"
             "{\n"
@@ -5167,7 +5180,7 @@ class PromptBuilder:
         scene_lines = "\n".join(f"- {item[1]}" for item in picked)
         prompt = (
             "# 角色卡\n"
-            f"{str(persona_text or '').strip()[:6000]}\n\n"
+            f"{str(persona_text or '').strip()}\n\n"
             f"# 称呼设置\n{pronoun}"
             + (f"｜名字：{name}" if str(name or "").strip() else "")
             + "\n\n# 场景\n每个场景给 3 个候选。\n"

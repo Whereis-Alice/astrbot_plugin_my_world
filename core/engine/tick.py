@@ -228,6 +228,9 @@ class TickMixin:
                         state, self.node(state.node_id) or node, outcome
                     )
 
+            # Movement/arrival plans may have changed her place earlier this beat.
+            # Atmosphere, event generation and nickname must use the actual place.
+            node = self.node(state.node_id) or node
             # 3) 数值演化
             #    扩展包先走一拍（数值、状态结算），再走主插件自己的演化
             try:
@@ -367,6 +370,7 @@ class TickMixin:
 
             self._tick_idle_life(state)
             # 6) 群名片同步
+            node = self.node(state.node_id) or node
             await self._sync_nickname(state, node)
 
             if state.current_action or state.current_plan:
@@ -842,6 +846,7 @@ class TickMixin:
         quote: str = "",
         reply: str = "",
         intent: str = "",
+        dialogue_session: str = "",
     ) -> None:
         """把这一轮她心里冒出来的那一句留下来（编辑器「内心活动」那一栏）。
 
@@ -854,10 +859,14 @@ class TickMixin:
         clean = " ".join(str(text or "").split()).strip()[:120]
         if not clean:
             return
+        dialogue_session = dialogue_session or (state.session_id if source == "聊完一轮" or quote or reply else "")
+        from ..chat_browse import dialogue_origin
         recent = [
             str(item.get("content") or "").strip()
             for item in state.thoughts[-3:]
             if isinstance(item, dict)
+            and not item.get("browse_session")
+            and dialogue_origin(item) == dialogue_session
         ]
         if clean in recent:
             return
@@ -875,6 +884,7 @@ class TickMixin:
             quote=quote,
             reply=reply,
             detail=detail,
+            dialogue_session=dialogue_session,
         )
 
     def _remember_action(

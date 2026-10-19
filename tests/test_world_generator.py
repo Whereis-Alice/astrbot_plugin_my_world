@@ -1189,6 +1189,10 @@ class EngineGeneratorTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(generator=method.__name__):
                 with self.assertRaisesRegex(ValueError, "429: quota exceeded"):
                     await method(1)
+        self.creator.generate.assert_awaited_once()
+        self.engine.clock.advance(31)
+        self.creator.generate = AsyncMock(return_value=LLMReply(ok=True, text="已恢复"))
+        self.assertEqual(await self.engine._ask_creator(SESSION, "", "", raise_errors=True), "已恢复")
 
     async def test_empty_reply_and_missing_model_have_actionable_errors(self):
         with self.assertRaisesRegex(ValueError, "空内容"):

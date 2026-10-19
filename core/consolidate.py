@@ -6,6 +6,7 @@ import json
 import hashlib
 from .evidence import source_snapshot, direct_text
 import time
+from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
@@ -104,6 +105,7 @@ class Consolidator:
         prompts: Any = None,
         sessions_of: Callable[[str], list[str]] | None = None,
         session_label: Callable[[str], str] | None = None,
+        datetime_provider: Callable[[float], datetime] | None = None,
     ) -> None:
         self.world = world
         self.memory = memory
@@ -113,6 +115,7 @@ class Consolidator:
         # 「这是在哪儿说的 / 这条记忆是哪儿的」：默认按 id 现推一个人话标签，
         # 引擎会传自己的 session_label 进来（群 123「名字」/ 私聊 456）。
         self._session_label = session_label or _fallback_session_label
+        self._datetime = datetime_provider or datetime.fromtimestamp
 
     def set_world(self, world: Any) -> None:
         self.world = world
@@ -142,9 +145,7 @@ class Consolidator:
                 continue
             who = str(item.get("name") or item.get("user_id") or "有人")
             uid = str(item.get("user_id") or "")
-            stamp = time.strftime(
-                "%m-%d %H:%M", time.localtime(float(item.get("at") or 0.0))
-            )
+            stamp = self._datetime(float(item.get("at") or 0.0)).strftime("%m-%d %H:%M")
             where = str(item.get("origin") or current_session or "")
             tag = "（她自己）" if item.get("is_self") else f"（QQ {uid}）" if uid else ""
             source_id = str(item.get("source_id") or "")
@@ -172,16 +173,13 @@ class Consolidator:
         rows = self.memory.db.query_memories(
             session_ids=self._sessions_of(session_id),
             memory_types=["scene", "event", "inner"],
+            exclude_source_scoped=True,
             limit=max(1, int(limit)),
         )
         labels = dict(session_labels or {})
         lines: list[str] = []
         for item in rows:
-            if item.get("source") == "chat_browse":
-                continue  # Never turn source-scoped reading feelings into a shared review/dream.
-            stamp = time.strftime(
-                "%Y-%m-%d %H:%M", time.localtime(float(item.get("created_at") or 0.0))
-            )
+            stamp = self._datetime(float(item.get("created_at") or 0.0)).strftime("%Y-%m-%d %H:%M")
             tier = "要点" if str(item.get("tier")) == "gist" else "原文"
             people = ",".join(str(entry) for entry in (item.get("participants") or []))
             tail = f"（{people}）" if people else ""
@@ -295,7 +293,7 @@ class Consolidator:
                 known_profiles=known_profiles[:40],
                 chat_lines=self.chat_lines(records, session_labels=session_labels,
                                           current_session=current_session or session_id),
-                date_text=time.strftime("%Y-%m-%d", time.localtime(stamp)), mode=result.mode,
+                date_text=self._datetime(stamp).date().isoformat(), mode=result.mode,
                 max_items=12 if result.mode == "full" else 6,
             )
             before = {(str(row.get("origin") or session_id), str(row.get("user_id") or ""))

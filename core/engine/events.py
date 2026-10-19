@@ -188,10 +188,9 @@ class EventsMixin:
             return penalty
         return 1.0
 
-    @staticmethod
-    def _today_key(now: float) -> str:
+    def _today_key(self, now: float) -> str:
         try:
-            return datetime.fromtimestamp(float(now)).strftime("%Y-%m-%d")
+            return self.local_at(now).date().isoformat()
         except (OverflowError, OSError, ValueError):
             return ""
 
@@ -432,8 +431,8 @@ class EventsMixin:
         """她自己的账里的时间标注：今天/昨天/前天 + HH:MM，更早写日期。"""
 
         try:
-            moment = datetime.fromtimestamp(float(at))
-            today = datetime.fromtimestamp(float(now))
+            moment = self.local_at(at)
+            today = self.local_at(now)
         except (OverflowError, OSError, ValueError):
             return ""
         days = (today.date() - moment.date()).days
@@ -562,7 +561,7 @@ class EventsMixin:
         ]
         if not items:
             return ""
-        moment = datetime.fromtimestamp(float(now if now is not None else self._now()))
+        moment = self.local_at(now if now is not None else self._now())
         last_map = dict(getattr(state, "schedule_last_fired", None) or {})
         rows: list[str] = []
         for item in items:

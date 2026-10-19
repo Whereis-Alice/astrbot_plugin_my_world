@@ -94,6 +94,8 @@ class SnapshotMixin:
                 continue
             if not self.schedule_in_scope(item, session_id):
                 continue
+            if self.world.sleep.mode == "autonomous" and any(step.type == "sleep" for step in item.action_chain):
+                continue  # The scheduler intentionally yields fixed sleep to her own rhythm.
             try:
                 hour, minute = (int(part) for part in str(item.time).split(":")[:2])
             except (TypeError, ValueError):
@@ -278,7 +280,7 @@ class SnapshotMixin:
             "life_decision": state.life_decision,
             "activity_reason": str((state.current_plan or {}).get("reason") or ""),
             "current_plan": state.current_plan,
-            "last_reasoning": state.last_reasoning,
+            "last_reasoning": state.reasoning_for(session_id),
             "thoughts": [item for item in state.thoughts if thought_visible(item, session_id, self._now())][-5:],
             # 别的插件的状态（今日穿搭、背包…）：编辑器里能看到、能手清
             "external_state": dict(getattr(state, "external_state", None) or {}),
@@ -474,8 +476,10 @@ class SnapshotMixin:
         if not session_id:
             return 0
         async with self.session_state(session_id) as state:
-            removed = len([item for item in (state.thoughts or []) if isinstance(item, dict)])
-            state.thoughts = []
+            before = len(state.thoughts)
+            state.thoughts = [item for item in state.thoughts
+                             if not thought_visible(item, session_id, 0)]
+            removed = before - len(state.thoughts)
         return removed
 
     async def preview_last_reply_request(self, session_id: str) -> str:

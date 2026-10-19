@@ -892,7 +892,7 @@ class ReplyMixin:
         async with self.session_state(ctx.session_id) as state:
             echo_marker = await self._event_marker(state)
             node = self.node(state.node_id) or self.node(self.default_node_id())
-            state.note_reasoning(parsed.reasoning, source="reply")
+            state.note_reasoning(parsed.reasoning, source="reply", session_id=ctx.session_id)
             # 这一轮她对**当前说话人**的好感变化（模型自己判断，代码再削一次上限）
             if ctx.user_id:
                 applied = self.profiles.apply_reply_affinity(

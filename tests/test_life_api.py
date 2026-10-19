@@ -2,6 +2,7 @@
 import sys
 import types
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 from tests import test_scope_api as scope
@@ -65,3 +66,19 @@ class LifeApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(appointment["title"], item["text"])
         self.assertEqual((await self.call("life/update", method="POST", session=self.session, operation="appointment", id=item["id"],
             revision=-1, date=day, time="23:50"))["status_code"], 400)
+
+    async def test_life_budget_uses_the_selected_world_calendar(self):
+        engine = self.plugin.engine
+        base = self.plugin.store.raw_world()
+        base["timezone"] = "UTC"
+        self.plugin.store.save_world(base)
+        local = {**base, "timezone": "Asia/Shanghai"}
+        self.plugin.store.save_scope(self.session, local, {"schedules": []}, ["settings"])
+        engine.reload_config()
+        stamp = datetime(2026, 10, 19, 16, 5, tzinfo=timezone.utc).timestamp()
+        await self.plugin.db.call("kv_set", "background_budget:2026-10-19", {"day": "global"})
+        await self.plugin.db.call("kv_set", "background_budget:2026-10-20", {"day": "local"})
+        with patch.object(engine, "_now", return_value=stamp):
+            data = (await self.call("life", session=self.session))["data"]
+        self.assertEqual(data["budget"], {"day": "local"})
+        self.assertEqual(engine.world.timezone, "UTC")

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from typing import Any
 from ..models import (
     NodeDef,
@@ -61,7 +60,7 @@ class CuddleMixin:
         )
         if cap <= 0:
             return 0
-        today = time.strftime("%Y-%m-%d", time.localtime(self._now()))
+        today = self._today_key(self._now())
         if str(state.desire_push_day or "") != today:
             state.desire_push_day = today
             state.desire_push_count = 0

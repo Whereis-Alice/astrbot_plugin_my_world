@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -56,7 +56,8 @@ class MattersMixin:
             return
         world = self.world
         state_key = self.state_key(session_id)
-        key = f"life_seed:{state_key}:{self._today_key(self._now())}"
+        day = self._today_key(self._now())
+        key = f"life_seed:{state_key}:{day}"
         async with self.session_state(session_id) as state:
             matters.ensure(state, self._now())
             if not self.life_seed_due(state):
@@ -73,7 +74,7 @@ class MattersMixin:
                 '结合人设和已有能力，想一件愿意持续几天的独处小事。只输出JSON：{"text":"", "motivation":""}。'
                 '没有想法可以留空。只在角色世界内模拟生活，不建立新身世、恋爱关系或重大物品。'
                 '编程、创作等兴趣可在世界内模拟，不要求配置电脑，不声称操作了现实文件或外部服务。不要声称已经做成。',
-                json.dumps({"persona": persona[:6000], "available": candidates,
+                json.dumps({"persona": persona, "available": candidates,
                             "interests": interests}, ensure_ascii=False))
         payload = extract_json_object(raw or "") or {}
         if "text" not in payload or not isinstance(payload["text"], str):
@@ -84,7 +85,7 @@ class MattersMixin:
             current_persona = await self._persona_text(session_id)
             if (current_persona != persona or self.world is not world or state.session_id != state_key
                     or not self.is_enabled(session_id) or not self.world.limits.life_matter_enabled
-                    or not self.world.limits.life_matter_self_start):
+                    or not self.world.limits.life_matter_self_start or self._today_key(self._now()) != day):
                 return
             matters.ensure(state, self._now())
             if (not self._matter_can_work(state)
@@ -294,10 +295,10 @@ class MattersMixin:
             candidates = self._matter_actions(state)
         # Never wait for inference while holding the life-state lock.
         persona = await self._persona_text(session_id)
-        if not await self._matter_context_current(session_id, world, state_key, persona):
+        if not await self._matter_context_current(session_id, world, state_key, persona, day=day):
             return
         if review:
-            await self._review_matter_stage(session_id, snapshot, world=world, state_key=state_key, persona=persona)
+            await self._review_matter_stage(session_id, snapshot, world=world, state_key=state_key, persona=persona, day=day)
             return
         with model_context("life_matter", f"为生活事项 {snapshot['id']} 安排世界内的小步", session_id):
             raw = await self._ask_judge(session_id,
@@ -312,14 +313,14 @@ class MattersMixin:
                     '格式：{"motivation":"一句动机","steps":[{"text":"具体下一步","action":"候选ID",'
                     '"node":"候选地点","minutes":20,"day_offset":0}],"blocked":""}。最多6步，每步5到60分钟。'
                     "day_offset是从今天起经过几天才适合做，可跨多日，不要为填满日程而强行赶完。",
-                    json.dumps({"persona": persona[:6000],
+                    json.dumps({"persona": persona,
                                 "matter": snapshot, "available": candidates}, ensure_ascii=False))
         payload = extract_json_object(raw or "") or {}
-        if not await self._matter_context_current(session_id, world, state_key, persona):
+        if not await self._matter_context_current(session_id, world, state_key, persona, day=day):
             return
         async with self.session_state(session_id) as state:
             item = matters.find(state, snapshot["id"])
-            if (not await self._matter_context_current(session_id, world, state_key, persona) or item is None
+            if (not await self._matter_context_current(session_id, world, state_key, persona, day=day) or item is None
                     or item["revision"] != snapshot["revision"] or item["status"] in matters.CLOSED | {"paused"}):
                 return  # Human edit, interruption, or newer result wins.
             allowed = {(r["action"], r["node"]) for r in self._matter_actions(state)}
@@ -356,13 +357,14 @@ class MattersMixin:
                 matters.history(item, "blocked", item["obstacle"], now)
             matters.sync(state)
 
-    async def _matter_context_current(self, session_id, world, state_key, persona) -> bool:
+    async def _matter_context_current(self, session_id, world, state_key, persona, *, day: str = "") -> bool:
         current_persona = await self._persona_text(session_id)
         return (self.world is world and self.state_key(session_id) == state_key
                 and self.is_enabled(session_id) and self.world.limits.life_matter_enabled
-                and current_persona == persona)
+                and current_persona == persona and (not day or self._today_key(self._now()) == day))
 
-    async def _review_matter_stage(self, session_id: str, snapshot: dict, *, world, state_key, persona) -> None:
+    async def _review_matter_stage(self, session_id: str, snapshot: dict, *, world, state_key, persona, day: str = "") -> None:
+        day = day or self._today_key(self._now())
         with model_context("life_matter", f"核对生活事项 {snapshot['id']} 的实际阶段结果", session_id):
             raw = await self._ask_judge(session_id,
                 "根据事项目标和实际动作收据，判断整个目标是否已达成，只输出JSON。"
@@ -372,14 +374,14 @@ class MattersMixin:
                 "reason可概括她在世界内完成了什么，但不得声称操作了现实服务器、通过真实测试或产生可下载文件。"
                 "普通阅读只能证明阅读；模拟步骤完成后可以确认相应的世界内目标。"
                 "现实用户的约定仍需兑现依据。可以继续则continue，暂时无法继续则blocked。",
-                json.dumps({"persona": persona[:6000], "matter": snapshot}, ensure_ascii=False))
+                json.dumps({"persona": persona, "matter": snapshot}, ensure_ascii=False))
         result = extract_json_object(raw or "") or {}
-        if not await self._matter_context_current(session_id, world, state_key, persona):
+        if not await self._matter_context_current(session_id, world, state_key, persona, day=day):
             return
         async with self.session_state(session_id) as state:
             item = matters.find(state, snapshot["id"])
             if (not item or item["revision"] != snapshot["revision"] or item["status"] in matters.CLOSED | {"paused"}
-                    or not await self._matter_context_current(session_id, world, state_key, persona)):
+                    or not await self._matter_context_current(session_id, world, state_key, persona, day=day)):
                 return
             reason = str(result.get("reason") or "尚未取得可核对的目标结果")[:300]
             outcome = result.get("outcome")
@@ -450,7 +452,7 @@ class MattersMixin:
         days = set(interest.get("days", []))
         node_id = str(action.get("node_id") or state.node_id)
         while start < end:
-            local = datetime.fromtimestamp(start)
+            local = self.local_at(start)
             boundary_hour = next((hour for hour in (5, 11, 18, 23, 24) if hour > local.hour), 24)
             boundary = (local.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(hours=boundary_hour)).timestamp()
             stop = min(end, boundary)

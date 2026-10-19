@@ -8,7 +8,7 @@
 2. **关系是"候选 + 代码校验"**：模型只提候选，槽位唯一性、冲突策略由代码决定，
    所以不会出现"一句玩笑话让他变成我老公"；
 3. **亲密度上限 = min(关系类型给的上限, 好感度达到的级别)**：
-   普通关系聊再久也上不去（群友不能亲亲），只有关系本身升级才会放宽。
+   具体身份、档位上下限和越界例外以关系配置为准。
 
 这一层**不调大模型**：抽取、确认、缩略版都由睡眠整理那一步（core/consolidate.py）负责。
 """
@@ -20,7 +20,7 @@ import math
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from .db import Database
 from .models import BondType, IntimacyLevel, ProfileConfig, WorldConfig
@@ -184,11 +184,13 @@ class ProfileStore:
         world: WorldConfig | None = None,
         *,
         group_of: Any = None,
+        day_provider: Callable[[float], str] | None = None,
     ) -> None:
         self.db = db
         self.world = world
         self._group_of = group_of
         """旧数据迁移时使用；新画像、关系和好感均按实际会话保存。"""
+        self._day_provider = day_provider
 
     # ---------------- 基础 ----------------
 
@@ -258,7 +260,7 @@ class ProfileStore:
         if clean:
             payload["qq_name"] = clean
         days = [str(item) for item in (payload.get("days") or []) if str(item)]
-        today = time.strftime("%Y-%m-%d", time.localtime(stamp))
+        today = self._day_key(stamp)
         if today not in days:
             days.append(today)
         payload["days"] = days[-_DAY_CACHE:]
@@ -915,8 +917,9 @@ class ProfileStore:
         raw.kv_set(AFFINITY_DAILY_KEY, data)
         return True
 
-    @staticmethod
-    def _day_key(now: float) -> str:
+    def _day_key(self, now: float) -> str:
+        if self._day_provider is not None:
+            return self._day_provider(float(now))
         return time.strftime("%Y-%m-%d", time.localtime(float(now)))
 
     def _kv_store(self) -> Any:

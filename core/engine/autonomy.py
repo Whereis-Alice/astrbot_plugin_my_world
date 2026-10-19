@@ -259,7 +259,7 @@ class AutonomyMixin:
         # 她特地走过来通常是有目的的：把刚才的打算和她现在能做什么摆在最前面，
         # 免得这次调用还在"重新规划整段时间"。
         where = (node.name if node else "") or state.node_id
-        intent = str((state.last_reasoning or {}).get("intent") or "").strip()
+        intent = str(state.reasoning_for().get("intent") or "").strip()
         here = "、".join(
             f"{item.id}（{item.name or item.id}）" for item in self.world.actions_in(state.node_id)
         )

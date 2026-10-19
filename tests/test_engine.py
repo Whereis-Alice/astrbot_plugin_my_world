@@ -1558,7 +1558,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("你忽然想起", pending)
         self.assertEqual(again, "", "同一件事不该连着提两遍")
         row = [item for item in self.engine.memory.db.query_memories(session_id=SESSION) if item["id"] == memory_id][0]
-        self.assertGreater(row["next_review_at"], time.time())
+        self.assertEqual(row["next_review_at"], self.clock.now() + 86400)
 
     async def test_review_respects_the_daily_quota(self):
         """每天的回想回访有上限：额度用完就不再冒出新的"忽然想起"。"""
@@ -10262,7 +10262,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
 
         await self.set_state(node_id="study")
         async with self.engine.session_state(SESSION) as state:
-            state.add_thought("今天风挺舒服", source="聊完一轮")
+            state.add_thought("今天风挺舒服", source="聊完一轮", dialogue_session=SESSION)
         payload = await self.engine.thoughts_payload(SESSION)
         self.assertEqual(len(payload["thoughts"]), 1)
         row = payload["thoughts"][0]
