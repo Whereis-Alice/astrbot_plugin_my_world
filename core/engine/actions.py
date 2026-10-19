@@ -458,7 +458,7 @@ class ActionsMixin:
         if plan is None:
             state.current_plan = create_plan(
                 steps=fresh + carried,
-                world_time=state.world_time,
+                world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds,
                 valid_for=self.world.limits.plan_valid_duration,
                 reason="同一轮里还没做完的动作",
                 source="pending",
@@ -469,9 +469,10 @@ class ActionsMixin:
             steps[anchor:anchor] = fresh
             plan["steps"] = steps
             # 新排的动作有自己的有效期，别一排队就过期
+            plan["expires_at"] = max(float(plan.get("expires_at") or 0), self._now() + self.world.limits.plan_valid_duration)
             plan["valid_until"] = max(
                 int(plan.get("valid_until") or 0),
-                int(state.world_time) + max(60, int(self.world.limits.plan_valid_duration)),
+                int(state.world_time) + max(1, math.ceil(self.world.limits.plan_valid_duration / self.tick_seconds)),
             )
         if note:
             outcome.notes.append(note)
@@ -934,7 +935,7 @@ class ActionsMixin:
         # 她自己原来没做完的安排接在后面：主人这一轮的要求先做，再回去做她自己的事
         state.current_plan = create_plan(
             steps=steps + tail,
-            world_time=state.world_time,
+            world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds,
             valid_for=self.world.limits.plan_valid_duration,
             reason=f"到了{self._node_name(target_node)}之后要做的事",
             source="auto_travel",
@@ -1211,12 +1212,7 @@ class ActionsMixin:
         return merged, ""
 
     async def _background_generate(self, channel: Any, **kwargs: Any) -> Any:
-        """A stalled provider must eventually release the life/session lock."""
-        try:
-            async with asyncio.timeout(self.world.limits.background_llm_timeout_seconds):
-                return await channel.generate(**kwargs)
-        except TimeoutError as exc:
-            raise TimeoutError("后台模型等待超时，这次交给规则或留待下次") from exc
+        return await self._budgeted_generate(channel, **kwargs)
 
     async def _ask_helper(
         self, session_id: str, system_prompt: str, prompt: str

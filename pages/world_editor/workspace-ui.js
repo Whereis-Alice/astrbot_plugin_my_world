@@ -3,6 +3,7 @@ export function initialiseWorkspace() {
   document.querySelector(".sidebar-note").textContent = "她的世界，持续生长";
   const icons = {
     status: '<rect x="3" y="3" width="18" height="18" rx="4"/><path d="M3 10h18M10 10v11"/>',
+    life: '<path d="M12 21V10M12 16C5 16 3 11 3 5c6 0 9 3 9 8M12 12c0-6 3-9 9-9 0 6-3 9-9 9"/>',
     thoughts: '<path d="M5 17a8 8 0 1 1 4 3l-5 1z"/><path d="M8 10h8M8 14h5"/>',
     events: '<path d="m12 3 2.8 5.7L21 10l-4.5 4.4 1.1 6.3L12 17.8l-5.6 2.9 1.1-6.3L3 10l6.2-1.3z"/>',
     contacts: '<rect x="5" y="3" width="15" height="18" rx="3"/><path d="M3 7h4M3 12h4M3 17h4M10 16c0-3 6-3 6 0"/><circle cx="13" cy="9" r="2"/>',

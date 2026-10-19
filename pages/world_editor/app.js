@@ -1,6 +1,7 @@
 import { createContactWorkbench } from "./contact-workbench.js";
 import { createRelationshipsPage } from "./relationships.js";
 import { createModelCallsPage } from "./model-calls.js";
+import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js";
 import { personAvatar, personColor, bindPeopleSort } from "./people-ui.js";
 import { openRelationshipRulesEditor } from "./relationship-rules.js";
 import { applyDetailedLevels, DETAILED_LEVELS } from "./relationship-preset.js";
@@ -3919,6 +3920,7 @@ function showTab(name, button) {
   if (name === "thoughts") loadThoughts();
   if (name === "logs") loadLogs();
   if (name === "model-calls") modelCallsPage.reload();
+  if (name === "life") lifePage.reload();
   if (name === "schedules") loadScheduleHistory();
   if (name === "ticks") loadTicks();
   if (name === "map") {
@@ -7195,6 +7197,7 @@ async function refreshStatus() {
     // 扩展想显示的状态优先（例如亲密扩展在戏里时说"兴奋中"）：
     // 这是编辑器里的一行字，群名片不受影响
     const stateLabel = stateLabelOf(data.state, data);
+    renderLifeFocus($("life-focus"), data, {el, open: () => showTab("life")});
     renderHero(data, stateLabel);
     renderStatusSections(data, stateLabel);
     renderToolWarnings();
@@ -20689,7 +20692,11 @@ function openWizard() {
  * 重点是把**整理前后的样子**摆在一起：整理过的那条正文是"要点"，原文留在 ``context`` 里。
  * 之前列表只渲染 content，整理过的和没整理过的长得一模一样，看起来就像"整理没生效"。
  */
-function openMemoryDetail(memory) {
+async function openMemoryDetail(memory) {
+  const revision = ui.memoryDetailRevision = (ui.memoryDetailRevision || 0) + 1;
+  let evidence = {};
+  try { evidence = await apiGet("memories/evidence", {id: memory.id, session: memory.session_id || $("memory-session").value}); } catch (_) { /* Legacy memories keep their existing context. */ }
+  if (ui.memoryDetailRevision !== revision || !$("tab-memories").classList.contains("active")) return;
   const rows = [
     ["整理状态", memory.tier === "gist" ? "已整理成要点" : "原文（还没整理）"],
     ["内容", String(memory.content || "")],
@@ -20720,6 +20727,18 @@ function openMemoryDetail(memory) {
     hint: "整理过的记忆只保留要点，原文收在「整理前的原文」里——忘的是细节，不是那件事。",
     confirmText: "关闭",
     build: (body) => {
+      if (evidence.sources?.length) {
+        const sources = el("section", "life-timeline");
+        for (const source of evidence.sources) {
+          const row = el("div", "life-timeline-item");
+          row.append(el("small", "muted", `${source.name || source.user_id || "角色"} · ${memoryStamp(source.at)} · ${source.kind === "self_statement" ? "角色说过的话" : "对方的原话"}`), el("p", "", source.text || ""), el("small", "muted", `来源 ${source.session} · ${source.id}`)); sources.append(row);
+        }
+        body.append(sources);
+      }
+      for (const revision of evidence.revisions || []) {
+        const detail = el("details", "memory-revision"), title = el("summary", "muted", `${revision.manual ? "人工修订" : "后续记录更新"} · ${memoryStamp(revision.at)}`);
+        detail.append(title, el("p", "sample-item-text", `修改前：${revision.before?.content || "（空）"}`), el("p", "sample-item-text", `修改后：${revision.after?.content || "（空）"}`)); body.append(detail);
+      }
       rows.forEach(([label, text]) => {
         const field = el("div", "field");
         field.appendChild(el("div", "field-head", label));
@@ -20914,6 +20933,13 @@ const relationshipsPage = createRelationshipsPage({
 });
 
 const modelCallsPage = createModelCallsPage({root: $("tab-model-calls"), apiGet, el});
+const lifePage = createLifePage({root: $("tab-life"), apiGet, apiPost, el, toast,
+  getSession: () => $("status-session").value,
+  openSettings: () => openLifeSettings({world: ui.config.world, el, openCustomDialog, markDirty}),
+  openCalls: id => { showTab("model-calls"); const input = $("calls-search"); if (input) { input.value = id; input.dispatchEvent(new Event("input")); } },
+  openMemories: text => { showTab("memories"); const input = $("memory-keyword"); if (input) { input.value = text; $("memory-search").click(); } },
+});
+$("status-session").addEventListener("change", () => { if ($("tab-life").classList.contains("active")) lifePage.reload(); });
 $("log-model-calls").addEventListener("click", () => showTab("model-calls"));
 
 async function openRelationshipRules() {

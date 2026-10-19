@@ -907,8 +907,8 @@ class GenerationMixin:
             life_lines.append(f"地点：{self.node_label(state.node_id)}；状态：{state.state}；精力：{state.energy:.2f}")
             life_lines.extend(self.prompts._event_line(event) for event in
                               (state.recent_events or [])[-8:] if isinstance(event, dict))
-            life_lines.extend("未完的心事：" + str(item.get("text") or item.get("topic") or "")[:180]
-                              for item in (state.own_topics or [])[:4] if isinstance(item, dict))
+            life_lines.append(self._own_topic_block(state))
+            life_lines.append("生活事项有独立的推进安排；日程请为它们留出空档，不要重复建立同一项目的动作或把规划当成完成。")
         system_prompt, prompt = self.prompts.build_schedule_generator_prompt(
             persona_text=await self._persona_text(session_id),
             zones=[
@@ -1275,6 +1275,9 @@ class GenerationMixin:
                 return False
             if action.get("type") in {"sleep", "nap"}:
                 self._finish_sleep_rhythm(state, action, interrupted=True)
+            self.pause_matter_action(state, action)
+            if (state.current_plan or {}).get("matter_id") == action.get("matter_id") and action.get("matter_id"):
+                state.current_plan = None
             state.add_event("interrupt", {"action": action.get("type")})
             state.current_action = None
             state.state = STATE_IDLE

@@ -606,6 +606,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, Star):
             except (asyncio.CancelledError, Exception):
                 pass
         self._reflection_tasks.clear()
+        await self.engine.close_background()
         unregister_profile_tools(self)
         try:
             await self.db.close()
@@ -637,12 +638,8 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, Star):
                 # 一个会话组只催一次决策：按"会话"逐个催的话，同一个她会被催好几遍，
                 # 而且第二次很可能挂在别的会话名下决定（落点就跟着跑了）
                 for session_id in self.engine.tick_session_ids():
-                    try:
-                        await self.engine.maybe_decide(session_id)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
-                        self.logger.warning(f"[my_world] 自主决策失败 session={session_id}: {exc}")
+                    self.engine.queue_background("decision:" + self.engine.state_key(session_id),
+                                                 lambda sid=session_id: self.engine.maybe_decide(sid))
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -2981,6 +2978,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, Star):
         if not self.engine.is_enabled(session_id):
             return "这个会话尚未启用我的世界。"
         with self.engine.config_scope(session_id):
+            await self.engine.memory.semantic.prepare(session_id, _event_persona_id(event), str(topic or "").strip(), mode="group")
             items = self.engine.memory.recall(
                 session_id=session_id, persona_id=_event_persona_id(event),
                 keyword=str(topic or "").strip(), strict_keyword=bool(str(topic or "").strip()),

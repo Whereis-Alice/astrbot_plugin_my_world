@@ -578,6 +578,7 @@ class ReplyMixin:
         if consumed is not None:
             return consumed
 
+        await self.memory.semantic.prepare(ctx.session_id, ctx.persona_id, ctx.text)
         # --- 第一阶段：记录消息影响 + 组装提示词（持锁，很快） ---
         #
         # 「合并重启」：她还在调模型时又来了新消息，就把几条并成一次请求重新发起。
@@ -661,9 +662,11 @@ class ReplyMixin:
                 ask = self._ask_about_hint(state, ctx)
                 if ask:
                     extra_notes = [*(extra_notes or []), ask]
+                self.mark_context_sources(state, ctx, batch)
                 memories = self.memory.recall(
                     automatic=True,
-                    session_id=state.session_id,
+                    session_id=ctx.session_id,
+                    keyword=ctx.text,
                     persona_id=ctx.persona_id,
                     node_id=state.node_id,
                     focus_user=ctx.user_id,
@@ -977,7 +980,7 @@ class ReplyMixin:
                     origin=ctx.session_id,
                 )
                 state.note_reply(message, session_id=ctx.session_id)
-                self.note_dialogue(state, text=message, is_self=True)
+                self.note_dialogue(state, text=message, is_self=True, origin=ctx.session_id)
                 # 这句话是在哪个会话里说的：留档只有一份，来源要标出来。
                 # 用 note_chat 的返回值定位那一条（重复没记时是 None → 什么都不改）
                 self._tag_chat_origin(state, ctx.session_id, recorded)
@@ -1015,10 +1018,7 @@ class ReplyMixin:
                     user_name=str(getattr(ctx, "user_name", "") or ""),
                     session_id=str(getattr(ctx, "session_id", "") or ""),
                 )
-            if parsed.own_topic_done:
-                self.mark_own_topic_done(
-                    state, user_id=str(getattr(ctx, "user_id", "") or "")
-                )
+            # Legacy boolean completions are deliberately ignored. Execution receipts own progress.
             self.mark_open_topics_asked(state, ctx)
             # 对方的口吻：模型判的优先，没判才用关键词表兜底（表只认字面，会认错反话）
             # 带上"谁说的"：同样一句难听的，亲近的人说她更受伤（见 _tone_magnitude）

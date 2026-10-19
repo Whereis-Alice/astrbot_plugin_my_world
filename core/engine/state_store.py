@@ -162,6 +162,10 @@ class StateStoreMixin:
         key = self.state_key(session_id)
         async with self.lock(key):
             state = await self.load_state(key)
+            from ..planner import migrate_plan
+            from ..life_matters import ensure
+            migrate_plan(state, now=self._now(), tick_seconds=self.tick_seconds)
+            ensure(state, self._now())
             self._sync_sleep_rhythm_mode(state)
             # 留档超上限时要不要先把顶掉的几条攒起来（配置成"压成摘要"才需要）：
             # 挂成临时属性，note_chat 会读它——不写进存档。

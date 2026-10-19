@@ -342,6 +342,13 @@ class WorldState:
     跟「还没聊完的」正好对称：那份记的是**别人的**事，这份记的是**她自己的**事。
     """
 
+    life_matters: list[dict[str, Any]] = field(default_factory=list)
+    life_migrated: bool = False
+    life_updated_at: float = 0.0
+    life_recovery: dict[str, Any] = field(default_factory=dict)
+    life_interests: dict[str, Any] = field(default_factory=dict)
+    life_artifacts: dict[str, Any] = field(default_factory=dict)
+
     last_say_limit: int = 0
     """那一次实际生效的句数上限（风格格、群聊硬顶、配置、密度提醒取更严格者）。"""
 

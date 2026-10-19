@@ -5,6 +5,9 @@ from __future__ import annotations
 from ..model_calls import model_operation
 
 from typing import Any
+import hashlib
+import json
+from ..evidence import source_snapshot
 from ..config_scope import session_scoped
 from ..memory import INTERACTION
 from ..state import WorldState
@@ -14,6 +17,33 @@ from .util import _clip_text
 
 
 class DialogueMemoryMixin:
+    def mark_context_sources(self, state, ctx, batch) -> None:
+        """Only lines selected for this prompt become available to factual consolidation."""
+        selected = [*self.chat_context_for_reply(state, ctx, exclude_entries=self.reply_batch_entries(batch)), *batch]
+        for row in selected:
+            if not isinstance(row, dict):
+                continue
+            origin = str(row.get("origin") or row.get("session") or ctx.session_id)
+            if origin != ctx.session_id:
+                continue
+            text = str(row.get("text") or row.get("raw_text") or "")
+            uid = str(row.get("user_id") or "")
+            source = source_snapshot(row, origin)
+            for pending in state.pending_memory:
+                if str(pending.get("origin") or state.session_id) != origin:
+                    continue
+                saved = pending.get("source_snapshot") or source_snapshot(pending, origin)
+                identified = bool(row.get("event_key") or row.get("source_id")) and bool(pending.get("source_id"))
+                if identified and source["id"] != saved["id"]:
+                    continue
+                if str(pending.get("user_id") or "") != uid or (not identified and str(pending.get("text") or "") != _clip_text(" ".join(text.split()), 160)):
+                    continue
+                pending["eligible"] = True
+                self.db.raw.observe_source(saved, eligible=True)
+            row["eligible"] = True
+            source = source_snapshot(row, origin)
+            self.db.raw.observe_source(source, eligible=True)
+
     # ---------------- 对话记忆：攒片段，再总结 ----------------
 
     def note_dialogue(
@@ -25,6 +55,8 @@ class DialogueMemoryMixin:
         text: str = "",
         is_self: bool = False,
         persona_id: str = "",
+        source_id: str = "",
+        origin: str = "",
     ) -> None:
         """把一条「她参与的对话」放进待总结缓冲（不立刻写记忆）。"""
 
@@ -46,6 +78,11 @@ class DialogueMemoryMixin:
                 "world_time": int(state.world_time),
             }
         )
+        entry = state.pending_memory[-1]
+        entry.update(source_id=source_id, origin=origin or state.session_id, eligible=bool(is_self))
+        source = source_snapshot({**entry, "text": str(text or "")}, state.session_id)
+        entry["source_snapshot"] = source
+        self.db.raw.observe_source(source, eligible=bool(is_self))
         limit = 60
         if len(state.pending_memory) > limit:
             state.pending_memory = state.pending_memory[-limit:]
@@ -110,12 +147,24 @@ class DialogueMemoryMixin:
         if not config.dialogue_summary or not self.is_enabled(session_id):
             return None
         async with self.session_state(session_id) as state:
-            reason = self._memory_flush_reason(state)
+            frozen = None
+            memory_session = session_id
+            for origin in dict.fromkeys([session_id, *self.group_sessions(session_id)]):
+                frozen = await self.db.call("pending_memory_batch", origin)
+                if frozen:
+                    memory_session = origin
+                    break
+            reason = "恢复未完成的记忆批次" if frozen else self._memory_flush_reason(state)
             if not reason:
                 return None
-            entries = [dict(item) for item in state.pending_memory]
-            hints = list(state.memory_hints)
-            node_id = state.pending_memory_node or state.node_id
+            entries = list(frozen["entries"]) if frozen else [dict(item) for item in state.pending_memory if item.get("eligible")]
+            if not entries:
+                return None
+            if not frozen:
+                memory_session = str(entries[0].get("origin") or session_id)
+                entries = [item for item in entries if str(item.get("origin") or session_id) == memory_session]
+            hints = list(frozen.get("hints", [])) if frozen else (list(state.memory_hints) if len(self.group_sessions(session_id)) <= 1 else [])
+            node_id = str(frozen.get("node_id") or state.node_id) if frozen else state.pending_memory_node or state.node_id
             persona_id = next(
                 (
                     str(item.get("persona_id") or "")
@@ -127,7 +176,11 @@ class DialogueMemoryMixin:
             mood = state.mood
             affect = float(state.affect)
             valence = float(state.valence)
-            state.pending_memory = []
+            batch_key = str(frozen["key"]) if frozen else hashlib.sha256(json.dumps([memory_session, entries], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+            if not frozen:
+                await self.db.call("freeze_memory_batch", batch_key, memory_session, {"entries": entries, "hints": hints, "node_id": node_id})
+            frozen_ids = {item.get("source_snapshot", {}).get("id") for item in entries}
+            state.pending_memory = [item for item in state.pending_memory if item.get("source_snapshot", {}).get("id") not in frozen_ids]
             state.memory_hints = []
             state.pending_memory_node = ""
             state.memory_flush_wanted = False
@@ -146,13 +199,14 @@ class DialogueMemoryMixin:
                 hints=hints,
                 max_chars=max(10, int(config.summary_max_chars)),
             )
-            reply = await self._ask_llm(session_id, system_prompt, prompt)
+            reply = await self._ask_llm(memory_session, system_prompt, prompt)
             outcome.llm_calls += 1
             summary = self._clean_memory_summary(reply)
         generated = bool(summary)
         if not summary:
             summary = self._fallback_memory_text(entries)
         if not summary:
+            await self.db.call("finish_memory_batch", batch_key)
             return outcome
 
         summary = _clip_text(summary, max(10, int(config.summary_max_chars)))
@@ -165,10 +219,13 @@ class DialogueMemoryMixin:
         async with self.session_state(session_id) as state:
             echo_marker = await self._event_marker(state)
             self.memory.remember(
-                session_id=session_id,
+                session_id=memory_session,
                 persona_id=persona_id,
                 node_id=node_id,
                 content=summary,
+                evidence=[{**item.get("source_snapshot", source_snapshot(item, session_id)), "eligible": True} for item in entries],
+                idempotency_key="dialogue:" + batch_key,
+                context="\n".join(f"{item.get("name", "有人")}：{item.get("text", "")}" for item in entries),
                 memory_type=INTERACTION,
                 related_users=users,
                 emotion=mood,
@@ -182,6 +239,7 @@ class DialogueMemoryMixin:
                 "memory",
                 {"content": summary, "reason": reason, "where": node_id},
             )
+            await self.db.call("finish_memory_batch", batch_key)
             await self._echo_events_since(state, outcome, echo_marker)
         return outcome
 

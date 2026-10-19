@@ -898,6 +898,8 @@ class SleepMixin:
                 name=ctx.user_name or ctx.user_id,
                 text=ctx.text,
                 persona_id=ctx.persona_id,
+                source_id=ctx.event_key,
+                origin=ctx.session_id,
             )
             await self._log_event(
                 state,

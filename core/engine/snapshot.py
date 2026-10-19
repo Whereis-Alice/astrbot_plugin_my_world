@@ -21,6 +21,7 @@ from ..prompt import (
     clock_text,
 )
 from ..state import WorldState
+from ..life_matters import ensure as ensure_matters
 from ..timeline import render_event
 from .constants import (
     DEBUG_ECHO_DEBOUNCE_SECONDS,
@@ -261,6 +262,11 @@ class SnapshotMixin:
             "tool_breakers": self.tool_breaker_state(),
             "current_action": state.current_action,
             "activity": self.activity_view(state),
+            "life_matters": [item for item in ensure_matters(state, self._now())
+                             if not item.get("who") or item.get("session") == session_id],
+            "life_recovery": state.life_recovery,
+            "life_interests": state.life_interests,
+            "activity_reason": str((state.current_plan or {}).get("reason") or ""),
             "current_plan": state.current_plan,
             "last_reasoning": state.last_reasoning,
             "thoughts": state.thoughts[-5:],

@@ -1,16 +1,9 @@
-"""场景记忆引擎（设计文档 4.13 节）。
-
-记忆与「地点 + 人」强相关，因此召回用 SQL 过滤 + 权重打分即可，不需要向量检索：
-- 召回空间天然很小（同一会话、同一节点、同一人格的记忆通常几十条）；
-- 过滤维度是结构化的（会话/人格/节点/用户），SQL 比向量更精确；
-- 省掉 embedding provider 依赖和每次召回的额外 API 开销。
-如果将来要做「同义语义召回」，可以在 recall 后面挂一个可选的向量重排，
-当前接口（recall 返回打分后的列表）已经预留了这个位置。
-"""
+"""Scoped lexical recall with optional semantic scores; facts and evidence remain authoritative."""
 
 from __future__ import annotations
 
 import re
+import json
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -141,6 +134,8 @@ class MemoryEngine:
         # 「查的时候看哪些会话」的换算：记忆**按会话各存一份**（这样以后改组
         # 也不会把记忆挂在错的地方），但召回时把同组的会话一起当条件。
         self._sessions_of = sessions_of
+        from .semantic_memory import SemanticMemory
+        self.semantic = SemanticMemory(self)
 
     def sessions(self, session_id: str) -> list[str]:
         """召回时要一起看的会话（会话组 = 组里所有会话）。"""
@@ -160,7 +155,26 @@ class MemoryEngine:
 
     # ---------------- 创建 ----------------
 
-    def remember(
+    def remember(self, *, evidence: list[dict] | None = None, idempotency_key: str = "", **kwargs) -> int | None:
+        import json
+        from .evidence import source_snapshot
+        with self.db.atomic():
+            if idempotency_key:
+                receipt = self.db._query("SELECT memory_id FROM memory_receipt WHERE batch_key=?", (idempotency_key,))
+                if receipt:
+                    return int(receipt[0]["memory_id"])
+            memory_id = self._remember(**kwargs)
+            if memory_id:
+                ids = []
+                for record in evidence or []:
+                    source = record if record.get("id", "").startswith("src_") else source_snapshot(record, kwargs.get("session_id", ""))
+                    ids.append(self.db.observe_source(source, eligible=bool(record.get("eligible"))))
+                self.db.attach_evidence(memory_id, ids)
+                if idempotency_key:
+                    self.db._execute("INSERT INTO memory_receipt(batch_key,memory_id,at) VALUES(?,?,?)", (idempotency_key, memory_id, time.time()))
+            return memory_id
+
+    def _remember(
         self,
         *,
         session_id: str,
@@ -213,7 +227,14 @@ class MemoryEngine:
                 return None
             if policy == "highest_weight" and float(conflict["weight"]) > float(weight):
                 return None
-            self.db.delete_memories(memory_id=int(conflict["id"]))
+            fields = {"content": text, "type": memory_type, "related_users": related_users,
+                      "emotion": emotion, "weight": max(0.0, min(1.0, float(weight))),
+                      "source": source, "context": context, "tier": tier,
+                      "participants": json.dumps(participants or related_users, ensure_ascii=False),
+                      "keywords": json.dumps(keywords or [], ensure_ascii=False),
+                      "created_at": time.time(), "next_review_at": float(next_review_at or 0), "pinned": bool(pinned)}
+            self.db.revise_memory(int(conflict["id"]), fields, manual=False)
+            return int(conflict["id"])
 
         self._enforce_limit(session_id=session_id, persona_id=persona_id)
         return self.db.add_memory(
@@ -327,7 +348,13 @@ class MemoryEngine:
                 )
             return rows
 
+        semantic = self.semantic.cached(session_id, persona_id, keyword, mode=mode) if config and config.semantic_enabled and keyword else {}
+        semantic = {mid: score for mid, score in semantic.items() if score >= config.semantic_min_similarity}
         candidates = query(terms)
+        if semantic:
+            by_id = {item["id"]: item for item in candidates}
+            by_id.update({item["id"]: item for item in query([]) if item["id"] in semantic})
+            candidates = list(by_id.values())
         if not candidates and terms and not strict_keyword:
             candidates = query([])
 
@@ -338,6 +365,7 @@ class MemoryEngine:
             score = self._score(item, focus_user=focus_user, node_id=node_id, now=now)
             if keyword:
                 score *= self._keyword_bonus(content=self._search_text(item), keyword=keyword)
+                score *= 1 + 2 * max(0, semantic.get(item["id"], 0))
             if score <= 0:
                 continue
             scored.append((score, item))
@@ -345,7 +373,7 @@ class MemoryEngine:
 
         if keyword:
             # 主题词一个都没命中的，只在没别的东西可 recall 时才拿出来垫底
-            hits = [pair for pair in scored if self._keyword_hits(self._search_text(pair[1]), keyword)]
+            hits = [pair for pair in scored if self._keyword_hits(self._search_text(pair[1]), keyword) or pair[1]["id"] in semantic]
             if hits or strict_keyword:
                 scored = hits
         results: list[RecalledMemory] = []

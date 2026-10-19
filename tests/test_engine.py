@@ -2514,24 +2514,26 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
                 state, "答应给他看照片", user_id="9", user_name="小刚"
             )
             prompt = self.engine.extra_reminders(state, ctx=ctx)
-            self.assertIn("你自己还记着的事", prompt)
+            self.assertIn("你一直在推进的生活事项", prompt)
             self.assertIn("答应给他看照片", prompt)
             # 对别人不说这件事
             other = self.ctx(user_id="7", user_name="小红")
             self.assertNotIn("答应给他看照片", self.engine.extra_reminders(state, ctx=other))
             # 做完划掉
-            self.assertEqual(self.engine.mark_own_topic_done(state, user_id="9"), 1)
+            self.assertEqual(self.engine.mark_own_topic_done(state, user_id="9"), 0)
+            self.assertEqual(self.engine.mark_own_topic_done(state, user_id="9", matter_id=state.life_matters[0]["id"],
+                evidence="平台确认照片已发出", confirmed=True), 1)
             self.assertEqual(state.own_topics, [])
             self.assertEqual(self.engine.mark_own_topic_done(state, user_id="9"), 0)
 
-    async def test_own_topic_is_dropped_after_a_few_days(self):
-        """放太久的自己那点事：丢掉，别当成陈年待办。"""
+    async def test_personal_project_is_kept_after_a_few_days(self):
+        """长期项目持续保留，不再把未完成当成自动过期。"""
 
         async with self.engine.session_state(SESSION) as state:
             self.engine.note_own_topic(state, "想做顿饭", user_id="9")
-            state.own_topics[0]["at"] = self.clock.now() - 5 * 86400
+            state.life_matters[0]["at"] = self.clock.now() - 5 * 86400
             self.engine._decay_own_topics(state, now=self.clock.now())
-            self.assertEqual(state.own_topics, [])
+            self.assertEqual(len(state.own_topics), 1)
 
     async def test_prompt_asks_for_grudge_and_own_topic_fields(self):
         """输出格式里得有这几个字段，模型才知道能写。"""
@@ -2701,6 +2703,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def test_user_message_updates_state_and_records_memory(self):
         await self.engine.handle_incoming(self.ctx(text="我今天有点难过", mood_signal="negative"))
+        await self.expose_dialogue()
         state = await self.get_state()
         self.assertIn("42", state.user_presence)
         self.assertEqual(state.user_presence["42"]["name"], "小明")
@@ -10092,6 +10095,16 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reasoning["intent"], "敷衍两句")
         self.assertEqual(reasoning["_source"], "reply")
 
+    async def expose_dialogue(self):
+        async with self.engine.session_state(SESSION) as state:
+            self.engine.mark_context_sources(state, self.ctx(), list(state.recent_chat))
+
+    async def drain_memory_jobs(self):
+        import asyncio
+        jobs = [task for key, task in getattr(self.engine, "_background_jobs", {}).items() if key.startswith("memory:")]
+        if jobs:
+            await asyncio.gather(*jobs)
+
     # ---------------- 对话记忆：攒片段再总结 ----------------
 
     async def test_dialogue_is_not_stored_message_by_message(self):
@@ -10114,6 +10127,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
 
         for text in ("在吗", "我今天加班到现在才下班", "好累啊"):
             await self.engine.handle_incoming(self.ctx(text=text))
+        await self.expose_dialogue()
         await self.engine.flush_pending_memory(SESSION)
 
         rows = self.interaction_rows()
@@ -10166,7 +10180,9 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
                 "arrival_decide": 0,
             }
         )
+        await self.expose_dialogue()
         await self.engine.tick()
+        await self.drain_memory_jobs()
 
         state = await self.get_state()
         self.assertEqual(state.node_id, "study")
@@ -10180,7 +10196,9 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
 
         await self.engine.handle_incoming(self.ctx(text="今天天气不错啊"))
         self.clock.advance(31 * 60)
+        await self.expose_dialogue()
         await self.engine.tick()
+        await self.drain_memory_jobs()
         self.assertEqual(len(self.interaction_rows()), 1)
 
     async def test_wake_up_and_memory_are_logged(self):
@@ -10190,6 +10208,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         await self.engine.handle_incoming(self.ctx(text="醒醒，别睡了"))
         self.clock.advance(31 * 60)
         self.llm.replies = []  # 没有总结可用 -> 退化成一行摘录
+        await self.expose_dialogue()
         await self.engine.flush_pending_memory(SESSION)
 
         events = await self.db.call("query_events", session_id=SESSION, limit=50)
@@ -10205,6 +10224,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         await self.engine.handle_incoming(self.ctx(text="我今天加班到现在才下班"))
         self.engine.llm = None
         self.clock.advance(31 * 60)
+        await self.expose_dialogue()
         await self.engine.flush_pending_memory(SESSION)
         rows = self.interaction_rows()
         self.assertEqual(len(rows), 1, rows)

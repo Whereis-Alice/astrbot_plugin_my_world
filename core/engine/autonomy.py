@@ -32,6 +32,7 @@ class AutonomyMixin:
 
         if not self.is_enabled(session_id):
             return None
+        await self.advance_life_matters(session_id)
         now = self._now()
         # 节流按"这一整个她"算，不按会话：同一个组的几个会话共用一个她
         pace_key = self.state_key(session_id)
@@ -366,7 +367,7 @@ class AutonomyMixin:
         if plan:
             created = create_plan(
                 steps=plan.get("steps", []),
-                world_time=state.world_time,
+                world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds,
                 valid_for=int(plan.get("valid_for", self.world.limits.plan_valid_duration)),
                 reason=str(plan.get("reason", "")),
                 source="llm",

@@ -1,0 +1,77 @@
+/* Personal life: quiet editorial hierarchy on the shared six-theme surface system. */
+#tab-life.active { display: flex; flex-direction: column; gap: 16px; min-height: 0; }
+.life-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 0 0 auto; }
+.life-toolbar strong { font-size: 15px; margin-right: 5px; }
+.life-toolbar input { max-width: 210px; min-width: 100px; flex: 1; }
+.life-toolbar select { width: auto; max-width: 150px; font-size: 12px; padding: 7px 25px 7px 10px; }
+.life-toolbar .life-spacer { flex: 1; }
+.life-toolbar small { color: var(--muted); }
+#life-tools > summary { font-size: 20px; line-height: 20px; padding: 4px 10px; }
+.life-opening { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line-strong); border-radius: 18px; overflow: hidden; flex: 0 0 auto; background: linear-gradient(112deg, var(--accent-soft), transparent 60%), var(--panel); box-shadow: var(--card-shadow); }
+.life-opening > div { padding: 19px 24px; min-width: 0; }
+.life-opening > div + div { border-left: 1px solid var(--line); background: var(--surface-highlight); }
+.life-opening h2 { font-size: 20px; font-weight: 560; letter-spacing: -.4px; margin: 8px 0; line-height: 1.5; }
+.life-opening p { margin: 0; color: var(--text-2); line-height: 1.7; font-size: 12px; }
+.life-now-label { display: inline-flex; align-items: center; gap: 7px; }
+.life-now-label::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 10px var(--ok); }
+.life-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 290px), 1fr)); gap: 16px; overflow: auto; align-content: start; padding: 2px 2px 18px; }
+.life-card { position: relative; display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; height: auto; min-height: 310px; text-align: left; white-space: normal; min-width: 0; gap: 12px; padding: 22px; border: 1px solid var(--line-strong); border-radius: 17px; background: radial-gradient(ellipse at 100% 0, var(--accent-soft), transparent 65%), linear-gradient(135deg, var(--surface-highlight), transparent 80%), var(--panel); color: var(--text); box-shadow: var(--card-shadow); overflow: hidden; transition: transform .18s, box-shadow .18s, border-color .18s; }
+.life-card > * { flex-shrink: 0; }
+.life-card { font-weight: 400; }
+.life-card:hover { transform: translateY(-2px); box-shadow: var(--glow); border-color: var(--accent-ring); }
+.life-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.life-card.is-working { border-color: var(--accent-ring); box-shadow: var(--glow-soft); }
+.life-card.is-working::before { content: ''; position: absolute; top: 20px; bottom: 20px; left: 0; width: 2px; background: var(--accent); box-shadow: 0 0 14px var(--accent); }
+.life-card.is-completed { background: radial-gradient(ellipse at 100% 0, var(--ok-soft), transparent 70%), var(--panel); }
+.life-card-top, .life-card-foot, .life-focus-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.life-badge { font-size: 10px; color: var(--accent-ink); background: var(--accent-soft); border: 1px solid var(--accent-ring); border-radius: 20px; padding: 4px 8px; white-space: nowrap; }
+.is-blocked .life-badge { color: var(--warn-text); background: var(--warn-soft); border-color: transparent; }
+.is-completed .life-badge { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
+.life-card h3 { font-size: 19px; line-height: 1.5; font-weight: 550; margin: 0; letter-spacing: -.3px; overflow-wrap: anywhere; }
+.life-motivation { margin: 0; font-size: 12px; line-height: 1.8; color: var(--text-2); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.life-card-next { padding: 13px 14px; margin-top: auto; border-radius: 11px; background: color-mix(in srgb, var(--bg) 45%, transparent); border: 1px solid var(--line); }
+.life-card-next p { margin: 6px 0 0; font-size: 12px; line-height: 1.75; color: var(--text-2); }
+.life-progress { height: 3px; border-radius: 5px; overflow: hidden; background: var(--line-strong); }
+.life-progress > span { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--secondary)); box-shadow: 0 0 10px var(--accent); }
+.life-card-foot { font-size: 10px; color: var(--muted); }
+.life-card-foot b { font-size: 13px; color: var(--accent-ink); font-variant-numeric: tabular-nums; }
+.life-empty { grid-column: 1 / -1; min-height: 240px; display: grid; place-content: center; text-align: center; gap: 12px; padding: 30px; border: 1px dashed var(--line-strong); border-radius: 17px; }
+.life-empty > span { color: var(--accent); font-size: 28px; }
+.life-empty h3, .life-empty p { margin: 0; line-height: 1.8; font-size: 13px; }
+.life-drawer { position: fixed; inset: 0 0 0 auto; margin: 0; width: min(600px, 100%); max-width: 100%; height: 100dvh; max-height: 100dvh; padding: 0; background: color-mix(in srgb, var(--panel) 94%, transparent); backdrop-filter: blur(24px); color: var(--text); border: 0; border-left: 1px solid var(--line-strong); box-shadow: var(--shadow-3); }
+.life-drawer::backdrop { background: var(--scrim); backdrop-filter: blur(4px); }
+.life-drawer-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 24px 28px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.life-drawer-head h2 { margin: 0; line-height: 1.5; font-size: 20px; }
+.life-detail { display: flex; flex-direction: column; gap: 23px; padding: 28px; }
+.life-field p { margin: 8px 0 0; line-height: 1.9; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.life-steps { display: flex; flex-direction: column; gap: 16px; margin: 0; padding-left: 22px; }
+.life-steps li b { display: block; font-size: 13px; line-height: 1.7; font-weight: 500; }
+.life-steps li small { font-size: 11px; }
+.life-steps li.done::marker { color: var(--ok); }
+.life-timeline { border-left: 1px solid var(--accent-ring); margin-left: 4px; }
+.life-timeline-item { position: relative; padding: 0 0 22px 23px; }
+.life-timeline-item::before { content: ''; position: absolute; left: -4px; top: 4px; width: 7px; height: 7px; background: var(--accent); border-radius: 50%; box-shadow: 0 0 10px var(--accent-ring); }
+.life-timeline-item time { font-size: 10px; color: var(--muted); }
+.life-timeline-item p { font-size: 13px; line-height: 1.8; margin: 7px 0; }
+.life-drawer-actions { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 18px; border-top: 1px solid var(--line); }
+.life-id { font-family: ui-monospace, monospace; font-size: 10px; overflow-wrap: anywhere; }
+.life-focus { border: 1px solid var(--accent-ring); background: radial-gradient(ellipse at 100% 0, var(--accent-soft), transparent 70%), var(--panel); padding: 20px; border-radius: 17px; box-shadow: var(--glow-soft); }
+.life-focus h3 { font-size: 20px; line-height: 1.6; margin: 12px 0 6px; font-weight: 500; }
+.life-focus p { font-size: 12px; color: var(--text-2); line-height: 1.8; margin: 0 0 14px; }
+.life-focus-next { display: grid; gap: 6px; padding: 12px 0; border-top: 1px solid var(--line); font-size: 12px; line-height: 1.8; }
+.life-focus > small { display: block; margin-top: 5px; font-size: 10px; }
+#life-recovery { font-size: 11px; margin: 0; color: var(--muted); }
+@media (max-width: 720px) {
+  #tab-life.active { gap: 11px; }
+  .life-opening { grid-template-columns: 1fr; }
+  .life-opening > div { padding: 15px 18px; }
+  .life-opening > div + div { border-left: 0; border-top: 1px solid var(--line); }
+  .life-opening h2 { font-size: 16px; margin: 5px 0; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; }
+  .life-opening p { font-size: 11px; }
+  .life-toolbar strong, .life-toolbar small, .life-spacer { display: none; }
+  .life-toolbar input { max-width: none; flex-basis: 100%; order: 2; }
+  .life-toolbar select { flex: 1; min-width: 0; max-width: none; }
+  .life-card { padding: 20px; }
+  .life-drawer-head, .life-detail { padding: 20px; }
+}
+@media (prefers-reduced-motion: reduce) { .life-card { transition: none; } .life-card:hover { transform: none; } }

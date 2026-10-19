@@ -44,6 +44,7 @@ from ..core.social import SocialDirectory, qq_id, rule_conflicts
 from ..core.timeline import build_timeline
 from ..core.tool_import import build_drafts as build_tool_action_drafts
 from ..core.tool_import import merge_drafts as merge_tool_action_drafts
+from .life_api import LifeApiMixin
 
 
 def _generation_timeout_seconds(config: Any) -> float:
@@ -80,7 +81,7 @@ def _query_int(name: str, default: int = 0) -> int:
         return default
 
 
-class WebApiMixin:
+class WebApiMixin(LifeApiMixin):
     def _register_web_apis(self, plugin_id: str) -> None:
         def register(path, handler, methods, description):
             @functools.wraps(handler)
@@ -199,6 +200,9 @@ class WebApiMixin:
         )
         register(f"/{p}/reload", self.api_reload, ["POST"], "热加载配置")
         register(f"/{p}/restore-default", self.api_restore, ["POST"], "恢复默认配置")
+        register(f"/{p}/life", self.api_life, ["GET"], "生活事项与持续进展")
+        register(f"/{p}/life/update", self.api_life_update, ["POST"], "管理生活事项")
+        register(f"/{p}/memories/evidence", self.api_memory_evidence, ["GET"], "记忆来源与人工修订")
         register(f"/{p}/state", self.api_state, ["GET"], "实时状态")
         register(f"/{p}/states", self.api_states, ["GET"], "所有会话的简要状态")
         register(f"/{p}/state/action", self.api_state_action, ["POST"], "手动触发动作")
@@ -3499,7 +3503,7 @@ class WebApiMixin:
         # 所以编辑器选了「用默认作用域」时不要真的写空串。
         if not str(fields.get("scope", "") or "").strip():
             fields.pop("scope", None)
-        await self.db.call("update_memory", int(memory_id), **fields)
+        await self.db.call("revise_memory", int(memory_id), fields)
         return json_response({"ok": True})
 
     async def api_memory_delete(self):

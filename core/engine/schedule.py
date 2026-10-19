@@ -559,6 +559,8 @@ class ScheduleMixin:
         once_done: set[tuple[str, str]] = set()
         # 她的一天只过一遍：同一个她（会话组）只检查一次日程
         for session_id in self.tick_session_ids():
+            if self.is_busy(session_id):
+                continue  # A delayed decision in one life must not stop the global clock.
             async with self.session_state(session_id) as state:
                 now = self.local_now()
                 seconds = now.timestamp()

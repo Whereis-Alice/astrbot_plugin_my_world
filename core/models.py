@@ -871,6 +871,14 @@ class StateDynamics(Permissive):
 
 
 class Limits(Permissive):
+    background_daily_calls: int = Field(default=120, ge=0, le=10000)
+    background_daily_tokens: int = Field(default=0, ge=0, le=100000000)
+    background_concurrency: int = Field(default=3, ge=1, le=12)
+    life_matter_enabled: bool = True
+    life_matter_self_start: bool = True
+    life_matter_active_max: int = Field(default=6, ge=1, le=20)
+    life_matter_daily_minutes: int = Field(default=90, ge=5, le=480)
+    life_matter_interval_minutes: int = Field(default=60, ge=5, le=1440)
     background_llm_timeout_seconds: float = Field(default=120, ge=1, le=1800)
     """后台决策、复盘、事件和睡眠整理的单次模型等待上限；原生聊天不受影响。"""
 
@@ -1017,6 +1025,11 @@ ECHO_TYPE_ALIASES: dict[str, tuple[str, ...]] = {
 
 
 class MemoryConfig(Permissive):
+    semantic_enabled: bool = False
+    semantic_endpoint: str = ""
+    semantic_model: str = ""
+    semantic_api_key_env: str = ""
+    semantic_min_similarity: float = Field(default=0.35, ge=0, le=1)
     """对话记忆怎么写。
 
     逐条存「某某说了什么」几乎没有信息量，所以对话是**攒成片段再总结**一条：

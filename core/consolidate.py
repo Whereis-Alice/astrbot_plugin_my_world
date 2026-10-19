@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+from .evidence import source_snapshot
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
@@ -156,7 +158,8 @@ class Consolidator:
             )
             where = str(item.get("origin") or current_session or "")
             tag = "（她自己）" if item.get("is_self") else f"（QQ {uid}）" if uid else ""
-            rows.append(f"[{stamp}·{self._where(where, labels)}·session={where}] {who}{tag}: {text}")
+            source_id = str(item.get("source_id") or "")
+            rows.append(f"[{stamp}·{self._where(where, labels)}·session={where}·source={source_id}] {who}{tag}: {text}")
         return rows[-max(1, int(limit)) :]
 
     def _where(self, session_id: str, labels: dict[str, str]) -> str:
@@ -267,7 +270,20 @@ class Consolidator:
             return result
         stamp = float(now if now is not None else time.time())
         max_items = 12 if result.mode == "full" else 6
-        records = list(chat_records or [])
+        records = []
+        source_map = {}
+        for row in chat_records or []:
+            snapshot = source_snapshot(row, session_id)
+            stored = self.memory.db.source_record(snapshot["id"])
+            if stored is not None and not stored["eligible"]:
+                continue
+            if row.get("eligible") is False and stored is None:
+                continue
+            record = {**row, "source_id": snapshot["id"]}
+            records.append(record)
+            if stored:
+                source_map[snapshot["id"]] = stored
+
         here = str(current_session or session_id or "")
         system, prompt = self.prompts.build_consolidate_prompt(
             persona_text=persona_text,
@@ -308,17 +324,39 @@ class Consolidator:
         if not isinstance(payload, dict) or not payload:
             result.note = "整理模型没有给出可用的 JSON"
             return result
+        for field in ("memories", "notes"):
+            for item in self._rows(payload.get(field)):
+                ids = [str(sid) for sid in item.get("source_ids", []) if str(sid) in source_map]
+                if not ids and item.get("context"):
+                    quote = " ".join(str(item["context"]).split())
+                    ids = [sid for sid, record in source_map.items() if len(quote) >= 4 and quote in str(record.get("text") or "")]
+                item["_evidence"] = [source_map[sid] for sid in ids]
+                if source_map and not ids:
+                    item["_ungrounded"] = True
+                if ids:
+                    item["context"] = "\n".join(f"{source_map[sid].get('name') or source_map[sid].get('user_id')}: {source_map[sid].get('text')}" for sid in ids)
+        batch_key = "consolidate:" + hashlib.sha256(json.dumps([session_id, result.mode, [row["source_id"] for row in records],
+                       payload if not records else ""], ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        if self.memory.db.kv_get(batch_key):
+            result.ok = True
+            result.note = "这批来源已经整理过，不重复记账"
+            return result
         result.ok = True
         if result.mode != "nap":
             payload = {**payload, "relations": self._grounded_relations(payload, records, result)}
         scoped = self._scoped_profile_updates(session_id, payload, records, result)
-        for sid, local in scoped.items():
-            local_records = [row for row in records if str(row.get("origin") or session_id) == sid]
-            local_known = self.known_ids(sid, local_records)
-            if result.mode == "nap":
-                self._apply_nap(sid, local, result, now=stamp, known=local_known)
-            else:
-                self._apply_full(sid, local, result, now=stamp, known=local_known)
+        with self.memory.db.atomic():
+            if self.memory.db.kv_get(batch_key):
+                result.note = "这批来源已经整理过，不重复记账"
+                return result
+            for sid, local in scoped.items():
+                local_records = [row for row in records if str(row.get("origin") or session_id) == sid]
+                local_known = self.known_ids(sid, local_records)
+                if result.mode == "nap":
+                    self._apply_nap(sid, local, result, now=stamp, known=local_known)
+                else:
+                    self._apply_full(sid, local, result, now=stamp, known=local_known)
+            self.memory.db.kv_set(batch_key, {"at": stamp})
         return result
 
     def _scoped_profile_updates(self, session_id, payload, records, result):
@@ -370,11 +408,25 @@ class Consolidator:
             sid = destination({"user_id": str(uid)})
             if sid:
                 local[sid]["digests"][str(uid)] = text
+        routed_memories = {sid: [] for sid in sessions}
+        for item in self._rows(payload.get("memories")):
+            if item.get("_ungrounded"):
+                result.skipped.append("新记忆没有可核对的来源，暂不保存")
+                continue
+            origins = {record["session"] for record in item.get("_evidence", [])}
+            if len(origins) == 1 and next(iter(origins)) in sessions:
+                routed_memories[next(iter(origins))].append(item)
+            elif not origins:
+                routed_memories[session_id].append(item)
+            else:
+                result.skipped.append("一条记忆混入多个会话来源，暂不保存")
+        for sid, items in routed_memories.items():
+            local[sid]["memories"] = items
         # Shared memory processing and the dream run once, in the original life.
         main = {**payload, **local.pop(session_id)}
         local[session_id] = main
         return {sid: part for sid, part in local.items() if sid == session_id
-                or any(part.get(field) for field in ("facts", "relations", "affinity", "digests"))}
+                or any(part.get(field) for field in ("facts", "relations", "affinity", "digests", "memories"))}
 
     def _grounded_relations(
         self, payload: dict[str, Any], records: list[dict[str, Any]], result: ConsolidateResult
@@ -580,6 +632,7 @@ class Consolidator:
             source="consolidate",
             tier="gist",
             context=str(item.get("context") or ""),
+            evidence=item.get("_evidence") or [],
             keywords=[
                 str(value) for value in (item.get("keywords") or []) if str(value)
             ],

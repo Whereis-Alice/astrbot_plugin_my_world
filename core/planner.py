@@ -7,6 +7,7 @@ Tick 每推进一次就调用一次 ``tick``，由引擎执行返回的步骤。
 from __future__ import annotations
 
 from typing import Any
+import math
 
 
 def _read_pages(value: Any) -> int:
@@ -29,6 +30,8 @@ def create_plan(
     reason: str = "",
     source: str = "rule",
     send_to: str = "",
+    now: float | None = None,
+    tick_seconds: float = 60.0,
 ) -> dict[str, Any] | None:
     """构造计划对象。steps 为空时返回 None。"""
 
@@ -67,7 +70,10 @@ def create_plan(
         "steps": normalized,
         "current_step": 0,
         "created_at": world_time,
-        "valid_until": world_time + max(60, int(valid_for)),
+        "valid_until": world_time + max(1, math.ceil(max(60, int(valid_for)) / max(1, tick_seconds))),
+        "clock": "seconds_v2",
+        "created_ts": float(now or 0),
+        "expires_at": float(now) + max(60, int(valid_for)) if now is not None else 0,
         "reason": reason,
         "source": source,
         # 她想把这些话说给谁（会话组里的哪个群 / 私聊）；空 = 落点默认
@@ -82,11 +88,27 @@ def active_plan(state, *, world_time: int | None = None) -> dict[str, Any] | Non
     if not isinstance(plan, dict) or not plan.get("steps"):
         return None
     now = state.world_time if world_time is None else world_time
+    deadline = float(plan.get("expires_at") or 0)
+    real_now = float(getattr(state, "plan_now", 0) or 0)
+    if deadline and real_now >= deadline:
+        state.current_plan = None
+        return None
     valid_until = int(plan.get("valid_until", 0) or 0)
-    if valid_until and now > valid_until:
+    if not deadline and valid_until and now >= valid_until:
         state.current_plan = None
         return None
     return plan
+
+
+def migrate_plan(state, *, now: float, tick_seconds: float) -> None:
+    """旧字段的差值是秒，创建位置是 tick；按已经过去的 tick 还原剩余有效期。"""
+    state.plan_now = now
+    plan = state.current_plan
+    if not isinstance(plan, dict) or plan.get("clock") == "seconds_v2":
+        return
+    ttl = max(60, int(plan.get("valid_until", 0)) - int(plan.get("created_at", 0)))
+    elapsed = max(0, state.world_time - int(plan.get("created_at", 0))) * tick_seconds
+    plan.update(clock="seconds_v2", created_ts=now - elapsed, expires_at=now + ttl - elapsed)
 
 
 def peek_step(state) -> dict[str, Any] | None:

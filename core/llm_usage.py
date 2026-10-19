@@ -107,15 +107,20 @@ _CURRENT_USAGE: ContextVar[LLMUsage | None] = ContextVar(
 
 
 @contextmanager
-def collect_llm_usage() -> Iterator[LLMUsage]:
+def collect_llm_usage(*, propagate: bool = False) -> Iterator[LLMUsage]:
     """收集当前异步任务里所有 LLM 响应的 usage。"""
 
+    previous = _CURRENT_USAGE.get()
     usage = LLMUsage()
     token = _CURRENT_USAGE.set(usage)
     try:
         yield usage
     finally:
         _CURRENT_USAGE.reset(token)
+        if propagate and previous is not None:
+            for key in ("responses", "reported_responses", "input_other", "input_cached", "output", "tokens_total"):
+                setattr(previous, key, getattr(previous, key) + getattr(usage, key))
+            previous.incomplete = previous.incomplete or usage.incomplete
 
 
 def record_llm_usage(value: Any) -> None:

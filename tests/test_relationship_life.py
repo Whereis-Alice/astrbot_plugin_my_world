@@ -209,6 +209,7 @@ class AutonomousContinuityTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TimeoutError):
             await self.engine._background_generate(channel, session_id=engine.SESSION)
         self.engine.world.limits.background_llm_timeout_seconds = 120
+        self.engine._background_failures.clear()  # Test cancellation separately from failure backoff.
         task = asyncio.create_task(self.engine._background_generate(channel))
         await asyncio.sleep(0)
         task.cancel()
@@ -224,6 +225,7 @@ class AutonomousContinuityTests(unittest.IsolatedAsyncioTestCase):
     async def test_expired_intention_is_remembered_as_unfinished_once(self):
         state = WorldState(engine.SESSION, node_id="study")
         self.engine.note_own_topic(state, "修好旧风车", user_id="42")
+        state.life_matters[0]["kind"] = "idea"
         now = self.clock.now() + 10 * DAY
         self.engine._decay_own_topics(state, now=now)
         self.engine._decay_own_topics(state, now=now + DAY)

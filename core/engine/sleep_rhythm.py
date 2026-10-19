@@ -249,8 +249,8 @@ class SleepRhythmMixin:
                 return
             steps.append({"action": "walk_to", "target_node": target})
         steps.append({"action": "sleep", "duration": int(state.sleep_rhythm["duration_seconds"])})
-        plan = create_plan(steps=steps, world_time=state.world_time,
-            valid_for=max(60, int(12 * 3600 / self.tick_seconds)),
+        plan = create_plan(steps=steps, world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds,
+            valid_for=12 * 3600,
             reason=str(state.sleep_rhythm.get("reason") or "休息"), source="forced" if force else "sleep_rhythm")
         await self._apply_plan(state, self.node(state.node_id), outcome, plan)
         await self._tick_plan(state, self.node(state.node_id), outcome, depth=0)

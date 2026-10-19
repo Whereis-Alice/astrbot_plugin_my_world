@@ -11,6 +11,7 @@
     <link rel="stylesheet" href="./people.css" />
     <link rel="stylesheet" href="./atelier.css" />
     <link rel="stylesheet" href="./model-calls.css" />
+    <link rel="stylesheet" href="./life.css" />
     <!-- 主题在解析样式前就定下来，避免刷新时先闪一下浅色 -->
     <script>
       (function () {
@@ -55,6 +56,7 @@
         <nav id="tabs" class="tabs">
           <span class="nav-group">观察</span>
           <button data-tab="status" class="active" title="控制台">控制台</button>
+          <button data-tab="life" title="生活事项">生活事项</button>
           <button data-tab="thoughts" title="内心活动">内心活动</button>
           <button data-tab="events" title="事件">事件</button>
           <button data-tab="contacts" title="通讯录">通讯录</button>
@@ -129,6 +131,23 @@
         </header>
 
         <main>
+        <section id="tab-life" class="tab">
+          <div class="life-toolbar">
+            <strong>生活的下文</strong><small id="life-count"></small><span class="life-spacer"></span>
+            <input id="life-search" type="search" placeholder="找一件事…" aria-label="搜索生活事项" />
+            <select id="life-filter" aria-label="筛选事项"><option value="active">还在心上</option><option value="blocked">等待与阻碍</option><option value="closed">已经翻篇</option><option value="all">全部事项</option></select>
+            <select id="life-sort" aria-label="事项排序"><option value="recent">最近变化</option><option value="progress">进度优先</option><option value="oldest">最早记下</option></select>
+            <button id="life-add" class="primary small">＋ 添一件事</button>
+            <details id="life-tools" class="command-menu"><summary aria-label="生活管理" title="生活积累、节奏与预算">···</summary><div class="command-menu-body">
+              <button id="life-collection" class="ghost small">生活积累与今日用量</button>
+              <button id="life-settings" class="ghost small">节奏与预算…</button>
+              <button id="life-refresh" class="ghost small">刷新生活事项</button>
+            </div></details>
+          </div>
+          <div class="life-opening"><div><span class="people-eyebrow life-now-label">此时此刻</span><h2 id="life-now-title">自由休息</h2><p id="life-now-reason"></p></div><div><span class="people-eyebrow">心里惦记的一件事</span><h2 id="life-next-title"></h2><p id="life-next-text"></p></div></div>
+          <p id="life-recovery" class="hidden"></p><div id="life-grid" class="life-grid" aria-live="polite"></div>
+          <dialog id="life-drawer" class="life-drawer" aria-labelledby="life-drawer-title"><header class="life-drawer-head"><h2 id="life-drawer-title"></h2><button id="life-close" class="ghost" aria-label="关闭事项详情">✕</button></header><div id="life-detail" class="life-detail"></div></dialog>
+        </section>
         <!-- 控制台：人物面板 + 当前状态 -->
         <section id="tab-status" class="tab active">
           <div class="workbench-toolbar console-toolbar">
@@ -151,6 +170,7 @@
 
           <div class="dash">
             <div class="dash-col">
+              <div id="life-focus" class="life-focus"></div>
               <!-- 人物面板：一眼看清她是谁、在哪、在做什么 -->
               <div class="card hero-card">
                 <div class="hero-top">

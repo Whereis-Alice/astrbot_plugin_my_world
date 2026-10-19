@@ -1985,7 +1985,7 @@ class PromptBuilder:
                 '  "forgive": false,\n'
                 '  "own_topic": "你自己打算做、或者答应过别人的一件事（20 字以内，'
                 '写清对谁；没有就留空）",\n'
-                '  "own_topic_done": false,\n'
+                '  "own_topic_done": "",\n'
                 '  "tone": "对方这一轮对你是什么口吻：'
                 'praise | hug | comfort | attack | refuse | normal",\n'
                 '  "addressing": "这句是在跟谁说话：me（对你说）| others（在跟别人说）| '
@@ -2048,9 +2048,9 @@ class PromptBuilder:
                 "关于 own_topic / own_topic_done：\n"
                 "- own_topic 记的是**你自己**的事：你答应过别人的（答应给他看照片）、"
                 "你自己想做的（想做顿饭）——写清对谁，20 字以内；\n"
-                "- 只写**没做完**的；做完的那一刻用 `own_topic_done: true` 划掉它；\n"
+                "- 只写**没做完**的；做完的那一刻用 `own_topic_done: 具体事项ID`，同时用 own_topic_evidence 摘录真实结果原话 划掉它；\n"
                 "- 别人的事用 open_topic，**别写在这儿**；\n"
-                "- 同时最多留两件，没有就留空。\n\n"
+                "- 活跃事项少量保留，没有新事项就留空。\n\n"
                 "关于 tone：\n"
                 "- 它记的是**对方这一轮对你是什么口吻**，六选一：\n"
                 "  praise＝夸你、认真接你的话；hug＝哄你、撒娇、亲昵的小动作；\n"
@@ -2777,7 +2777,8 @@ class PromptBuilder:
             '  "grudge": "",\n'
             '  "forgive": false,\n'
             '  "own_topic": "",\n'
-            '  "own_topic_done": false,\n'
+            '  "own_topic_done": "",\n'
+            '  "own_topic_evidence": "",\n'
             '  "actions": []\n'
             "}\n\n"
             "字段口径：\n"
@@ -2789,7 +2790,7 @@ class PromptBuilder:
             "- addressing 三选一：me（在跟她说）/ others（在跟别人说）/ unclear；\n"
             "- open_topic 记「对方还有件没说完的事」，写具体日期、不写明天这种相对时间；\n"
             "- heart_knot 记她自己心里搁着的一件事；grudge 记他在她这儿记的一笔账，门槛要高；\n"
-            "- own_topic 记她答应过 / 自己想做的事；做完的那一刻用 own_topic_done 划掉；\n"
+            "- own_topic 记她答应过 / 自己想做的事；只有明确完成结果才填写 own_topic_done 的具体事项ID和 own_topic_evidence 原话；不能只填true；\n"
             f"- 所有字段都从「这一轮的真实对话」里读，不要为了填满而编；{pronoun}没有的就留空。\n"
             "只输出 JSON，不要解释、不要 Markdown 代码块。"
         )
@@ -4380,7 +4381,7 @@ class PromptBuilder:
         else:
             schema = (
                 "{\n"
-                '  "memories": [{"text": "要点（一句话）", "context": "当时的原话", '
+                '  "memories": [{"text": "要点（一句话）", "source_ids": ["原话的source ID"], "context": "当时的原话", '
                 '"participants": ["QQ号"], "emotion": "心情词", "weight": 0.6, '
                 '"keywords": ["关键词"], "review_in_days": 3}],\n'
                 '  "merge": [{"keep_id": 12, "drop_ids": [13, 14], "text": "合并后的一句"}],\n'

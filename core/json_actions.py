@@ -213,7 +213,8 @@ class ParseResult:
     own_topic: str = ""
     """**她自己**打算做、或者答应过别人的事（"答应给他看照片"）。空 = 这轮没添新的。"""
 
-    own_topic_done: bool = False
+    own_topic_done: str = ""
+    own_topic_evidence: str = ""
     """上面记着的那件事**刚做完了** → 划掉它。"""
 
     tone: str = ""
@@ -570,7 +571,8 @@ def parse_action_payload(
         grudge=_clean_note(payload.get("grudge")),
         forgive=_as_bool(payload.get("forgive")),
         own_topic=_clean_note(payload.get("own_topic")),
-        own_topic_done=_as_bool(payload.get("own_topic_done")),
+        own_topic_done=str(payload.get("own_topic_done") or "") if isinstance(payload.get("own_topic_done"), str) else "",
+        own_topic_evidence=str(payload.get("own_topic_evidence") or "")[:500],
         tone=_parse_tone(payload.get("tone")),
         addressing=_parse_addressing(payload.get("addressing")),
         touch=_parse_touch(payload.get("touch")),
@@ -627,6 +629,7 @@ _BUILTIN_JSON_KEYS = frozenset(
         "forgive",
         "own_topic",
         "own_topic_done",
+        "own_topic_evidence",
         "tone",
         "addressing",
         "touch",

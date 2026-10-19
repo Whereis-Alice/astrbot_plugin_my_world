@@ -267,13 +267,15 @@ class Decider:
         if self.world.decider.enabled and interject_allowed and group_chatting:
             motive = self.interject_motive(state)
             if motive:
-                return create_plan(
+                plan = create_plan(
                     steps=[{"action": "say", "interject": True}],
-                    world_time=state.world_time,
+                    world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds,
                     valid_for=min(600, self._plan_valid()),
                     reason=motive,
                     source="rule",
                 )
+                if self._valid_candidate(state, plan):
+                    return plan
 
         # 1) 精力过低 -> 该休息了（刚被叫醒的保护期里不安排，免得叫醒几分钟又被抓回去睡）。
         #    夜里睡整觉，白天先小睡：白天一睡八小时，醒来正好是半夜，日子直接过乱。
@@ -300,13 +302,15 @@ class Decider:
                     if sleepy and not exhausted
                     else "白天精力低，先小睡一会儿"
                 )
-            return create_plan(
+            plan = create_plan(
                 steps=steps,
-                world_time=state.world_time,
+                world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds,
                 valid_for=self._plan_valid(),
                 reason=reason,
                 source="rule",
             )
+            if self._valid_candidate(state, plan):
+                return plan
 
         # 2~5) 剩下的几件事都**不是**非做不可的：各自先判断"够不够格"，
         #      再由今天的基调给它们拨权重，从够格的里面挑一件。
@@ -337,7 +341,7 @@ class Decider:
                     "search",
                     create_plan(
                         steps=[step],
-                        world_time=state.world_time,
+                        world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds,
                         valid_for=self._plan_valid(),
                         reason="好奇心高，想查点东西",
                         source="rule",
@@ -360,7 +364,7 @@ class Decider:
                     "wander",
                     create_plan(
                         steps=steps,
-                        world_time=state.world_time,
+                        world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds,
                         valid_for=self._plan_valid(),
                         reason="太无聊了，换个环境",
                         source="rule",
@@ -388,7 +392,7 @@ class Decider:
                     "outdoor",
                     create_plan(
                         steps=steps,
-                        world_time=state.world_time,
+                        world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds,
                         valid_for=self._plan_valid(),
                         reason="在家待久了，想出去走走",
                         source="rule",
@@ -409,7 +413,7 @@ class Decider:
                     "read",
                     create_plan(
                         steps=steps,
-                        world_time=state.world_time,
+                        world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds,
                         valid_for=self._plan_valid(),
                         reason="有点闲，去看会儿书",
                         source="rule",
@@ -468,8 +472,9 @@ class Decider:
         只有今天确实偏了才让它显出"今天跟昨天不一样"。
         """
 
+        candidates = [(name, plan) for name, plan in candidates if self._valid_candidate(state, plan)]
         if not candidates:
-            return None
+            return self._custom_life_plan(state)
         if len(candidates) == 1:
             return candidates[0][1]
         weights = self.branch_weights(state)
@@ -487,6 +492,48 @@ class Decider:
                 return plan
         return candidates[-1][1]
 
+    def _valid_candidate(self, state, plan) -> bool:
+        if not plan or not plan.get("steps"):
+            return False
+        position = state.node_id
+        for step in plan["steps"]:
+            action = self.world.action_map().get(str(step.get("action") or ""))
+            if not action or not action.enabled or action.idle:
+                return False
+            if action.id == "walk_to":
+                target = str(step.get("target_node") or "")
+                if target not in self.world.node_map() or find_path(self.world.adjacent(), position, target) is None:
+                    return False
+                position = target
+            elif not action.available_in(position):
+                return False
+        return True
+
+    def _custom_life_plan(self, state):
+        from .life import life_role
+        if state.energy < .4 or state.boredom <= .45:
+            return None
+        from .life_matters import stable_interests
+        preferred = {item["action"] for item in stable_interests(state)}
+        for action in sorted(self.world.actions, key=lambda a: a.id not in preferred):
+            if (not action.enabled or action.idle or action.llm_level != "template"
+                    or action.target_type != "none" or life_role(action) not in {"interest", "explore"}):
+                continue
+            for node in self.world.nodes:
+                if not action.available_in(node.id):
+                    continue
+                if node.id != state.node_id and not self.action_usable("walk_to"):
+                    continue
+                if find_path(self.world.adjacent(), state.node_id, node.id) is None:
+                    continue
+                plan = create_plan(steps=[*self._travel_then(state.node_id, node.id, self.world.adjacent()),
+                                          {"action": action.id, "duration": self._action_duration(action.id)}],
+                                   world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds,
+                                   valid_for=self._plan_valid(), reason=f"有点空闲，想{action.name}", source="rule")
+                if self._valid_candidate(state, plan):
+                    return plan
+        return None
+
     def forced_plan(self, state: WorldState, flag: str) -> dict[str, Any] | None:
         """极端保护触发的计划。"""
 
@@ -503,35 +550,38 @@ class Decider:
             else:
                 steps.append({"action": "nap", "duration": self.nap_seconds(state)})
                 reason = "精力透支，先眯一会儿"
-            return create_plan(
+            plan = create_plan(
                 steps=steps,
-                world_time=state.world_time,
+                world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds,
                 valid_for=self._plan_valid(),
                 reason=reason,
                 source="extreme",
             )
+            return plan if self._valid_candidate(state, plan) else None
         if flag == "force_reach_out":
             # 太久没和人说话了：原地开口就行（说话发到会话里，跟房间无关）
             steps = [{"action": "say"}]
-            return create_plan(
+            plan = create_plan(
                 steps=steps,
-                world_time=state.world_time,
+                world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds,
                 valid_for=self._plan_valid(),
                 reason="太久没和人说话了",
                 source="extreme",
             )
+            return plan if self._valid_candidate(state, plan) else None
         if flag == "need_change":
             target = self._pick_idle_node(exclude=state.node_id)
             if target:
                 steps = self._travel_then(state.node_id, target, graph)
                 steps.append({"action": "stare"})
-                return create_plan(
+                plan = create_plan(
                     steps=steps,
-                    world_time=state.world_time,
+                    world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds,
                     valid_for=self._plan_valid(),
                     reason="想换换环境",
                     source="extreme",
                 )
+                return plan if self._valid_candidate(state, plan) else self._custom_life_plan(state)
         return None
 
     # ---------------- 工具 ----------------
@@ -572,12 +622,12 @@ class Decider:
         rows: list[tuple[float, str, str]] = []
         for node in self.world.nodes:
             zone = self.world.zone_of(node.id)
-            if zone == home_zone:
+            if zone == home_zone or find_path(self.world.adjacent(), state.node_id, node.id) is None:
                 continue
             actions = [
                 action
                 for action in self.world.actions_in(node.id)
-                if action.scope == "node" and action.enabled
+                if action.scope == "node" and action.enabled and not action.idle and action.id not in {"sleep", "nap"}
             ]
             if not actions:
                 continue
@@ -590,11 +640,7 @@ class Decider:
             rows.append((lively, node.id, doing))
         if not rows:
             # 外面一个能去的都没有：退回"有发呆动作的地方"，再不行就哪儿都不去
-            rows = [
-                (0.0, node.id, "stare")
-                for node in self.world.nodes
-                if self.world.zone_of(node.id) != home_zone
-            ]
+            rows = []
         if not rows:
             return "", ""
         if float(state.curiosity) >= float(state.boredom):

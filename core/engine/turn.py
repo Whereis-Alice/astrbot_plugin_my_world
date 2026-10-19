@@ -5,6 +5,7 @@ from __future__ import annotations
 from ..model_calls import model_operation
 
 from typing import Any
+import json
 from ..config_scope import session_scoped
 from ..json_actions import (
     extract_json_object,
@@ -42,7 +43,7 @@ class TurnMixin:
                 origin=session_id,
             )
             state.note_reply(clean, session_id=session_id)
-            self.note_dialogue(state, text=clean, is_self=True, persona_id=persona_id)
+            self.note_dialogue(state, text=clean, is_self=True, persona_id=persona_id, origin=session_id)
             self._tag_chat_origin(state, session_id, recorded)
             self._count_passive_reply(state)
 
@@ -105,11 +106,20 @@ class TurnMixin:
                 other_context="",
                 pronoun=pronounce_for(getattr(self.world, "gender", "female")),
             )
+            prompt += "\n\n" + self._own_topic_block(state, ctx)
+        if tool_trace:
+            prompt += ("\n\n# 本轮原生工具的实际记录\n只有成功的实际结果覆盖具体目标才可确认该事项完成。"
+                       "检索到旧记录、获取资料、准备成功不等于外部操作已完成；失败或结果不明确就留空。\n"
+                       + json.dumps(tool_trace[:20], ensure_ascii=False)[:8000])
         raw = await self._ask_judge(session_id, system, prompt)
-        if not raw or extract_json_object(raw) is None:
+        payload = extract_json_object(raw or "")
+        if payload is None:
             return None
+        # Reflection only writes metadata. Some providers omit the empty actions
+        # array; normalize it here without weakening the action parser elsewhere.
+        payload["actions"] = []
         parsed = parse_action_payload(
-            raw,
+            json.dumps(payload, ensure_ascii=False),
             available_actions=set(),
             max_actions=0,
             max_messages=0,
@@ -174,9 +184,8 @@ class TurnMixin:
                     session_id=str(getattr(ctx, "session_id", "") or ""),
                 )
             if parsed.own_topic_done:
-                self.mark_own_topic_done(
-                    state, user_id=str(getattr(ctx, "user_id", "") or "")
-                )
+                self.confirm_matter_from_turn(state, ctx, parsed.own_topic_done,
+                                              parsed.own_topic_evidence, tool_trace or [])
             self.mark_open_topics_asked(state, ctx)
             tone = parsed.tone or keyword_signal(ctx.text)
             await self._apply_tone_pulse(

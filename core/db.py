@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .model_call_store import MODEL_CALL_SCHEMA, ModelCallStoreMixin
+from .background import BackgroundStoreMixin
+from .evidence import EVIDENCE_SCHEMA, EvidenceStoreMixin
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS world_state (
@@ -236,7 +238,7 @@ def _fact_row(row: sqlite3.Row) -> dict[str, Any]:
     return item
 
 
-class Database(ModelCallStoreMixin):
+class Database(ModelCallStoreMixin, BackgroundStoreMixin, EvidenceStoreMixin):
     """同步 sqlite 封装。调用方应通过 AsyncDatabase 使用，避免阻塞事件循环。"""
 
     def __init__(self, path: str | Path) -> None:
@@ -253,7 +255,7 @@ class Database(ModelCallStoreMixin):
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=30000")
         conn.execute("PRAGMA synchronous=NORMAL")
-        conn.executescript(SCHEMA + MODEL_CALL_SCHEMA)
+        conn.executescript(SCHEMA + MODEL_CALL_SCHEMA + EVIDENCE_SCHEMA)
         conn.commit()
         self._migrate(conn)
         return conn
@@ -1522,12 +1524,19 @@ class AsyncDatabase:
     def __init__(self, path: str | Path) -> None:
         self._db = Database(path)
         self._write_lock = asyncio.Lock()
+        self._close_callbacks = []
 
     @property
     def raw(self) -> Database:
         return self._db
 
+    def on_close(self, callback) -> None:
+        self._close_callbacks.append(callback)
+
     async def close(self) -> None:
+        callbacks, self._close_callbacks = self._close_callbacks, []
+        for callback in callbacks:
+            await callback()
         await asyncio.to_thread(self._db.close)
 
     async def call(self, func_name: str, *args: Any, **kwargs: Any) -> Any:

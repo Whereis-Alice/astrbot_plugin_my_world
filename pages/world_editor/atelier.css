@@ -297,6 +297,11 @@ main:has(:is(#tab-contacts, #tab-relationships).active) { padding: 13px 19px 12p
   .sidebar .tabs .nav-group { margin-top: 5px; margin-bottom: 1px; line-height: 14px; }
   .sidebar-foot { padding-top: 7px; }
 }
+@media (min-width: 761px) and (max-height: 680px) {
+  .sidebar .tabs button { height: 25px; padding-block: 3px; }
+  .sidebar .tabs .nav-group { margin-top: 3px; line-height: 12px; }
+  .sidebar-foot { padding-top: 5px; }
+}
 @media (max-width: 1200px) {
   .people-toolbar, .contacts-command-bar { flex-wrap: wrap; gap: 6px; }
   .people-search { width: 230px; }

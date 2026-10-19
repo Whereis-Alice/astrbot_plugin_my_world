@@ -200,119 +200,51 @@ class RelationsMixin:
     ) -> bool:
         """记一件**她自己**的事：答应过别人的、自己想做的，还没做。"""
 
-        config = self.world.state_dynamics
-        if not bool(getattr(config, "own_topic_enabled", True)):
+        if not self.world.state_dynamics.own_topic_enabled:
             return False
-        body = " ".join(str(text or "").split())[:60]
-        if not body:
-            return False
-        now = self._now()
-        uid = str(user_id or "")
-        items = [
-            dict(item) for item in (state.own_topics or []) if isinstance(item, dict)
-        ]
-        for item in items:
-            if str(item.get("who") or "") != uid:
-                continue
-            existing = str(item.get("text") or "")
-            if existing == body or (existing and (existing in body or body in existing)):
-                item["text"] = body
-                item["at"] = now
-                state.own_topics = items
-                return True
-        items.append(
-            {
-                "text": body,
-                "who": uid,
-                "who_name": str(user_name or ""),
-                "session": str(session_id or "") or state.session_id,
-                "at": now,
-            }
-        )
-        limit = max(1, int(getattr(config, "own_topic_max", 2) or 2))
-        for item in items[:-limit]:
-            self._archive_unfinished_topic(state, item)
-        state.own_topics = items[-limit:]
-        self._log("debug", f"记下一件自己的事：{body}")
-        return True
+        return self.add_life_matter(state, text, who=str(user_id or ""), who_name=str(user_name or ""),
+                                    session=str(session_id or state.session_id), kind="promise" if user_id else "project") is not None
 
-    def mark_own_topic_done(self, state: WorldState, *, user_id: str = "") -> int:
-        """她自己那件事做完了：划掉。返回划掉了几件。"""
-
-        uid = str(user_id or "")
-        kept: list[dict[str, Any]] = []
-        removed = 0
-        for item in list(state.own_topics or []):
-            if not isinstance(item, dict):
-                continue
-            mine = str(item.get("who") or "")
-            # 只划掉跟当前这个人相关的；没写对谁的就当是她自己的打算
-            if not mine or not uid or mine == uid:
-                removed += 1
-                continue
-            kept.append(item)
-        state.own_topics = kept
-        if removed:
-            self._log("debug", f"划掉了 {removed} 件她自己的事")
-        return removed
+    def mark_own_topic_done(self, state: WorldState, *, user_id: str = "", matter_id: str = "",
+                            evidence: str = "", confirmed: bool = False) -> int:
+        """A boolean or user ID alone is never authority to close a personal project."""
+        from .. import life_matters as matters
+        matters.ensure(state, self._now())
+        item = matters.find(state, matter_id)
+        if (not item or not confirmed or not evidence or item["status"] in matters.CLOSED
+                or (item.get("who") and item["who"] != str(user_id))):
+            return 0
+        item.update(status="completed", progress=100, result=evidence[:500], completed_at=self._now())
+        matters.history(item, "completed", evidence, self._now(), kind_of_evidence="confirmed_result")
+        matters.sync(state)
+        return 1
 
     def _decay_own_topics(self, state: WorldState, *, now: float) -> None:
-        """Long-unfinished intentions become a memory, never a claimed success."""
-
-        keep_days = max(1, int(getattr(self.world.state_dynamics, "own_topic_days", 3) or 3))
-        keep = []
-        for item in list(state.own_topics or []):
-            if not isinstance(item, dict):
-                continue
-            if float(now) - float(item.get("at") or now) < keep_days * 86400:
-                keep.append(item)
-                continue
-            self._archive_unfinished_topic(state, item)
-        state.own_topics = keep
+        from .. import life_matters as matters
+        matters.ensure(state, now)
+        days = max(1, self.world.state_dynamics.own_topic_days)
+        for item in state.life_matters:
+            # Projects and promises persist until an explicit outcome; fleeting legacy ideas may fade.
+            if (item.get("legacy") or item.get("kind") == "idea") and not item.get("steps") and item["status"] not in matters.CLOSED:
+                if now - float(item.get("at") or now) >= days * 86400:
+                    self._archive_unfinished_topic(state, item)
+                    item["status"] = "expired"
+                    matters.history(item, "expired", "搁置，尚未确认完成", now)
+        matters.sync(state)
 
     def _archive_unfinished_topic(self, state: WorldState, item: dict[str, Any]) -> None:
         text = str(item.get("text") or "").strip()
         if text:
-            self.memory.remember(
-                session_id=state.session_id, persona_id="", node_id=state.node_id,
-                content=f"（后来搁置、尚未确认完成的打算）{text}", memory_type=INNER,
-                emotion=state.mood, weight=0.3,
-                participants=[str(item["who"])] if item.get("who") else [],
-            )
+            self.memory.remember(session_id=str(item.get("session") or state.session_id), persona_id="", node_id=state.node_id,
+                content=f"（后来搁置、尚未确认完成的打算）{text}", memory_type=INNER, weight=0.3,
+                participants=[str(item["who"])] if item.get("who") else [])
 
-    def _own_topic_block(
-        self, state: WorldState, ctx: Any = None, *, autonomy: bool = False
-    ) -> str:
-        """「你自己还记着的事」那一段：她答应过、想做但还没做的。"""
-
-        config = self.world.state_dynamics
-        if not bool(getattr(config, "own_topic_enabled", True)):
+    def _own_topic_block(self, state: WorldState, ctx: Any = None, *, autonomy: bool = False) -> str:
+        from ..life_matters import context_block
+        if not self.world.state_dynamics.own_topic_enabled:
             return ""
-        who = str(getattr(ctx, "user_id", "") or "")
-        lines: list[str] = []
-        for item in list(state.own_topics or [])[:2]:
-            if not isinstance(item, dict):
-                continue
-            text = str(item.get("text") or "").strip()
-            if not text:
-                continue
-            owner = str(item.get("who") or "")
-            if who and owner and owner != who:
-                continue
-            when = self._said_when_text(float(item.get("at") or 0.0))
-            label = "（你自己记着的）"
-            if autonomy and owner and owner != who:
-                name = str(item.get("who_name") or "") or self._user_label(state, owner)
-                label = f"（对 {name} 说的）" if name else "（对别人说的）"
-            lines.append(f"- {label}{text}{when}")
-        if not lines:
-            return ""
-        return (
-            "# 你自己还记着的事\n"
-            "这些是**你自己**答应过、或者想做的，还没做完。想起来了就顺手做掉——"
-            "比如答应给他看照片就把照片发出去；也可以顺口提一句（「上次说要给你看的」）。\n"
-            "**别当成任务清单逐条念**，也不用解释这是哪来的。\n" + "\n".join(lines)
-        )
+        return context_block(state, session_id=str(getattr(ctx, "session_id", "") or state.session_id),
+                             user_id=str(getattr(ctx, "user_id", "") or ""), now=self._now())
 
     def _said_when_text(self, stamp: float) -> str:
         """「（今天记的）/（3 天前记的）」这种尾巴。"""

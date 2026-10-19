@@ -113,6 +113,8 @@ from .profiles import ProfilesMixin
 from .recall import RecallMixin
 from .cuddle import CuddleMixin
 from .relations import RelationsMixin
+from .matters import MattersMixin
+from .background import BackgroundMixin
 from .tools import ToolsMixin
 from .schedule import ScheduleMixin
 from .weather import WeatherMixin
@@ -229,6 +231,8 @@ class MyWorldEngine(
     RecallMixin,
     CuddleMixin,
     RelationsMixin,
+    MattersMixin,
+    BackgroundMixin,
     ToolsMixin,
     ScheduleMixin,
     WeatherMixin,
@@ -277,6 +281,7 @@ class MyWorldEngine(
         self._init_config_scopes()
         self.store = store
         self.db = db
+        self.db.on_close(self.close_background)
         # 扩展挂载点：没装扩展时就是个空壳（见 core/extensions.py）
         from ..extensions import ExtensionHost
 

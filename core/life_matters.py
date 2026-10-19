@@ -1,0 +1,130 @@
+"""Persistent personal projects. Only execution receipts can advance a step."""
+
+from __future__ import annotations
+
+from hashlib import sha256
+from typing import Any
+from uuid import uuid4
+
+CLOSED = {"completed", "abandoned", "expired"}
+
+
+def stable_interests(state) -> list[dict]:
+    """Several actual sessions across three days, rather than a sampled personality change."""
+    return [{"action": key, **value} for key, value in state.life_interests.items()
+            if len(value.get("days", [])) >= 3 and value.get("sessions", 0) >= 3
+            and value.get("minutes", 0) >= 45][:8]
+
+
+def history(item: dict, kind: str, text: str, now: float, **evidence: Any) -> None:
+    item["history"] = [*item.get("history", []), {
+        "at": now, "kind": kind, "text": str(text)[:500], **evidence,
+    }][-60:]
+    item["updated_at"] = now
+    item["revision"] = int(item.get("revision", 0)) + 1
+
+
+def ensure(state, now: float) -> list[dict]:
+    if not isinstance(state.life_matters, list):
+        state.life_matters = []
+    state.life_matters = [item for item in state.life_matters if isinstance(item, dict) and item.get("id")]
+    if not state.life_migrated:
+        for old in state.own_topics or []:
+            if not isinstance(old, dict) or not old.get("text"):
+                continue
+            item = make(str(old["text"]), now=float(old.get("at") or now),
+                        session=str(old.get("session") or state.session_id),
+                        who=str(old.get("who") or ""), who_name=str(old.get("who_name") or ""))
+            # Stable even if a legacy save is reloaded before the first write.
+            item["id"] = "lm_" + sha256(f"{state.session_id}:{old}".encode()).hexdigest()[:16]
+            item["legacy"] = True
+            state.life_matters.append(item)
+        state.life_migrated = True
+    sync(state)
+    return state.life_matters
+
+
+def make(text: str, *, now: float, session: str, who: str = "", who_name: str = "",
+         motivation: str = "", kind: str = "project", next_step: str = "") -> dict:
+    return {"id": "lm_" + uuid4().hex[:16], "text": text[:160], "who": who,
+            "who_name": who_name, "session": session, "at": now, "updated_at": now,
+            "kind": kind if kind in {"project", "promise", "idea"} else "project",
+            "motivation": motivation[:300], "status": "active", "progress": 0,
+            "next_step": next_step[:300], "obstacle": "", "resume_at": 0,
+            "steps": [], "history": [], "revision": 1, "result": "",
+            "work_day": "", "worked_minutes": 0, "last_attempt_at": 0,
+            "plan_attempts": 0}
+
+
+def sync(state) -> None:
+    state.own_topics = [{**item} for item in state.life_matters if item.get("status") not in CLOSED]
+    active = [item for item in state.life_matters if item.get("status") not in CLOSED]
+    closed = [item for item in state.life_matters if item.get("status") in CLOSED]
+    state.life_matters = [*active, *closed[-60:]]
+
+
+def find(state, matter_id: str) -> dict | None:
+    return next((item for item in state.life_matters if item.get("id") == matter_id), None)
+
+
+def visible(item: dict, session_id: str, *, autonomy: bool = False) -> bool:
+    # Sharing a physical world never grants permission to disclose a private promise.
+    return not item.get("who") or str(item.get("session") or "") == session_id
+
+
+def complete_step(state, matter_id: str, step_id: str, *, now: float,
+                  receipt: dict) -> bool:
+    item = find(state, matter_id)
+    if item is None or item.get("status") in CLOSED | {"paused"}:
+        return False
+    step = next((s for s in item.get("steps", []) if s.get("id") == step_id), None)
+    if step is None or step.get("status") == "done" or not receipt.get("ok"):
+        return False
+    step.update(status="done", result=receipt, finished_at=now)
+    item["obstacle"] = ""
+    remaining = [s for s in item["steps"] if s.get("status") != "done"]
+    item["progress"] = round(100 * (len(item["steps"]) - len(remaining)) / len(item["steps"]))
+    item["next_step"] = remaining[0]["text"] if remaining else ""
+    history(item, "step_done", step["text"], now, receipt=receipt, step_id=step_id)
+    if not remaining:
+        if item.get("kind") == "promise":
+            item.update(status="blocked", progress=99, next_step="等待真实结果或管理员确认",
+                        obstacle="准备步骤已做完，尚未取得约定已兑现的依据")
+            history(item, "awaiting_evidence", item["obstacle"], now)
+            sync(state)
+            return True
+        item.update(status="active", progress=99, needs_review=True, next_step="这一阶段已做完，核对结果后再安排")
+        history(item, "stage_done", "本阶段步骤均已实际执行，尚未确认整个目标完成", now, receipt=receipt)
+        # An in-world work product, explicitly labelled; never an external file/operation.
+        state.life_artifacts[item["id"]] = {"label": item["text"], "result": str(receipt.get("result") or "已执行本阶段步骤"),
+                                            "at": now, "scope": "in_world", "session": item["session"]}
+        state.life_artifacts = dict(list(state.life_artifacts.items())[-40:])
+    else:
+        item["resume_at"] = float(remaining[0].get("not_before") or 0)
+        item["status"] = "waiting" if item["resume_at"] > now else "active"
+    sync(state)
+    return True
+
+
+def context_block(state, *, session_id: str, user_id: str = "", now: float = 0) -> str:
+    items = ensure(state, now)
+    rows = []
+    for item in items:
+        if item.get("status") in CLOSED or not visible(item, session_id):
+            continue
+        if user_id and item.get("who") and item["who"] != user_id:
+            continue
+        rows.append(f"- [{item['id']}] {item['text']}；动机：{item.get('motivation') or '原先想做的事'}；"
+                    f"状态：{item['status']}；已执行进度：{item.get('progress', 0)}%；"
+                    f"下一步：{item.get('next_step') or '尚待安排'}；阻碍：{item.get('obstacle') or '无'}")
+    block = ("# 你一直在推进的生活事项\n只记得真实进展；打算、想象、梦和口头声称都不算做成。"
+            "可以自然提起，不要逐条念清单。涉及他人的事情只能在来源会话提及。\n" + "\n".join(rows[:6])) if rows else ""
+    interests = stable_interests(state)
+    if interests:
+        block += "\n# 从日子里积累的兴趣\n这些是实际多日投入，供选择空闲活动参考；人设与当前需要优先，不必每次重复。\n" + "\n".join(
+            f"- {item['label']}：{len(item['days'])} 天、{item['sessions']} 次、累计 {item['minutes']:g} 分钟" for item in interests)
+    artifacts = [item for item in state.life_artifacts.values() if item.get("session") == session_id][-3:]
+    if artifacts:
+        block += "\n# 已留下的生活阶段记录\n以下仅证明世界内活动，不代表产出了真实文件、寄出物品或完成外部操作。\n" + "\n".join(
+            f"- {item['label']}：{item['result']}" for item in artifacts)
+    return block

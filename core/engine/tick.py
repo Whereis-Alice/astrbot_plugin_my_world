@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from ..model_calls import model_operation
 
+import asyncio
 from typing import Any
+from .background import CRITICAL_TICK
 from ..config_scope import session_scoped
 from ..json_actions import (
     PlannedAction,
@@ -41,49 +43,45 @@ class TickMixin:
         """推进所有启用会话的世界时钟。返回需要发送的消息。"""
 
         self._last_tick_at = self._now()
-        try:
-            # 天气是全局的：整轮只查一次，放在会话循环之前，
-            # 这样它写的事件也已经越过各会话的回显游标（静默刷新不快发到群里）
-            await self.maybe_refresh_weather()
-        except Exception as exc:
-            self._log("debug", f"静默刷新天气失败：{exc}")
-        try:
-            # 自动排日程也是"每天一次"的事：放在会话循环之前，
-            # 排好的安排这一轮就能按正常逻辑被看见。
-            await self.auto_generate_schedule_scopes()
-        except Exception as exc:
-            self._log("debug", f"自动排日程失败：{exc}")
-        try:
-            # 心迹画像一直在记新东西：每隔几小时同步一份过来（只读它的文件）
-            await self.maybe_sync_profile_weaver(
-                str(getattr(self, "external_data_root", "") or "")
-            )
-        except Exception as exc:
-            self._log("debug", f"心迹画像同步失败：{exc}")
+        self.queue_background("weather", self.maybe_refresh_weather)
+        self.queue_background("daily_schedule", self.auto_generate_schedule_scopes)
+        self.queue_background("profile_sync", lambda: self.maybe_sync_profile_weaver(str(getattr(self, "external_data_root", "") or "")))
         outcomes: list[TickOutcome] = []
         # 同一个她只推一次：组里的几个群 / 私聊共用一份状态，
         # 按会话各推一遍等于她的时间、精力、事件频率乘以会话数。
-        for session_id in self.tick_session_ids():
+        async def advance_one(session_id):
+            if self.is_busy(session_id):
+                lock = self.lock(self.state_key(session_id))
+                try:
+                    await asyncio.wait_for(lock.acquire(), timeout=.1)
+                except TimeoutError:
+                    return None
+                else:
+                    lock.release()
+            token = CRITICAL_TICK.set(True)
             try:
-                outcome = await self._tick_session(session_id)
-            except Exception as exc:  # 单个会话出错不影响其他会话
+                return await self._tick_session(session_id)
+            except Exception as exc:
                 self._log("warning", f"tick 失败 session={session_id}: {exc}")
-                continue
-            if outcome is not None:
-                outcomes.append(outcome)
+                return None
+            finally:
+                CRITICAL_TICK.reset(token)
+        # Different characters advance independently; commits for one character stay locked.
+        results = await asyncio.gather(*(advance_one(sid) for sid in self.tick_session_ids()))
+        outcomes.extend(row for row in results if row is not None)
+        for session_id in [row.session_id for row in outcomes if row.summary.get("life_seed_due")]:
+            self.queue_background("life_seed:" + self.state_key(session_id), lambda sid=session_id: self.seed_life_matter(sid))
+        for session_id in [row.session_id for row in outcomes if row.summary.get("matters_pending")]:
+            self.queue_background("matter:" + self.state_key(session_id), lambda sid=session_id: self.advance_life_matters(sid))
+        schedule_token = CRITICAL_TICK.set(True)
         try:
             outcomes.extend(await self.run_schedules())
         except Exception as exc:
             self._log("warning", f"日程检查失败: {exc}")
-        # 对话记忆：把攒着的片段总结成一条（放在这里是为了不占着会话锁调模型）
-        for session_id in self.tick_session_ids():
-            try:
-                flushed = await self.flush_pending_memory(session_id)
-            except Exception as exc:
-                self._log("warning", f"总结对话记忆失败 session={session_id}: {exc}")
-                continue
-            if flushed is not None:
-                outcomes.append(flushed)
+        finally:
+            CRITICAL_TICK.reset(schedule_token)
+        for session_id in [row.session_id for row in outcomes if row.summary.get("memory_due")]:
+            self.queue_background("memory:" + self.state_key(session_id), lambda sid=session_id: self.flush_pending_memory(sid))
         for outcome in outcomes:
             await self._deliver(outcome)
         self._record_tick(outcomes)
@@ -98,6 +96,7 @@ class TickMixin:
         async with self.session_state(session_id) as state:
             echo_marker = await self._event_marker(state)
             node = self.node(state.node_id) or self.node(self.default_node_id())
+            elapsed_life = self.reconcile_life_time(state)
             state.world_time += 1
             if not self.world.is_home_zone(state.node_id):
                 # 人就在外面：一直记着"最近出过门"，回家以后那句提醒才准
@@ -167,7 +166,7 @@ class TickMixin:
             mood_reset = self.dynamics.tick(
                 state,
                 node=node,
-                elapsed_seconds=self.tick_seconds,
+                elapsed_seconds=elapsed_life,
                 world=self.world,
                 now=self._now(),
             )
@@ -291,6 +290,10 @@ class TickMixin:
             if state.current_action or state.current_plan:
                 node = self.node(state.node_id) or node
             outcome.summary = {
+                "memory_due": bool(self._memory_flush_reason(state)) or await self.db.call("has_pending_memory_batch", self.group_sessions(session_id)),
+                "life_seed_due": state.world_time * self.tick_seconds >= 21600 and not any(
+                    m.get("status") not in {"completed", "abandoned", "expired"} for m in state.life_matters),
+                "matters_pending": any(item.get("status") not in {"completed", "abandoned", "expired", "paused"} for item in state.life_matters),
                 "world_time": int(state.world_time),
                 "node_id": str(state.node_id or ""),
                 "node_name": self._node_name(state.node_id),
@@ -476,7 +479,7 @@ class TickMixin:
         per_minute = (definition.on_complete.effects_per_minute if definition else {}) or {}
         if per_minute:
             elapsed_seconds = int(action.get("elapsed_ticks", 0)) * self.tick_seconds
-            minutes = max(0.0, elapsed_seconds / 60.0)
+            minutes = max(0.0, elapsed_seconds / 60.0 - float(action.get("effects_settled_minutes", 0)))
             if minutes > 0:
                 self.dynamics.apply_effects(
                     state, per_minute, world=self.world, scale=minutes, now=self._now()
@@ -494,9 +497,12 @@ class TickMixin:
             # 睡醒给她一次机会说早安（发不发、发给谁由她自己定，一天一次）
             state.current_action = None
             state.state = STATE_IDLE
-            await self._maybe_say_goodmorning(state, node, outcome)
+            if not action.get("offline_wake"):
+                await self._maybe_say_goodmorning(state, node, outcome)
         elif definition is not None and definition.id == "nap":
             self._finish_sleep_rhythm(state, action, interrupted=False)
+
+        self._record_matter_action(state, action)
 
         # 行动完成 -> 记忆
         if definition is not None:

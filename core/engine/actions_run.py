@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ..model_calls import model_operation
 
+import math
 from typing import Any
 from ..json_actions import (
     PlannedAction,
@@ -410,6 +411,8 @@ class ActionsRunMixin:
 
         if definition.category == "continuous":
             duration_ticks = self._duration_ticks(definition, action, state)
+            if from_plan and (state.current_plan or {}).get("source") == "life_matter" and definition.id != "walk_to":
+                duration_ticks = max(1, math.ceil(action.duration / self.tick_seconds))
             if duration_ticks <= 0:
                 duration_ticks = 1
             payload: dict[str, Any] = {
@@ -436,6 +439,8 @@ class ActionsRunMixin:
                 # 只凭下标认不出自己，做完时就可能把别人的步骤当成自己的推掉
                 payload["plan_created_at"] = int(state.current_plan.get("created_at") or 0)
                 payload["plan_index"] = int(state.current_plan.get("current_step") or 0)
+                payload["matter_id"] = state.current_plan.get("matter_id", "")
+                payload["matter_step_id"] = state.current_plan.get("matter_step_id", "")
             if definition.id == "walk_to":
                 target = action.target_node or action.target
                 if target in self.world.node_map():
@@ -473,6 +478,8 @@ class ActionsRunMixin:
                 state.drowsy_started_world_time = 0
                 state.drowsy_started_at = 0.0
             previous = state.current_action if isinstance(state.current_action, dict) else None
+            if previous:
+                self.pause_matter_action(state, previous)
             if previous and str(previous.get("type") or "") != definition.id:
                 self.dynamics.apply_event(state, "interrupted", now=self._now())
                 state.add_event("interrupt", {"action": previous.get("type")})
@@ -1042,7 +1049,7 @@ class ActionsRunMixin:
                     ]
                     state.current_plan = create_plan(
                         steps=remaining,
-                        world_time=state.world_time,
+                        world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds,
                         valid_for=self.world.limits.plan_valid_duration,
                         reason="日程后续步骤",
                         source="schedule",

@@ -245,7 +245,7 @@ class ScheduleRecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_schedule_generation_includes_current_life_and_unfinished_topics(self):
         async with self.engine.session_state(generator_tests.SESSION) as state:
             state.energy = 0.12
-            state.own_topics = [{"text": "想把没看完的书读完"}]
+            self.engine.add_life_matter(state, "想把没看完的书读完")
         self.creator.replies = ['{"schedules": []}']
         await self.engine.generate_schedules(1, "once")
         prompt = self.creator.calls[-1]["prompt"]

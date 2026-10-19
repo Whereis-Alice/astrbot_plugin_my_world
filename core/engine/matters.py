@@ -1,0 +1,357 @@
+"""Long-running life projects: snapshot -> inference -> guarded commit -> actual action."""
+
+from __future__ import annotations
+
+import copy
+import json
+from typing import Any
+
+from .. import life_matters as matters
+from ..config_scope import session_scoped
+from ..json_actions import extract_json_object
+from ..life import life_role
+from ..model_calls import model_context
+from ..pathfinding import find_path
+from ..planner import create_plan
+from .models import TickOutcome
+
+
+class MattersMixin:
+    def _matter_can_work(self, state) -> bool:
+        thread = self._active_thread(state)
+        return (not state.is_sleeping and not state.current_action and not state.current_plan
+                and state.state == "idle" and state.energy >= .4
+                and not (thread and self._thread_critical(thread))
+                and not (self.world.sleep.mode == "autonomous" and state.sleep_rhythm.get("decision") == "sleep"))
+
+    @session_scoped
+    async def seed_life_matter(self, session_id: str) -> None:
+        """At most one quiet personal suggestion per day, after her first six lived hours."""
+        if not self.is_enabled(session_id) or not self.world.limits.life_matter_enabled or not self.world.limits.life_matter_self_start:
+            return
+        key = f"life_seed:{self.state_key(session_id)}:{self._today_key(self._now())}"
+        async with self.session_state(session_id) as state:
+            matters.ensure(state, self._now())
+            if (not self._matter_can_work(state)
+                    or state.world_time * self.tick_seconds < 6 * 3600
+                    or any(m["status"] not in matters.CLOSED for m in state.life_matters)
+                    or self.db.raw.kv_get(key)):
+                return
+            candidates = self._matter_actions(state)
+            interests = matters.stable_interests(state)
+            self.db.raw.kv_set(key, {"at": self._now()})
+        if not candidates:
+            return
+        persona = await self._persona_text(session_id)
+        with model_context("life_matter", "有空闲，为自己的生活想一件可持续的小事", session_id):
+            raw = await self._ask_judge(session_id,
+                '结合人设和已有能力，想一件愿意持续几天的独处小事。只输出JSON：{"text":"", "motivation":""}。'
+                '没有想法可以留空。不要建立新身世、恋爱关系、重大物品或外部操作。不要声称已经做成。',
+                json.dumps({"persona": persona[:6000], "available": candidates,
+                            "interests": interests}, ensure_ascii=False))
+        payload = extract_json_object(raw or "") or {}
+        async with self.session_state(session_id) as state:
+            matters.ensure(state, self._now())
+            if (self.is_enabled(session_id) and self.world.limits.life_matter_enabled
+                    and self.world.limits.life_matter_self_start
+                    and not any(m["status"] not in matters.CLOSED for m in state.life_matters)):
+                self.add_life_matter(state, str(payload.get("text") or ""), session=session_id,
+                                     motivation=str(payload.get("motivation") or ""))
+
+    def confirm_matter_from_turn(self, state, ctx, matter_id: str, evidence: str, trace: list) -> bool:
+        matters.ensure(state, self._now())
+        item = matters.find(state, matter_id)
+        if not item or item.get("session") != ctx.session_id or (item.get("who") and item["who"] != ctx.user_id):
+            return False
+        # An exact observed success can ground a conclusion; a character's claim cannot.
+        failure_words = ("失败", "未发送", "没有发送", "未完成", "超时", "取消", '"ok": false', '"success": false', "error:", "failed")
+        receipts = [row for row in trace if row.get("ok") is True and len(evidence.strip()) >= 4
+                    and evidence in str(row.get("result") or "")
+                    and not any(word in str(row.get("result") or "").lower() for word in failure_words)]
+        if not receipts:
+            return False
+        done = self.mark_own_topic_done(state, user_id=ctx.user_id, matter_id=matter_id,
+                                         evidence=evidence, confirmed=True)
+        if done:
+            matters.history(item, "tool_evidence", evidence, self._now(), receipt=receipts[0])
+        return bool(done)
+
+    def reconcile_matters(self, state) -> None:
+        matters.ensure(state, self._now())
+        running = str((state.current_action or {}).get("matter_id") or (state.current_plan or {}).get("matter_id") or "")
+        for item in state.life_matters:
+            if item["status"] == "working" and item["id"] != running:
+                item.update(status="active", obstacle="上次的小步被打断，稍后接着做")
+                matters.history(item, "interrupted", item["obstacle"], self._now())
+        matters.sync(state)
+
+    def pause_matter_action(self, state, action: dict) -> None:
+        item = matters.find(state, str(action.get("matter_id") or ""))
+        if item is None or action.get("type") == "walk_to":
+            return
+        step = next((s for s in item.get("steps", []) if s["id"] == action.get("matter_step_id")), None)
+        if step and step.get("status") != "done":
+            minutes = max(0, int(action.get("elapsed_ticks") or 0) * self.tick_seconds / 60)
+            step["worked_minutes"] = min(step["minutes"], step.get("worked_minutes", 0) + minutes)
+            item["worked_minutes"] = item.get("worked_minutes", 0) + minutes
+            matters.history(item, "paused_step", f"暂时放下，已经投入 {step['worked_minutes']:g} 分钟", self._now())
+
+    def add_life_matter(self, state, text: str, **kwargs) -> dict | None:
+        matters.ensure(state, self._now())
+        body = " ".join(str(text or "").split())[:160]
+        if not body:
+            return None
+        who = str(kwargs.get("who") or "")
+        session = str(kwargs.pop("session", "") or state.session_id)
+        existing = next((m for m in state.life_matters if m["text"] == body and m.get("who") == who
+                         and m.get("session") == session and m["status"] not in matters.CLOSED), None)
+        if existing:
+            return existing
+        if sum(m["status"] not in matters.CLOSED | {"paused"} for m in state.life_matters) >= self.world.limits.life_matter_active_max:
+            return None
+        if sum(m["status"] == "paused" for m in state.life_matters) >= 20:
+            return None
+        item = matters.make(body, now=self._now(), session=session, **kwargs)
+        matters.history(item, "created", "记下一件想继续做的事", self._now())
+        state.life_matters.append(item)
+        matters.sync(state)
+        return item
+
+    def manage_life_matter(self, state, matter_id: str, operation: str, *, reason: str = "",
+                           resume_at: float = 0, **changes: Any) -> dict:
+        matters.ensure(state, self._now())
+        item = matters.find(state, matter_id)
+        if item is None:
+            raise ValueError("找不到这件生活事项")
+        if operation in {"pause", "resume", "postpone", "abandon"}:
+            if item["status"] in matters.CLOSED:
+                raise ValueError("已经结束的事项不能再次执行，请新建事项")
+            item["status"] = {"pause": "paused", "resume": "active", "postpone": "waiting", "abandon": "abandoned"}[operation]
+            item["resume_at"] = resume_at if operation == "postpone" else 0
+            item["obstacle"] = str(reason)[:300]
+        elif operation == "complete":
+            if not reason.strip():
+                raise ValueError("手动确认完成时请填写实际结果")
+            item.update(status="completed", progress=100, result=reason[:500], completed_at=self._now())
+        elif operation == "edit":
+            if item["status"] in matters.CLOSED:
+                raise ValueError("已经结束的事项保留为历史，请新建事项")
+            if "text" in changes and not str(changes["text"]).strip():
+                raise ValueError("事项内容不能为空")
+            changed_goal = "text" in changes and str(changes["text"]).strip() != item["text"]
+            for key in ("text", "motivation", "next_step"):
+                if key in changes:
+                    item[key] = str(changes[key]).strip()[:160 if key == "text" else 300]
+            if changed_goal:
+                item.update(needs_replan=True, last_attempt_at=0, plan_attempts=0,
+                            next_step="目标已调整，保留已做步骤，重新安排后续")
+        else:
+            raise ValueError("支持暂停、继续、延期、放弃和编辑；完成需要真实执行依据")
+        if operation in {"pause", "postpone", "abandon", "complete", "edit"}:
+            action = state.current_action or {}
+            if action.get("matter_id") == matter_id:
+                self.pause_matter_action(state, action)
+                state.current_action = None
+                state.state = "idle"
+            if (state.current_plan or {}).get("matter_id") == matter_id:
+                state.current_plan = None
+        if operation == "resume":
+            item.update(last_attempt_at=0, plan_attempts=0)
+        if operation == "edit" and item["status"] == "working":
+            item["status"] = "active"
+        matters.history(item, "manual_" + operation, reason or "管理员调整", self._now(), manual=True)
+        matters.sync(state)
+        return item
+
+    def _matter_actions(self, state) -> list[dict]:
+        rows = []
+        for action in self.world.actions:
+            # Personal quiet work cannot send messages, touch a person or replay external tools.
+            if (not action.enabled or action.idle or action.category != "continuous"
+                    or action.llm_level != "template" or action.target_type != "none"
+                    or action.tool_list() or action.trigger_command or action.on_complete.trigger not in {"none", "llm_followup"}
+                    or life_role(action) not in {"interest", "explore"}):
+                continue
+            for node in self.world.nodes:
+                if node.id != state.node_id and not self.decider.action_usable("walk_to"):
+                    continue
+                if action.available_in(node.id) and (node.id == state.node_id or find_path(self.world.adjacent(), state.node_id, node.id)):
+                    if self.action_quota_left(state, action) and self._check_preconditions(state, action)[0]:
+                        rows.append({"action": action.id, "name": action.name, "description": action.description[:250], "node": node.id})
+        return rows[:80]
+
+    @session_scoped
+    async def advance_life_matters(self, session_id: str) -> None:
+        if not self.is_enabled(session_id) or not self.world.limits.life_matter_enabled:
+            return
+        now = self._now()
+        async with self.session_state(session_id) as state:
+            self.reconcile_matters(state)
+            if not self._matter_can_work(state):
+                return
+            eligible = [m for m in state.life_matters if m["status"] in {"active", "waiting", "blocked", "working"}
+                        and (not m.get("resume_at") or float(m["resume_at"]) <= now)]
+            if not eligible:
+                return
+            item = min(eligible, key=lambda m: (float(m.get("last_attempt_at") or 0), float(m.get("at") or 0)))
+            if now - float(item.get("last_attempt_at") or 0) < self.world.limits.life_matter_interval_minutes * 60:
+                return
+            day = self._today_key(now)
+            if item.get("work_day") != day:
+                item.update(work_day=day, worked_minutes=0, plan_attempts=0)
+            if item.get("worked_minutes", 0) >= self.world.limits.life_matter_daily_minutes:
+                return
+            item["last_attempt_at"] = now
+            review = bool(item.get("needs_review"))
+            if item.get("steps") and not item.get("needs_replan") and not review:
+                await self._start_matter_step(state, item)
+                return
+            if int(item.get("plan_attempts", 0)) >= 3:
+                return
+            item["plan_attempts"] = int(item.get("plan_attempts", 0)) + 1
+            snapshot = copy.deepcopy(item)
+            candidates = self._matter_actions(state)
+        # Never wait for inference while holding the life-state lock.
+        if review:
+            await self._review_matter_stage(session_id, snapshot)
+            return
+        if not candidates:
+            raw = None
+        else:
+            with model_context("life_matter", f"为生活事项 {snapshot['id']} 安排可执行的小步", session_id):
+                raw = await self._ask_judge(session_id,
+                    "你为角色安排一个能持续数天的个人项目，只输出JSON。不要把计划写成已经发生的事实。"
+                    "只能从候选动作与地点安排真实适配的小步；不可借看书完成发照片、购物、联系他人等外部操作。"
+                    "外部操作或缺少能力时返回blocked及原因，等待实际对话/工具结果。"
+                    '格式：{"motivation":"一句动机","steps":[{"text":"具体下一步","action":"候选ID",'
+                    '"node":"候选地点","minutes":20,"day_offset":0}],"blocked":""}。最多6步，每步5到60分钟。'
+                    "day_offset是从今天起经过几天才适合做，可跨多日，不要为填满日程而强行赶完。",
+                    json.dumps({"matter": snapshot, "available": candidates}, ensure_ascii=False))
+        payload = extract_json_object(raw or "") or {}
+        async with self.session_state(session_id) as state:
+            item = matters.find(state, snapshot["id"])
+            if (not self.is_enabled(session_id) or not self.world.limits.life_matter_enabled or item is None
+                    or item["revision"] != snapshot["revision"] or item["status"] in matters.CLOSED | {"paused"}):
+                return  # Human edit, interruption, or newer result wins.
+            allowed = {(r["action"], r["node"]) for r in self._matter_actions(state)}
+            steps = []
+            proposed = payload.get("steps") if isinstance(payload.get("steps"), list) else []
+            for index, step in enumerate(proposed[:6]):
+                if not isinstance(step, dict) or (step.get("action"), step.get("node")) not in allowed or not step.get("text"):
+                    continue
+                try:
+                    minutes = min(60, max(5, int(step.get("minutes") or 20)))
+                    day_offset = min(30, max(0, int(step.get("day_offset", index))))
+                except (ValueError, TypeError):
+                    continue
+                definition = self.world.action_map()[step["action"]]
+                if definition.duration_mode == "llm":
+                    minutes = min(max(minutes, max(1, definition.duration_min / 60)), max(1, definition.duration_max / 60))
+                steps.append({"id": f"{item['id']}_{item['revision']}_{index}", "text": str(step["text"])[:300],
+                              "action": step["action"], "node": step["node"], "minutes": minutes,
+                              "not_before": now + day_offset * 86400, "status": "pending"})
+            if steps and not payload.get("blocked"):
+                steps = [s for s in item.get("steps", []) if s.get("status") == "done"][-60:] + steps
+                item.update(steps=steps, progress=min(99, round(100 * sum(s["status"] == "done" for s in steps) / len(steps))),
+                            next_step=next(s["text"] for s in steps if s["status"] != "done"), status="active",
+                            motivation=str(payload.get("motivation") or item.get("motivation") or "")[:300], obstacle="", needs_replan=False)
+                matters.history(item, "planned", "安排了可执行的小步，尚未完成", now)
+                if self._matter_can_work(state):
+                    await self._start_matter_step(state, item)
+            else:
+                item.update(status="blocked", obstacle=str(payload.get("blocked") or "暂时没有得到可执行安排，稍后再想")[:300])
+                matters.history(item, "blocked", item["obstacle"], now)
+            matters.sync(state)
+
+    async def _review_matter_stage(self, session_id: str, snapshot: dict) -> None:
+        with model_context("life_matter", f"核对生活事项 {snapshot['id']} 的实际阶段结果", session_id):
+            raw = await self._ask_judge(session_id,
+                "根据事项目标和实际动作收据，判断整个目标是否已达成，只输出JSON。"
+                '格式：{"outcome":"completed|continue|blocked","reason":""}。'
+                "只能证明收据中的世界内活动；读资料不能证明修好了物品或产出了文件。"
+                "可以继续则continue，能力不足则blocked，已有依据确实覆盖整个目标才completed。不要编造新经历。",
+                json.dumps(snapshot, ensure_ascii=False))
+        result = extract_json_object(raw or "") or {}
+        async with self.session_state(session_id) as state:
+            item = matters.find(state, snapshot["id"])
+            if (not item or item["revision"] != snapshot["revision"] or item["status"] in matters.CLOSED | {"paused"}
+                    or not self.is_enabled(session_id) or not self.world.limits.life_matter_enabled):
+                return
+            reason = str(result.get("reason") or "尚未取得可核对的目标结果")[:300]
+            outcome = result.get("outcome")
+            if outcome == "completed" and item["kind"] != "promise":
+                receipts = [s.get("result", {}) for s in item["steps"] if s.get("status") == "done"]
+                item.update(status="completed", progress=100, needs_review=False, next_step="", completed_at=self._now(),
+                            result="；".join(str(r.get("result") or "") for r in receipts)[-500:])
+                matters.history(item, "completed", "依据世界内实际活动确认完成；" + reason, self._now())
+            elif outcome == "continue":
+                item.update(status="active", needs_review=False, needs_replan=True, next_step=reason, last_attempt_at=0)
+                matters.history(item, "continue_stage", "进入下一阶段：" + reason, self._now())
+            else:
+                item.update(status="blocked", obstacle=reason, next_step="等待真实结果或人工确认")
+                matters.history(item, "review_blocked", reason, self._now())
+            matters.sync(state)
+
+    async def _start_matter_step(self, state, item: dict) -> None:
+        step = next((s for s in item.get("steps", []) if s.get("status") != "done"), None)
+        if step is None:
+            return
+        if float(step.get("not_before") or 0) > self._now():
+            item.update(status="waiting", resume_at=step["not_before"], next_step=step["text"])
+            return
+        if (step["action"], step["node"]) not in {(r["action"], r["node"]) for r in self._matter_actions(state)}:
+            item.update(status="blocked", obstacle="所需动作或地点现在不可用，保留已有进展", needs_replan=True)
+            matters.history(item, "blocked", item["obstacle"], self._now())
+            return
+        minutes = min(max(0, step["minutes"] - step.get("worked_minutes", 0)), self.world.limits.life_matter_daily_minutes - item.get("worked_minutes", 0))
+        if minutes <= 0:
+            return
+        steps = []
+        # The shared world's plan/events are visible in other conversations too.
+        # Keep a private promise's wording only in its origin-scoped matter block.
+        public_intent = step["text"] if not item.get("who") else "继续一件已记下的生活事项"
+        if state.node_id != step["node"]:
+            steps.append({"action": "walk_to", "target_node": step["node"], "kind": "quiet"})
+        steps.append({"action": step["action"], "duration": minutes * 60, "kind": "quiet", "intent": public_intent})
+        plan = create_plan(steps=steps, world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds,
+                           valid_for=max(7200, minutes * 60 + 1800), reason=public_intent, source="life_matter")
+        plan.update(matter_id=item["id"], matter_step_id=step["id"])
+        item.update(status="working", next_step=step["text"])
+        matters.history(item, "started", step["text"], self._now(), step_id=step["id"])
+        outcome = TickOutcome(session_id=state.session_id)
+        await self._apply_plan(state, self.node(state.node_id), outcome, plan)
+        await self._tick_plan(state, self.node(state.node_id), outcome, depth=0)
+
+    def _record_matter_action(self, state, action: dict) -> None:
+        definition = self.world.action_map().get(str(action.get("type") or ""))
+        minutes = max(0, int(action.get("elapsed_ticks") or 0) * self.tick_seconds / 60)
+        if (definition and definition.category == "continuous" and definition.llm_level == "template"
+                and definition.target_type == "none" and life_role(definition) in {"interest", "explore"} and minutes >= 1):
+            interest = state.life_interests.setdefault(definition.id, {"label": definition.name, "sessions": 0, "minutes": 0, "days": []})
+            interest.update(sessions=interest["sessions"] + 1, minutes=interest["minutes"] + minutes, last_at=self._now())
+            interest["days"] = sorted(set([*interest.get("days", []), self._today_key(self._now())]))[-30:]
+            state.life_interests = dict(sorted(state.life_interests.items(), key=lambda pair: pair[1].get("last_at", 0))[-40:])
+        matter_id, step_id = action.get("matter_id"), action.get("matter_step_id")
+        if not matter_id or action.get("type") == "walk_to":
+            return
+        item = matters.find(state, matter_id)
+        if item is None:
+            return
+        if definition is None or definition.llm_level != "template":
+            return  # External success must come from an explicit result, never elapsed time.
+        item["worked_minutes"] = item.get("worked_minutes", 0) + minutes
+        step = next((s for s in item.get("steps", []) if s["id"] == step_id), None)
+        if step is None:
+            return
+        step["worked_minutes"] = step.get("worked_minutes", 0) + minutes
+        receipt = {"ok": True, "kind": "in_world_action", "action": definition.id,
+                   "at": self._now(), "minutes": minutes, "result": f"实际进行了「{definition.name}」，投入 {minutes:g} 分钟"}
+        if step["worked_minutes"] + .01 < step["minutes"]:
+            item["status"] = "active"
+            matters.history(item, "progress", f"这一小步已投入 {step['worked_minutes']:g} 分钟，稍后继续", self._now(), receipt=receipt)
+            return
+        if matters.complete_step(state, matter_id, step_id, now=self._now(), receipt=receipt):
+            self.memory.remember(session_id=item["session"], persona_id="", node_id=state.node_id,
+                content=f"（生活事项的实际进展）{item['text']}：{receipt['result']}", memory_type="scene",
+                source="life_matter", context=json.dumps(receipt, ensure_ascii=False),
+                participants=[item["who"]] if item.get("who") else [])
