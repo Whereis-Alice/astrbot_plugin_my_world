@@ -214,6 +214,7 @@ class RelationsMixin:
         if (not item or not confirmed or not evidence or item["status"] in matters.CLOSED
                 or (item.get("who") and item["who"] != str(user_id))):
             return 0
+        self._stop_matter_work(state, matter_id)
         item.update(status="completed", progress=100, result=evidence[:500], completed_at=self._now())
         matters.history(item, "completed", evidence, self._now(), kind_of_evidence="confirmed_result")
         matters.sync(state)

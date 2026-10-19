@@ -28,7 +28,7 @@ from ..planner import (
     create_plan,
 )
 from ..ports import ToolCallResult
-from ..speech_policy import speech_origin
+from ..speech_policy import SILENT_FOLLOWUP, speech_origin
 from ..state import (
     STATE_DROWSY,
     WorldState,
@@ -432,6 +432,7 @@ class ActionsRunMixin:
                 # 这个动作是在哪个会话里被安排/触发的：做完的续说回那儿
                 "session": outcome.home(),
                 "speech_kind": outcome.speech_kind,
+                "silent_followup": SILENT_FOLLOWUP.get() or bool(from_plan and (state.current_plan or {}).get("silent_followup")),
                 "desc": definition.name or definition.id,
             }
             if from_plan and isinstance(state.current_plan, dict):
@@ -566,7 +567,8 @@ class ActionsRunMixin:
             return
         if definition.llm_level == "command":
             # 指令触发：拼一条指令交给 AstrBot 跑，再把结果交回给她
-            payload = {"type": definition.id, "session": outcome.home()}
+            payload = {"type": definition.id, "session": outcome.home(),
+                       "silent_followup": SILENT_FOLLOWUP.get() or bool(from_plan and (state.current_plan or {}).get("silent_followup"))}
             await self._run_command_action(
                 state, node, outcome, definition, action, remember=payload
             )
@@ -594,6 +596,7 @@ class ActionsRunMixin:
                 "desc": definition.name or definition.id,
                 "reply_planned": reply_planned,
                 "speech_kind": outcome.speech_kind,
+                "silent_followup": SILENT_FOLLOWUP.get() or bool(from_plan and (state.current_plan or {}).get("silent_followup")),
             }
             answered = await self._finish_action(state, node, outcome, payload)
             if from_plan and state.current_plan is not None:

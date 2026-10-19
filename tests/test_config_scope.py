@@ -101,6 +101,25 @@ class ConfigScopeTests(unittest.IsolatedAsyncioTestCase):
         with self.engine.config_scope(B):
             self.assertEqual(self.engine.world.name, "main")
 
+    async def test_repair_uses_each_characters_own_map_and_actions(self):
+        world = self.store.raw_world()
+        room = copy.deepcopy(world["nodes"][0])
+        room.update(id="private_room", name="Private room")
+        action = {"id": "private_read", "name": "Read", "category": "continuous", "llm_level": "template"}
+        self.override(A, blocks=["map", "actions"], nodes=[room], edges=[], actions=[action])
+        for session, node, kind in ((A, "private_room", "private_read"), (B, "study", "read")):
+            async with self.engine.session_state(session) as state:
+                state.node_id = node
+                state.current_action = {"type": kind, "elapsed_ticks": 1, "duration_ticks": 10}
+        # A repair can be triggered from either the default editor or a scoped editor.
+        for caller in ("", A):
+            with self.subTest(caller=caller), self.engine.config_scope(caller):
+                await self.engine.repair_states_after_config_change()
+                for session, node, kind in ((A, "private_room", "private_read"), (B, "study", "read")):
+                    saved = await self.engine.load_state(session, cold_start=False)
+                    self.assertEqual(saved.node_id, node)
+                    self.assertEqual(saved.current_action["type"], kind)
+
     async def test_sleep_mode_change_applies_only_to_the_effective_scope(self):
         for session in (A, B):
             async with self.engine.session_state(session) as state:

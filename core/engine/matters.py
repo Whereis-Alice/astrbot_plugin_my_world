@@ -13,6 +13,7 @@ from ..life import life_role
 from ..model_calls import model_context
 from ..pathfinding import find_path
 from ..planner import create_plan
+from ..state import WorldState
 from .models import TickOutcome
 
 
@@ -24,6 +25,20 @@ class MattersMixin:
                 and not (thread and self._thread_critical(thread))
                 and not (self.world.sleep.mode == "autonomous" and state.sleep_rhythm.get("decision") == "sleep"))
 
+    def life_seed_due(self, state: WorldState) -> bool:
+        """One suggestion a day; transient failures get a bounded, delayed retry."""
+        if (not self.world.limits.life_matter_enabled or not self.world.limits.life_matter_self_start
+                or not self._matter_can_work(state) or state.world_time * self.tick_seconds < 6 * 3600
+                or any(m["status"] not in matters.CLOSED for m in state.life_matters)):
+            return False
+        key = f"life_seed:{self.state_key(state.session_id)}:{self._today_key(self._now())}"
+        marker = self.db.raw.kv_get(key)
+        if not marker:
+            return True
+        # A legacy marker already consumed this day's suggestion.
+        return (isinstance(marker, dict) and "attempts" in marker and not marker.get("done")
+                and int(marker["attempts"]) < 3 and float(marker.get("retry_at") or 0) <= self._now())
+
     @session_scoped
     async def seed_life_matter(self, session_id: str) -> None:
         """At most one quiet personal suggestion per day, after her first six lived hours."""
@@ -32,16 +47,16 @@ class MattersMixin:
         key = f"life_seed:{self.state_key(session_id)}:{self._today_key(self._now())}"
         async with self.session_state(session_id) as state:
             matters.ensure(state, self._now())
-            if (not self._matter_can_work(state)
-                    or state.world_time * self.tick_seconds < 6 * 3600
-                    or any(m["status"] not in matters.CLOSED for m in state.life_matters)
-                    or self.db.raw.kv_get(key)):
+            if not self.life_seed_due(state):
                 return
             candidates = self._matter_actions(state)
             interests = matters.stable_interests(state)
-            self.db.raw.kv_set(key, {"at": self._now()})
-        if not candidates:
-            return
+            marker = self.db.raw.kv_get(key) or {}
+            attempts = int(marker.get("attempts") or 0) + bool(candidates)
+            self.db.raw.kv_set(key, {"at": self._now(), "attempts": attempts,
+                "retry_at": self._now() + max(15, self.world.limits.life_matter_interval_minutes) * 60})
+            if not candidates:
+                return
         persona = await self._persona_text(session_id)
         with model_context("life_matter", "有空闲，为自己的生活想一件可持续的小事", session_id):
             raw = await self._ask_judge(session_id,
@@ -50,8 +65,11 @@ class MattersMixin:
                 json.dumps({"persona": persona[:6000], "available": candidates,
                             "interests": interests}, ensure_ascii=False))
         payload = extract_json_object(raw or "") or {}
+        if "text" not in payload or not isinstance(payload["text"], str):
+            return  # Unavailable/malformed is different from a valid "no new idea".
         async with self.session_state(session_id) as state:
             matters.ensure(state, self._now())
+            self.db.raw.kv_set(key, {"at": self._now(), "attempts": attempts, "done": True})
             if (self.is_enabled(session_id) and self.world.limits.life_matter_enabled
                     and self.world.limits.life_matter_self_start
                     and not any(m["status"] not in matters.CLOSED for m in state.life_matters)):
@@ -118,6 +136,16 @@ class MattersMixin:
             step = next(s for s in item["steps"] if s["id"] == action.get("matter_step_id"))
             matters.history(item, "paused_step", f"暂时放下，已经投入 {step['worked_minutes']:g} 分钟", self._now())
 
+    def _stop_matter_work(self, state: WorldState, matter_id: str) -> None:
+        """Release only this matter's preparation, preserving confirmed online effort."""
+        action = state.current_action or {}
+        if action.get("matter_id") == matter_id:
+            self.pause_matter_action(state, action)
+            state.current_action = None
+            state.state = "idle"
+        if (state.current_plan or {}).get("matter_id") == matter_id:
+            state.current_plan = None
+
     def add_life_matter(self, state, text: str, **kwargs) -> dict | None:
         matters.ensure(state, self._now())
         body = " ".join(str(text or "").split())[:160]
@@ -175,13 +203,7 @@ class MattersMixin:
         else:
             raise ValueError("支持暂停、继续、延期、放弃和编辑；完成需要真实执行依据")
         if operation in {"pause", "postpone", "abandon", "complete", "edit"}:
-            action = state.current_action or {}
-            if action.get("matter_id") == matter_id:
-                self.pause_matter_action(state, action)
-                state.current_action = None
-                state.state = "idle"
-            if (state.current_plan or {}).get("matter_id") == matter_id:
-                state.current_plan = None
+            self._stop_matter_work(state, matter_id)
         if operation == "resume":
             item.update(last_attempt_at=0, plan_attempts=0)
         if operation == "edit" and item["status"] == "working":
@@ -366,7 +388,7 @@ class MattersMixin:
         if not matter_id or action.get("type") == "walk_to":
             return
         item = matters.find(state, matter_id)
-        if item is None:
+        if item is None or item.get("status") in matters.CLOSED | {"paused"}:
             return
         if definition is None or definition.llm_level != "template":
             return  # External success must come from an explicit result, never elapsed time.

@@ -285,9 +285,10 @@ class SleepRhythmMixin:
         seconds = max(0, int(action.get("elapsed_ticks") or 0)) * self.tick_seconds
         kind = str(action.get("type") or "sleep")
         rhythm = state.sleep_rhythm
-        started = _number(rhythm.get("sleep_started_at")) or self._now() - seconds
+        ended = _number(action.get("offline_wake_at")) or self._now()
+        started = _number(rhythm.get("sleep_started_at")) or ended - seconds
         low, _ = self._rhythm_duration_bounds()
-        state.sleep_history.append({"kind": kind, "started_at": started, "ended_at": self._now(),
+        state.sleep_history.append({"kind": kind, "started_at": started, "ended_at": ended,
             "hours": round(seconds / 3600, 2), "interrupted": interrupted,
             "disturbances": int(state.startled_count or 0), "rested": kind == "sleep" and seconds >= low,
             "reason": str(rhythm.get("reason") or "")[:240]})
@@ -296,7 +297,7 @@ class SleepRhythmMixin:
         before = _number(rhythm.get("awake_before_sleep"), 12)
         rhythm.pop("retry_at", None)
         effective_awake = 0 if kind == "sleep" and seconds >= low else max(0, before - seconds / 3600 * 2)
-        rhythm.update(awake_since=self._now() - effective_awake * 3600, decision="awake",
-            next_evaluation_at=self._now() + self.world.sleep.evaluation_minutes * 60,
-            last_wake_at=self._now(), planned_wake_at=0, sleep_started_at=0)
+        rhythm.update(awake_since=ended - effective_awake * 3600, decision="awake",
+            next_evaluation_at=ended + self.world.sleep.evaluation_minutes * 60,
+            last_wake_at=ended, planned_wake_at=0, sleep_started_at=0)
         state.sleep_started_at = 0

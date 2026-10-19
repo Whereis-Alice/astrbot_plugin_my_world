@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
+from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from typing import Any
 
@@ -13,7 +15,13 @@ CRITICAL_TICK = ContextVar("world_critical_tick", default=False)
 
 
 class BackgroundMixin:
-    def queue_background(self, key: str, work) -> asyncio.Task | None:
+    def _background_concurrency(self) -> int:
+        # The shared worker pool belongs to global settings; each scoped model
+        # channel still applies its own inference limit in _budgeted_generate.
+        world = getattr(self, "_base_runtime", {}).get("world") or self.world
+        return max(1, world.limits.background_concurrency)
+
+    def queue_background(self, key: str, work: Callable[[], Awaitable[Any]]) -> asyncio.Task | None:
         jobs = getattr(self, "_background_jobs", None)
         if jobs is None:
             jobs = self._background_jobs = {}
@@ -22,21 +30,50 @@ class BackgroundMixin:
         current = jobs.get(key)
         if current and not current.done():
             return current
-        # Admission is bounded, including queued jobs. Low-priority work retries next beat.
-        if sum(not task.done() for task in jobs.values()) >= max(8, self.world.limits.background_concurrency * 4):
+        # Reserve room for every character's four job families and the three global
+        # jobs. A fixed capacity used to discard the same characters on every beat.
+        concurrency = self._background_concurrency()
+        capacity = max(8, concurrency * 4, len(self.tick_session_ids()) * 4 + 3)
+        live = sum(not task.done() for task in jobs.values())
+        if live >= capacity:
             return None
+        if not hasattr(self, "_background_condition"):
+            self._background_condition = asyncio.Condition()
+            self._background_waiters = deque()
+            self._background_running_jobs = 0
+        condition = self._background_condition
+        waiters = self._background_waiters
 
         async def run():
+            ticket, admitted = object(), False
             try:
+                async with condition:
+                    waiters.append(ticket)
+                    await condition.wait_for(lambda: waiters[0] is ticket and
+                        self._background_running_jobs < self._background_concurrency())
+                    waiters.popleft()
+                    admitted = True
+                    self._background_running_jobs += 1
+                    condition.notify_all()
                 return await work()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 self._log("debug", f"后台工作 {key} 留待下次：{type(exc).__name__}")
             finally:
-                jobs.pop(key, None)
+                async with condition:
+                    if admitted:
+                        self._background_running_jobs -= 1
+                    elif ticket in waiters:
+                        waiters.remove(ticket)
+                    condition.notify_all()
         task = asyncio.create_task(run(), name="my_world:" + key)
         jobs[key] = task
+        def forget(completed):
+            if jobs.get(key) is completed:
+                jobs.pop(key, None)
+        # A task cancelled before its first instruction never enters run/finally.
+        task.add_done_callback(forget)
         return task
 
     async def close_background(self) -> None:
@@ -113,10 +150,18 @@ class BackgroundMixin:
         state.world_time += missing_ticks
         # Translate relative counters by the elapsed life clock.
         current = state.current_action or {}
+        remaining = min(gap, 6 * 3600)
         if current.get("type") in {"sleep", "nap"}:
             left = max(0, int(current.get("duration_ticks", 0)) - int(current.get("elapsed_ticks", 0)))
-            slept = min(left, missing_ticks)
+            slept = min(left, int(gap / self.tick_seconds))
             current["elapsed_ticks"] = int(current.get("elapsed_ticks", 0)) + slept
+            sleep_seconds = slept * self.tick_seconds
+            wake_at = now - gap + sleep_seconds
+            # Sleep has its own energy, curiosity, desire and pressure dynamics.
+            # Settle that interval before the completion path turns her idle.
+            if sleep_seconds:
+                self.dynamics.tick(state, node=self.node(state.node_id), elapsed_seconds=sleep_seconds,
+                                   world=self.world, now=wake_at)
             definition = self.world.action_map().get(str(current.get("type")))
             if definition and slept:
                 self.dynamics.apply_effects(state, definition.on_complete.effects_per_minute,
@@ -124,7 +169,12 @@ class BackgroundMixin:
                 current["effects_settled_minutes"] = float(current.get("effects_settled_minutes", 0)) + slept * self.tick_seconds / 60
             if slept >= left:
                 current["offline_wake"] = True
+                current["offline_wake_at"] = wake_at
                 state.goodmorning_day = self._today_key(now)
+                remaining = min(max(0, gap - sleep_seconds), 6 * 3600)
+            else:
+                remaining = max(0, gap - sleep_seconds)
+            current["offline_tick_settled"] = True
         elif current:
             # Preserve project identity; a missing runtime cannot prove work actually happened.
             self.pause_matter_action(state, current, at=previous)
@@ -139,4 +189,4 @@ class BackgroundMixin:
         state.life_recovery = {"at": now, "elapsed_seconds": elapsed, "settled_seconds": gap,
                                "from_tick": old_tick, "note": "离线期间仅结算时间与休息；没有补发消息或虚构事项进展"}
         state.add_event("offline_recovery", dict(state.life_recovery))
-        return min(gap, 6 * 3600) if not state.is_sleeping else self.tick_seconds
+        return remaining

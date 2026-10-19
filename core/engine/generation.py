@@ -24,6 +24,7 @@ from ..generator import (
     spring_layout_zones,
 )
 from ..json_actions import CANCEL_MODES
+from ..planner import same_plan
 from ..models import (
     ActionDef,
     action_is_legacy,
@@ -1434,13 +1435,15 @@ class GenerationMixin:
         """
 
         notes: list[str] = []
-        nodes = set(self.world.node_map())
-        actions = set(self.world.action_map())
-        default_node = self.default_node_id()
         for session_id in list(self.state_session_ids()):
             fixed: list[str] = []
             try:
                 async with self.session_state(session_id) as state:
+                    # Each character may own a different map/action block. The
+                    # editor's calling scope cannot repair other lives with its map.
+                    nodes = set(self.world.node_map())
+                    actions = set(self.world.action_map())
+                    default_node = self.default_node_id()
                     if state.node_id and state.node_id not in nodes:
                         fixed.append(f"地点 {state.node_id} 没了，落到 {default_node}")
                         state.node_id = default_node
@@ -1451,23 +1454,33 @@ class GenerationMixin:
                         node = str(action.get("target_node") or "")
                         if (kind and kind not in actions) or (node and node not in nodes):
                             fixed.append(f"丢掉手上的「{kind or '动作'}」")
+                            self.pause_matter_action(state, action)
+                            if kind in {"sleep", "nap"}:
+                                self._finish_sleep_rhythm(state, action, interrupted=True)
                             state.current_action = None
                             state.state = STATE_IDLE
                     plan = state.current_plan
                     if isinstance(plan, dict) and plan.get("steps"):
                         kept: list[dict[str, Any]] = []
-                        for step in plan["steps"]:
+                        remap: dict[int, int] = {}
+                        old_index = int(plan.get("current_step") or 0)
+                        for index, step in enumerate(plan["steps"]):
                             if not isinstance(step, dict):
                                 continue
                             kind = str(step.get("action") or "")
                             node = str(step.get("target_node") or "")
                             if (kind and kind not in actions) or (node and node not in nodes):
                                 continue
+                            remap[index] = len(kept)
                             kept.append(step)
                         if len(kept) != len(plan["steps"]):
                             fixed.append(f"排队的计划里删掉 {len(plan['steps']) - len(kept)} 步")
                             plan["steps"] = kept
-                            if not kept:
+                            plan["current_step"] = sum(index < old_index for index in remap)
+                            running = state.current_action
+                            if running and same_plan(running, plan) and running.get("plan_index") in remap:
+                                running["plan_index"] = remap[running["plan_index"]]
+                            if plan["current_step"] >= len(kept):
                                 state.current_plan = None
                     if fixed:
                         await self._log_event(
@@ -1504,6 +1517,8 @@ class GenerationMixin:
         async with self.session_state(session_id) as state:
             # 临睡期被叫醒 = "别睡了，再陪我一会儿"：把揣着的那一步睡觉丢掉
             was_sleeping = state.is_sleeping or state.state == STATE_DROWSY
+            if not was_sleeping:
+                return False
             if state.state == STATE_DROWSY:
                 state.drowsy_sleep_step = {}
                 state.drowsy_started_world_time = 0

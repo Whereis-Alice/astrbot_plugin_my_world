@@ -35,6 +35,7 @@ from .util import (
     _clip_log,
     _clip_text,
 )
+from ..speech_policy import SILENT_FOLLOWUP
 
 
 class EventFlowMixin:
@@ -138,17 +139,25 @@ class EventFlowMixin:
             params=dict(item.get("params") or {}),
         )
         marker = await self._latest_event_id(state.session_id)
-        self._silent_followup += 1
+        previous_action, previous_plan = state.current_action, state.current_plan
+        token = SILENT_FOLLOWUP.set(True)
         try:
             await self._execute_actions(
                 state, node, outcome, [planned], depth=0, autonomous=True
             )
         finally:
-            self._silent_followup -= 1
+            SILENT_FOLLOWUP.reset(token)
+        if state.current_plan and state.current_plan is not previous_plan:
+            state.current_plan["silent_followup"] = True
         thread["action_calls"] = int(thread.get("action_calls") or 0) + 1
         results = await self._action_results_since(state.session_id, marker)
         if not results:
-            results = ["（这个动作跑完了，但没有拿到能用的内容）"]
+            if state.current_action and state.current_action is not previous_action:
+                results = ["（动作进行中，尚未取得完成结果；不能据此认定已经做成）"]
+            elif state.current_plan and state.current_plan is not previous_plan:
+                results = ["（已排入计划，尚未完成；不能据此认定已经做成）"]
+            else:
+                results = ["（没有取得可核对的结果，不能认定已经做成）"]
         observations = [f"{definition.name or definition.id}：{text}" for text in results]
         thread["observations"] = [
             *list(thread.get("observations") or []),

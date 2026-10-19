@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ..model_calls import model_operation
+from ..speech_policy import SILENT_FOLLOWUP
 
 from datetime import (
     datetime,
@@ -175,6 +176,8 @@ class ScheduleActionsMixin:
             and (detail or images)
         ):
             want_followup = True
+        if SILENT_FOLLOWUP.get() or (remember or {}).get("silent_followup"):
+            want_followup = False
         if not want_followup:
             outcome.notes.append(f"指令「{line}」已执行，这次不开口")
             return

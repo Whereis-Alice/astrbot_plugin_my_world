@@ -2,6 +2,10 @@
 
 import functools
 import inspect
+from contextvars import ContextVar
+
+
+SILENT_FOLLOWUP = ContextVar("world_silent_followup", default=False)
 
 
 def speech_origin(source):

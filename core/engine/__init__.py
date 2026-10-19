@@ -395,13 +395,6 @@ class MyWorldEngine(
         取走即失效——这些提示只该出现一次。
         """
 
-        self._silent_followup = 0
-        """大于 0 时，动作完成后不触发"续说"。
-
-        事件里"先去做点什么"那一轮用它：工具结果只交回给她判断，
-        不能顺手把查到的内容发到群里。
-        """
-
         self._tool_failures: dict[str, dict[str, Any]] = {}
         """工具的连续失败次数与退避到期时间（熔断用，只在内存里）。"""
         self._last_llm: dict[str, dict[str, Any]] = {}

@@ -27,7 +27,7 @@ from ..planner import (
     peek_step,
     same_plan,
 )
-from ..speech_policy import speech_origin
+from ..speech_policy import SILENT_FOLLOWUP, speech_origin
 from ..state import (
     STATE_DROWSY,
     STATE_IDLE,
@@ -296,8 +296,7 @@ class TickMixin:
                 node = self.node(state.node_id) or node
             outcome.summary = {
                 "memory_due": bool(self._memory_flush_reason(state)) or await self.db.call("has_pending_memory_batch", self.group_sessions(session_id)),
-                "life_seed_due": state.world_time * self.tick_seconds >= 21600 and not any(
-                    m.get("status") not in {"completed", "abandoned", "expired"} for m in state.life_matters),
+                "life_seed_due": self.life_seed_due(state),
                 "matters_pending": any(item.get("status") not in {"completed", "abandoned", "expired", "paused"} for item in state.life_matters),
                 "world_time": int(state.world_time),
                 "node_id": str(state.node_id or ""),
@@ -326,7 +325,8 @@ class TickMixin:
         action = state.current_action
         if not isinstance(action, dict):
             return
-        action["elapsed_ticks"] = int(action.get("elapsed_ticks", 0)) + 1
+        if not action.pop("offline_tick_settled", False):
+            action["elapsed_ticks"] = int(action.get("elapsed_ticks", 0)) + 1
         self.settle_matter_work(state, action)
         if int(action.get("elapsed_ticks", 0)) < int(action.get("duration_ticks", 0) or 0):
             return
@@ -613,7 +613,7 @@ class TickMixin:
             # 工具型动作拿到结果后，默认交回主模型说一句（可以用全局设置关掉）
             want_followup = True
             hint = hint or "把刚才查到的结果用你自己的话说出来，简短自然，别念成清单。"
-        if want_followup and self._silent_followup:
+        if want_followup and (SILENT_FOLLOWUP.get() or action.get("silent_followup")):
             # 事件里"先去做点什么"那一轮：结果只交回给她判断，不往群里说
             want_followup = False
             outcome.notes.append(f"动作 {action_id} 的结果只用于事件判断，不作续说")
@@ -843,6 +843,8 @@ class TickMixin:
         after_search: bool = False,
         definition: Any = None,
     ) -> bool:
+        if SILENT_FOLLOWUP.get():
+            return False
         persona_text = await self._persona_text(state.session_id)
         _cell, say_limit, style_text = self.style_for(state, state.session_id)
         blocked_actions = self._hidden_actions(state)
