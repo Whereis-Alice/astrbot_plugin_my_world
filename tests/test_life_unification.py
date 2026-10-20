@@ -70,11 +70,11 @@ class LifeUnificationTests(unittest.IsolatedAsyncioTestCase):
     async def test_event_has_optional_bounded_continuation_not_a_mandatory_task(self):
         state = WorldState(S)
         thread = {"id": "event_one"}
-        self.engine.link_event_matter(state, thread, {})
+        await self.engine.link_event_matter(state, thread, {})
         self.assertEqual(state.life_matters, [])
         proposal = {"text": "慢慢画出刚才见到的天空", "reason": "散步时想留住这片晚霞"}
-        self.engine.link_event_matter(state, thread, proposal)
-        self.engine.link_event_matter(state, thread, proposal)
+        await self.engine.link_event_matter(state, thread, proposal)
+        await self.engine.link_event_matter(state, thread, proposal)
         self.assertEqual(len(state.life_matters), 1)
         self.assertEqual(state.life_matters[0]["kind"], "idea")
         self.assertEqual(state.life_matters[0]["origin_event"], thread["id"])
@@ -291,7 +291,7 @@ class LifeUnificationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unknown_event_matter_id_does_not_create_a_replacement(self):
         state = WorldState(S)
-        self.engine.link_event_matter(state, {"id": "event_unknown"}, {"matter_id": "missing", "text": "误建事项", "reason": "模型引用错误"})
+        await self.engine.link_event_matter(state, {"id": "event_unknown"}, {"matter_id": "missing", "text": "误建事项", "reason": "模型引用错误"})
         self.assertEqual(state.life_matters, [])
 
     async def test_once_appointment_beyond_a_week_is_still_the_next_schedule(self):

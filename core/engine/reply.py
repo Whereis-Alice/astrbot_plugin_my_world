@@ -1017,7 +1017,7 @@ class ReplyMixin:
                 self.resolve_grudge(state, user_id=str(getattr(ctx, "user_id", "") or ""))
             # 「我自己答应过的事」：她自己的账本，跟 open_topic 正好对称
             if parsed.own_topic:
-                self.note_own_topic(
+                await self.note_own_topic(
                     state,
                     parsed.own_topic,
                     user_id=str(getattr(ctx, "user_id", "") or ""),

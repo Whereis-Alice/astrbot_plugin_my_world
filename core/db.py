@@ -21,6 +21,7 @@ from .background import BackgroundStoreMixin
 from .evidence import EVIDENCE_SCHEMA, EvidenceStoreMixin
 from .social_learning import SOCIAL_SCHEMA, SocialStoreMixin
 from .life_memory import LIFE_SQL, LIFE_TYPES, LIFE_SOURCES, SOURCE_SCOPED_SQL, migrate_life_memory
+from .life_journal import JOURNAL_SCHEMA, JournalStoreMixin
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS world_state (
@@ -143,6 +144,8 @@ CREATE TABLE IF NOT EXISTS event_log (
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_event_session ON event_log (session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_event_persona_time
+    ON event_log (session_id, persona_id, created_at, id);
 
 CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
@@ -240,7 +243,13 @@ def _fact_row(row: sqlite3.Row) -> dict[str, Any]:
     return item
 
 
-class Database(ModelCallStoreMixin, BackgroundStoreMixin, EvidenceStoreMixin, SocialStoreMixin):
+class Database(
+    JournalStoreMixin,
+    ModelCallStoreMixin,
+    BackgroundStoreMixin,
+    EvidenceStoreMixin,
+    SocialStoreMixin,
+):
     """同步 sqlite 封装。调用方应通过 AsyncDatabase 使用，避免阻塞事件循环。"""
 
     def __init__(self, path: str | Path) -> None:
@@ -258,7 +267,9 @@ class Database(ModelCallStoreMixin, BackgroundStoreMixin, EvidenceStoreMixin, So
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=30000")
             conn.execute("PRAGMA synchronous=NORMAL")
-            conn.executescript(SCHEMA + MODEL_CALL_SCHEMA + EVIDENCE_SCHEMA + SOCIAL_SCHEMA)
+            conn.executescript(
+                SCHEMA + JOURNAL_SCHEMA + MODEL_CALL_SCHEMA + EVIDENCE_SCHEMA + SOCIAL_SCHEMA
+            )
             conn.commit()
             self._migrate(conn)
             migrate_life_memory(conn, self.path)

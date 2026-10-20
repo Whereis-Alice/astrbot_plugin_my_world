@@ -77,9 +77,9 @@ class RelationshipApiTests(unittest.IsolatedAsyncioTestCase):
         engine.world.state_dynamics.own_topic_max = 5
         async with engine.session_state(self.session) as state:
             engine.note_grudge(state, '说了伤人的话', user_id='42', force=True)
-            engine.note_own_topic(state, '一起看星星', user_id='42')
-            engine.note_own_topic(state, '自己修理旧风车')
-            engine.note_own_topic(state, '一起种花', user_id='7')
+            await engine.note_own_topic(state, '一起看星星', user_id='42')
+            await engine.note_own_topic(state, '自己修理旧风车')
+            await engine.note_own_topic(state, '一起种花', user_id='7')
         result = await self.call('profile/contact', session=self.session, user_id='42')
         self.assertEqual(result['status_code'], 200)
         data = result['data']

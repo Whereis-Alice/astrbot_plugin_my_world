@@ -273,6 +273,28 @@ DEFAULT_WORLD: dict[str, Any] = {
         # 主回复的工具调用走 AstrBot 原生：她查到的天气顺手记下来
         "from_tools": True,
     },
+    "calendar": {
+        "enabled": True,
+        "auto_generate": True,
+        "world_type": "auto",
+        "countries": [],
+        "culture_notes": "",
+        "use_public_calendar": True,
+        "max_events": 120,
+    },
+    "diary": {
+        "enabled": True,
+        "automatic": True,
+        "write_hour": 1,
+        "keep": 180,
+        "include_inner": True,
+    },
+    "life_context": {
+        "enabled": True,
+        "include_calendar": True,
+        "include_diary": True,
+        "max_chars": 1600,
+    },
     # 夜晚时段：睡觉动作只在夜里可选，夜里醒着也要付熬夜代价
     "night": {
         "start_hour": 23,

@@ -1286,7 +1286,7 @@ class EventsMixin:
             suggestions=suggestions,
             thread=thread,
         )
-        self.link_event_matter(state, thread, settlement.life_matter)
+        await self.link_event_matter(state, thread, settlement.life_matter)
         delta, spent = clamp_ability_delta(
             settlement.ability_delta,
             spent_today=state.ability_spent_today,

@@ -174,7 +174,8 @@ def progress_label(item: dict) -> str:
 
 
 def make(text: str, *, now: float, session: str, who: str = "", who_name: str = "",
-         motivation: str = "", kind: str = "project", next_step: str = "") -> dict:
+         motivation: str = "", kind: str = "project", next_step: str = "",
+         persona_key: str = "") -> dict:
     return {"id": "lm_" + uuid4().hex[:16], "text": text[:160], "who": who,
             "who_name": who_name, "session": session, "at": now, "updated_at": now,
             "kind": kind if kind in {"project", "promise", "idea"} else "project",
@@ -182,7 +183,8 @@ def make(text: str, *, now: float, session: str, who: str = "", who_name: str = 
             "next_step": next_step[:300], "obstacle": "", "resume_at": 0,
             "steps": [], "history": [], "revision": 1, "result": "",
             "work_day": "", "worked_minutes": 0, "last_attempt_at": 0,
-            "plan_attempts": 0}
+            "plan_attempts": 0,
+            **({"persona_key": persona_key} if persona_key else {})}
 
 
 def sync(state) -> None:

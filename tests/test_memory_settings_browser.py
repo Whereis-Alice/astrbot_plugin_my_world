@@ -106,8 +106,14 @@ class MemorySettingsBrowserTests(unittest.TestCase):
     def test_settings_categories_cover_every_section_and_search_finds_embedding(self):
         self.install_models()
         sections = self.page.evaluate("""()=>[...document.querySelectorAll('#settings-form>.card-section')].map(e=>({key:e.dataset.sectionKey,title:e.dataset.sectionTitle,hidden:e.classList.contains('hidden')}))""")
-        expected = {'生活记忆','用户画像'}
+        expected = {'生活记忆', '生活日历与日记', '用户画像'}
         self.assertEqual({row['title'] for row in sections if not row['hidden']}, expected)
+        expect(self.page.locator('[data-section-title="生活日历与日记"]')).to_contain_text(
+            '世界类型'
+        )
+        expect(self.page.locator('[data-section-title="生活日历与日记"]')).to_contain_text(
+            '把日历与最近日记注入聊天'
+        )
         self.page.get_by_role('button', name='生活与作息', exact=True).click()
         expect(self.page.locator('[data-section-title="生活事项"]')).to_be_visible()
         expect(self.page.locator('[data-section-title="后台预算"]')).to_be_visible()

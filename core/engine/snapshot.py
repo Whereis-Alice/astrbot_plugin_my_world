@@ -990,6 +990,11 @@ class SnapshotMixin:
         """
 
         payload = detail or {}
+        if not persona_id:
+            try:
+                _, persona_id = await self._journal_persona(state.session_id)
+            except Exception:
+                persona_id = ""
         where = str(place or (getattr(outcome, "place", "") if outcome else "") or "")
         if where and where != str(state.session_id):
             label = self.session_label(where, state)

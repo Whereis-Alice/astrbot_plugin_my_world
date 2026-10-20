@@ -220,7 +220,7 @@ class AutonomyMixin:
         )
         if not inner and fallback_allowed:
             state.last_rule_inner_at = self._now()
-        self._remember_inner_thought(
+        await self._remember_inner_thought(
             state,
             inner or (reason if fallback_allowed else ""),
             source="自主决定" if inner else "此刻选择",

@@ -189,7 +189,7 @@ class RelationsMixin:
 
     # ---------------- 她自己的事（答应过的、想做的） ----------------
 
-    def note_own_topic(
+    async def note_own_topic(
         self,
         state: WorldState,
         text: str,
@@ -202,8 +202,12 @@ class RelationsMixin:
 
         if not self.world.state_dynamics.own_topic_enabled:
             return False
+        _, persona_key = await self._journal_persona(
+            str(session_id or state.session_id)
+        )
         return self.add_life_matter(state, text, who=str(user_id or ""), who_name=str(user_name or ""),
-                                    session=str(session_id or state.session_id), kind="promise" if user_id else "project") is not None
+                                    session=str(session_id or state.session_id), kind="promise" if user_id else "project",
+                                    persona_key=persona_key) is not None
 
     def mark_own_topic_done(self, state: WorldState, *, user_id: str = "", matter_id: str = "",
                             evidence: str = "", confirmed: bool = False) -> int:

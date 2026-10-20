@@ -2323,6 +2323,55 @@ class IdleLifeConfig(Permissive):
     generation_prompt: str = ""
 
 
+class LifeCalendarConfig(Permissive):
+    """A grounded year calendar for the character's world."""
+
+    enabled: bool = True
+    auto_generate: bool = True
+    world_type: Literal["auto", "real", "fanfiction", "original"] = "auto"
+    countries: list[str] = Field(default_factory=list, max_length=8)
+    culture_notes: str = ""
+    use_public_calendar: bool = True
+    max_events: int = Field(default=120, ge=10, le=250)
+
+    @field_validator("countries", mode="before")
+    @classmethod
+    def _normalize_countries(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+        items = value if isinstance(value, (list, tuple, set)) else str(value).split(",")
+        result: list[str] = []
+        for item in items:
+            code = str(item or "").strip().upper()
+            if len(code) == 2 and code.isalpha() and code not in result:
+                result.append(code)
+        return result[:8]
+
+    @field_validator("culture_notes", mode="before")
+    @classmethod
+    def _clean_culture_notes(cls, value: Any) -> str:
+        return " ".join(str(value or "").split())[:2500]
+
+
+class LifeDiaryConfig(Permissive):
+    """Daily first-person journal entries grounded in the saved life day."""
+
+    enabled: bool = True
+    automatic: bool = True
+    write_hour: int = Field(default=1, ge=0, le=12)
+    keep: int = Field(default=180, ge=7, le=1095)
+    include_inner: bool = True
+
+
+class LifeContextConfig(Permissive):
+    """Optional per-request exposure of calendar and diary facts."""
+
+    enabled: bool = True
+    include_calendar: bool = True
+    include_diary: bool = True
+    max_chars: int = Field(default=1600, ge=0, le=6000)
+
+
 LIFE_SIMULATION_ACTION = ActionDef(
     id="life_simulation", name="继续自己的生活事项", category="continuous",
     llm_level="template", scope="global", life_role="interest", visible=False,
@@ -2488,6 +2537,9 @@ class WorldConfig(Permissive):
     events: EventConfig = Field(default_factory=EventConfig)
     abilities: AbilitiesConfig = Field(default_factory=AbilitiesConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
+    calendar: LifeCalendarConfig = Field(default_factory=LifeCalendarConfig)
+    diary: LifeDiaryConfig = Field(default_factory=LifeDiaryConfig)
+    life_context: LifeContextConfig = Field(default_factory=LifeContextConfig)
     profile: ProfileConfig = Field(default_factory=ProfileConfig)
     reply_style: ReplyStyle = Field(default_factory=ReplyStyle)
     vision: VisionCaption = Field(default_factory=VisionCaption)

@@ -4,8 +4,8 @@
 .life-workspace-head h2 { margin: 4px 0 0; font-size: 24px; font-weight: 550; letter-spacing: -.7px; }
 .life-workspace-actions { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .life-device-button { border-color: var(--accent-ring); color: var(--accent-ink); background: linear-gradient(135deg, var(--accent-soft), transparent); white-space: nowrap; }
-.life-view-nav { display: flex; gap: 4px; padding: 4px; border: 1px solid var(--line-strong); border-radius: 13px; background: color-mix(in srgb, var(--panel) 72%, transparent); backdrop-filter: blur(14px); }
-.life-view-button { border: 1px solid transparent; border-radius: 9px; padding: 8px 23px; color: var(--muted); background: transparent; font-size: 12px; }
+.life-view-nav { display: flex; gap: 4px; padding: 4px; border: 1px solid var(--line-strong); border-radius: 13px; background: color-mix(in srgb, var(--panel) 72%, transparent); backdrop-filter: blur(14px); max-width: 100%; }
+.life-view-button { border: 1px solid transparent; border-radius: 9px; padding: 8px 18px; color: var(--muted); background: transparent; font-size: 12px; flex: 1 1 auto; }
 .life-view-button[aria-selected="true"] { color: var(--accent-ink); border-color: var(--accent-ring); background: linear-gradient(135deg, var(--accent-soft), var(--surface-highlight)); box-shadow: var(--glow-soft); }
 .life-view-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .life-view { display: flex; flex-direction: column; gap: 16px; min-height: 0; flex: 0 0 auto; }
@@ -31,6 +31,44 @@
 .life-rhythm p, .life-resume-note { font-size: 11px; color: var(--text-2); line-height: 1.9; }
 .life-rhythm small { display: block; line-height: 1.9; font-size: 10px; }
 .life-recent-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 13px; }
+.life-week-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 16px 18px; border: 1px solid var(--line-strong); border-radius: 16px; background: linear-gradient(120deg, var(--accent-soft), transparent 68%), var(--panel); box-shadow: var(--card-shadow); }
+.life-week-range { min-width: 150px; }
+.life-week-range h3 { margin: 0 0 4px; font-size: 18px; font-weight: 560; letter-spacing: -.3px; }
+.life-week-range small { display: block; font-size: 10px; line-height: 1.6; }
+.life-week-nav, .life-week-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.life-week-note { margin: -7px 2px 0; line-height: 1.8; font-size: 11px; }
+.life-week-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; align-items: stretch; }
+.life-week-day { min-width: 0; min-height: 360px; padding: 13px 11px; border: 1px solid var(--line-strong); border-radius: 14px; background: linear-gradient(155deg, var(--surface-highlight), transparent 45%), var(--panel); box-shadow: var(--card-shadow); }
+.life-week-day.is-today { border-color: var(--accent-ring); box-shadow: var(--glow-soft); background: radial-gradient(ellipse at 100% 0, var(--accent-soft), transparent 72%), var(--panel); }
+.life-week-day-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.life-week-day-head strong { display: block; font: 550 20px ui-monospace, monospace; letter-spacing: -1px; }
+.life-week-day-head small { display: block; margin-top: 3px; font-size: 10px; }
+.life-week-section { padding-top: 11px; }
+.life-week-section + .life-week-section { margin-top: 11px; border-top: 1px solid var(--line); }
+.life-week-section h4 { margin: 0 0 7px; color: var(--muted); font-size: 9px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+.life-week-section-head { display: flex; align-items: center; justify-content: space-between; gap: 5px; }
+.life-week-section-head h4 { margin-bottom: 7px; }
+.life-week-section-head small { font-size: 8px; }
+.life-week-list { display: grid; gap: 6px; }
+.life-week-agenda { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 6px; padding: 7px; border-radius: 8px; background: color-mix(in srgb, var(--bg) 45%, transparent); }
+.life-week-agenda time { color: var(--accent-ink); font: 550 11px ui-monospace, monospace; }
+.life-week-agenda span { min-width: 0; font-size: 10px; line-height: 1.55; overflow-wrap: anywhere; }
+.life-week-agenda small { grid-column: 2; font-size: 8px; }
+.life-week-agenda.is-past { opacity: .62; }
+.life-week-agenda.is-soon { border: 1px solid var(--accent-ring); background: var(--accent-soft); }
+.life-week-event { display: grid; gap: 3px; padding: 7px 8px; border-left: 2px solid var(--accent); border-radius: 0 8px 8px 0; background: var(--accent-soft); }
+.life-week-event.source-public_calendar { border-left-color: var(--ok); }
+.life-week-event.source-inferred { border-left-color: var(--warn-text); background: var(--warn-soft); }
+.life-week-event strong { font-size: 10px; line-height: 1.55; font-weight: 550; }
+.life-week-event small { font-size: 8px; color: var(--muted); }
+.life-week-event p { margin: 0; font-size: 9px; line-height: 1.65; color: var(--text-2); }
+.life-week-diary strong { display: block; margin-bottom: 5px; font-size: 11px; line-height: 1.55; }
+.life-week-diary p { margin: 0 0 6px; color: var(--text-2); font-size: 9px; line-height: 1.7; }
+.life-week-diary > small { font-size: 8px; }
+.life-week-empty-line { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.7; }
+.life-week-empty { grid-column: 1 / -1; min-height: 220px; display: grid; place-content: center; justify-items: center; gap: 9px; padding: 24px; text-align: center; border: 1px dashed var(--line-strong); border-radius: 15px; color: var(--muted); }
+.life-week-empty span { color: var(--accent); font-size: 24px; }
+.life-week-empty h3, .life-week-empty p { margin: 0; }
 .life-experience-card { position: relative; display: flex; flex-direction: column; align-items: stretch; gap: 12px; height: auto; min-height: 165px; padding: 20px; text-align: left; white-space: normal; border: 1px solid var(--line-strong); border-radius: 16px; color: var(--text); background: radial-gradient(ellipse at 100% 0, var(--accent-soft), transparent 80%), var(--panel); box-shadow: var(--card-shadow); }
 .life-experience-card h3 { margin: 0; font-size: 16px; font-weight: 500; line-height: 1.6; }
 .life-experience-card p { margin: 0; font-size: 12px; font-weight: 400; line-height: 1.8; color: var(--text-2); }
@@ -55,13 +93,23 @@
 @media (max-width: 900px) {
   .life-overview-grid { grid-template-columns: minmax(0, 1fr); }
   .life-recent-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
+  .life-week-toolbar { align-items: flex-start; flex-wrap: wrap; }
+  .life-week-range { flex: 1 1 100%; }
+  .life-week-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 600px) {
   .life-workspace-head { gap: 12px; flex-wrap: wrap; }
-  .life-workspace-actions { width: 100%; justify-content: space-between; gap: 8px; }
+  .life-workspace-actions { width: 100%; flex-direction: column; align-items: stretch; gap: 8px; }
+  .life-view-nav { width: 100%; }
   .life-workspace-head h2 { font-size: 20px; }
   .life-workspace-head .people-eyebrow { font-size: 8px; }
-  .life-view-button { padding: 7px 13px; }
+  .life-view-button { min-width: 0; padding: 7px 5px; }
+  .life-device-button { width: 100%; }
+  .life-week-toolbar { padding: 14px; }
+  .life-week-nav, .life-week-actions { width: 100%; }
+  .life-week-nav button, .life-week-actions button { flex: 1 1 auto; }
+  .life-week-grid { grid-template-columns: minmax(0, 1fr); }
+  .life-week-day { min-height: 0; }
   .life-day-card { padding: 16px; }
   .life-agenda-row { gap: 10px; grid-template-columns: 44px minmax(0, 1fr) auto; }
   .life-agenda-row time { font-size: 15px; }

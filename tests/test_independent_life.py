@@ -322,7 +322,7 @@ class IndependentEngineTests(unittest.IsolatedAsyncioTestCase):
             id="read_for_schedule", name="看书", category="continuous", life_role="interest"
         )
         self.engine.world.actions.append(definition)
-        self.engine._remember_action = lambda *args: None
+        self.engine._remember_action = AsyncMock(return_value=None)
         self.engine._satisfy_desire_from_action = AsyncMock()
         self.engine._maybe_soothe_from_action = AsyncMock()
         async with self.engine.session_state(SESSION) as state:

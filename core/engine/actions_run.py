@@ -659,7 +659,7 @@ class ActionsRunMixin:
                 for text in messages:
                     outcome.add_speech(text, speaker)
         elif definition.id == "think" and action.content:
-            self._remember_inner_thought(
+            await self._remember_inner_thought(
                 state,
                 action.content,
                 source="她想事情",

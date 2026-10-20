@@ -208,6 +208,21 @@ class WebApiMixin(LifeApiMixin):
         register(f"/{p}/restore-default", self.api_restore, ["POST"], "恢复默认配置")
         register(f"/{p}/life", self.api_life, ["GET"], "生活事项与持续进展")
         register(f"/{p}/life/update", self.api_life_update, ["POST"], "管理生活事项")
+        register(f"/{p}/life/week", self.api_life_week, ["GET"], "生活周视图")
+        register(f"/{p}/calendar", self.api_calendar, ["GET"], "读取世界年历")
+        register(
+            f"/{p}/calendar/generate",
+            self.api_calendar_generate,
+            ["POST"],
+            "手动生成世界年历",
+        )
+        register(f"/{p}/diary", self.api_diary, ["GET"], "读取每日日记")
+        register(
+            f"/{p}/diary/generate",
+            self.api_diary_generate,
+            ["POST"],
+            "补写过去的每日日记",
+        )
         register(f"/{p}/memories/evidence", self.api_memory_evidence, ["GET"], "记忆来源与人工修订")
         register(f"/{p}/state", self.api_state, ["GET"], "实时状态")
         register(f"/{p}/states", self.api_states, ["GET"], "所有会话的简要状态")

@@ -137,7 +137,7 @@ class TurnMixin:
                 state.note_reasoning(parsed.reasoning, source="reflect", session_id=session_id)
             # 复盘里那句「心里冒出来的一两句」也存下来：这样每聊一轮，
             # 「内心活动」都会跟着动，而不是等她自己想起来写 think 动作。
-            self._remember_inner_thought(
+            await self._remember_inner_thought(
                 state,
                 str((parsed.reasoning or {}).get("inner") or ""),
                 source="聊完一轮",
@@ -177,7 +177,7 @@ class TurnMixin:
             if parsed.forgive:
                 self.resolve_grudge(state, user_id=str(getattr(ctx, "user_id", "") or ""))
             if parsed.own_topic:
-                self.note_own_topic(
+                await self.note_own_topic(
                     state,
                     parsed.own_topic,
                     user_id=str(getattr(ctx, "user_id", "") or ""),

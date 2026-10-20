@@ -95,14 +95,17 @@ class LifeControlMixin:
         state.life_decision = {"kind": "continue", "reason": "临时安排已结束，接着做刚才放下的事", "at": self._now()}
         return True
 
-    def link_event_matter(self, state, thread: dict, proposal: dict) -> None:
+    async def link_event_matter(self, state, thread: dict, proposal: dict) -> None:
         """Explicit, optional continuation from a settled event; one link per thread."""
         if (not self.world.limits.life_matter_enabled or thread.get("matter_linked")
                 or not isinstance(proposal, dict)):
             return
         session = str(thread.get("session") or state.session_id)
+        _, persona_key = await self._journal_persona(session)
         target = matters.find(state, str(proposal.get("matter_id") or ""))
         if proposal.get("matter_id") and not target:
+            return
+        if target and str(target.get("persona_key") or "") != persona_key:
             return
         text, reason = str(proposal.get("text") or "").strip(), str(proposal.get("reason") or "").strip()
         if not reason:
@@ -113,7 +116,14 @@ class LifeControlMixin:
             matters.history(target, "event_link", reason, self._now(), event_id=thread["id"])
         elif text:
             # Events can create personal intentions, never promises to real users.
-            target = self.add_life_matter(state, text, session=session, kind="idea", motivation=reason)
+            target = self.add_life_matter(
+                state,
+                text,
+                session=session,
+                kind="idea",
+                motivation=reason,
+                persona_key=persona_key,
+            )
             if not target:
                 return
             target["origin_event"] = str(thread["id"])

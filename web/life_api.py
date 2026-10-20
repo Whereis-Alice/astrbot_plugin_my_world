@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import math
+from datetime import date, timedelta
 
 from astrbot.api.web import error_response, json_response, request
 
@@ -109,8 +110,12 @@ class LifeApiMixin:
                         state.add_event("life_experience_removed", {"action": action, "label": removed.get("label"), "source": "管理员整理"})
                         return json_response({"ok": True})
                     if operation == "create":
+                        _, persona_key = await self.engine._journal_persona(
+                            session_id
+                        )
                         item = self.engine.add_life_matter(state, str(payload.get("text") or ""),
-                            session=session_id, motivation=str(payload.get("motivation") or ""), kind=str(payload.get("kind") or "project"))
+                            session=session_id, motivation=str(payload.get("motivation") or ""), kind=str(payload.get("kind") or "project"),
+                            persona_key=persona_key)
                         if not item:
                             raise ValueError("请填写内容；活跃事项满额时请先暂停或结束已有事项")
                     else:
@@ -139,6 +144,162 @@ class LifeApiMixin:
                     return json_response({"ok": True, "item": item})
         except (ValueError, TypeError) as exc:
             return error_response(str(exc))
+
+    async def api_life_week(self):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        session_id = self._scope(request.query.get("session", ""))
+        if not session_id:
+            return error_response("请先选择会话")
+        start = str(request.query.get("start", "") or "").strip()
+        if start:
+            try:
+                date.fromisoformat(start)
+            except ValueError:
+                return error_response("start 必须是 YYYY-MM-DD")
+        try:
+            with self.engine.config_scope(session_id):
+                return json_response(
+                    await self.engine.life_week(session_id, start or None)
+                )
+        except (TypeError, ValueError) as exc:
+            return error_response(str(exc))
+
+    async def api_calendar(self):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        session_id = self._scope(request.query.get("session", ""))
+        if not session_id:
+            return error_response("请先选择会话")
+        try:
+            year = int(request.query.get("year", self.engine.local_now().year))
+        except (TypeError, ValueError):
+            return error_response("year 必须是有效年份")
+        if not 1900 <= year <= 2200:
+            return error_response("year 超出支持范围")
+        with self.engine.config_scope(session_id):
+            cfg = self.engine.world.calendar
+            enabled = bool(getattr(cfg, "enabled", True))
+            calendar = (
+                await self.engine.calendar_for_year(session_id, year)
+                if enabled
+                else None
+            )
+            return json_response(
+                {
+                    "session": session_id,
+                    "year": year,
+                    "enabled": enabled,
+                    "auto_generate": bool(getattr(cfg, "auto_generate", True)),
+                    "world_type": str(getattr(cfg, "world_type", "auto")),
+                    "countries": list(getattr(cfg, "countries", []) or []),
+                    "calendar": calendar,
+                }
+            )
+
+    async def api_calendar_generate(self):
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload)
+        if guard is not None:
+            return guard
+        session_id = self._scope(payload.get("session"))
+        if not session_id or not self.engine.is_enabled(session_id):
+            return error_response("请先选择已启用的会话")
+        try:
+            year = int(payload.get("year") or self.engine.local_now().year)
+        except (TypeError, ValueError):
+            return error_response("year 必须是有效年份")
+        if not 1900 <= year <= 2200:
+            return error_response("year 超出支持范围")
+        with self.engine.config_scope(session_id):
+            if not getattr(self.engine.world.calendar, "enabled", True):
+                return error_response("请先在设置中启用生活日历")
+            calendar = await self.engine.ensure_calendar(
+                session_id, year, force=True, automatic=False
+            )
+        if calendar is None:
+            return error_response(
+                "日历没有生成：请检查内容生成模型、后台预算与人设，或稍后重试"
+            )
+        return json_response({"ok": True, "year": year, "calendar": calendar})
+
+    async def api_diary(self):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        session_id = self._scope(request.query.get("session", ""))
+        if not session_id:
+            return error_response("请先选择会话")
+        day = str(request.query.get("day", "") or "").strip()
+        if day:
+            try:
+                date.fromisoformat(day)
+            except ValueError:
+                return error_response("day 必须是 YYYY-MM-DD")
+        try:
+            limit = max(1, min(365, int(request.query.get("limit", 30) or 30)))
+        except (TypeError, ValueError):
+            limit = 30
+        with self.engine.config_scope(session_id):
+            cfg = self.engine.world.diary
+            enabled = bool(getattr(cfg, "enabled", True))
+            entry = (
+                await self.engine.diary_for_day(session_id, day)
+                if enabled and day
+                else None
+            )
+            entries = (
+                await self.engine.diary_entries(session_id, limit) if enabled else []
+            )
+            return json_response(
+                {
+                    "session": session_id,
+                    "enabled": enabled,
+                    "automatic": bool(getattr(cfg, "automatic", True)),
+                    "day": day,
+                    "entry": entry,
+                    "entries": entries,
+                }
+            )
+
+    async def api_diary_generate(self):
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload)
+        if guard is not None:
+            return guard
+        session_id = self._scope(payload.get("session"))
+        if not session_id or not self.engine.is_enabled(session_id):
+            return error_response("请先选择已启用的会话")
+        day = str(payload.get("day") or "").strip()
+        if not day:
+            return error_response("请选择要补写的日期")
+        try:
+            target = date.fromisoformat(day)
+        except ValueError:
+            return error_response("day 必须是 YYYY-MM-DD")
+        if target >= self.engine.local_now().date():
+            return error_response("只能补写已经结束的日期")
+        with self.engine.config_scope(session_id):
+            diary_cfg = self.engine.world.diary
+            if not getattr(diary_cfg, "enabled", True):
+                return error_response("请先在设置中启用每日日记")
+            keep_days = max(7, int(getattr(diary_cfg, "keep", 180) or 180))
+            if target < self.engine.local_now().date() - timedelta(
+                days=keep_days - 1
+            ):
+                return error_response(
+                    f"日期超出日记保留范围（最近 {keep_days} 天）"
+                )
+            entry = await self.engine.ensure_diary(
+                session_id, day, force=True, automatic=False
+            )
+        if entry is None:
+            return error_response(
+                "这一天没有足够的已保存生活记录，未生成凭空日记"
+            )
+        return json_response({"ok": True, "day": day, "entry": entry})
 
     async def api_memory_evidence(self):
         guard = self._guard()

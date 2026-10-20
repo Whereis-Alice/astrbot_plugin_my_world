@@ -10,6 +10,7 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
   const $ = id => root.querySelector(`#${id}`);
   let data = {}, filter = "active", sort = "recent", request = 0, selected = null, opener = null;
   let drawerSession = "", drawerRevision = 0;
+  let weekData = {}, weekRequest = 0;
   const grid = $("life-grid"), drawer = $("life-drawer"), body = $("life-detail");
   function button(label, callback, cls = "ghost small") {
     const node = el("button", cls, label); node.type = "button"; node.addEventListener("click", callback); return node;
@@ -70,6 +71,137 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
       if (revision !== request || getSession() !== session) return;
       data = response; onData?.(data); render();
     } catch (error) { if (revision === request) { grid.replaceChildren(el("div", "life-empty", `读取失败：${error.message}`)); } }
+  }
+  function localDate(value = new Date()) {
+    const date = value instanceof Date ? new Date(value) : new Date(`${value}T12:00:00`);
+    if (!Number.isFinite(date.getTime())) return "";
+    const shifted = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+    return shifted.toISOString().slice(0, 10);
+  }
+  function mondayOf(value = new Date()) {
+    const day = value instanceof Date ? localDate(value) : String(value);
+    const date = new Date(`${day}T12:00:00`);
+    if (!Number.isFinite(date.getTime())) return "";
+    const offset = (date.getDay() + 6) % 7;
+    date.setDate(date.getDate() - offset);
+    return localDate(date);
+  }
+  function shiftDay(day, amount) {
+    const date = new Date(`${day || localDate()}T12:00:00`);
+    date.setDate(date.getDate() + amount);
+    return localDate(date);
+  }
+  function worldToday() {
+    return weekData.today || localDate();
+  }
+  function shortDay(day) {
+    const [, month, date] = String(day || "").split("-");
+    return month && date ? `${month}.${date}` : day;
+  }
+  function renderWeek(response) {
+    weekData = response && typeof response === "object" ? response : {};
+    const title = $("life-week-title"), caption = $("life-week-caption");
+    const note = $("life-week-note"), weekGrid = $("life-week-grid");
+    if (!weekGrid) return;
+    weekGrid.replaceChildren();
+    if (!getSession()) {
+      title.textContent = "这一周";
+      caption.textContent = "先在顶栏选择一个会话";
+      note.textContent = "日历、日程和日记都按当前会话所属的角色与配置范围读取。";
+      const empty = el("div", "life-week-empty");
+      empty.append(el("span", "", "⌁"), el("h3", "", "还没有可查看的一周"), el("p", "muted", "选择会话后，这里会并排显示七天里的安排、节庆与日记。"));
+      weekGrid.append(empty);
+      return;
+    }
+    const days = Array.isArray(weekData.days) ? weekData.days : [];
+    title.textContent = weekData.week_start ? `${shortDay(weekData.week_start)} — ${shortDay(weekData.week_end)}` : "这一周";
+    const year = Number(String(weekData.week_start || worldToday()).slice(0, 4));
+    const calendarButton = $("life-week-generate-calendar");
+    if (calendarButton) calendarButton.textContent = `生成 ${year || ""} 年日历`;
+    const calendar = weekData.calendar;
+    const worldType = calendar?.world_type === "real" ? "现实世界"
+      : calendar?.world_type === "fanfiction" ? "同人/原作世界"
+        : calendar?.world_type === "original" ? "原创世界" : "世界背景";
+    caption.textContent = calendar ? `${worldType} · 日历与生活安排并列，不代表计划都已发生` : "这一周的生活安排与日记";
+    note.textContent = calendar
+      ? `${worldType}${calendar.culture_notes ? ` · ${calendar.culture_notes}` : ""}`
+      : "本年度日历尚未生成。日程与日记仍可查看，也可以点右侧生成本年日历。";
+    if (!days.length) {
+      const empty = el("div", "life-week-empty");
+      empty.append(el("span", "", "⌁"), el("h3", "", "这一周还没有数据"), el("p", "muted", "稍后刷新，或先生成本年日历。"));
+      weekGrid.append(empty); return;
+    }
+    const weekdayLabels = {mon: "周一", tue: "周二", wed: "周三", thu: "周四", fri: "周五", sat: "周六", sun: "周日"};
+    const statusLabels = {upcoming: "待开始", past: "已过时", soon: "即将开始", delayed: "时间未定"};
+    const sourceLabels = {public_calendar: "公共日历", model: "世界设定", inferred: "推定", manual: "手动"};
+    for (const day of days) {
+      const card = el("article", `life-week-day${day.is_today ? " is-today" : ""}`);
+      const head = el("header", "life-week-day-head");
+      const date = el("div");
+      date.append(el("strong", "", shortDay(day.date)), el("small", "muted", weekdayLabels[day.weekday] || day.weekday));
+      head.append(date);
+      if (day.is_today) head.append(el("span", "life-badge", "今天"));
+      card.append(head);
+
+      const agenda = el("section", "life-week-section");
+      const agendaHead = el("div", "life-week-section-head");
+      const sourceLabel = day.agenda_source === "recorded" ? "已记录"
+        : day.agenda_source === "today" ? "今天" : "计划";
+      agendaHead.append(el("h4", "", "安排"), el("small", "muted", sourceLabel));
+      agenda.append(agendaHead);
+      if (day.agenda?.length) {
+        const list = el("div", "life-week-list");
+        for (const item of day.agenda) {
+          const row = el("div", `life-week-agenda is-${item.status || "upcoming"}`);
+          row.append(el("time", "", item.time || "—"), el("span", "", item.title || "生活安排"),
+            el("small", "muted", statusLabels[item.status] || "已安排"));
+          list.append(row);
+        }
+        agenda.append(list);
+      } else agenda.append(el("p", "life-week-empty-line", "没有固定安排"));
+      card.append(agenda);
+
+      const calendarBox = el("section", "life-week-section");
+      calendarBox.append(el("h4", "", "日历与文化"));
+      if (day.calendar?.length) {
+        const list = el("div", "life-week-list");
+        for (const item of day.calendar.slice(0, 4)) {
+          const row = el("div", `life-week-event source-${item.source || "inferred"}`);
+          row.append(el("strong", "", item.title || "日历事件"),
+            el("small", "", sourceLabels[item.source] || item.source || "推定"));
+          if (item.description) row.append(el("p", "", String(item.description).slice(0, 120)));
+          list.append(row);
+        }
+        calendarBox.append(list);
+      } else calendarBox.append(el("p", "life-week-empty-line", day.calendar_generated ? "今天没有日历事件" : "年历尚未生成"));
+      card.append(calendarBox);
+
+      const diary = el("section", "life-week-section life-week-diary");
+      diary.append(el("h4", "", "这一天的日记"));
+      if (day.diary) {
+        diary.append(el("strong", "", day.diary.title || "无题"),
+          el("p", "", String(day.diary.content || "").slice(0, 220)),
+          el("small", "muted", day.diary.mood || "生活回顾"));
+      } else diary.append(el("p", "life-week-empty-line", "还没有日记。有足够生活记录后会自动补写。"));
+      card.append(diary);
+      weekGrid.append(card);
+    }
+  }
+  async function loadWeek(startDay = "") {
+    const revision = ++weekRequest, session = getSession();
+    const weekGrid = $("life-week-grid");
+    if (weekGrid) weekGrid.replaceChildren(el("div", "life-week-empty", "正在整理这一周…"));
+    if (!session) { renderWeek({}); return; }
+    try {
+      const response = await apiGet("life/week", {session, start: startDay || ""});
+      if (revision !== weekRequest || session !== getSession()) return;
+      renderWeek(response);
+    } catch (error) {
+      if (revision !== weekRequest) return;
+      renderWeek({});
+      const note = $("life-week-note");
+      if (note) note.textContent = `读取失败：${error.message}`;
+    }
   }
   async function mutate(operation, values = {}) {
     const session = drawerSession, revision = drawerRevision, id = selected?.id;
@@ -202,10 +334,50 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
       line("语义召回", data.semantic || "未启用"));
     drawer.showModal();
   });
+  $("life-week-prev").addEventListener("click", () => {
+    loadWeek(shiftDay(weekData.week_start || mondayOf(), -7));
+  });
+  $("life-week-today").addEventListener("click", () => loadWeek());
+  $("life-week-next").addEventListener("click", () => {
+    loadWeek(shiftDay(weekData.week_start || mondayOf(), 7));
+  });
+  $("life-week-generate-calendar").addEventListener("click", async event => {
+    const session = getSession();
+    if (!session) { toast("先选择一个会话"); return; }
+    const button = event.currentTarget, old = button.textContent;
+    const year = Number(String(weekData.week_start || mondayOf()).slice(0, 4));
+    button.disabled = true; button.textContent = "正在生成…";
+    try {
+      const response = await apiPost("calendar/generate", {session, year, force: true});
+      if (!response.ok) throw new Error(response.error || response.message || "日历生成失败");
+      toast(`${year} 年日历已生成`);
+      await loadWeek(weekData.week_start || mondayOf());
+    } catch (error) {
+      toast(error.message || String(error));
+    } finally {
+      button.disabled = false; button.textContent = old;
+    }
+  });
+  $("life-week-generate-diary").addEventListener("click", async event => {
+    const session = getSession();
+    if (!session) { toast("先选择一个会话"); return; }
+    const day = shiftDay(worldToday(), -1), button = event.currentTarget, old = button.textContent;
+    button.disabled = true; button.textContent = "正在补写…";
+    try {
+      const response = await apiPost("diary/generate", {session, day});
+      if (!response.ok) throw new Error(response.error || response.message || "日记生成失败");
+      toast(`${day} 的日记已补写`);
+      await loadWeek(weekData.week_start || mondayOf());
+    } catch (error) {
+      toast(error.message || String(error));
+    } finally {
+      button.disabled = false; button.textContent = old;
+    }
+  });
   $("life-filter").addEventListener("change", event => { filter = event.target.value; render(); });
   $("life-sort").addEventListener("change", event => { sort = event.target.value; render(); });
   $("life-search").addEventListener("input", render);
-  return {reload, select: view => workspace?.select(view), openSchedules: () => workspace?.openSchedules()};
+  return {reload, loadWeek, select: view => workspace?.select(view), openSchedules: () => workspace?.openSchedules()};
 }
 
 export function renderLifeFocus(container, data, {el, open}) {
@@ -229,7 +401,7 @@ export function openLifeSettings({world, el, openCustomDialog, markDirty, isCurr
     const body = el("div", "life-budget-settings"); host.append(body);
     for (const [key, label, fallback, min, max] of [
       ["life_matter_active_max", "活跃事项上限", 6, 1, 20], ["life_matter_daily_minutes", "每件事每天最多投入（分钟）", 90, 5, 480],
-      ["life_matter_interval_minutes", "再次推进前的间隔（分钟）", 60, 5, 1440], ["background_daily_calls", "每天后台调用预算", 120, 0, 10000],
+      ["life_matter_interval_minutes", "再次推进前的间隔（分钟）", 60, 5, 1440], ["background_daily_calls", "每天后台调用预算", 1000, 0, 10000],
       ["background_daily_tokens", "每天后台 token 预算", 0, 0, 100000000], ["background_concurrency", "同时运行的后台模型请求", 1, 1, 12]]) {
       const wrap = el("label", "field"), input = el("input"); input.type = "number"; input.min = min; input.max = max; input.value = limits[key] ?? fallback;
       wrap.append(el("span", "", label), input); body.append(wrap); controls.push(() => { if (!input.checkValidity()) throw new Error(`${label}超出范围`); limits[key] = Number(input.value); });

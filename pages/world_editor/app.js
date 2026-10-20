@@ -3881,7 +3881,10 @@ function showTab(name, button) {
   if (name === "thoughts") loadThoughts();
   if (name === "logs") loadLogs();
   if (name === "model-calls") modelCallsPage.reload();
-  if (name === "life") lifePage.reload();
+  if (name === "life") {
+    lifePage.reload();
+    if ($("tab-life").dataset.lifeView === "week") lifePage.loadWeek();
+  }
   else for (const manager of document.querySelectorAll('.life-manager[open]')) manager.close();
   if (openLifeSchedules) lifePage.openSchedules();
   if (name === "schedules") loadScheduleHistory();
@@ -16515,6 +16518,7 @@ const SETTINGS_TABS = [
     hint: "自己的生活记忆、嵌入检索和人物资料",
     sections: [
       "生活记忆",
+      "生活日历与日记",
       "用户画像",
     ],
   },
@@ -18106,7 +18110,7 @@ function renderSettings() {
   form.appendChild(living);
   const background = settingsSection("后台预算", "生活规划、事件和复盘共用的模型额度；原生聊天的模型与工具由 AstrBot 管理。", "0 表示不设每日调用或 Token 上限；计划决策次数为 0 则关闭该类模型规划。");
   for (const [key, label, fallback, min, max] of [
-    ["background_daily_calls", "每天后台调用预算", 120, 0, 10000], ["background_daily_tokens", "每天后台 token 预算", 0, 0, 100000000],
+    ["background_daily_calls", "每天后台调用预算", 1000, 0, 10000], ["background_daily_tokens", "每天后台 token 预算", 0, 0, 100000000],
     ["background_concurrency", "同时运行的后台模型请求", 1, 1, 12], ["background_llm_timeout_seconds", "后台模型等待上限（秒）", 120, 1, 1800],
     ["llm_plan_min_interval_seconds", "问计划的间隔（秒）", 900, 0, 86400], ["max_llm_plan_per_hour", "每小时最多计划决策次数", 10, 0, 120],
     ["max_llm_text_per_hour", "每小时最多生成发言次数", 20, 0, 10000]]) {
@@ -18156,6 +18160,124 @@ function renderSettings() {
     {type: "number", min: 0, max: 12000, hint: "含时间、经历与细节；0 表示关闭自动注入。人物画像与群词典独立管理。"}));
   memorySearchFields({container: memory._fields, memory: world.memory, providers: ui.config.embedding_providers, defaultProvider: ui.config.embedding_default, el, onChange: markDirty});
   form.appendChild(memory);
+
+  /* --- 生活日历与日记 --- */
+  world.calendar = world.calendar || {};
+  world.diary = world.diary || {};
+  world.life_context = world.life_context || {};
+  const calendarDiary = settingsSection(
+    "生活日历与日记",
+    "给她一套能落地的年历与每天的生活回顾。现实公共节假日、原作世界历法和原创文化必须分开表达，不能把日历背景当成她已经经历的事。",
+    "默认开启。日历和日记由内容生成模型在后台按每日预算生成；生活页的周视图可以查看、补生成本年日历和补写过去日期的日记。",
+  );
+  calendarDiary._fields.appendChild(checkboxField(
+    "启用生活日历",
+    world.calendar.enabled !== false,
+    value => { world.calendar.enabled = value; markDirty(); },
+    {hint: "关闭后不读取或生成年历，也不向聊天注入日历背景。"},
+  ));
+  calendarDiary._fields.appendChild(checkboxField(
+    "自动生成年度日历",
+    world.calendar.auto_generate !== false,
+    value => { world.calendar.auto_generate = value; markDirty(); },
+    {hint: "每个角色、人格和年份只生成一次；失败会有限重试，成功后在数据库长期复用。"},
+  ));
+  calendarDiary._fields.appendChild(selectField(
+    "世界类型",
+    world.calendar.world_type || "auto",
+    [
+      {key: "auto", label: "按人设自动判断"},
+      {key: "real", label: "现实世界"},
+      {key: "fanfiction", label: "同人/原作世界"},
+      {key: "original", label: "原创虚构世界"},
+    ],
+    value => { world.calendar.world_type = value; markDirty(); },
+    {hint: "现实世界会采用真实公共日历；同人世界优先保留原作历法与组织；原创世界只接受有设定依据的节庆和文化活动。"},
+  ));
+  calendarDiary._fields.appendChild(inputField(
+    "国家或地区代码",
+    Array.isArray(world.calendar.countries) ? world.calendar.countries.join(", ") : "",
+    value => {
+      world.calendar.countries = [...new Set(String(value || "").split(/[\s,，]+/)
+        .map(item => item.trim().toUpperCase())
+        .filter(item => /^[A-Z]{2}$/.test(item)))].slice(0, 8);
+      markDirty();
+    },
+    {placeholder: "例如 CN, JP", hint: "使用两位 ISO 代码，最多八个；没有配置时由模型只根据人设判断文化背景。"},
+  ));
+  calendarDiary._fields.appendChild(textareaField(
+    "文化、历法与原创世界说明",
+    world.calendar.culture_notes || "",
+    value => { world.calendar.culture_notes = String(value || "").slice(0, 2500); markDirty(); },
+    {rows: 3, placeholder: "例如：以日本关西的学校生活为主；同时存在原创的“风祭”，每年五月第二个周末举行。", hint: "写清现实地区、原作历法或原创节庆依据。没有依据的日期会被标记为推定。"},
+  ));
+  calendarDiary._fields.appendChild(checkboxField(
+    "使用公共节假日数据",
+    world.calendar.use_public_calendar !== false,
+    value => { world.calendar.use_public_calendar = value; markDirty(); },
+    {hint: "需要 holidays 依赖；关闭后只使用人设、原作设定和手写文化说明。"},
+  ));
+  calendarDiary._fields.appendChild(inputField(
+    "每年最多日历事件数",
+    num(world.calendar.max_events, 120),
+    value => { world.calendar.max_events = Math.max(10, Math.min(250, Math.round(num(value, 120)))); markDirty(); },
+    {type: "number", min: 10, max: 250, hint: "只限制展示与提示词使用的年历规模，不会按固定模板编造事件。"},
+  ));
+  calendarDiary._fields.appendChild(checkboxField(
+    "启用每日日记",
+    world.diary.enabled !== false,
+    value => { world.diary.enabled = value; markDirty(); },
+    {hint: "只用她已保存的日程、安全生活事件、事项和独处内心写第一人称回顾；没有依据时不凭空生成。"},
+  ));
+  calendarDiary._fields.appendChild(checkboxField(
+    "自动补写前一天的日记",
+    world.diary.automatic !== false,
+    value => { world.diary.automatic = value; markDirty(); },
+    {hint: "到设定时刻后补写过去日期；首次最多检查最近七天，模型失败会退避重试。"},
+  ));
+  calendarDiary._fields.appendChild(inputField(
+    "每天几点后补写日记",
+    num(world.diary.write_hour, 1),
+    value => { world.diary.write_hour = Math.max(0, Math.min(12, Math.round(num(value, 1)))); markDirty(); },
+    {type: "number", min: 0, max: 12, hint: "按世界时区计算，只会补写已经结束的日期。"},
+  ));
+  calendarDiary._fields.appendChild(inputField(
+    "每位角色保留多少篇日记",
+    num(world.diary.keep, 180),
+    value => { world.diary.keep = Math.max(7, Math.min(1095, Math.round(num(value, 180)))); markDirty(); },
+    {type: "number", min: 7, max: 1095, hint: "按同一配置范围与人格分别计数。"},
+  ));
+  calendarDiary._fields.appendChild(checkboxField(
+    "日记可以参考独处内心",
+    world.diary.include_inner !== false,
+    value => { world.diary.include_inner = value; markDirty(); },
+    {hint: "只使用她自己的非聊天内心，不读取翻消息感想、对话原文或其他人格内容。"},
+  ));
+  calendarDiary._fields.appendChild(checkboxField(
+    "把日历与最近日记注入聊天",
+    world.life_context.enabled !== false,
+    value => { world.life_context.enabled = value; markDirty(); },
+    {hint: "这是可选的动态上下文，只参与当前请求，不写进聊天历史；异常时静默跳过。"},
+  ));
+  calendarDiary._fields.appendChild(checkboxField(
+    "注入今天的日历背景",
+    world.life_context.include_calendar !== false,
+    value => { world.life_context.include_calendar = value; markDirty(); },
+    {hint: "会标明来源，并提醒她日历背景不代表已经参加。"},
+  ));
+  calendarDiary._fields.appendChild(checkboxField(
+    "注入最近一篇日记",
+    world.life_context.include_diary !== false,
+    value => { world.life_context.include_diary = value; markDirty(); },
+    {hint: "日记只作为她自己的回顾，不当成用户说过的话或外部事实。"},
+  ));
+  calendarDiary._fields.appendChild(inputField(
+    "日历与日记上下文上限",
+    num(world.life_context.max_chars, 1600),
+    value => { world.life_context.max_chars = Math.max(0, Math.min(6000, Math.round(num(value, 1600)))); markDirty(); },
+    {type: "number", min: 0, max: 6000, hint: "字符数；0 表示完全不注入。"},
+  ));
+  form.appendChild(calendarDiary);
 
   /* --- 动作与地点 --- */
   const placeSection = settingsSection(
@@ -20865,6 +20987,7 @@ const lifeWorkspace = mountLifeWorkspace({root: $("tab-life"), el, onSave: saveA
   if (view === "experiences") {
     loadEvents();
   }
+  if (view === "week") lifePage.loadWeek();
   if (view === "today" || view === "schedules") loadScheduleHistory();
   renderConfigScope();
   if (view === "schedules") {
@@ -20889,6 +21012,7 @@ const lifePage = createLifePage({root: $("tab-life"), apiGet, apiPost, el, toast
 $("status-session").addEventListener("change", () => {
   if (!$("tab-life").classList.contains("active")) return;
   lifePage.reload();
+  if ($("tab-life").dataset.lifeView === "week") lifePage.loadWeek();
   if ($("tab-life").dataset.lifeView === "experiences") lifeWorkspace.select("experiences");
 });
 $("log-model-calls").addEventListener("click", () => showTab("model-calls"));

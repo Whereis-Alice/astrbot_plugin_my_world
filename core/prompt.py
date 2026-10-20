@@ -852,6 +852,7 @@ class PromptBuilder:
         abilities_line: str = "",
         pending_event: str = "",
         event_journal: str = "",
+        life_context: str = "",
         hidden_actions: set[str] | None = None,
         current_session: str = "",
         session_labels: dict[str, str] | None = None,
@@ -951,6 +952,10 @@ class PromptBuilder:
         if event_journal:
             # 她自己的账：正在经历 / 最近发生在我身上的事 / 还挂着的
             blocks.append(event_journal)
+        if life_context:
+            # Calendar and diary are grounded per-request background. Keep them
+            # in this runtime layer so they never enter persisted chat history.
+            blocks.append(life_context)
         external = self.external_state_block(state)
         if external:
             # 别的插件的状态（今日穿搭、背包、经济…）：记在她这儿，别说完就忘
@@ -2496,6 +2501,7 @@ class PromptBuilder:
         abilities_line: str = "",
         pending_event: str = "",
         event_journal: str = "",
+        life_context: str = "",
         session_directory: str = "",
         current_session: str = "",
         session_labels: dict[str, str] | None = None,
@@ -2559,6 +2565,7 @@ class PromptBuilder:
                 abilities_line=abilities_line,
                 pending_event=pending_event,
                 event_journal=event_journal,
+                life_context=life_context,
                 current_session=current_session,
                 session_labels=session_labels,
                 chat_images=chat_images,
@@ -2650,6 +2657,7 @@ class PromptBuilder:
         abilities_line: str = "",
         pending_event: str = "",
         event_journal: str = "",
+        life_context: str = "",
         session_directory: str = "",
         current_session: str = "",
         session_labels: dict[str, str] | None = None,
@@ -2692,6 +2700,7 @@ class PromptBuilder:
             abilities_line=abilities_line,
             pending_event=pending_event,
             event_journal=event_journal,
+            life_context=life_context,
             current_session=current_session,
             session_labels=session_labels,
             chat_images=chat_images,

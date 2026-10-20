@@ -80,6 +80,10 @@ class WeatherMixin:
             "weather": await self.weather_line(),
             "recent_search": await self._recent_search_line(session_id),
         }
+        try:
+            notes["life_context"] = await self.life_context_text(session_id)
+        except Exception:
+            notes["life_context"] = ""
         if not session_id:
             return notes
         try:

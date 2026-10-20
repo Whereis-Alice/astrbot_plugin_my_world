@@ -135,6 +135,10 @@ class TickMixin:
         for outcome in outcomes:
             await self._deliver(outcome)
         self._record_tick(outcomes)
+        # Calendar and diary are maintenance work. Queue them after the core
+        # clock and schedule pass so they cannot consume a reply path's scripted
+        # model turn or delay the life state itself.
+        self.queue_background("calendar_diary", self.maintain_calendar_diaries)
         return [*outcomes, *schedule_rows]
 
     def _queue_life_summary(self, outcome: TickOutcome) -> None:
@@ -596,7 +600,7 @@ class TickMixin:
 
         # 行动完成 -> 记忆
         if definition is not None:
-            self._remember_action(state, definition, action)
+            await self._remember_action(state, definition, action)
 
         state.current_action = None
         state.state = STATE_IDLE
@@ -836,7 +840,7 @@ class TickMixin:
         state.add_event("chain", {"schedule": schedule_id})
         await self._run_chain(state, target.action_chain, outcome, depth=depth)
 
-    def _remember_inner_thought(
+    async def _remember_inner_thought(
         self,
         state: WorldState,
         text: str,
@@ -847,6 +851,7 @@ class TickMixin:
         reply: str = "",
         intent: str = "",
         dialogue_session: str = "",
+        persona_key: str = "",
     ) -> None:
         """把这一轮她心里冒出来的那一句留下来（编辑器「内心活动」那一栏）。
 
@@ -859,6 +864,8 @@ class TickMixin:
         clean = " ".join(str(text or "").split()).strip()[:120]
         if not clean:
             return
+        if not persona_key:
+            _, persona_key = await self._journal_persona(state.session_id)
         dialogue_session = dialogue_session or (state.session_id if source == "聊完一轮" or quote or reply else "")
         from ..chat_browse import dialogue_origin
         recent = [
@@ -866,6 +873,7 @@ class TickMixin:
             for item in state.thoughts[-8:]
             if isinstance(item, dict)
             and not item.get("browse_session")
+            and item.get("persona_key") == persona_key
             and dialogue_origin(item) == dialogue_session
         ]
         if clean in recent:
@@ -885,9 +893,10 @@ class TickMixin:
             reply=reply,
             detail=detail,
             dialogue_session=dialogue_session,
+            persona_key=persona_key,
         )
 
-    def _remember_action(
+    async def _remember_action(
         self, state: WorldState, definition: ActionDef, action: dict[str, Any]
     ) -> None:
         if definition.id == "life_simulation":
@@ -896,7 +905,9 @@ class TickMixin:
         if definition.id == "think":
             content = str(action.get("content", "") or "")
             if content:
-                self._remember_inner_thought(state, content, source="她想事情")
+                await self._remember_inner_thought(
+                    state, content, source="她想事情"
+                )
                 self.memory.remember(
                     session_id=state.session_id,
                     persona_id=str(action.get("persona_id", "")),

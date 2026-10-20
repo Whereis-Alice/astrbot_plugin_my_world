@@ -218,13 +218,13 @@ class AutonomousContinuityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_same_promise_to_two_people_is_not_merged(self):
         state = WorldState(engine.SESSION, node_id="study")
-        self.engine.note_own_topic(state, "周末一起去看星星", user_id="42")
-        self.engine.note_own_topic(state, "周末一起去看星星", user_id="7")
+        await self.engine.note_own_topic(state, "周末一起去看星星", user_id="42")
+        await self.engine.note_own_topic(state, "周末一起去看星星", user_id="7")
         self.assertEqual({item["who"] for item in state.own_topics}, {"42", "7"})
 
     async def test_expired_intention_is_remembered_as_unfinished_once(self):
         state = WorldState(engine.SESSION, node_id="study")
-        self.engine.note_own_topic(state, "修好旧风车", user_id="42")
+        await self.engine.note_own_topic(state, "修好旧风车", user_id="42")
         state.life_matters[0]["kind"] = "idea"
         now = self.clock.now() + 10 * DAY
         self.engine._decay_own_topics(state, now=now)

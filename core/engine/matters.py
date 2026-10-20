@@ -92,8 +92,10 @@ class MattersMixin:
                     or any(m["status"] in {"active", "working"} for m in state.life_matters)):
                 return
             self.db.raw.kv_set(key, {"at": self._now(), "attempts": attempts, "done": True})
+            _, persona_key = await self._journal_persona(session_id)
             self.add_life_matter(state, str(payload.get("text") or ""), session=session_id,
-                                 motivation=str(payload.get("motivation") or ""))
+                                 motivation=str(payload.get("motivation") or ""),
+                                 persona_key=persona_key)
 
     def confirm_matter_from_turn(self, state, ctx, matter_id: str, evidence: str, trace: list) -> bool:
         matters.ensure(state, self._now())
@@ -175,7 +177,9 @@ class MattersMixin:
             return None
         who = str(kwargs.get("who") or "")
         session = str(kwargs.pop("session", "") or state.session_id)
+        persona_key = str(kwargs.get("persona_key") or "")
         existing = next((m for m in state.life_matters if m["text"] == body and m.get("who") == who
+                         and str(m.get("persona_key") or "") == persona_key
                          and m.get("session") == session and m["status"] not in matters.CLOSED), None)
         if existing:
             return existing

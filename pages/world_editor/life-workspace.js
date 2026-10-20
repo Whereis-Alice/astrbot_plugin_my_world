@@ -14,6 +14,26 @@ export function mountLifeWorkspace({root, el, onView, onSave}) {
   concerns.append($("life-toolbar" ) || root.querySelector(".life-toolbar"), $("life-grid"));
   const experiences = $("tab-events"); experiences.classList.remove("tab"); experiences.classList.add("life-view", "life-experiences");
   const eventTools = experiences.querySelector(".page-head");
+  const week = el("div", "life-view life-week"); week.id = "life-view-week";
+  const weekTools = el("div", "life-week-toolbar");
+  const weekRange = el("div", "life-week-range");
+  const weekTitle = el("h3", "", "这一周"); weekTitle.id = "life-week-title";
+  const weekCaption = el("small", "muted", "日程、日历与日记排在同一条时间线上"); weekCaption.id = "life-week-caption";
+  weekRange.append(weekTitle, weekCaption);
+  const weekNav = el("div", "life-week-nav");
+  const previousWeek = el("button", "ghost small", "← 上周"); previousWeek.type = "button"; previousWeek.id = "life-week-prev";
+  const thisWeek = el("button", "ghost small", "本周"); thisWeek.type = "button"; thisWeek.id = "life-week-today";
+  const nextWeek = el("button", "ghost small", "下周 →"); nextWeek.type = "button"; nextWeek.id = "life-week-next";
+  weekNav.append(previousWeek, thisWeek, nextWeek);
+  const weekActions = el("div", "life-week-actions");
+  const generateCalendar = el("button", "primary small", "生成本年日历"); generateCalendar.type = "button"; generateCalendar.id = "life-week-generate-calendar";
+  const generateDiary = el("button", "ghost small", "补写前一天日记"); generateDiary.type = "button"; generateDiary.id = "life-week-generate-diary";
+  weekActions.append(generateCalendar, generateDiary);
+  weekTools.append(weekRange, weekNav, weekActions);
+  const weekNote = el("p", "life-week-note muted"); weekNote.id = "life-week-note";
+  weekNote.textContent = "先选择会话。日历与日记会沿用当前配置范围，不会跨人格读取。";
+  const weekGrid = el("div", "life-week-grid"); weekGrid.id = "life-week-grid";
+  week.append(weekTools, weekNote, weekGrid);
   const schedules = $("tab-schedules"); schedules.classList.remove("tab"); schedules.classList.add("active", "life-schedule-editor");
   const overview = el("div", "life-overview-grid"), agenda = el("section", "life-day-card"), aside = el("aside", "life-day-card life-context-card");
   const agendaHead = el("div", "life-section-head"); agendaHead.append(el("h3", "", "今天的安排"));
@@ -29,8 +49,8 @@ export function mountLifeWorkspace({root, el, onView, onSave}) {
   recentHead.append(seeAll); recent.append(recentHead, recentBody); today.append(overview, recent);
   const help = el("details", "life-explanation"); help.append(el("summary", "", "安排、牵挂和经历，怎样连成生活？"),
     el("p", "", "日程安排什么时候做；牵挂保存想跨天继续的事；经历记录生活中发生的变化。一次练习可以按日程推进同一件牵挂，遇到意外就暂时放下，之后接着做。普通经历可以自然结束，自由时间也不必填满。"));
-  root.prepend(header); root.querySelector(".life-opening").after(today, concerns, experiences, help);
-  const buttons = new Map(), panels = {today, concerns, experiences};
+  root.prepend(header); root.querySelector(".life-opening").after(today, concerns, experiences, week, help);
+  const buttons = new Map(), panels = {today, concerns, experiences, week};
   function select(view = "today") {
     if (!(view in panels)) view = "today";
     for (const [key, panel] of Object.entries(panels)) {
@@ -40,14 +60,15 @@ export function mountLifeWorkspace({root, el, onView, onSave}) {
     }
     root.dataset.lifeView = view; onView(view);
   }
-  for (const [view, label] of [["today", "今日"], ["concerns", "牵挂"], ["experiences", "经历"]]) {
+  for (const [view, label] of [["today", "今日"], ["concerns", "牵挂"], ["experiences", "经历"], ["week", "周视图"]]) {
     const button = el("button", "life-view-button", label); button.type = "button"; button.id = `life-view-button-${view}`;
     button.dataset.lifeView = view; button.setAttribute("role", "tab"); button.setAttribute("aria-controls", panels[view].id);
     button.onclick = () => select(view); nav.append(button); buttons.set(view, button);
     button.addEventListener("keydown", event => {
       if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
       event.preventDefault(); const keys = [...buttons.keys()], index = keys.indexOf(view);
-      const next = event.key === "Home" ? 0 : event.key === "End" ? 2 : (index + (event.key === "ArrowRight" ? 1 : 2)) % 3;
+      const next = event.key === "Home" ? 0 : event.key === "End" ? keys.length - 1
+        : (index + (event.key === "ArrowRight" ? 1 : -1) + keys.length) % keys.length;
       select(keys[next]); buttons.get(keys[next]).focus();
     });
   }

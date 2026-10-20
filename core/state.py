@@ -1230,6 +1230,7 @@ class WorldState:
         reply: str = "",
         detail: dict[str, Any] | None = None,
         dialogue_session: str = "",
+        persona_key: str = "",
     ) -> None:
         """留下她的一句心里话。
 
@@ -1266,6 +1267,7 @@ class WorldState:
                 "quote": " ".join(str(quote or "").split())[:300],
                 "reply": " ".join(str(reply or "").split())[:500],
                 "detail": detail_payload,
+                **({"persona_key": persona_key} if persona_key else {}),
                 **({"dialogue_session": dialogue_session} if dialogue_session else {}),
             }
         )

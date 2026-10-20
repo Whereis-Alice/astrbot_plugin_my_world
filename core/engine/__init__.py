@@ -128,6 +128,7 @@ from .search import SearchMixin
 from .actions_run import ActionsRunMixin
 from .interrupt import InterruptMixin
 from .generation import GenerationMixin
+from .calendar_diary import CalendarDiaryMixin
 from .limits import LimitsMixin
 from .group_chat import GroupChatMixin
 from .send import SendMixin
@@ -249,6 +250,7 @@ class MyWorldEngine(
     ActionsRunMixin,
     InterruptMixin,
     GenerationMixin,
+    CalendarDiaryMixin,
     LimitsMixin,
     GroupChatMixin,
     SendMixin,

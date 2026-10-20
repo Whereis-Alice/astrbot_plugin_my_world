@@ -115,6 +115,11 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         # 专门测"没配工具会被跳过"的用例会自己把它清掉。
         raw = self.store.raw_world()
         raw.setdefault("events", {}).setdefault("auto", {})["enabled"] = False
+        # Calendar and diary generation use the same background model seam.
+        # Focused tests opt in so unrelated life-clock tests do not steal their
+        # scripted replies or exercise another generator.
+        raw.setdefault("calendar", {})["auto_generate"] = False
+        raw.setdefault("diary", {})["automatic"] = False
         # 本组验证既有日程/夜晚睡眠行为；自主作息由 test_sleep_rhythm 独立验证。
         raw["sleep"]["mode"] = "fixed"
         for action in raw["actions"]:
@@ -2520,7 +2525,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
 
         ctx = self.ctx(user_id="9", user_name="小刚")
         async with self.engine.session_state(SESSION) as state:
-            self.engine.note_own_topic(
+            await self.engine.note_own_topic(
                 state, "答应给他看照片", user_id="9", user_name="小刚"
             )
             prompt = self.engine.extra_reminders(state, ctx=ctx)
@@ -2540,7 +2545,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         """长期项目持续保留，不再把未完成当成自动过期。"""
 
         async with self.engine.session_state(SESSION) as state:
-            self.engine.note_own_topic(state, "想做顿饭", user_id="9")
+            await self.engine.note_own_topic(state, "想做顿饭", user_id="9")
             state.life_matters[0]["at"] = self.clock.now() - 5 * 86400
             self.engine._decay_own_topics(state, now=self.clock.now())
             self.assertEqual(len(state.own_topics), 1)
@@ -10294,7 +10299,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
 
         await self.set_state(node_id="study")
         async with self.engine.session_state(SESSION) as state:
-            self.engine._remember_inner_thought(
+            await self.engine._remember_inner_thought(
                 state,
                 "这话听着耳熟",
                 source="聊完一轮",
