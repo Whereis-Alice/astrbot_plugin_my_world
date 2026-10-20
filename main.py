@@ -155,7 +155,6 @@ from .core.message_parts import (
 )
 
 
-
 def _legacy_plugin_data_dirs(plugin_dir: str) -> list[str]:
     """按优先级列出可能存着旧数据的目录（拿不到宿主路径时退回插件目录旁边）。"""
 
@@ -265,14 +264,6 @@ def node_label(world: Any, node_id: str) -> str:
     return (node.name or node.id) if node is not None else (node_id or "？")
 
 
-
-
-
-
-
-
-
-
 def _chain_items(chain: Any) -> list[Any]:
     """把 MessageChain / MessageEventResult / 裸 list 统一成组件列表。"""
 
@@ -303,22 +294,6 @@ def _extra_components(chain: Any, *, skip_plain: bool = True) -> list[Any]:
             continue
         picked.append(component)
     return picked
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # ======================================================================
@@ -416,7 +391,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
         """最近一次主模型调用的原始响应（按会话存，供回复钩子使用）。"""
         self._tick_task: asyncio.Task | None = None
         self._self_initiated_depth = 0
-        self._self_initiated_tasks: set[asyncio.Task] = set()
+        self._self_initiated_tasks: dict[asyncio.Task, int] = {}
         """正在调模型的那几条协程（我们自己的调用）。"""
         self._reflection_tasks: set[asyncio.Task] = set()
         """回合复盘的后台任务：发送完成后才跑，不拖慢聊天。"""
@@ -593,6 +568,13 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
         # 宿主重载插件时是「先调 terminate()，再解绑事件处理器」，
         # 这个窗口里进来的消息还会走到这个实例上。标记一下，让所有入口直接装死。
         self._retired = True
+        # Context 的路由表在卸载时不会自动移除插件 API。只清理本实例的绑定，
+        # 后续重载注册的新实例不能被旧实例的 terminate 顺手删掉。
+        routes = getattr(self.context, "registered_web_apis", None)
+        owned = getattr(self, "_web_api_handlers", set())
+        if isinstance(routes, list):
+            routes[:] = [row for row in routes if row[1] not in owned]
+        self._web_api_handlers = set()
         task, self._tick_task = self._tick_task, None
         if task is not None:
             task.cancel()
@@ -600,15 +582,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
                 await task
             except (asyncio.CancelledError, Exception):
                 pass
-        pending = [task for task in self._reflection_tasks if not task.done()]
-        for task in pending:
-            task.cancel()
-        for task in pending:
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
-        self._reflection_tasks.clear()
+        await self._close_response_tasks()
         await self.engine.close_background()
         unregister_profile_tools(self)
         try:
@@ -1227,19 +1201,21 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
         self._self_initiated_depth += 1
         task = self._current_task()
         if task is not None:
-            self._self_initiated_tasks.add(task)
-            # 防御：万一某次调用没走到 reset（异常被吞、任务被取消……），
-            # 集合里堆着死任务会让后面的钩子判断出现意外，定期清一次只留当前任务。
-            if len(self._self_initiated_tasks) > 8:
-                self._self_initiated_tasks.clear()
-                self._self_initiated_tasks.add(task)
+            self._self_initiated_tasks[task] = self._self_initiated_tasks.get(task, 0) + 1
+            # 只回收已经结束的任务；并发调用超过八条时，活动任务也仍须跳过注入。
+            for stale in [item for item in self._self_initiated_tasks if item.done()]:
+                self._self_initiated_tasks.pop(stale, None)
         return self._self_initiated_depth
 
     def reset_self_initiated(self, _token: int = 0) -> None:
         self._self_initiated_depth = max(0, self._self_initiated_depth - 1)
         task = self._current_task()
         if task is not None:
-            self._self_initiated_tasks.discard(task)
+            depth = self._self_initiated_tasks.get(task, 0)
+            if depth > 1:
+                self._self_initiated_tasks[task] = depth - 1
+            else:
+                self._self_initiated_tasks.pop(task, None)
 
     @staticmethod
     def _current_task() -> asyncio.Task | None:
@@ -1285,12 +1261,12 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
             return lock
         if len(self._reply_locks) > 128:
             # 会话多起来以后顺手回收没在用的那些，别一直攒着
-            for key in [
-                key
-                for key, value in self._reply_locks.items()
+            for stale_key in [
+                stale_key
+                for stale_key, value in self._reply_locks.items()
                 if not value.locked()
             ]:
-                self._reply_locks.pop(key, None)
+                self._reply_locks.pop(stale_key, None)
         lock = asyncio.Lock()
         self._reply_locks[key] = lock
         return lock
@@ -1346,11 +1322,9 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
     async def on_llm_request(self, event: AstrMessageEvent, req) -> None:
         """消息走到大模型时触发。
 
-        - 本插件接管这次回复，自己调大模型、按 JSON 动作执行并发送，然后 ``stop_event()``
-          阻止主人格重复回复；
-        - **接管失败（没配模型 / 调用出错 / 模型没给动作）就不回这一条**：绝不交回主人格——
-          那是另一个人设，顶下来用户会看到「她」突然换了个说法；
-        - 如果消息在这之前已经被别的插件处理掉（事件已 stop、或根本没走到大模型），我们什么都不做。
+        默认 inject 模式替换人格、注入这一刻的生活与记忆，随后放行 AstrBot 原生
+        Agent 的工具循环和发送。睡眠等门禁可提前结束这一轮；只有废弃的
+        takeover 模式自行生成并发送。已停止、未启用与自主模型调用不参与注入。
         """
 
         if not self.enabled:
@@ -1600,6 +1574,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
                 "recalled_ids": list(plan.recalled_ids),
                 "persona_id": ctx.persona_id,
                 "started_at": time.time(),
+                "provider_id": _selected_provider_extra(event),
                 "model_attribution": call_context(),
                 "tools": [],
             },
@@ -1782,6 +1757,18 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
         这里**不改内容、不改结果**：正文由原生管线发送，工具循环也早就跑完了。
         """
 
+        if (self.retired or self.in_self_initiated_call() or response is None
+                or getattr(response, "is_chunk", False)
+                or bool(getattr(event, "_profileweaver_auto_extract_running", False))):
+            return
+        if getattr(response, "role", "") == "err":
+            turn = event.get_extra(MW_TURN_EXTRA, None)
+            await observe_native_response(self, event, response, turn)
+            if isinstance(turn, dict):
+                turn["response_error"] = True
+                self.engine.decision_trace(str(turn.get("session_id") or ""), "response", "error",
+                                           "原生 Agent 返回错误，本轮不写入角色记忆")
+            return
         turn = event.get_extra(MW_TURN_EXTRA, None)
         await observe_native_response(self, event, response, turn)
         service = getattr(self, "profile_weaver_service", None)
@@ -1817,6 +1804,8 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
     ) -> None:
         """原生工具开始调用：只记录，不动参数、不动工具集。"""
 
+        if self.retired or self.in_self_initiated_call():
+            return
         turn = event.get_extra(MW_TURN_EXTRA, None)
         if not isinstance(turn, dict):
             return
@@ -1844,6 +1833,8 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
     ) -> None:
         """原生工具返回：把结果摘要补给刚才那条记录。"""
 
+        if self.retired or self.in_self_initiated_call():
+            return
         turn = event.get_extra(MW_TURN_EXTRA, None)
         if not isinstance(turn, dict):
             return
@@ -1899,15 +1890,24 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
     async def after_message_sent(self, event: AstrMessageEvent) -> None:
         """宿主发完了：推进水位线、把她的话写回世界，并在后台做一次回合复盘。"""
 
+        if self.retired:
+            return
         turn = event.get_extra(MW_TURN_EXTRA, None)
         if not isinstance(turn, dict):
             return
+        # 工具在 Agent 完成前也可以通过宿主管线发送图片/文字。那次发送不能消耗
+        # 整轮账本；最终 on_llm_response 写入 reply 后才提交本轮。
+        if "reply" not in turn and not turn.get("response_error"):
+            return
         event.set_extra(MW_TURN_EXTRA, None)
         session_id = str(turn.get("session_id") or "")
-        if not session_id:
+        if not session_id or turn.get("response_error"):
             return
         try:
-            await self.engine.mark_reply_batch_replied(session_id)
+            if "interaction_entries" in turn:
+                await self.engine.mark_reply_batch_replied(session_id, batch=turn["interaction_entries"])
+            else:
+                await self.engine.mark_reply_batch_replied(session_id)
         except Exception as exc:
             self.logger.debug(f"[my_world] 推进水位线失败：{exc}")
         reply = str(turn.get("reply") or "").strip()
@@ -3296,7 +3296,6 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
         return result
 
 
-
 # ======================================================================
 # 小工具
 # ======================================================================
@@ -3391,9 +3390,5 @@ def _render_status(snapshot: dict[str, Any], pronoun: str = "她") -> str:
     if snapshot.get("unanswered_count"):
         lines.append(f"连续无人回应：{snapshot['unanswered_count']} 次")
     return "\n".join(lines)
-
-
-
-
 
 

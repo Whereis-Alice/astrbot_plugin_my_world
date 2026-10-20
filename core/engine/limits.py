@@ -102,10 +102,12 @@ class LimitsMixin:
     def _arrival_decision_allowed(self, state: WorldState) -> bool:
         """「走到新地方」这类决策有独立的每小时上限（不占自主行动额度）。"""
 
+        limit = max(0, int(self.world.limits.max_arrival_decisions_per_hour))
+        if limit == 0:
+            return False
         hour = self._hour_index(state)
         if state.arrival_hour_marker != hour:
             return True
-        limit = max(0, int(self.world.limits.max_arrival_decisions_per_hour))
         return state.arrival_count_hour < limit
 
     def _count_arrival_decision(self, state: WorldState) -> None:
@@ -123,10 +125,13 @@ class LimitsMixin:
         state.share_count_hour += 1
 
     def _share_allowed(self, state: WorldState) -> bool:
+        limit = max(0, int(self.world.limits.max_share_per_hour))
+        if limit == 0:
+            return False
         hour = self._hour_index(state)
         if state.share_hour_marker != hour:
             return True
-        return state.share_count_hour < self.world.limits.max_share_per_hour
+        return state.share_count_hour < limit
 
     # ---------------- LLM 预算 ----------------
 
@@ -154,11 +159,13 @@ class LimitsMixin:
         state.last_llm_plan_at = self._now()
 
     def _llm_text_allowed(self, state: WorldState) -> bool:
-        limits = self.world.limits
+        limit = max(0, int(self.world.limits.max_llm_text_per_hour))
+        if limit == 0:
+            return False
         hour = self._hour_index(state)
         if state.llm_text_hour_marker != hour:
             return True
-        return state.llm_text_count_hour < max(0, int(limits.max_llm_text_per_hour))
+        return state.llm_text_count_hour < limit
 
     def _count_llm_text(self, state: WorldState) -> None:
         hour = self._hour_index(state)

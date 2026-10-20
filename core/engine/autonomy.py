@@ -210,11 +210,21 @@ class AutonomyMixin:
             state.note_reasoning({"intent": str(plan.get("reason"))}, source="plan")
         # 自主决策时她心里那一句也留下：以前只有 think 动作才写，
         # 模型不主动想，「内心活动」那一栏就长期只有一行旧内容。
+        reason = str(plan.get("reason") or "").strip()
+        inner = str(plan.get("inner") or "").strip()
+        # Rule and sleep plans cost no model call. Their reason is already a
+        # grounded first-person selection, so retain it when no model-authored
+        # wording exists without inventing an event or a stronger emotion.
+        fallback_allowed = bool(
+            reason and self._now() - float(state.last_rule_inner_at or 0) >= 3600
+        )
+        if not inner and fallback_allowed:
+            state.last_rule_inner_at = self._now()
         self._remember_inner_thought(
             state,
-            str(plan.get("inner") or ""),
-            source="自主决定",
-            intent=str(plan.get("reason") or ""),
+            inner or (reason if fallback_allowed else ""),
+            source="自主决定" if inner else "此刻选择",
+            intent=reason,
         )
         state.add_event(
             "plan", {"reason": plan.get("reason"), "source": plan.get("source")}

@@ -1,10 +1,8 @@
-"""AstrBot 模型调用适配（LLMPort 实现）。
-"""
+"""AstrBot 模型调用适配（LLMPort 实现）。"""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
-
 from uuid import uuid4
 
 from ..core.model_calls import call_context
@@ -15,45 +13,56 @@ if TYPE_CHECKING:
     from .. import MyWorldPlugin
 
 
-class AstrBotLLM:
-    """LLMPort 实现。"""
+def _retry_kind(exc: Exception, *, sampling: bool, images: bool, contexts: bool,
+                max_tokens: bool) -> str:
+    """Only adapt an explicitly rejected request shape; keep transport failures intact."""
 
-    def __init__(
-        self,
-        plugin: "MyWorldPlugin",
-        provider_id: str = "",
-        role: str = "main",
-        sampling: dict[str, float] | None = None,
-    ) -> None:
+    text = str(exc).lower()
+    if any(word in text for word in (
+        "content_filter", "prohibited_content", "内容安全", "content policy",
+        "rate limit", "rate_limit", "quota", "429", "timeout", "timed out",
+        "connection", "authentication", "unauthorized", "401", "403", "502", "503",
+    )):
+        return ""
+    unsupported = any(word in text for word in (
+        "unsupported", "not support", "not accept", "unexpected keyword",
+        "unknown parameter", "unrecognized", "not permitted", "不支持", "不接受",
+    ))
+    if sampling and unsupported and any(word in text for word in (
+        "sampling", "top_p", "frequency_penalty", "presence_penalty",
+    )):
+        return "sampling"
+    if max_tokens and unsupported and "max_tokens" in text:
+        return "max_tokens"
+    malformed = unsupported or any(word in text for word in (
+        "invalid", "malformed", "decode", "format", "fetch", "download", "not found", "无效",
+    ))
+    if images and malformed and any(word in text for word in ("image", "multimodal", "vision", "图片")):
+        return "images"
+    if contexts and malformed and any(word in text for word in ("contexts", "history", "messages", "历史")):
+        return "contexts"
+    return ""
+
+
+class AstrBotLLM:
+    """LLMPort 实现；仅在 Provider 明确拒绝参数格式时做兼容重试。"""
+
+    def __init__(self, plugin: "MyWorldPlugin", provider_id: str = "", role: str = "main",
+                 sampling: dict[str, float] | None = None) -> None:
         self.plugin = plugin
         self.provider_id = provider_id
         self.role = role
-        """``main`` = 说话用的主模型（它的原始响应要留给别的插件看），其余是辅助模型。"""
         self.sampling = dict(sampling or {})
-        """采样参数（温度 / top_p / 重复惩罚）。空 = 不覆盖，用 Provider 自己的设置。
+        # Provider 可以随会话切换；某一个不支持参数不能禁用其它 Provider 的配置。
+        self._sampling_rejected_providers: set[str] = set()
+        self._max_tokens_rejected_providers: set[str] = set()
 
-        这些参数在最外层适配器上统一加：多轮聊天的复读和"每轮都一个腔调"，
-        一半是采样参数的事，而插件自己的每次调用都不该各写一遍。
-        """
-        self._sampling_rejected = False
-        """Provider 不认这些参数时，退回只传温度，别让主回复跟着挂掉。"""
-
-    async def generate(
-        self,
-        *,
-        session_id: str,
-        system_prompt: str,
-        prompt: str,
-        contexts: list[dict] | None = None,
-        temperature: float | None = None,
-        max_tokens: int | None = None,
-        image_urls: list[str] | None = None,
-    ) -> LLMReply:
+    async def generate(self, *, session_id: str, system_prompt: str, prompt: str,
+                       contexts: list[dict] | None = None, temperature: float | None = None,
+                       max_tokens: int | None = None, image_urls: list[str] | None = None) -> LLMReply:
         context = self.plugin.context
         provider_id = (self.provider_id or self.plugin.llm_provider_id or "").strip()
         if not provider_id and self.role == "main":
-            # 别的插件（世界树这类）可能在这一轮里临时指定了模型：
-            # 接管回复是我们自己调模型的，得认它一眼，不然"这一条换模型"会静默失效
             provider_id = self.plugin.turn_provider_override(session_id)
         if not provider_id:
             try:
@@ -63,11 +72,15 @@ class AstrBotLLM:
         kwargs: dict[str, Any] = {}
         if temperature is not None:
             kwargs["temperature"] = temperature
-        # 采样参数由适配器统一加（配置关掉时 self.sampling 是空的，等于不覆盖）
-        if self.sampling and not self._sampling_rejected:
+        if self.sampling:
             for key in ("temperature", "top_p", "frequency_penalty", "presence_penalty"):
-                if key in self.sampling and (key != "temperature" or temperature is None):
+                if (key in self.sampling and (key != "temperature" or temperature is None)
+                        and (key == "temperature" or provider_id not in self._sampling_rejected_providers)):
                     kwargs[key] = self.sampling[key]
+        # AstrBot 的 OpenAI/Anthropic/Gemini/Responses 适配器均支持这个输出上限。
+        # 若某个自定义 Provider 明确拒绝，再只对它省略此参数。
+        if max_tokens is not None and provider_id not in self._max_tokens_rejected_providers:
+            kwargs["max_tokens"] = max_tokens
         images = [str(item) for item in (image_urls or []) if str(item).strip()]
         attempt = 0
         retry_reason = ""
@@ -79,93 +92,43 @@ class AstrBotLLM:
             return await tracked_generate(self.plugin, session_id=session_id, role=self.role,
                 trace_id=trace_id, attempt=attempt, retry_reason=retry_reason, **options)
 
+        options = dict(chat_provider_id=provider_id, prompt=prompt, system_prompt=system_prompt,
+                       contexts=list(contexts) if contexts else None, image_urls=images or None, **kwargs)
+        adapted: set[str] = set()
         token = self.plugin.set_self_initiated()
         try:
-            response = await invoke(
-                chat_provider_id=provider_id,
-                prompt=prompt,
-                system_prompt=system_prompt,
-                contexts=list(contexts) if contexts else None,
-                image_urls=images or None,
-                **kwargs,
-            )
-        except Exception as exc:
-            # 上游按内容安全拒了这次生成：同一段内容再要一次还是会被拒，
-            # 别再把它当成"Provider 不认采样参数"反复重试——那会把真正的原因埋掉，
-            # 而且白白多打几次请求（露骨内容这条路上这条日志误导过一次排查）。
-            blocked = any(
-                marker in str(exc)
-                for marker in ("content_filter", "PROHIBITED_CONTENT", "内容安全", "content policy")
-            )
-            # Provider 不认采样参数：退回只传温度，别让主回复跟着挂掉
-            if self.sampling and not self._sampling_rejected and len(kwargs) > 1 and not blocked:
-                retry_reason = "采样参数不兼容，退回只传温度"
-                self._sampling_rejected = True
-                self.plugin.logger.warning(
-                    f"[my_world] Provider 不接受采样参数（{exc}），"
-                    "已退回只用温度；要调就去 Panel 的 Provider 里调"
-                )
-                kwargs = {key: value for key, value in kwargs.items() if key == "temperature"}
+            while True:
                 try:
-                    response = await invoke(
-                        chat_provider_id=provider_id,
-                        prompt=prompt,
-                        system_prompt=system_prompt,
-                        contexts=list(contexts) if contexts else None,
-                        image_urls=images or None,
-                        **kwargs,
-                    )
-                    if self.role == "main":
-                        self.plugin.remember_llm_response(session_id, response)
-                    text = getattr(response, "completion_text", "") or ""
-                    return LLMReply(text=text, ok=True)
-                except Exception as retry_exc:
-                    return LLMReply(ok=False, error=f"LLM 调用失败: {retry_exc}")
-            # Provider 不支持图片（或图片取不回来）时，退回纯文字再来一次
-            if images:
-                retry_reason = "带图片请求失败，退回纯文字"
-                try:
-                    response = await invoke(
-                        chat_provider_id=provider_id,
-                        prompt=prompt,
-                        system_prompt=system_prompt,
-                        contexts=list(contexts) if contexts else None,
-                        **kwargs,
-                    )
-                    self.plugin.logger.warning(
-                        f"[my_world] 带图片调用失败（{exc}），已退回纯文字"
-                    )
-                    if self.role == "main":
-                        self.plugin.remember_llm_response(session_id, response)
-                    text = getattr(response, "completion_text", "") or ""
-                    return LLMReply(text=text, ok=True)
-                except Exception as retry_exc:
-                    return LLMReply(ok=False, error=str(retry_exc))
-            if blocked:
-                self.plugin.logger.warning(
-                    f"[my_world] 上游按内容安全拒了这次生成（{str(exc)[:160]}）："
-                    "换一段说法、或换一个 Provider（Panel → Provider）"
-                )
-                return LLMReply(ok=False, error=str(exc))
-            # 历史上下文格式不被某些 Provider 接受时，退化成不带历史再试一次
-            if contexts:
-                retry_reason = "历史上下文不兼容，去除历史后重试"
-                try:
-                    response = await invoke(
-                        chat_provider_id=provider_id,
-                        prompt=prompt,
-                        system_prompt=system_prompt,
-                        **kwargs,
-                    )
-                except Exception as retry_exc:
-                    return LLMReply(ok=False, error=str(retry_exc))
-            else:
-                return LLMReply(ok=False, error=str(exc))
+                    response = await invoke(**options)
+                    break
+                except Exception as exc:
+                    kind = _retry_kind(exc, sampling=any(key in options for key in (
+                        "top_p", "frequency_penalty", "presence_penalty")),
+                        images=bool(options.get("image_urls")), contexts=bool(options.get("contexts")),
+                        max_tokens="max_tokens" in options)
+                    if not kind or kind in adapted:
+                        return LLMReply(ok=False, error=str(exc))
+                    adapted.add(kind)
+                    if kind == "sampling":
+                        self._sampling_rejected_providers.add(provider_id)
+                        for key in ("top_p", "frequency_penalty", "presence_penalty"):
+                            options.pop(key, None)
+                        retry_reason = "采样参数不兼容，退回只传温度"
+                    elif kind == "max_tokens":
+                        self._max_tokens_rejected_providers.add(provider_id)
+                        options.pop("max_tokens", None)
+                        retry_reason = "输出上限参数不兼容，使用 Provider 默认上限"
+                    elif kind == "images":
+                        options["image_urls"] = None
+                        retry_reason = "图片格式不兼容，退回纯文字"
+                    else:
+                        options["contexts"] = None
+                        retry_reason = "历史上下文格式不兼容，去除历史后重试"
+                    self.plugin.logger.warning(f"[my_world] {retry_reason}")
         finally:
             self.plugin.reset_self_initiated(token)
+        if response is None or getattr(response, "role", "") == "err":
+            return LLMReply(ok=False, error=str(getattr(response, "completion_text", "") or "Provider 返回错误响应"))
         if self.role == "main":
-            # 主模型的原始响应留给「回复钩子」用：别的插件可能要看 usage / id 这些字段，
-            # 自己拼一个假的响应它们会读不到而报错。
             self.plugin.remember_llm_response(session_id, response)
-        text = getattr(response, "completion_text", "") or ""
-        return LLMReply(text=text, ok=True)
+        return LLMReply(text=getattr(response, "completion_text", "") or "", ok=True)

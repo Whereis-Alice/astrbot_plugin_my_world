@@ -54,9 +54,16 @@ def dialogue_origin(item: dict) -> str | None:
     return ""
 
 
-def thought_visible(item: dict, session: str, now: float) -> bool:
+def thought_visible(
+    item: dict, session: str, now: float, *, fallback_session: str = ""
+) -> bool:
     origin = dialogue_origin(item)
-    if origin is None or (origin and origin != session):
+    if origin is None:
+        # Legacy chat reflections had no origin tag. They are safe to show only
+        # in the representative session that owns this persisted world; sibling
+        # sessions still require an explicit matching source.
+        origin = fallback_session if fallback_session == session else "<legacy>"
+    if origin and origin != session:
         return False
     return not item.get("browse_session") or (
         item["browse_session"] == session and float(item.get("expires_at") or 0) > now)

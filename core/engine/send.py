@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import replace
 from typing import Any
 from ..config_scope import session_scoped
@@ -402,67 +403,21 @@ class SendMixin:
         ):
             outcome.notes.append("冷却期内不发送")
             return
-        async with self.session_state(outcome.session_id) as state:
-            if said or images or routed or routed_images:
-                if not is_event_speech and not is_reply_speech:
-                    self.engagement.on_bot_spoke(state)
-                await self._log_event(
-                    state,
-                    "bot_message",
-                    {
-                        "messages": said,
-                        # 生图 / 出图的动作：日志里能看出这一轮除了话还贴了几张图
-                        "images": len(images),
-                        "style_cell": state.last_style_cell,
-                        "say_limit": int(state.last_say_limit or 0),
-                    },
-                )
-                # 自己说过的话也进聊天上下文：模型才知道"刚才那句是我说的"，
-                # 并被要求换一种说法，避免每轮都用同一个句式开场。
-                for message in said:
-                    recorded = state.note_chat(
-                        user_id="__self__",
-                        name=state.bot_current_nickname or state.bot_base_nickname or "你",
-                        text=message,
-                        now=self._now(),
-                        keep=self.chat_history_limit(),
-                        is_self=True,
-                        origin=outcome.session_id,
-                    )
-                    state.note_reply(message, session_id=outcome.session_id)
-                    # 这句是在哪个会话里说的（留档只有一份，来源要标出来）
-                    self._tag_chat_origin(state, outcome.session_id, recorded)
-                for target, messages in routed.items():
-                    await self._log_event(
-                        state,
-                        "bot_message",
-                        {
-                            "messages": messages,
-                            "session": self.session_label(target, state),
-                            "images": len(routed_images.get(target) or []),
-                            "note": "这一句说给了另一个会话",
-                        },
-                    )
-                    for message in messages:
-                        recorded = state.note_chat(
-                            user_id="__self__",
-                            name=state.bot_current_nickname
-                            or state.bot_base_nickname
-                            or "你",
-                            text=message,
-                            now=self._now(),
-                            keep=self.chat_history_limit(),
-                            is_self=True,
-                            origin=target,
-                        )
-                        state.note_reply(message, session_id=target)
-                        self._tag_chat_origin(state, target, recorded)
-            # 调试用的动作回显不算"她说过的话"：不进聊天上下文、不计无人回应保护
+        # 计划里有一句话并不意味着她已经说出口。先收平台回执，再写聊天与冷却。
+        delivered: dict[str, list[str]] = {}
+        delivered_images: dict[str, int] = {}
+        autonomous_kinds = {"reply", "schedule", "event", "quiet"}
+        autonomous_delivered = False
+        for index, message in enumerate(outcome.live_messages):
+            target = outcome.live_origins[index] if index < len(outcome.live_origins) else outcome.home()
+            kind = outcome.live_kinds[index] if index < len(outcome.live_kinds) else outcome.speech_kind
+            delivered.setdefault(target, []).append(message)
+            autonomous_delivered = autonomous_delivered or kind not in autonomous_kinds
         sent = False
         attempted = False
         # Reserve only while sending, and count only platform-accepted content.
         async def send_target(target, view, echoes=()):
-            nonlocal sent, attempted
+            nonlocal sent, attempted, autonomous_delivered
             self._filter_proactive_speech(view)
             kinds = []
             if view.messages:
@@ -477,7 +432,6 @@ class SendMixin:
             target_images = self._group_images(view)
             def autonomous(values):
                 return any(kind not in {"reply", "schedule", "event", "quiet"} for kind in values)
-            auto_text = bool(view.messages) and autonomous(view.speech_kinds.get("", []) or [view.speech_kind])
             auto_images = bool(target_images) and autonomous(view.image_kinds.get("", []) or [view.speech_kind])
             contact_sent = False
             try:
@@ -485,12 +439,31 @@ class SendMixin:
                     attempted = True
                     accepted = bool(await self.messenger.send_text(target, target_ordered))
                     sent = sent or accepted
-                    contact_sent = accepted and auto_text
+                    receipt_reader = getattr(self.messenger, "take_sent_texts", None)
+                    received = receipt_reader(target) if callable(receipt_reader) else (target_ordered if accepted else [])
+                    received_counts = Counter(received)
+                    actual_messages = []
+                    actual_auto_text = False
+                    message_kinds = view.speech_kinds.get("", [])
+                    for index, message in enumerate(view.messages):
+                        if received_counts[message] > 0:
+                            actual_messages.append(message)
+                            received_counts[message] -= 1
+                            kind = message_kinds[index] if index < len(message_kinds) else view.speech_kind
+                            actual_auto_text = actual_auto_text or kind not in autonomous_kinds
+                    contact_sent = actual_auto_text
+                    if actual_messages:
+                        delivered.setdefault(target, []).extend(actual_messages)
+                        autonomous_delivered = autonomous_delivered or actual_auto_text
                     if not accepted:
                         outcome.notes.append(f"发到 {target} 失败：平台没有接收")
                         self._log("warning", f"发到 {target} 失败：平台没有接收")
                 if target_images:
                     accepted = await self._send_group_images(target, target_images)
+                    sent = sent or accepted
+                    if accepted:
+                        delivered_images[target] = delivered_images.get(target, 0) + len(target_images)
+                        autonomous_delivered = autonomous_delivered or auto_images
                     contact_sent = contact_sent or bool(accepted and auto_images)
             except Exception as exc:
                 outcome.notes.append(f"发到 {target} 失败：{exc}")
@@ -512,10 +485,28 @@ class SendMixin:
                 speech_kinds={"": list(outcome.speech_kinds.get(target, []))},
                 image_kinds={"": list(outcome.image_kinds.get(target, []))})
             await send_target(target, view)
+        if delivered or delivered_images:
+            async with self.session_state(outcome.session_id) as state:
+                if autonomous_delivered:
+                    self.engagement.on_bot_spoke(state)
+                for target in dict.fromkeys([*delivered, *delivered_images]):
+                    messages = delivered.get(target, [])
+                    detail = {"messages": messages, "images": delivered_images.get(target, 0),
+                              "style_cell": state.last_style_cell, "say_limit": int(state.last_say_limit or 0)}
+                    if target != outcome.session_id:
+                        detail.update(session=self.session_label(target, state), note="这一句说给了另一个会话")
+                    await self._log_event(state, "bot_message", detail)
+                    for message in messages:
+                        recorded = state.note_chat(user_id="__self__",
+                            name=state.bot_current_nickname or state.bot_base_nickname or "你",
+                            text=message, now=self._now(), keep=self.chat_history_limit(),
+                            is_self=True, origin=target)
+                        state.note_reply(message, session_id=target)
+                        self._tag_chat_origin(state, target, recorded)
         note = getattr(self.messenger, "take_fail_note", None)
         failed_note = note(outcome.session_id) if callable(note) else ""
         if failed_note:
-            # 没发出去这件事也要留痕：日志里能看到"这条她说过、但平台没收"
+            # 失败留在发送日志里，不能进入她已经说过的话。
             async with self.session_state(outcome.session_id) as state:
                 self.dynamics.apply_event(state, "send_failed", now=self._now())
                 await self._log_event(

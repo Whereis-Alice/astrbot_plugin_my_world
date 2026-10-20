@@ -5147,6 +5147,7 @@ function actionLabel(id) {
 
 /** 左栏「当前状态」：没选会话时的占位。 */
 function setStatusEmpty(text) {
+  $("life-focus")?.classList.add("hidden");
   $("status-head").innerHTML = "";
   renderHero(null, "");
   ["status-time", "status-progress", "status-runtime"].forEach((id) => {
@@ -7127,10 +7128,11 @@ async function refreshStatus() {
     if ($("status-session").value !== sessionId || ui.statusRequest !== requestId) return;
     ui.status = data;
     clearStatusEmpty();
+    $("life-focus").classList.remove("hidden");
     // 扩展想显示的状态优先（例如亲密扩展在戏里时说"兴奋中"）：
     // 这是编辑器里的一行字，群名片不受影响
     const stateLabel = stateLabelOf(data.state, data);
-    renderLifeFocus($("life-focus"), data, {el, open: () => showTab("life")});
+    renderLifeFocus($("life-focus"), data, {el, config: ui.config, open: () => showTab("life")});
     renderHero(data, stateLabel);
     renderStatusSections(data, stateLabel);
     renderToolWarnings();
@@ -15974,7 +15976,11 @@ function renderThoughts(data) {
     health.classList.remove("hidden");
     health.dataset.ok = String(Boolean(info.clock_recent && info.enabled));
     health.querySelector("summary").textContent = `${info.message} · ${info.current}`;
-    health.querySelector("p").textContent = `${info.note} 最近生活推进：${info.last_tick_at ? formatStamp(info.last_tick_at) : "暂无记录"}；最近规划尝试：${info.last_plan_at ? formatStamp(info.last_plan_at) : "暂无记录"}。调用失败与预算可在「模型调用」和「运行」中查看。`;
+    const budget = info.background_budget || {};
+    const budgetText = info.autonomous_generation === "budget_exhausted"
+      ? `今日自主模型预算已用完（调用 ${budget.calls ?? 0}/${budget.call_limit || "不限"}）；聊后复盘仍会记录，自主生活改用规则继续。`
+      : `今日自主模型预算尚可用（调用 ${budget.calls ?? 0}/${budget.call_limit || "不限"}）。`;
+    health.querySelector("p").textContent = `${info.note} 最近生活推进：${info.last_tick_at ? formatStamp(info.last_tick_at) : "暂无记录"}；最近规划尝试：${info.last_plan_at ? formatStamp(info.last_plan_at) : "暂无记录"}；最近内心：${info.last_thought_at ? formatStamp(info.last_thought_at) : "暂无记录"}。${budgetText}`;
   }
   ui.thoughtRenderLimit = 40;
   renderThoughtsPage();

@@ -30,6 +30,25 @@ class LifeDepthTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["thoughts"][0]["detail"]["intent"], "昨天的阅读还留了一个问题")
         self.assertEqual(self.messenger.sent, [])
 
+    async def test_rule_plan_reason_becomes_a_grounded_inner_line(self):
+        async with self.engine.session_state(S) as state:
+            outcome = TickOutcome(S)
+            plan = {
+                "steps": [{"action": "read", "duration": 600}],
+                "reason": "昨天那本书还停在折角的一页，先读一会儿再说。",
+                "source": "rule",
+            }
+            first_reason = plan["reason"]
+            await self.engine._apply_plan(state, self.engine.node("study"), outcome, plan)
+            plan["reason"] = "又在这里坐了五分钟，先换个姿势。"
+            await self.engine._apply_plan(state, self.engine.node("study"), outcome, plan)
+        thoughts = (await self.engine.thoughts_payload(S))["thoughts"]
+        thought = thoughts[0]
+        self.assertEqual(thought["content"], first_reason)
+        self.assertEqual(thought["source"], "此刻选择")
+        self.assertEqual(thought["detail"]["intent"], first_reason)
+        self.assertEqual(len(thoughts), 1, "grounded rule fallback is limited to one per hour")
+
     async def test_quiet_planning_uses_existing_budget_and_never_speaks_or_calls_tools(self):
         self.engine.decider.should_ask_llm = Mock(return_value=True)
         self.llm.replies = [json.dumps({"plan": [{"action": "say", "messages": ["不应发送"]},
@@ -57,10 +76,26 @@ class LifeDepthTests(unittest.IsolatedAsyncioTestCase):
             state.life_updated_at = self.clock.now() - 33 * 3600
         payload = await self.engine.thoughts_payload(S)
         self.assertFalse(payload["health"]["clock_recent"])
+        self.assertEqual(payload["health"]["autonomous_generation"], "available")
         self.assertEqual(payload["thoughts"], [])
         async with self.engine.session_state(S) as state:
             state.life_updated_at = self.clock.now()
         self.assertTrue((await self.engine.thoughts_payload(S))["health"]["clock_recent"])
+
+    async def test_thought_health_explains_an_exhausted_autonomous_budget(self):
+        self.engine.world.limits.background_daily_calls = 1
+        day = self.engine._today_key(self.clock.now())
+        await self.engine.db.call(
+            "reserve_background", day, calls=1, tokens=0, reserve=2048
+        )
+        async with self.engine.session_state(S) as state:
+            state.life_updated_at = self.clock.now()
+            state.add_thought("这一会儿先安静读几页。", source="此刻选择")
+        health = (await self.engine.thoughts_payload(S))["health"]
+        self.assertEqual(health["autonomous_generation"], "budget_exhausted")
+        self.assertIn("自主模型预算已用完", health["message"])
+        self.assertEqual(health["background_budget"]["remaining_calls"], 0)
+        self.assertGreater(health["last_thought_at"], 0)
 
     async def test_rule_motive_uses_actual_activity_and_does_not_repeat_the_first_action(self):
         state = await self.engine.load_state(S, cold_start=False)

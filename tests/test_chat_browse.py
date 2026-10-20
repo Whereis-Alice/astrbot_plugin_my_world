@@ -5,7 +5,7 @@ import json
 import unittest
 from unittest.mock import AsyncMock, Mock
 
-from core.chat_browse import feeling_context, reading_view
+from core.chat_browse import feeling_context, reading_view, thought_visible
 from core.json_actions import PlannedAction
 from core.models import ActionDef, ChatBrowseConfig, normalize_legacy_keys
 from core.engine.models import MessageContext
@@ -30,6 +30,23 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
     def note(self, state, text="大家聊起了窗边的花", origin=S, **kwargs):
         return state.note_chat(user_id="42", name="小明", text=text,
             now=self.clock.now(), origin=origin, keep=100, **kwargs)
+
+    def test_legacy_chat_thoughts_are_visible_only_to_the_world_owner(self):
+        legacy = {"source": "聊完一轮", "quote": "对方原话", "reply": "她的回复"}
+        self.assertFalse(thought_visible(legacy, S, self.clock.now()))
+        self.assertTrue(
+            thought_visible(legacy, S, self.clock.now(), fallback_session=S)
+        )
+        self.assertFalse(
+            thought_visible(legacy, G, self.clock.now(), fallback_session=S)
+        )
+        tagged = {**legacy, "dialogue_session": G}
+        self.assertFalse(
+            thought_visible(tagged, S, self.clock.now(), fallback_session=S)
+        )
+        self.assertTrue(
+            thought_visible(tagged, G, self.clock.now(), fallback_session=S)
+        )
 
     async def prepare(self, source=S):
         self.configure()

@@ -93,7 +93,7 @@
   .calls-metric { padding: 10px 12px; gap: 4px; }
   .calls-metric > strong { font-size: 20px; }
   .calls-metric > small { font-size: 9px; }
-  .calls-trend { padding: 10px 12px; margin-bottom: 10px; }
+  .calls-trend { padding: 10px 12px; margin-bottom: 4px; }
   .calls-trend-heading { flex-wrap: wrap; gap: 5px; }
   .calls-trend-heading > span { font-size: 9px; line-height: 1.6; }
   .calls-chart { height: 40px; margin-top: 9px; }

@@ -2598,6 +2598,9 @@ if not _KEEP_DEFAULT_ACTIONS_ON:
     apply_default_actions_off(DEFAULT_WORLD.get("actions") or [])
 
 DEFAULT_SCHEDULES: dict[str, Any] = {
+    # New worlds arrange a small day automatically; existing files retain their
+    # own explicit setting (including a missing/disabled legacy auto block).
+    "auto": {"enabled": True, "per_day": 2, "hour": 8, "extra_prompt": ""},
     "schedules": [
         {
             "id": "morning_greet",

@@ -157,7 +157,7 @@ class LifeAuditTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotEqual(saved["status"], "completed")
                 self.assertEqual(saved["steps"], [])
 
-    async def test_arrival_updates_the_place_for_needs_events_and_nickname(self):
+    async def test_arrival_settles_the_walk_at_its_source_then_updates_events_and_nickname(self):
         await self.idle()
         async with self.engine.session_state(S) as state:
             state.current_action = {"type": "walk_to", "target_node": "bedroom", "duration_ticks": 1,
@@ -168,7 +168,7 @@ class LifeAuditTests(unittest.IsolatedAsyncioTestCase):
         await self.engine._tick_session(S)
         self.assertEqual(events.call_args.args[1].id, "bedroom")
         self.assertEqual(nickname.call_args.args[1].id, "bedroom")
-        self.assertEqual(dynamics.call_args.kwargs["node"].id, "bedroom")
+        self.assertEqual(dynamics.call_args.kwargs["node"].id, "study")
 
     async def test_autonomous_sleep_schedule_is_not_presented_as_next_executable_plan(self):
         self.engine.world.sleep.mode = "autonomous"

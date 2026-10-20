@@ -392,7 +392,9 @@ class GroupChatMixin:
             for stale in list(self._replied_batch_keys)[:-32]:
                 self._replied_batch_keys.pop(stale, None)
 
-    async def mark_reply_batch_replied(self, session_id: str) -> None:
+    async def mark_reply_batch_replied(
+        self, session_id: str, *, batch: list[dict[str, Any]] | None = None
+    ) -> None:
         """回复**真的发出去**之后，把水位线推到这一轮的边界（见 `_remember_replied_batch`）。
 
         没有这一轮的批次记录（例如只是"说给别处"的旁听投递）就**不推进**：
@@ -401,7 +403,20 @@ class GroupChatMixin:
 
         if not self.is_enabled(session_id):
             return
-        keys = self._replied_batch_keys.pop(str(session_id), None)
+        if batch is None:
+            keys = self._replied_batch_keys.pop(str(session_id), None)
+        else:
+            # 原生 Agent 的多个回合可以同时在飞。提交发完的那个回合自己的事件，
+            # 不能取会话里被下一轮覆盖的待提交表，否则会吞掉尚未发送的消息。
+            target = str(session_id)
+            keys = {self.event_key_of(item) for item in batch if isinstance(item, dict)
+                    and str(item.get("origin") or item.get("session") or "") == target}
+            keys.discard("")
+            pending = self._replied_batch_keys.get(target)
+            if pending is not None:
+                pending.difference_update(keys)
+                if not pending:
+                    self._replied_batch_keys.pop(target, None)
         if not keys:
             return
         async with self.session_state(session_id) as state:

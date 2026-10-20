@@ -121,6 +121,7 @@ class TickOutcome:
     speech_kinds: dict[str, list[str]] = field(default_factory=dict)
     image_kinds: dict[str, list[str]] = field(default_factory=dict)
     live_kinds: list[str] = field(default_factory=list)
+    live_origins: list[str] = field(default_factory=list)
     contact_id: str = field(default_factory=lambda: uuid4().hex)
     contact_people: set[str] = field(default_factory=set)
 

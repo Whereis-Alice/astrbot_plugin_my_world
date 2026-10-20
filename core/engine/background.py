@@ -96,7 +96,14 @@ class BackgroundMixin:
         from ..ports import LLMReply
         context = call_context()
         purpose = str(context.get("purpose") or "other")
-        interactive = purpose in {"reply", "chat", "action", "tool_params", "followup"} and not CRITICAL_TICK.get() and not LIFE_WORK.get()
+        # Calls caused by a person are not part of the autonomous background
+        # allowance. In particular, post-chat reflection is what keeps the
+        # "inner thoughts" page updating; a busy conversation must not let other
+        # lives starve it by exhausting the autonomous planning budget.
+        interactive = purpose in {
+            "reply", "chat", "reflection", "creation", "persona", "evaluation",
+            "action", "tool_params", "followup",
+        } and not CRITICAL_TICK.get() and not LIFE_WORK.get()
         if interactive:
             async with asyncio.timeout(self.world.limits.background_llm_timeout_seconds):
                 return await channel.generate(**kwargs)
@@ -168,10 +175,12 @@ class BackgroundMixin:
         remaining = min(gap, 6 * 3600)
         if current.get("type") in {"sleep", "nap"}:
             left = max(0, int(current.get("duration_ticks", 0)) - int(current.get("elapsed_ticks", 0)))
-            slept = min(left, int(gap / self.tick_seconds))
+            slept = min(left, int(elapsed / self.tick_seconds))
             current["elapsed_ticks"] = int(current.get("elapsed_ticks", 0)) + slept
             sleep_seconds = slept * self.tick_seconds
-            wake_at = now - gap + sleep_seconds
+            # The settlement cap bounds need evolution, not the historical clock.
+            # A multi-day outage must still wake at the end of the original rest.
+            wake_at = previous + sleep_seconds
             # Sleep has its own energy, curiosity, desire and pressure dynamics.
             # Settle that interval before the completion path turns her idle.
             if sleep_seconds:
@@ -186,7 +195,7 @@ class BackgroundMixin:
                 current["offline_wake"] = True
                 current["offline_wake_at"] = wake_at
                 state.goodmorning_day = self._today_key(now)
-                remaining = min(max(0, gap - sleep_seconds), 6 * 3600)
+                remaining = min(max(0, elapsed - sleep_seconds), 6 * 3600)
             else:
                 remaining = max(0, gap - sleep_seconds)
             current["offline_tick_settled"] = True

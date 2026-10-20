@@ -444,6 +444,35 @@ class ScheduleMixin:
             return False
         return bool(until > 0 and until <= seconds and not record.get("cancelled"))
 
+    def _previous_schedule_delay(self, state: WorldState, schedule: Any, now: datetime) -> str:
+        """Carry yesterday's bounded retry, with its original appointment date."""
+        record = self._schedule_delay_record(state, schedule.id)
+        day = str(record.get("day") or "")
+        yesterday = (now - timedelta(days=1)).date().isoformat()
+        if not record or record.get("cancelled") or day != yesterday:
+            return ""
+        if schedule.once and schedule.date and schedule.date != day:
+            return ""
+        origin = now - timedelta(days=1)
+        if not schedule.once and schedule.days and self.WEEKDAY_KEYS[origin.weekday()] not in schedule.days:
+            return ""
+        moment = self._schedule_moment(origin, schedule)
+        if moment is None:
+            return ""
+        config = self.world.events
+        minutes = max(5, int(getattr(config, "schedule_delay_minutes", 30) or 30))
+        duration = max(0, int(getattr(config, "schedule_delay_limit_minutes", 180) or 0))
+        count = max(0, int(getattr(config, "schedule_delay_limit_times", 2) or 0))
+        windows = [value for value in (duration, count * minutes) if value > 0]
+        # Even unlimited same-day configuration cannot revive yesterday forever.
+        window = max(minutes, min(windows) if windows else 180) * 60
+        deadline = moment.timestamp() + window + self.SCHEDULE_MAX_GAP_SECONDS
+        try:
+            until = float(record.get("until") or 0)
+        except (TypeError, ValueError):
+            return ""
+        return day if 0 < until <= deadline and now.timestamp() <= deadline else ""
+
     def _delay_slot(self, state: WorldState, schedule: Any) -> str:
         record = self._schedule_delay_record(state, schedule.id)
         until = float(record.get("until") or 0)
@@ -492,7 +521,7 @@ class ScheduleMixin:
         state.schedule_delays = {**(state.schedule_delays or {}), str(schedule.id): record}
 
     async def _schedule_gate(
-        self, state: WorldState, schedule: Any, *, label: str
+        self, state: WorldState, schedule: Any, *, label: str, day_key: str = ""
     ) -> tuple[str, str]:
         """日程到点时的闸门：返回 ``("do"|"delay"|"cancel", 说明)``。"""
 
@@ -500,7 +529,7 @@ class ScheduleMixin:
         if state.is_sleeping or (state.state == "drowsy" and self.world.sleep.mode != "fixed"):
             return "delay", "正在休息，醒来后再安排"
         thread = self._active_thread(state)
-        day_key = self.local_now().strftime("%Y-%m-%d")
+        day_key = day_key or self.local_now().strftime("%Y-%m-%d")
         if self._thread_critical(thread) and not self._delay_exhausted(state, schedule, day_key):
             return "delay", "她手上这件危险或重要的事还没完，先让路"
         if not bool(getattr(config, "schedule_gate", True)):
@@ -511,7 +540,6 @@ class ScheduleMixin:
         thread = self._active_thread(state)
         if thread is None:
             return "do", ""
-        day_key = self.local_now().strftime("%Y-%m-%d")
         if self._delay_exhausted(state, schedule, day_key):
             return "do", "推迟到上限了，按日程执行"
         if self._thread_critical(thread):
@@ -562,11 +590,43 @@ class ScheduleMixin:
         # A reload during inference owns a fresh cursor reset. Do not consume it
         # or remove a new appointment that happens to reuse an old schedule ID.
         if self._schedule_signature is signature:
+            protections = await self._schedule_prune_protections()
+            if self._schedule_signature is not signature:
+                return [row for result in results for row in result]
             self._schedule_reset_pending = False
+            for owner, (day, preserve) in protections.items():
+                with self.config_scope(owner):
+                    self._prune_once_schedules(day, preserve=preserve)
             for owner, schedule_id in once_done:
+                if schedule_id in protections.get(owner, ("", set()))[1]:
+                    continue  # Another life using this library still has a valid retry.
                 with self.config_scope(owner):
                     self._drop_schedule(schedule_id)
         return [row for result in results for row in result]
+
+    async def _schedule_prune_protections(self) -> dict[str, tuple[str, set[str]]]:
+        """Prune a shared library only after collecting every life's valid retry."""
+        protections: dict[str, tuple[str, set[str]]] = {}
+        for session_id in self.tick_session_ids():
+            with self.config_scope(session_id):
+                session = self.session_config(self.config_scope_id)
+                owner = self.config_scope_id if "schedules" in (getattr(session, "config_overrides", {}) or {}) else ""
+                now = self.local_now()
+                day, preserve = protections.setdefault(owner, (now.date().isoformat(), set()))
+                state = await self.load_state(session_id, cold_start=False)
+                cursor = self._schedule_cursor(state, now)
+                start = datetime.fromtimestamp(cursor, now.tzinfo)
+                for schedule in self.schedules.schedules:
+                    if not self.schedule_in_scope(schedule, session_id):
+                        continue
+                    if self._previous_schedule_delay(state, schedule, now):
+                        preserve.add(schedule.id)
+                    elif start.date() != now.date():
+                        moment = self._schedule_moment(start, schedule)
+                        if (schedule.enabled and schedule.once and schedule.date == start.date().isoformat()
+                                and moment and cursor < moment.timestamp() <= now.timestamp()):
+                            preserve.add(schedule.id)
+        return protections
 
     @session_scoped
     @life_work([])
@@ -582,33 +642,41 @@ class ScheduleMixin:
                 now = self.local_now()
                 seconds = now.timestamp()
                 day_key = now.strftime("%Y-%m-%d")
-                self._prune_once_schedules(day_key)
-                weekday = self.WEEKDAY_KEYS[now.weekday()]
-                candidates = [
-                    schedule for schedule in self.schedules.schedules
-                    if schedule.enabled
-                    and not (schedule.once and schedule.date and schedule.date != day_key)
-                    and (schedule.once or not schedule.days or weekday in schedule.days)
-                ]
                 if self._schedule_reset_pending:
                     cursor = seconds - self.SCHEDULE_LOOKBACK_SECONDS
                 else:
                     cursor = self._schedule_cursor(state, now)
+                # The schedule cursor is on local_now().timestamp()'s calendar
+                # timeline. An injected clock may expose a separate now() epoch;
+                # feeding this cursor into local_at() would apply its offset twice.
+                start = datetime.fromtimestamp(cursor, now.tzinfo)
+                # Keep the original retry date; shared-library pruning runs after
+                # every life checks, using their valid protection sets together.
+                carried = {schedule.id: self._previous_schedule_delay(state, schedule, now)
+                           for schedule in self.schedules.schedules}
+                candidates = [schedule for schedule in self.schedules.schedules if schedule.enabled]
                 state.schedule_cursor = seconds
                 if not candidates:
                     continue
-                due: list[tuple[Any, str]] = []
+                due: list[tuple[Any, str, str]] = []
+                dates = [start, now] if start.date() != now.date() else [now]
                 for schedule in candidates:
-                    moment = self._schedule_moment(now, schedule)
-                    if moment is None:
-                        continue
-                    stamp = moment.timestamp()
-                    if cursor < stamp <= seconds:
-                        due.append((schedule, moment.strftime("%H:%M")))
-                    elif self._schedule_delay_due(state, schedule, day_key, cursor, seconds):
+                    found = False
+                    for date in dates:
+                        date_key = date.date().isoformat()
+                        weekday = self.WEEKDAY_KEYS[date.weekday()]
+                        if (schedule.once and schedule.date and schedule.date != date_key
+                                or not schedule.once and schedule.days and weekday not in schedule.days):
+                            continue
+                        moment = self._schedule_moment(date, schedule)
+                        if moment is not None and cursor < moment.timestamp() <= seconds:
+                            due.append((schedule, moment.strftime("%H:%M"), date_key))
+                            found = True
+                    retry_day = carried.get(schedule.id) or day_key
+                    if not found and self._schedule_delay_due(state, schedule, retry_day, cursor, seconds):
                         # 之前被事件推迟的那条：到重试时间了，再走一遍闸门
-                        due.append((schedule, str(self._delay_slot(state, schedule) or "")))
-                for schedule, slot in sorted(
+                        due.append((schedule, str(self._delay_slot(state, schedule) or ""), retry_day))
+                for schedule, slot, day_key in sorted(
                     due, key=lambda item: item[0].priority, reverse=True
                 ):
                     if not self.schedule_in_scope(schedule, session_id):
@@ -687,7 +755,7 @@ class ScheduleMixin:
                     state.schedule_delays[schedule.id] = checkpoint
                     # 日程闸门：她正忙着处理一件事件时，睡觉/小睡/换地方要先问一句
                     choice, gate_note = await self._schedule_gate(
-                        state, schedule, label=label
+                        state, schedule, label=label, day_key=day_key
                     )
                     if choice != "do":
                         await self._log_event(

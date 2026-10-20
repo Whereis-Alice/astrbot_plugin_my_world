@@ -91,7 +91,7 @@ async def observe_native_response(plugin, event, response, turn) -> None:
             or bool(getattr(event, "_profileweaver_auto_extract_running", False))):
         return
     turn["model_call_recorded"] = True
-    provider = plugin.turn_provider_override(event.unified_msg_origin)
+    provider = str(turn.get("provider_id") or plugin.turn_provider_override(event.unified_msg_origin) or "")
     if not provider:
         try:
             provider = await plugin.context.get_current_chat_provider_id(event.unified_msg_origin)

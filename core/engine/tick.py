@@ -182,6 +182,32 @@ class TickMixin:
                 # 人就在外面：一直记着"最近出过门"，回家以后那句提醒才准
                 state.last_outdoor_at = self._now()
 
+            # Settle the interval that actually elapsed before completing its
+            # action or starting the next one. Otherwise the last minute asleep
+            # loses recovery, and a newly started rest recovers earlier awake time.
+            # Offline rest has already been settled by reconcile_life_time; finish
+            # it first so only the remaining awake interval is evolved here.
+            if (state.current_action or {}).get("offline_wake"):
+                await self._tick_continuous(state, node, outcome)
+            was_storm = bool(state.storm)
+            if self._roll_day_mood(state, self._now()):
+                info = day_mood_info(state.day_mood)
+                await self._log_event(state, "day_mood", {
+                    "day_mood": state.day_mood,
+                    "label": info.label if info is not None else "",
+                    "hint": info.hint if info is not None else "",
+                })
+            mood_reset = self.dynamics.tick(state, node=node, elapsed_seconds=elapsed_life,
+                                            world=self.world, now=self._now())
+            state.mood = self.dynamics.derive_mood(state)
+            penalty = self._stay_up_penalty(state)
+            if penalty > 1.0:
+                extra = (float(self.world.state_dynamics.energy_decay_per_min)
+                         * (penalty - 1.0) * (elapsed_life / 60.0))
+                state.energy = max(0.0, float(state.energy) - max(0.0, extra))
+            if state.stay_up_until and state.world_time > int(state.stay_up_until):
+                state.stay_up_until = 0
+
             # 正在做的动作被停用了：立刻停下（否则"停用"看起来没生效）
             current = state.current_action or {}
             current_def = self.world.action_map().get(str(current.get("type") or ""))
@@ -228,37 +254,15 @@ class TickMixin:
                         state, self.node(state.node_id) or node, outcome
                     )
 
-            # Movement/arrival plans may have changed her place earlier this beat.
-            # Atmosphere, event generation and nickname must use the actual place.
+            # Movement may have changed her place earlier this beat. Subsequent
+            # events and nickname use the destination; needs used the elapsed walk.
             node = self.node(state.node_id) or node
-            # 3) 数值演化
-            #    扩展包先走一拍（数值、状态结算），再走主插件自己的演化
+            # 3) 扩展结算与这一拍的状态历史
             try:
                 notes = await self.extensions.on_tick(state, self.world, self._now())
                 outcome.notes.extend(notes)
             except Exception as exc:
                 self._log("warning", f"扩展这一拍出错：{exc}")
-            was_storm = bool(state.storm)
-            # 新的一天：掷一次今天的基调（曲线快慢），一天只掷一次
-            if self._roll_day_mood(state, self._now()):
-                info = day_mood_info(state.day_mood)
-                await self._log_event(
-                    state,
-                    "day_mood",
-                    {
-                        "day_mood": state.day_mood,
-                        "label": info.label if info is not None else "",
-                        "hint": info.hint if info is not None else "",
-                    },
-                )
-            mood_reset = self.dynamics.tick(
-                state,
-                node=node,
-                elapsed_seconds=elapsed_life,
-                world=self.world,
-                now=self._now(),
-            )
-            state.mood = self.dynamics.derive_mood(state)
             # 好感按实际会话独立计账；共享生活只推进一次，但每份关系分别结算。
             decayed = [row for sid in self.group_sessions(state.session_id)
                        for row in self.profiles.decay_affinity(sid, now=self._now())]
@@ -285,18 +289,6 @@ class TickMixin:
                     {"on": bool(state.storm), "valence": round(state.valence, 3)},
                 )
             await self._record_history(state, node)
-
-            # 3.2) 熬夜代价：夜里醒着，或者为了事件推迟了睡觉，精力掉得更快
-            penalty = self._stay_up_penalty(state)
-            if penalty > 1.0:
-                extra = (
-                    float(self.world.state_dynamics.energy_decay_per_min)
-                    * (penalty - 1.0)
-                    * (self.tick_seconds / 60.0)
-                )
-                state.energy = max(0.0, float(state.energy) - max(0.0, extra))
-            if state.stay_up_until and state.world_time > int(state.stay_up_until):
-                state.stay_up_until = 0
 
             # 3.5) 事件系统：她自己遇上的事、以及等群友拿主意这件事
             #      （生成与结算走打杂模型，只有"她怎么选"用主模型；判定是纯计算）
@@ -410,6 +402,14 @@ class TickMixin:
             action["elapsed_ticks"] = int(action.get("elapsed_ticks", 0)) + 1
         self.settle_life_practice(state, action)
         self.settle_matter_work(state, action)
+        if action.get("matter_id") and action.get("type") != "walk_to":
+            from ..life_matters import find
+            item = find(state, str(action["matter_id"]))
+            if item and item.get("worked_minutes", 0) >= self.world.limits.life_matter_daily_minutes:
+                # Duration bounds and coarse ticks may exceed today's remaining
+                # budget. Record this attempt and retain the unfinished step.
+                action["duration_ticks"] = min(int(action.get("duration_ticks") or 0),
+                                               int(action.get("elapsed_ticks") or 0))
         if int(action.get("elapsed_ticks", 0)) < int(action.get("duration_ticks", 0) or 0):
             return
         await self._finish_action(
@@ -863,7 +863,7 @@ class TickMixin:
         from ..chat_browse import dialogue_origin
         recent = [
             str(item.get("content") or "").strip()
-            for item in state.thoughts[-3:]
+            for item in state.thoughts[-8:]
             if isinstance(item, dict)
             and not item.get("browse_session")
             and dialogue_origin(item) == dialogue_session

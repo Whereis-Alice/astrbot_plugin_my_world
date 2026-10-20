@@ -5,7 +5,7 @@ desc: >-
   主回复仍然走 AstrBot 原生 Agent——人设与处境由本插件注入，工具调用、工具循环、发送全交给宿主，
   不抢工具、不丢上下文。
 short_desc: 她的世界 + 原生工具：虚拟动作 / 日程 / 事件 / 记忆 / 世界生成 / 完整画像
-version: v4.25.0
+version: v4.26.1
 author: Whereis-Alice
 author_url: https://github.com/Whereis-Alice
 repo: https://github.com/Whereis-Alice/astrbot_plugin_my_world
@@ -31,7 +31,7 @@ help: |
   聊天使用 AstrBot 原生 Agent；本插件提供角色此刻的处境和生活背景。
 
   先在目标会话发送 /mw session add，再打开插件页面“我的世界编辑器”。
-  选择人设、调整地图与动作，在日程中开启自动生成。自主作息默认开启。
+  选择人设、调整地图与动作；新建世界每天自动生成两项安排，自主作息默认开启。
   恋爱、主人等特殊关系默认只允许管理员设置，可在关系表逐类开启自然形成。
 
   /mw status：当前状态

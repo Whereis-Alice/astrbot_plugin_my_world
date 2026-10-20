@@ -872,6 +872,7 @@ class ActionsMixin:
                 break
             outcome.live_messages.append(line)
             outcome.live_kinds.append(kind)
+            outcome.live_origins.append(outcome.home())
             sent_count += 1
         if sent_count >= len(lines):
             return

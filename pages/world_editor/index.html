@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>我的世界编辑器</title>
+    <title>我的世界 · 生活工作室</title>
     <link rel="icon" href="./assets/logo.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./style.css" />
     <link rel="stylesheet" href="./contacts.css" />
@@ -30,13 +30,15 @@
     </script>
   </head>
   <body>
+    <a class="skip-link" href="#world-main">跳到主要内容</a>
     <div id="login" class="login hidden">
       <div class="login-card">
         <h1>我的世界编辑器</h1>
         <p class="muted">这个编辑器设置了独立访问密码，请先登录。</p>
+        <label class="sr-only" for="login-password">访问密码</label>
         <input id="login-password" type="password" placeholder="访问密码" autocomplete="current-password" />
         <button id="login-button" class="primary">登录</button>
-        <p id="login-message" class="error"></p>
+        <p id="login-message" class="error" role="status"></p>
       </div>
     </div>
 
@@ -44,7 +46,7 @@
       <aside class="sidebar">
         <div class="brand">
           <img class="brand-logo" src="./assets/logo.svg" alt="" />
-          <span class="brand-name">我的世界编辑器</span>
+          <span class="brand-name">我的世界<small>生活工作室</small></span>
           <button
             id="sidebar-toggle"
             class="sidebar-toggle"
@@ -54,23 +56,24 @@
             «
           </button>
         </div>
-        <nav id="tabs" class="tabs">
-          <span class="nav-group">观察</span>
+        <nav id="tabs" class="tabs" aria-label="世界导航">
+          <span class="nav-group">她的日常</span>
           <button data-tab="status" class="active" title="控制台">控制台</button>
           <button data-tab="life" title="生活">生活</button>
           <button data-tab="thoughts" title="内心活动">内心活动</button>
           <button data-tab="contacts" title="通讯录">通讯录</button>
           <button data-tab="relationships" title="关系与好感">关系与好感</button>
           <button data-tab="memories" title="生活记忆">生活记忆</button>
+          <span class="nav-group">运行与诊断</span>
           <button data-tab="logs" title="日志">日志</button>
           <button data-tab="model-calls" title="模型调用">模型调用</button>
           <button data-tab="ticks" title="运行记录">运行</button>
           <button data-tab="debug" title="调试">调试</button>
-          <span class="nav-group">编辑</span>
+          <span class="nav-group">她的世界</span>
           <button data-tab="map" title="地图">地图</button>
           <button data-tab="actions" title="动作库">动作库</button>
           <button data-tab="sessions" title="会话">会话</button>
-          <span class="nav-group">配置</span>
+          <span class="nav-group">偏好与管理</span>
           <button data-tab="settings" title="设置">设置</button>
           <button data-tab="presets" title="预设">预设</button>
         </nav>
@@ -105,7 +108,7 @@
             </label>
           </div>
           <div class="topbar-right">
-            <span id="save-state" class="muted"></span>
+            <span id="save-state" class="muted" role="status"></span>
             <button id="theme-toggle" class="ghost" type="button" aria-haspopup="dialog" title="选择外观与配色">◈ 外观</button>
             <button id="save" class="primary">保存</button>
             <button
@@ -129,7 +132,7 @@
           </div>
         </header>
 
-        <main>
+        <main id="world-main" tabindex="-1">
         <section id="tab-life" class="tab">
           <div class="life-toolbar">
             <strong>生活的下文</strong><small id="life-count"></small><span class="life-spacer"></span>

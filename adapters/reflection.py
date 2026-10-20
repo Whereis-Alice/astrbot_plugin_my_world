@@ -7,6 +7,19 @@ from typing import Any
 
 
 class ReflectionMixin:
+    async def _close_response_tasks(self) -> None:
+        """Stop reflection and plugin model requests before persistence is closed."""
+
+        current = asyncio.current_task()
+        pending = {task for task in self._reflection_tasks | set(self._self_initiated_tasks)
+                   if task is not current and not task.done()}
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        self._reflection_tasks.clear()
+        self._self_initiated_tasks.clear()
+
     def _spawn_reflection(self, turn: dict[str, Any]) -> None:
         """把回合复盘放到后台：她说完就完事，复盘慢一点不影响聊天。"""
 

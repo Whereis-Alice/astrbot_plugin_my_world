@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -30,6 +31,14 @@ class AstrBotMessenger:
         self.plugin = plugin
         self._blocked_until: dict[str, float] = {}
         self._fail_notes: dict[str, str] = {}
+        self._sent_texts: ContextVar[list[str] | None] = ContextVar("my_world_sent_texts", default=None)
+
+    def take_sent_texts(self, session_id: str) -> list[str]:
+        """Accepted segments from this task's last send, including partial delivery."""
+
+        texts = self._sent_texts.get() or []
+        self._sent_texts.set(None)
+        return list(texts)
 
     # ---------------- 失败冷却（不重试） ----------------
 
@@ -67,6 +76,8 @@ class AstrBotMessenger:
         )
 
     async def send_text(self, session_id: str, messages: list[str]) -> bool:
+        accepted_texts: list[str] = []
+        self._sent_texts.set(accepted_texts)
         texts = [m for m in messages if m and str(m).strip()]
         if not texts:
             return False
@@ -75,15 +86,23 @@ class AstrBotMessenger:
         # 一条消息一个消息链：平台侧才会显示成多条（分段回复）。
         # 全部塞进同一个 chain 的话，多数平台会拼成一条发出去。
         ok = False
+        failed = False
         for index, text in enumerate(texts):
             try:
                 result = await self.plugin.context.send_message(
                     session_id, MessageChain(chain=[Plain(text=str(text))])
                 )
                 ok = bool(result) or ok
+                if result:
+                    accepted_texts.append(str(text))
+                else:
+                    self.mark_failed(session_id, "平台没有接收消息")
+                    failed = True
+                    break
             except Exception as exc:
                 # 失败就失败：不重试、不补发，后面的几条也不再试（平台已经不通了）
                 self.mark_failed(session_id, exc)
+                failed = True
                 break
             if index == len(texts) - 1:
                 break  # 最后一条不用再等
@@ -91,7 +110,7 @@ class AstrBotMessenger:
             if delay > 0:
                 # 分段之间停一下，群里看起来像她在一句句打字
                 await asyncio.sleep(delay)
-        if ok:
+        if ok and not failed:
             self.mark_sent(session_id)
         return ok
 

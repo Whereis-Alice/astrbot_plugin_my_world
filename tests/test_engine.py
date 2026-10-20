@@ -76,6 +76,11 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.store = ConfigStore(self.data_dir)
         self.store.ensure_files()
         self.store.load_world()
+        # New installs start an automatic life. Each focused fixture opts into
+        # its own background generators so unrelated model calls stay isolated.
+        schedules = self.store.raw_schedules()
+        schedules["auto"]["enabled"] = False
+        self.store.save_schedules(schedules)
         self.store.add_session(
             SESSION,
             session_type="group",
@@ -109,6 +114,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         # 测试里显式配一个，等同于"真实用户已经配好"的状态；
         # 专门测"没配工具会被跳过"的用例会自己把它清掉。
         raw = self.store.raw_world()
+        raw.setdefault("events", {}).setdefault("auto", {})["enabled"] = False
         # 本组验证既有日程/夜晚睡眠行为；自主作息由 test_sleep_rhythm 独立验证。
         raw["sleep"]["mode"] = "fixed"
         for action in raw["actions"]:

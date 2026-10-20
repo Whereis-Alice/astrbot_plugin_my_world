@@ -190,6 +190,28 @@ class MattersAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         with model_context("reply", "被动聊天", SESSION):
             self.assertTrue((await self.engine._background_generate(self.llm, session_id=SESSION, prompt="x", system_prompt="")).ok)
 
+    async def test_chat_reflection_and_manual_creation_do_not_starve_autonomous_life_budget(self):
+        self.engine.world.limits.background_daily_calls = 1
+        self.llm.replies = ["自主计划", "聊后复盘", "管理员生成", "不应启动"]
+        with model_context("plan", "自主决定", SESSION):
+            first = await self.engine._background_generate(
+                self.llm, session_id=SESSION, prompt="plan", system_prompt=""
+            )
+        self.assertTrue(first.ok)
+        for purpose, prompt in (("reflection", "reflect"), ("creation", "create")):
+            with self.subTest(purpose=purpose), model_context(purpose, "人工触发", SESSION):
+                reply = await self.engine._background_generate(
+                    self.llm, session_id=SESSION, prompt=prompt, system_prompt=""
+                )
+                self.assertTrue(reply.ok)
+        with model_context("plan", "再次自主决定", SESSION):
+            blocked = await self.engine._background_generate(
+                self.llm, session_id=SESSION, prompt="blocked", system_prompt=""
+            )
+        self.assertFalse(blocked.ok)
+        budget = self.db.raw.kv_get("background_budget:" + self.engine._today_key(self.clock.now()))
+        self.assertEqual(budget["calls"], 1)
+
     async def test_self_start_after_closed_history_and_switch_off_during_inference(self):
         async with self.engine.session_state(SESSION) as state:
             state.world_time = 600

@@ -135,12 +135,14 @@ class MattersMixin:
         total = 0.0
         # Usually one tick; legacy running saves may contain several unsettled ticks.
         for tick in range(accounted + 1, elapsed + 1):
-            minutes = min(self.tick_seconds / 60, max(0, step["minutes"] - step.get("worked_minutes", 0)))
-            if minutes <= 0:
-                break
             day = self._today_key((self._now() if at is None else at) - (elapsed - tick + .5) * self.tick_seconds)
             if item.get("work_day") != day:
                 item.update(work_day=day, worked_minutes=0, plan_attempts=0)
+            minutes = min(self.tick_seconds / 60,
+                          max(0, step["minutes"] - step.get("worked_minutes", 0)),
+                          max(0, self.world.limits.life_matter_daily_minutes - item.get("worked_minutes", 0)))
+            if minutes <= 0:
+                continue
             item["worked_minutes"] = item.get("worked_minutes", 0) + minutes
             step["worked_minutes"] = step.get("worked_minutes", 0) + minutes
             total += minutes

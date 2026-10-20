@@ -426,15 +426,19 @@ class ScheduleActionsMixin:
         self.reload_config()
         return True
 
-    def _prune_once_schedules(self, day_key: str) -> None:
+    def _prune_once_schedules(self, day_key: str, *, preserve: set[str] | None = None) -> None:
         """日期已经过去的一次性日程留着没用，顺手清掉（每天只扫一次）。"""
 
         owner = self.config_scope_id if "schedules" in (getattr(self.session_config(self.config_scope_id), "config_overrides", {}) or {}) else ""
-        if day_key == self._once_pruned_day.get(owner):
-            return
-        self._once_pruned_day[owner] = day_key
         raw = self.scoped_schedules()
         items = list(raw.get("schedules") or [])
+        # Recheck when a protected carry-over completes, is cancelled or expires.
+        marker = (day_key, tuple(sorted(preserve or ())),
+                  tuple((str(item.get("id") or ""), str(item.get("date") or ""))
+                        for item in items if item.get("once")))
+        if marker == self._once_pruned_day.get(owner):
+            return
+        self._once_pruned_day[owner] = marker
         kept = [
             item
             for item in items
@@ -442,6 +446,7 @@ class ScheduleActionsMixin:
                 item.get("once")
                 and str(item.get("date") or "")
                 and str(item.get("date")) < day_key
+                and str(item.get("id") or "") not in (preserve or set())
             )
         ]
         if len(kept) == len(items):

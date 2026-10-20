@@ -88,6 +88,8 @@ class WebApiMixin(LifeApiMixin):
         def register(path, handler, methods, description):
             @functools.wraps(handler)
             async def scoped_handler(*args, **kwargs):
+                if self.retired:
+                    return error_response("插件已停止，请启用或重新加载后再试", status_code=503)
                 method = str(getattr(request, "method", methods[0])).upper()
                 payload = (await request.json(default={}) or {}) if method == "POST" else request.query
                 if not hasattr(payload, "get"):
@@ -112,6 +114,8 @@ class WebApiMixin(LifeApiMixin):
                         if "settings" not in (session.config_overrides or {}):
                             return error_response("请先为此会话启用并保存独立设置")
                     return await handler(*args, **kwargs)
+            self._web_api_handlers = getattr(self, "_web_api_handlers", set())
+            self._web_api_handlers.add(scoped_handler)
             return self.context.register_web_api(path, scoped_handler, methods, description)
         p = plugin_id
         register(f"/{p}/config/scope", self.api_put_scope, ["POST"], "保存会话独立配置")
