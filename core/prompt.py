@@ -2300,6 +2300,11 @@ class PromptBuilder:
             if current is not None and str(current.get("since") or ""):
                 header += f"（{current.get('since')} 起）"
             lines.append(header)
+            lines.append("- 关系身份和相处档位只提供背景，不规定性格、语气或亲昵表现；具体言行遵循原有人设和当前情境。")
+            for name in bonds:
+                definition = self.world.profile.bond_by_name(name)
+                if definition and definition.prompt.strip():
+                    lines.append(f"- 关系「{name}」的自定义补充：{definition.prompt.strip()}")
             for item in (_field(person, "claims") or [])[:2]:
                 since = str(item.get("since") or "")
                 when = f"（{since}）" if since else ""
@@ -2351,8 +2356,8 @@ class PromptBuilder:
             for text in self._fact_lines(person, skip_weaver=skip_weaver_facts):
                 lines.append(f"- {text}")
             level_prompt = str(_field(level, "prompt", "") or "")
-            if level_prompt:
-                lines.append(f"- {level_prompt}")
+            if level_prompt.strip():
+                lines.append(f"- 当前档位的自定义补充：{level_prompt.strip()}")
             relation = _field(person, "relationship") or {}
             for reason in _field(relation, "reasons", []) or []:
                 lines.append(f"- {reason}")
@@ -2360,10 +2365,8 @@ class PromptBuilder:
             if manual:
                 lines.append("- 仅管理员可确立或更换的身份：" + "、".join(manual[:16])
                              + "。不能因好感、昵称或玩笑自行认定；已有身份也不能擅自替换。")
-            # 这一档叫什么、再熟一点到哪儿：只讲"现在到哪儿为止"，
-            # 不要把四级阶梯全铺给她（用不上的档位写进去只会分散注意力）。
+            # Only authored boundaries apply; distance alone never scripts behavior.
             level_name = str(_field(level, "name", "") or "")
-            next_name = str(_field(level, "next_name", "") or "")
             deny = [
                 str(item) for item in (_field(level, "deny") or [])
                 if str(item)
@@ -2371,17 +2374,13 @@ class PromptBuilder:
             if deny:
                 where = f"（你们现在是「{level_name}」这一档）" if level_name else ""
                 lines.append(
-                    f"- 这一档还不能做：{'、'.join(deny)}{where}。**不做，也不提**。"
-                    "他要是开口要，用你自己的语气拒掉或者把话题岔开（可以带情绪、可以嘴硬，"
-                    "但别答应、也别做完再说）。"
+                    f"- 这一档还不能做：{'、'.join(deny)}{where}。这是已配置的行为边界；"
+                    "不因身份或好感自动解除，如何表达由原有人设和当前情境决定。"
                 )
-            if next_name:
-                lines.append(f"- 再熟一点才到「{next_name}」那一档：比现在更亲的那些动作，先别碰。")
-            # 关系本身是负面的时候统一压住：不然"讨厌的人"那档全靠各自的文案自己扛。
+            # A negative identity is context, not an instruction to adopt a tone.
             if bool(_field(person, "negative", False)):
                 lines.append(
-                    "- 你对他没那个意思：**不主动找他、不撒娇、不做任何亲昵动作**；"
-                    "他套近乎就冷淡回掉，别给他台阶。"
+                    "- 当前包含负面关系身份；具体态度和回应方式遵循原有人设及当下情境。"
                 )
             digest = str(_field(person, "digest", "") or "")
             if digest and not lines:

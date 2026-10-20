@@ -63,6 +63,9 @@ class AutonomyMixin:
             elif not self.proactive_chat_allowed(session_id):
                 outcome.notes.append("自主搭话已关闭，继续安静生活")
                 await self._quiet_rule_plan(state, node, outcome)
+            elif self.contact_status(session_id)["reason"]:
+                outcome.notes.append(self.contact_status(session_id)["reason"] + "，继续安静生活")
+                await self._quiet_rule_plan(state, node, outcome)
             elif not self.engagement.can_speak(state):
                 outcome.notes.append("处于发言冷却期，继续安静生活")
                 await self._quiet_rule_plan(state, node, outcome)
@@ -250,7 +253,8 @@ class AutonomyMixin:
         if self.world.sleep.mode == "autonomous" and state.sleep_rhythm.get("decision") == "sleep":
             await self._run_rhythm_sleep(state, outcome)
             return
-        if not self.proactive_chat_allowed(outcome.session_id) or not self.engagement.can_speak(state):
+        if (not self.proactive_chat_allowed(outcome.session_id) or not self.engagement.can_speak(state)
+                or self.contact_status(outcome.session_id)["reason"]):
             outcome.notes.append("抵达新地点，冷却期内继续安静生活")
             await self._quiet_rule_plan(state, node, outcome)
             return

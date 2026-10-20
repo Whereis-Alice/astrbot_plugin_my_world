@@ -185,12 +185,14 @@ class ProfileStore:
         *,
         group_of: Any = None,
         day_provider: Callable[[float], str] | None = None,
+        now_provider: Callable[[], float] | None = None,
     ) -> None:
         self.db = db
         self.world = world
         self._group_of = group_of
         """旧数据迁移时使用；新画像、关系和好感均按实际会话保存。"""
         self._day_provider = day_provider
+        self._now_provider = now_provider or time.time
 
     # ---------------- 基础 ----------------
 
@@ -1084,21 +1086,11 @@ class ProfileStore:
     def proactive_quota_left(
         self, session_id: str, user_id: str, *, now: float | None = None
     ) -> int:
-        """今天还能**主动**去找他几次。
-
-        上限来自这个人的**当前亲密度级别**（分级表里的「每天最多主动找他几次」）：
-        陌生人 / 客气是 0，熟人 1、朋友 2、亲近 3、特别的人 4——越亲近越会主动去找他。
-        """
-
-        if not self.enabled():
-            return 0
-        view = self.view(session_id, user_id)
-        if view is None:
-            return 0
-        cap = max(0, int(getattr(view.level, "proactive_per_day", 0) or 0))
+        """同一实际会话内，今天还能主动联系这个人几次；档位不规定次数。"""
+        cap = max(0, int(self.config.proactive_person_daily_max))
         if cap <= 0:
             return 0
-        stamp = float(now if now is not None else time.time())
+        stamp = float(now if now is not None else self._now_provider())
         key, uid = self.group_key(session_id), str(user_id or "").strip()
         if not key or not uid:
             return 0
@@ -1111,7 +1103,7 @@ class ProfileStore:
     ) -> None:
         """记一次"她主动找他"（每天按人计数）。"""
 
-        stamp = float(now if now is not None else time.time())
+        stamp = float(now if now is not None else self._now_provider())
         key, uid = self.group_key(session_id), str(user_id or "").strip()
         if not key or not uid:
             return

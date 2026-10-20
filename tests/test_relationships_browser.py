@@ -53,7 +53,7 @@ SOCIAL_BRIDGE = r"""
         return resolve();
       }
       if (endpoint === 'relationships/rules') return {profile: clone(socialRules), fingerprint: 'initial', actions: [
-        {id: 'selfie', name: '自拍'}, {id: 'leg_photo', name: '拍腿的照片'}, {id: 'hug', name: '抱抱'}]};
+        {id: 'selfie', name: '自拍', enabled: true}, {id: 'leg_photo', name: '拍腿的照片', enabled: false}, {id: 'hug', name: '抱抱', enabled: true}]};
       if (endpoint === 'profile/contacts') {
         const result = await original.apiGet(endpoint, params);
         result.people = result.people.slice(0, 8).map((item, i) => ({...item,
@@ -378,7 +378,7 @@ class RelationshipsBrowserTests(unittest.TestCase):
         self.page.get_by_text("从身份模板添加", exact=True).click()
         self.page.get_by_role("button", name="同学 ＋", exact=True).click()
         card = self.page.locator(".rule-card").filter(has=self.page.locator("summary strong", has_text="同学"))
-        card.locator("summary").click()
+        card.locator(":scope > summary").click()
         expect(card.get_by_label("允许自然形成", exact=True)).not_to_be_checked()
         expect(card.get_by_label("允许越过通常上限", exact=True)).not_to_be_checked()
         self.assertEqual(self.page.evaluate("socialWrites.length"), 0)
@@ -387,6 +387,70 @@ class RelationshipsBrowserTests(unittest.TestCase):
         added = self.page.evaluate("socialWrites[0].params.profile.bonds.find(x=>x.name==='同学')")
         self.assertFalse(added["auto_form"])
         self.assertEqual(added["group"], "")
+        self.assertEqual(self.errors, [])
+
+    def test_optional_boundaries_use_enabled_action_names_and_preserve_custom_entries(self):
+        self.page.evaluate("""() => {
+          socialRules.levels[0].deny = ['leg_photo', '<img src=x onerror=alert(1)>'];
+          socialRules.levels[0].deny_customized = true;
+        }""")
+        self.page.locator(".people-management > summary").click()
+        self.page.locator("#relationships-rules").click()
+        self.page.get_by_role("button", name="相处档位", exact=True).click()
+        first = self.page.locator(".rule-card").first
+        first.locator(":scope > summary").click()
+        self.assertEqual(first.get_by_label("如何称呼").count(), 0)
+        self.assertEqual(first.get_by_label("每天最多主动联系", exact=True).count(), 0)
+        boundary = first.locator(".relationship-boundary")
+        expect(boundary).to_contain_text("拍腿的照片 · 已停用")
+        self.assertEqual(boundary.locator("img").count(), 0)
+        expect(boundary.get_by_label("拍腿的照片", exact=True)).to_have_count(0)
+        expect(boundary.get_by_label("自拍", exact=True)).to_be_visible()
+        boundary.get_by_label("搜索已启用的动作").fill("抱")
+        expect(boundary.locator(".boundary-option")).to_have_count(1)
+        boundary.get_by_label("抱抱", exact=True).check()
+        expect(boundary).to_contain_text("已限制 3 项")
+        boundary.get_by_role("button", name="移除限制：<img src=x onerror=alert(1)>", exact=True).click()
+        first.locator(".relationship-prompt > summary").click()
+        first.get_by_label("档位额外说明", exact=True).fill("最近在慢慢和解")
+        self.page.evaluate("document.documentElement.dataset.palette = 'aurora'; document.documentElement.dataset.theme = 'dark'")
+        boundary.scroll_into_view_if_needed()
+        self.host.screenshot(path=str(self.shots / "relationship-options-desktop.png"))
+        self.host.set_viewport_size({"width": 390, "height": 844})
+        self.page.evaluate("document.documentElement.dataset.palette = 'cloud'; document.documentElement.dataset.theme = 'light'")
+        boundary.scroll_into_view_if_needed()
+        self.assertTrue(self.page.locator("#dialog").evaluate("n => n.scrollWidth <= n.clientWidth + 1"))
+        self.host.screenshot(path=str(self.shots / "relationship-options-mobile.png"))
+        self.page.locator("#dialog-ok").click()
+        self.page.wait_for_function("socialWrites.length === 1")
+        saved = self.page.evaluate("socialWrites[0].params.profile.levels[0]")
+        self.assertEqual(saved["deny"], ["leg_photo", "hug"])
+        self.assertTrue(saved["deny_customized"])
+        self.assertEqual(saved["prompt"], "最近在慢慢和解")
+        self.assertTrue(saved["prompt_customized"])
+        self.assertNotIn("address", saved)
+        self.assertNotIn("proactive_per_day", saved)
+        self.assertEqual(self.errors, [])
+
+    def test_default_optional_rules_are_collapsed_and_cancel_is_read_only(self):
+        self.page.locator(".people-management > summary").click()
+        self.page.locator("#relationships-rules").click()
+        self.page.get_by_role("button", name="相处档位", exact=True).click()
+        first = self.page.locator(".rule-card").first
+        first.locator(":scope > summary").click()
+        self.assertFalse(first.locator(".relationship-prompt").evaluate("n => n.open"))
+        self.assertFalse(first.locator(".relationship-boundary").evaluate("n => n.open"))
+        expect(first.locator(".relationship-boundary")).to_contain_text("未添加 · 遵循人设")
+        first.locator(".relationship-boundary > summary").click()
+        first.get_by_label("自拍", exact=True).check()
+        self.page.locator("#dialog-cancel").click()
+        self.assertEqual(self.page.evaluate("socialWrites.length"), 0)
+        self.page.locator(".people-management > summary").click()
+        self.page.locator("#relationships-rules").click()
+        self.page.get_by_role("button", name="相处档位", exact=True).click()
+        first = self.page.locator(".rule-card").first
+        first.locator(":scope > summary").click()
+        self.assertFalse(first.locator(".relationship-boundary").evaluate("n => n.open"))
         self.assertEqual(self.errors, [])
 
     def test_gallery_dossier_and_mobile_relationships_have_no_horizontal_overflow(self):

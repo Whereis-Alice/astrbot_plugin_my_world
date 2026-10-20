@@ -361,7 +361,7 @@ class ProfileTestCase(unittest.TestCase):
         self.store.adjust_affinity(SESSION, "42", -60, reason="他欺负过她")
         view = self.store.view(SESSION, "42")
         self.assertEqual(view.level.name, "敌意")
-        self.assertIn("抱抱", [self.store.action_label(item) for item in view.level.deny])
+        self.assertEqual(view.level.deny, [])  # Distance does not prescribe actions.
 
     def test_plain_bond_caps_intimacy_even_with_full_affinity(self):
         """普通关系聊再久也上不去：群友的好感拉满，也只能到"熟人"级。"""
@@ -373,8 +373,9 @@ class ProfileTestCase(unittest.TestCase):
         view = self.store.view(SESSION, "42")
         self.assertEqual(view.affinity, 100.0)
         self.assertEqual(view.level.name, "熟人")
-        denied = [self.store.action_label(item) for item in view.level.deny]
-        self.assertIn("亲亲", denied)
+        self.assertEqual(view.level.deny, [])
+        self.world.profile.levels[view.level_index].deny = ["kiss"]
+        self.assertEqual(self.store.view(SESSION, "42").level.deny, ["kiss"])
 
     def test_romance_bond_unlocks_the_top_level(self):
         self.store.touch(SESSION, "42", "小明")

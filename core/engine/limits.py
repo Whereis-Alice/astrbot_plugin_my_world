@@ -20,6 +20,8 @@ class LimitsMixin:
         state.autonomous_count_hour += 1
 
     def _within_hourly_limit(self, state: WorldState) -> bool:
+        if self.world.limits.max_autonomous_per_hour <= 0:
+            return False
         hour = self._hour_index(state)
         if state.autonomous_hour_marker != hour:
             return True

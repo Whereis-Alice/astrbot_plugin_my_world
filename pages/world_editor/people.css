@@ -160,6 +160,17 @@ main:has(#tab-contacts.active) { padding: 22px 26px 18px; }
 .rule-template-options { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 15px; }
 .rule-denied { margin: 17px 0; }
 .rule-denied > summary { cursor: pointer; color: var(--text-2); font-size: 12px; }
+.relationship-prompt {min-width:0;margin:10px 0;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:linear-gradient(125deg,var(--accent-soft),transparent 70%),var(--bg-soft);}
+.relationship-prompt>summary {display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;color:var(--text-2);font-size:12px;list-style:none;}
+.relationship-prompt>summary strong {font-weight:550;}
+.relationship-prompt>summary strong::before {content:"▸";margin-right:8px;color:var(--accent);}
+.relationship-prompt[open]>summary strong::before {content:"▾";}
+.relationship-prompt>summary span {font-size:11px;color:var(--muted);}
+.relationship-prompt>p {font-size:12px;line-height:1.8;margin:12px 0;}
+.relationship-prompt-field {display:grid;gap:8px;color:var(--text-2);font-size:12px;min-width:0;}
+.relationship-prompt textarea {box-sizing:border-box;width:100%;min-width:0;resize:vertical;line-height:1.7;}
+.relationship-prompt>button {margin-top:10px;}
+.relationship-prompt:not([open])>:not(summary) {display:none;}
 .rule-action-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 11px; margin-top: 14px; max-height: 230px; overflow: auto; }
 .rule-growth-stage { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; }
 @media (max-width: 650px) { .rule-card-fields { grid-template-columns: 1fr; } .rule-action-options { grid-template-columns: repeat(2, minmax(0, 1fr)); } .rule-growth-stage { grid-template-columns: 1fr; } }
@@ -212,3 +223,24 @@ main:has(#tab-contacts.active) { padding: 22px 26px 18px; }
   #tab-contacts .weaver-field-list { grid-template-columns: minmax(0, 1fr); }
 }
 @media (prefers-reduced-motion: reduce) { .people-drawer { animation: none; } .social-card, #contacts-list .contact-card { transition: none; } }
+.relationship-boundary { margin: 12px 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); min-width: 0; }
+.relationship-boundary > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; font-size: 12px; }
+.relationship-boundary > summary span { color: var(--muted); font-size: 11px; }
+.relationship-boundary > p { font-size: 12px; line-height: 1.7; }
+.relationship-boundary > input { width: 100%; box-sizing: border-box; margin: 8px 0; }
+.boundary-selected { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.boundary-selected[hidden] { display: none; }
+.boundary-chip { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line)); border-radius: 8px; background: color-mix(in srgb, var(--accent) 9%, var(--panel)); padding: 6px 9px; color: var(--text); font-size: 12px; }
+.boundary-chip span:first-child { overflow-wrap: anywhere; }
+.boundary-chip span:last-child { color: var(--muted); }
+.boundary-options { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(150px, 100%), 1fr)); gap: 5px; max-height: 240px; overflow-y: auto; overscroll-behavior: contain; }
+.boundary-option { display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 8px; font-size: 12px; cursor: pointer; min-width: 0; }
+.boundary-option:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.boundary-option:has(input:checked) { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.boundary-option input { flex: 0 0 auto; width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
+.boundary-option span { overflow-wrap: anywhere; }
+.form .boundary-options > .boundary-option { display: flex; align-items: center; justify-content: flex-start; flex-direction: row; gap: 8px; text-align: left; }
+.form .boundary-options > .boundary-option input { width: 15px; min-width: 15px; padding: 0; }
+.relationship-boundary > summary strong { font-weight: 550; }
+.relationship-boundary > summary strong::before { content: "▸"; margin-right: 8px; color: var(--accent); }
+.relationship-boundary[open] > summary strong::before { content: "▾"; }

@@ -1383,7 +1383,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("他上次跟你说话是 2 小时前", section, f"实际这一段是：\n{section}")
 
     async def test_plain_bond_keeps_intimacy_limits_in_the_prompt(self):
-        """普通关系（群友）就算好感拉满，提示词里也写着"这一档还不能做：亲亲"。"""
+        """普通关系仍限制距离；动作限制仅在管理员明确配置后注入。"""
 
         self.llm.replies = [SAY_REPLY]
         ctx = self.ctx(text="在吗", user_id="7", user_name="小明")
@@ -1392,6 +1392,9 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             ctx.session_id, ctx.user_id, type="群友", asserted_by="她的判断"
         )
         self.engine.profiles.adjust_affinity(ctx.session_id, ctx.user_id, 100, reason="测试")
+        level = self.engine.profiles.view(ctx.session_id, ctx.user_id).level
+        self.assertEqual(level.deny, [])
+        level.deny = ["kiss"]
 
         await self.engine.handle_reply(ctx)
         prompt = self.llm.calls[-1]["system_prompt"]
@@ -7260,17 +7263,19 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             block = self.engine.miss_block(state)
         self.assertIn("刚认识的", block)
 
-    async def test_proactive_contact_quota_follows_the_level(self):
-        """「每天最多主动找他几次」按级别算：陌生人 0 次（不主动动手），朋友 2 次。"""
+    async def test_proactive_contact_quota_is_shared_by_levels(self):
+        """档位不规定主动次数；只有统一的联系保护额度。"""
 
         self.engine.profiles.touch(SESSION, "42", "小明")
-        self.assertEqual(self.engine.profiles.proactive_quota_left(SESSION, "42"), 0)
+        self.assertEqual(self.engine.profiles.proactive_quota_left(SESSION, "42"), 2)
         self._make_close_friend("42")
         self.assertEqual(self.engine.profiles.proactive_quota_left(SESSION, "42"), 2)
         self.engine.profiles.note_proactive(SESSION, "42")
         self.assertEqual(self.engine.profiles.proactive_quota_left(SESSION, "42"), 1)
 
-        # 她主动对某人做事（不是用户日程）：额度是 0 时直接跳过
+        # 她主动对某人做事（不是用户日程）：额度耗尽时直接跳过。
+        self.engine.profiles.note_proactive(SESSION, "9")
+        self.engine.profiles.note_proactive(SESSION, "9")
         await self.set_state(state="idle", current_action=None, current_plan=None)
         async with self.engine.session_state(SESSION) as state:
             outcome = TickOutcome(session_id=SESSION)
@@ -12458,7 +12463,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         await self.engine._maybe_desire_push(state, node, outcome, SESSION)
         prompt = self.llm.calls[-1]["prompt"]
         self.assertIn("demo_self_option", prompt)
-        self.assertIn("不算被满足", prompt)
+        self.assertIn("以人设与实际情境为准", prompt)
+        self.assertNotIn("不算被满足", prompt)
 
     async def test_nobody_to_find_but_she_can_still_solve_it_herself(self):
         """没人可找、但扩展给了"自己解决"这个动作时，那一轮照样要摆给她

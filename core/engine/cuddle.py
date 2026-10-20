@@ -53,18 +53,13 @@ class CuddleMixin:
         return float(state.desire) * weight >= threshold
 
     def _desire_push_left(self, state: WorldState) -> int:
-        """今天还能推几次（整个会话组一份，按世界日期算）。"""
+        """生活组剩余实际联系额度；动机评估次数只作运行记录。"""
 
-        cap = max(
-            0, int(getattr(self.world.state_dynamics, "desire_push_daily_max", 0) or 0)
-        )
-        if cap <= 0:
-            return 0
         today = self._today_key(self._now())
         if str(state.desire_push_day or "") != today:
             state.desire_push_day = today
             state.desire_push_count = 0
-        return max(0, cap - int(state.desire_push_count or 0))
+        return self.contact_status(state.session_id)["left"]
 
     def _cuddle_people(self, state: WorldState, session_id: str) -> list[dict[str, Any]]:
         """能去贴的人，**按亲密度从高到低**排。
@@ -141,11 +136,9 @@ class CuddleMixin:
                 + (f"。**跟他不能做**：{deny}" if deny else "")
             )
         parts = [
-            f"你这会儿**很想被人碰一碰**（欲求 {float(state.desire):.2f}）。"
-            "不是非得做什么——想凑过去蹭一下、想被摸摸头、想拉他的手、想凑近了说句话、"
-            "或者只想让他注意到你，都算。**想要就直接说**——说清你想被怎么碰、"
-            "想让他在哪儿、想他怎么做，别只绕着「抱紧我一点」打转；"
-            "**做什么、对谁做、在哪儿做都由你定。**"
+            f"你此刻希望获得陪伴或接触的感觉较强（欲求 {float(state.desire):.2f}）。"
+            "这是当前状态，不规定你必须亲昵、撒娇或联系别人。"
+            "如何理解和回应这份感觉，请遵循原有人设和当前情境。"
         ]
         if who_lines:
             parts.append(
@@ -153,8 +146,7 @@ class CuddleMixin:
                 + "\n".join(who_lines)
                 + "\n\n能做的肢体接触（括号里是贴得多近，0~1）：\n"
                 + ("\n".join(actions) or "（这个地点这会儿没有能做的接触动作）")
-                + "\n\n在哪说也由你定：想私密、想撒娇就发他的私聊；"
-                "想让别人看见你们关系好就发群里（计划里写 send_to）。"
+                + "\n\n若决定联系，请按话题隐私、关系和场合选择群聊或私聊（计划里写 send_to）。"
             )
         else:
             parts.append(
@@ -164,10 +156,7 @@ class CuddleMixin:
         if selfs:
             listed = "、".join(f"{action_id}（{label}）" for action_id, label in selfs)
             parts.append(
-                "**也可以自己解决**（如果你不想让任何人知道、或者实在没人在）："
-                f"{listed}。\n"
-                "　自己解决不用找谁、也不会被谁看见，但**只是没那么急了**，不算被满足——"
-                "做完会有点空落、反而更想他；被人抱着是完全不一样的。"
+                f"也可以选择不涉及他人的活动：{listed}。是否适合、会有什么感受，以人设与实际情境为准。"
             )
         parts.append(
             "**也可以什么都不做**：如果这会儿不方便、或者你其实不太想，"
@@ -255,7 +244,7 @@ class CuddleMixin:
             ),
             "enabled": bool(getattr(config, "desire_push_enabled", True)),
             "push_left": self._desire_push_left(state),
-            "push_cap": max(0, int(getattr(config, "desire_push_daily_max", 0) or 0)),
+            "push_cap": self.contact_status(state.session_id)["cap"],
             "last_push_at": float(getattr(state, "desire_push_at", 0.0) or 0.0),
         }
 
@@ -298,9 +287,8 @@ class CuddleMixin:
         where = self._person_places(state, uid)
         hint = (
             f"你这会儿特别想 {name}（{idle or '刚想起来'}），想去跟他说句话。\n"
-            "**在哪说由你自己决定**：想私密一点、想撒娇、想问他一句只给他听的话，"
-            "就发到他的私聊；想让别人都看到你们关系好，就发到你们都在的群里。"
-            "想先做点什么（走动、倒杯茶顺手提醒他喝水）再开口也可以，一起排进计划。\n"
+            "是否联系、说些什么，都遵循原有人设和当前情境；也可以先继续自己的生活。"
+            "若决定联系，按话题隐私与场合选择群聊或私聊。\n"
             "注意：**换地方说 ≠ 把刚才那句话再说一遍**。"
             "如果你刚在群里说过一句、没人理，那就别把它原样搬到私聊——"
             "要么接着往下说（“刚才那个…”），要么说点别的（你正在做的事、你自己的事）。\n"
@@ -317,9 +305,9 @@ class CuddleMixin:
         outcome.session_id = self._freeze_plan_target(
             state, outcome, plan, fallback=session_id
         )
+        plan["contact_people"] = [uid]
         await self._apply_plan(state, node, outcome, plan)
         self._count_autonomous(state)
-        self.profiles.note_proactive(self.profile_session(state, uid), uid)
         state.miss[uid] = 0.0
         # 刚找过他：下一次"想他"重新随机等一段时间
         state.miss_ready_at[uid] = self._next_miss_open_at(self._now())

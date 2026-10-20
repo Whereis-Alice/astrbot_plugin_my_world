@@ -23,6 +23,12 @@ def speech_origin(source):
                 kind = (bound["state"].drowsy_sleep_step or {}).get("speech_kind", "")
             elif source == "plan":
                 plan = bound["state"].current_plan or {}
+                outcome.contact_id = plan.get("contact_id") or plan.get("id") or outcome.contact_id
+                outcome.contact_people.update(plan.get("contact_people") or [])
+                for candidate in plan.get("steps") or []:
+                    definition = self.world.action_map().get(candidate.get("action"))
+                    if definition is not None and definition.target_type == "user" and candidate.get("target"):
+                        outcome.contact_people.add(str(candidate["target"]))
                 steps = plan.get("steps") or []
                 index = int(plan.get("current_step") or 0)
                 step = steps[index] if 0 <= index < len(steps) else {}
@@ -33,6 +39,10 @@ def speech_origin(source):
                     kind = "reply"
             else:
                 kind = source
+            if source == "completion":
+                action = bound["action"]
+                outcome.contact_id = action.get("contact_id") or action.get("plan_id") or outcome.contact_id
+                outcome.contact_people.update(action.get("contact_people") or [])
             outcome.speech_kind = kind
             try:
                 return await function(self, *args, **kwargs)

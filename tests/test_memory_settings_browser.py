@@ -50,6 +50,37 @@ class MemorySettingsBrowserTests(unittest.TestCase):
         expect(self.page.locator('#dialog-body').get_by_text('嵌入服务 API 基址（含 /v1）', exact=True)).to_have_count(0)
         self.assertEqual(self.errors, [])
 
+    def test_relationship_settings_share_optional_name_picker_and_contact_controls(self):
+        self.install_models()
+        self.page.get_by_role('button', name='记忆与资料', exact=True).click()
+        # Find the existing settings editor through its card, without relying on a translated title.
+        level = self.page.locator('.level-card').first
+        self.page.get_by_text('亲密度分级', exact=True).click()
+        level.locator(':scope > summary').click()
+        expect(level).not_to_contain_text('每天主动')
+        expect(level).not_to_contain_text('称呼')
+        expect(level.locator('.relationship-boundary')).to_contain_text('未添加 · 遵循人设')
+        level.locator('.relationship-boundary > summary').click()
+        level.get_by_label('搜索已启用的动作').fill('抱')
+        expect(level.locator('.boundary-option')).to_have_count(1)
+        level.get_by_label('抱抱', exact=True).check()
+        expect(level.get_by_role('button', name='移除限制：抱抱', exact=True)).to_be_visible()
+        level.locator('.relationship-prompt > summary').click()
+        level.get_by_label('档位额外说明', exact=True).fill('一起照料过花园')
+        for width, height, palette in [(1440, 1000, 'aurora'), (390, 844, 'cloud')]:
+            self.host.set_viewport_size({'width':width,'height':height})
+            self.page.evaluate("p=>{document.documentElement.dataset.palette=p;document.documentElement.dataset.theme=p==='cloud'?'light':'dark'}", palette)
+            level.scroll_into_view_if_needed()
+            self.assertTrue(level.evaluate('n=>n.scrollWidth<=n.clientWidth+1'))
+            self.host.screenshot(path=str(self.shots/f'relationship-settings-{width}.png'))
+        self.page.get_by_role('button', name='聊天与表达', exact=True).click()
+        expect(self.page.get_by_label('每天最多主动联系', exact=True)).to_be_visible()
+        expect(self.page.get_by_label('每天最多联系同一个人', exact=True)).to_be_visible()
+        self.assertEqual(self.page.get_by_label('每天最多主动联系', exact=True).count(), 1)
+        self.page.locator('[data-section-title="主动联系"]').scroll_into_view_if_needed()
+        self.host.screenshot(path=str(self.shots/'proactive-contact-settings.png'))
+        self.assertEqual(self.errors, [])
+
     def test_memory_shortcut_cancel_and_all_themes_remain_readable(self):
         self.install_models()
         self.capture_writes()

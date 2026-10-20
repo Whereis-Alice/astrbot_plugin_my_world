@@ -144,7 +144,7 @@ class ConfigMixin:
         memory.semantic.provider = self.embedding
         # 用户画像：按实际会话各存一份，记忆回答"发生过什么"，它回答"这个人是谁"
         profiles = ProfileStore(
-            self.db.raw, world, group_of=self.state_key, day_provider=self._today_key
+            self.db.raw, world, group_of=self.state_key, day_provider=self._today_key, now_provider=self._now
         )
         # 睡眠整理：消化记忆 + 更新画像 + 写梦（小睡只做轻整理）
         consolidator = Consolidator(

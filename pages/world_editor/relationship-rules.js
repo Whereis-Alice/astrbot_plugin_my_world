@@ -1,4 +1,6 @@
+import { relationshipBoundaryEditor } from "./relationship-boundary.js";
 import { applyDetailedLevels } from "./relationship-preset.js";
+import { relationshipPromptEditor } from "./relationship-prompt.js";
 
 const TEMPLATES = [
   ["同学", "classmate", 0, 30, "日常身份"], ["同事", "colleague", 0, 30, "日常身份"],
@@ -70,10 +72,10 @@ export async function openRelationshipRulesEditor({ el, apiGet, apiPost,
         for (const [key, label] of [["auto_form", "允许自然形成"], ["allow_boundary_crossing", "允许越过通常上限"], ["unique", "唯一身份"], ["negative", "负面关系"]])
           toggles.append(check(label, bond[key], value => {bond[key] = value;}));
         const remove = button("删除此关系类型", () => {profile.bonds.splice(index, 1); redraw();}, "ghost small danger");
-        card.append(head, fields, toggles, remove); return card;
+        card.append(head, fields, toggles, relationshipPromptEditor({item: bond, kind: "关系", el}), remove); return card;
       }
       function levels() {
-        content.append(el("p", "people-muted", "档位描述相处距离，关系描述身份。好感先匹配档位，再受身份上下限约束；负好感与生气仍会影响表现。"));
+        content.append(el("p", "people-muted", "档位只描述相处距离，关系只描述身份；具体言行由原有人设和当前情境决定。好感仍按身份上下限匹配档位，需要时可添加额外说明。"));
         const preset = el("details", "rule-template-library");
         preset.append(el("summary", "", "使用十档相处方案"),
           el("p", "people-muted", "戒备 → 疏远 → 礼貌 → 初识 → 熟悉 → 投缘 → 信任 → 亲密 → 知己 → 相依。应用会换算身份上下限，保存前可取消。"),
@@ -86,22 +88,9 @@ export async function openRelationshipRulesEditor({ el, apiGet, apiPost,
           const fields = el("div", "rule-card-fields");
           fields.append(field("档位名称", input(level.name, value => {level.name = value; head.querySelector("strong").textContent = value;})),
             field("好感起点（包含）", input(level.min_affinity, value => {level.min_affinity = value;}, "number")),
-            field("好感终点", input(level.max_affinity, value => {level.max_affinity = value;}, "number")),
-            field("如何称呼", input(level.address || "", value => {level.address = value;})),
-            field("每天最多主动联系", input(level.proactive_per_day || 0, value => {level.proactive_per_day = value;}, "number")));
-          const text = el("textarea"); text.value = level.prompt || ""; text.rows = 3;
-          text.addEventListener("input", () => {level.prompt = text.value;});
-          const denied = el("details", "rule-denied");
-          denied.append(el("summary", "", `禁止动作 · ${(level.deny || []).length} 项`));
-          const choices = el("div", "rule-action-options");
-          const actions = new Map((loaded.actions || []).map(action => [action.id, action.name]));
-          (level.deny || []).forEach(id => {if (!actions.has(id)) actions.set(id, id);});
-          for (const [id, name] of actions) choices.append(check(name, (level.deny || []).includes(id), value => {
-            const list = new Set(level.deny || []); value ? list.add(id) : list.delete(id); level.deny = [...list];
-            denied.querySelector("summary").textContent = `禁止动作 · ${list.size} 项`;
-          }));
-          denied.append(choices);
-          card.append(head, fields, field("这一档的相处方式", text), denied, button("删除此档位", () => {
+            field("好感终点", input(level.max_affinity, value => {level.max_affinity = value;}, "number")));
+          const denied = relationshipBoundaryEditor({item: level, actions: loaded.actions || [], el});
+          card.append(head, fields, relationshipPromptEditor({item: level, kind: "档位", el}), denied, button("删除此档位", () => {
             if (profile.levels.length <= 1) {toast("至少保留一个档位"); return;}
             profile.levels.splice(index, 1);
             for (const bond of profile.bonds) for (const key of ["floor", "cap"])
@@ -112,7 +101,7 @@ export async function openRelationshipRulesEditor({ el, apiGet, apiPost,
         });
         content.append(button("＋ 添加一个相处档位", () => {
           const end = Number(profile.levels.at(-1)?.max_affinity || 0);
-          profile.levels.push({name: "新档位", min_affinity: end, max_affinity: end + 10, deny: [], prompt: "", proactive_per_day: 0, address: ""}); redraw();
+          profile.levels.push({name: "新档位", min_affinity: end, max_affinity: end + 10, deny: [], deny_customized: false, prompt: ""}); redraw();
         }));
       }
       function growth() {

@@ -437,6 +437,8 @@ class ActionsRunMixin:
                 # 这个动作是在哪个会话里被安排/触发的：做完的续说回那儿
                 "session": outcome.home(),
                 "speech_kind": outcome.speech_kind,
+                "contact_id": outcome.contact_id,
+                "contact_people": sorted(outcome.contact_people),
                 "silent_followup": SILENT_FOLLOWUP.get() or bool(from_plan and (state.current_plan or {}).get("silent_followup")),
                 "desc": definition.name or definition.id,
             }
@@ -605,6 +607,8 @@ class ActionsRunMixin:
                 "desc": definition.name or definition.id,
                 "reply_planned": reply_planned,
                 "speech_kind": outcome.speech_kind,
+                "contact_id": outcome.contact_id,
+                "contact_people": sorted(outcome.contact_people),
                 "silent_followup": SILENT_FOLLOWUP.get() or bool(from_plan and (state.current_plan or {}).get("silent_followup")),
             }
             answered = await self._finish_action(state, node, outcome, payload)
@@ -876,6 +880,11 @@ class ActionsRunMixin:
         elif not callable(poker):
             reason = "当前发送通道不支持戳一戳"
         else:
+            outcome.contact_people.add(target)
+            receipt, blocked = self._reserve_contact(outcome, outcome.home(), [outcome.speech_kind])
+            if blocked:
+                outcome.notes.append(blocked)
+                return
             try:
                 # 在"她现在说话的地方"戳：私聊里说话就戳私聊，别戳到群里去
                 result = await poker(outcome.home(), target)
@@ -884,6 +893,8 @@ class ActionsRunMixin:
                 route = str(getattr(result, "route", "") or "")
             except Exception as exc:
                 reason = f"{type(exc).__name__}: {exc}"
+            finally:
+                self._finish_contact(receipt, ok)
 
         if ok:
             outcome.notes.append(f"戳了 {self._target_name(state, target)}")

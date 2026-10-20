@@ -309,17 +309,20 @@ class SendMixin:
             self._log("warning", f"发送结果图片失败：{exc}")
             return False
 
-    def _filter_proactive_speech(self, outcome: TickOutcome) -> None:
+    def _filter_proactive_speech(self, outcome: TickOutcome, *, block_contact=False) -> None:
         """Filter before recording speech, including already queued autonomous lines."""
         removed = 0
 
         def keep(lines, key, metadata, *, images=False):
             nonlocal removed
             kinds = metadata.get(key, [])
-            mask = [
-                self.speech_allowed(key or outcome.session_id, kinds[i] if i < len(kinds) else outcome.speech_kind)
-                for i in range(len(lines))
-            ]
+            def allowed(i):
+                kind = kinds[i] if i < len(kinds) else outcome.speech_kind
+                target = key or outcome.home()
+                protected = kind in {"reply", "event", "schedule"}
+                return self.speech_allowed(target, kind) and (protected or (
+                    not block_contact and self.contact_speech_allowed(outcome, target, kind)))
+            mask = [allowed(i) for i in range(len(lines))]
             if key == "" and not images:
                 outcome.debug_positions = [sum(mask[:int(pos)]) for pos in outcome.debug_positions]
             removed += len(mask) - sum(mask)
@@ -331,7 +334,7 @@ class SendMixin:
         outcome.routed = {sid: keep(lines, sid, outcome.speech_kinds) for sid, lines in outcome.routed.items()}
         outcome.routed_images = {sid: keep(lines, sid, outcome.image_kinds, images=True) for sid, lines in outcome.routed_images.items()}
         if removed:
-            outcome.notes.append(f"自主搭话已暂停，未发送 {removed} 条内容")
+            outcome.notes.append(f"自主搭话已暂停或联系额度不足，未发送 {removed} 条内容")
 
     @session_scoped
     async def _deliver(self, outcome: TickOutcome) -> None:
@@ -457,41 +460,58 @@ class SendMixin:
             # 调试用的动作回显不算"她说过的话"：不进聊天上下文、不计无人回应保护
         sent = False
         attempted = False
-        # Send each default result exactly once per selected concrete destination.
-        for target in broadcast_targets:
-            target_view = replace(
-                outcome, session_id=target, messages=list(outcome.messages), images=list(outcome.images),
-                routed={}, routed_images={}, notes=[],
-                speech_kinds={"": list(outcome.speech_kinds.get("", []))},
-                image_kinds={"": list(outcome.image_kinds.get("", []))},
-            )
-            self._filter_proactive_speech(target_view)
-            target_ordered = pending + target_view.ordered_messages()
-            target_images = self._group_images(target_view)
+        # Reserve only while sending, and count only platform-accepted content.
+        async def send_target(target, view, echoes=()):
+            nonlocal sent, attempted
+            self._filter_proactive_speech(view)
+            kinds = []
+            if view.messages:
+                kinds.extend(view.speech_kinds.get("", []) or [view.speech_kind])
+            if view.images:
+                kinds.extend(view.image_kinds.get("", []) or [view.speech_kind])
+            receipt, blocked = self._reserve_contact(view, target, kinds)
+            if blocked:
+                outcome.notes.append(f"{target}：{blocked}")
+                self._filter_proactive_speech(view, block_contact=True)
+            target_ordered = list(echoes) + view.ordered_messages()
+            target_images = self._group_images(view)
+            def autonomous(values):
+                return any(kind not in {"reply", "schedule", "event", "quiet"} for kind in values)
+            auto_text = bool(view.messages) and autonomous(view.speech_kinds.get("", []) or [view.speech_kind])
+            auto_images = bool(target_images) and autonomous(view.image_kinds.get("", []) or [view.speech_kind])
+            contact_sent = False
             try:
-                target_sent = True
                 if target_ordered:
-                    # 返回假值 = 平台没收下这批话：必须点名是哪个落点失败了，
-                    # 其余落点照旧继续发（一次落点失败不该拖累别的会话）
                     attempted = True
-                    target_sent = bool(await self.messenger.send_text(target, target_ordered))
-                    sent = sent or target_sent
-                    if not target_sent:
+                    accepted = bool(await self.messenger.send_text(target, target_ordered))
+                    sent = sent or accepted
+                    contact_sent = accepted and auto_text
+                    if not accepted:
                         outcome.notes.append(f"发到 {target} 失败：平台没有接收")
                         self._log("warning", f"发到 {target} 失败：平台没有接收")
                 if target_images:
-                    await self._send_group_images(target, target_images)
+                    accepted = await self._send_group_images(target, target_images)
+                    contact_sent = contact_sent or bool(accepted and auto_images)
             except Exception as exc:
                 outcome.notes.append(f"发到 {target} 失败：{exc}")
                 self._log("warning", f"发到 {target} 失败：{exc}")
-        for target, messages in routed.items():
-            try:
-                await self.messenger.send_text(target, messages)
-            except Exception as exc:
-                outcome.notes.append(f"发到 {target} 失败：{exc}")
-                self._log("warning", f"发到 {target} 失败：{exc}")
-        for target, refs in routed_images.items():
-            await self._send_group_images(target, refs)
+            finally:
+                self._finish_contact(receipt, contact_sent)
+
+        for target in broadcast_targets:
+            view = replace(outcome, session_id=target, speech_home=target,
+                messages=list(outcome.messages), images=list(outcome.images),
+                routed={}, routed_images={}, notes=[],
+                speech_kinds={"": list(outcome.speech_kinds.get("", []))},
+                image_kinds={"": list(outcome.image_kinds.get("", []))})
+            await send_target(target, view, pending)
+        for target in dict.fromkeys([*routed, *routed_images]):
+            view = replace(outcome, session_id=target, speech_home=target,
+                messages=list(routed.get(target, [])), images=list(routed_images.get(target, [])),
+                routed={}, routed_images={}, notes=[], debug_messages=[], debug_positions=[],
+                speech_kinds={"": list(outcome.speech_kinds.get(target, []))},
+                image_kinds={"": list(outcome.image_kinds.get(target, []))})
+            await send_target(target, view)
         note = getattr(self.messenger, "take_fail_note", None)
         failed_note = note(outcome.session_id) if callable(note) else ""
         if failed_note:

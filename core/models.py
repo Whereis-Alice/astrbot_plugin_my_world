@@ -829,9 +829,6 @@ class StateDynamics(Permissive):
     desire_push_threshold: float = 0.75
     """欲求过这条线才会推一次（还会乘当天基调里「贴一下」那一条的权重）。"""
 
-    desire_push_daily_max: int = 3
-    """一天最多推几次（整个会话组一份）：推多了她会显得很黏。"""
-
     desire_push_min_interval_minutes: int = 40
     """两次之间至少隔这么久，别每一拍都问她一遍。"""
 
@@ -867,7 +864,12 @@ class StateDynamics(Permissive):
     @model_validator(mode="before")
     @classmethod
     def _legacy_keys(cls, data: Any) -> Any:
-        return _rename_keys(data, {"social_decay_per_min": "affect_decay_per_min"})
+        data = _rename_keys(data, {"social_decay_per_min": "affect_decay_per_min"})
+        if isinstance(data, dict):
+            data = dict(data)
+            if data.pop("desire_push_daily_max", None) == 0:
+                data["desire_push_enabled"] = False
+        return data
 
 
 class Limits(Permissive):
@@ -1648,7 +1650,7 @@ class BondType(Permissive):
     """一种关系（主人 / 朋友 / 男友 / 敌人…）。
 
     ``cap`` 是这种关系允许到的**亲密度上限**（``ProfileConfig.levels`` 的下标）：
-    普通关系聊再久也上不去，只有关系本身升级才会放宽——这就是"群友怎么聊都不能亲亲"。
+    档位描述距离；具体行为遵循人设、情境和管理员可选的边界配置。
     """
 
     name: str = ""
@@ -1668,14 +1670,13 @@ class BondType(Permissive):
     cap: int = 2
     """这个关系允许到的**亲密度上限**（``levels`` 的下标）。
 
-    "普通关系聊再久也不能亲亲"就靠它：群友的上限压在「熟人」，好感再高也上不去。
+    未开启越过上限时，身份的通常距离上限优先于好感达到的档位。
     """
 
     floor: int = 0
     """这个关系**至少**到哪一档（``levels`` 的下标，0 = 不抬）。
 
-    关系本身也是一种态度：绑成男友之后，哪怕好感还没养起来，抱抱亲亲也该放开——
-    否则提示词里会同时出现"他是你男友"和"你们还不熟，别贴贴"，自相矛盾。
+    已确立身份可以提供熟悉程度下限，不代表必须采取某种亲昵行为。
     生效档位 = 好感给的档位，先被 ``floor`` 抬起来、再被 ``cap`` 压下去。
 
     只在好感**不为负**时生效：她可以对男友生气，惹到了就是「冷淡」，
@@ -1696,28 +1697,40 @@ class BondType(Permissive):
     aliases: list[str] = Field(default_factory=list)
     """别名：模型或用户写"男朋友"时对上这里的"男友"。"""
 
+    prompt: str = ""
+    """管理员可选的关系补充；默认只提供身份，不预设性格或表达方式。"""
+
+    prompt_customized: bool = False
+    """是否由管理员明确编辑，用于保留自定义补充的来源。"""
+
 
 class IntimacyLevel(Permissive):
-    """亲密度分级：门槛、称呼、这一档还不能做的动作，以及给模型的提示词文本。"""
+    """相处距离分级；额外提示和动作边界均为可选。"""
 
     name: str = ""
     min_affinity: float = -100.0
     max_affinity: float = 100.0
-    address: str = ""
-    """她这一级怎么称呼他（留空 = 用名字）。"""
-
     deny: list[str] = Field(default_factory=list)
     """明确禁止的动作 id：写进提示词的"现在还不能：…"。
 
     刻意**不**把动作从她的候选列表里摘掉：群里常常同时有亲疏不同的人，一刀切摘掉会连
-    最亲的那个人也用不了。分寸交给模型自己克制，提示词里会说明"动作按距离分档"。
+    最亲的那个人也用不了。留空时不附加动作限制，具体言行遵循人设和当前情境。
     """
 
-    proactive_per_day: int = 0
-    """这一级每天最多主动找他几次。"""
+    deny_customized: bool = False
+    """明确编辑的动作边界不会按内置默认值清理。"""
 
     prompt: str = ""
-    """这一级的提示词文本（可配置）：她现在能做什么、不能做什么。"""
+    """可选的档位补充；默认留空，言行由原有人设决定。"""
+
+    prompt_customized: bool = False
+    """明确编辑过的内容不按内置默认文案清理。"""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _clear_inherited_prompt(cls, data: Any) -> Any:
+        from .relationship_prompts import clear_inherited_level_prompt
+        return clear_inherited_level_prompt(data)
 
 
 def _default_profile_tables() -> tuple[list[BondType], list[IntimacyLevel]]:
@@ -1750,6 +1763,21 @@ class ProfileConfig(Permissive):
 
     enabled: bool = True
     """总开关：关掉就完全不记画像、不往提示词里带。"""
+
+    proactive_daily_max: int = Field(default=6, ge=0, le=1000)
+    """每个生活组每天最多主动联系几次；只统计平台成功接收的联系。"""
+
+    proactive_person_daily_max: int = Field(default=2, ge=0, le=1000)
+    """在同一实际会话中，每天最多主动联系同一个人几次，与相处档位无关。"""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _retire_contact_caps(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            data = dict(data)
+            if data.pop("miss_push_daily_max", None) == 0:
+                data["miss_push_enabled"] = False
+        return data
 
     consolidate_enabled: bool = True
     """睡眠整理开关（画像与记忆的消化 / 折叠都在那一步）。"""
@@ -1859,9 +1887,6 @@ class ProfileConfig(Permissive):
 
     miss_push_threshold: float = 0.70
     """软推的触发线（比写进提示词的 ``miss_threshold`` 高：先想，真想得不行才动手）。"""
-
-    miss_push_daily_max: int = 2
-    """软推每天最多触发几次（整个会话组算一份，防着反复打扰）。"""
 
     ask_about_enabled: bool = True
     """关系熟了之后，主动问那些她还不知道的事（性别 / 生日 / 年龄…）。
@@ -3324,7 +3349,8 @@ FIELD_LABELS: dict[str, str] = {
     "state_dynamics.desire_relief_min_intimacy": "多亲密才算真的解渴",
     "state_dynamics.desire_relief_hour_cap": "一小时最多落多少（0 = 不限）",
     "profile.miss_threshold": "多想你才会主动找你",
-    "profile.miss_push_daily_max": "每天最多主动找你几次",
+    "profile.proactive_daily_max": "生活组每天最多主动联系几次",
+    "profile.proactive_person_daily_max": "每天最多联系同一个人几次",
     "profile.miss_cooldown_min_minutes": "两次主动找你的间隔（分钟）",
     "profile.miss_cooldown_max_minutes": "刚聊完之后最久隔多久才开始想你（分钟）",
     "profile.miss_loneliness_weight": "孤独感对想念的影响",

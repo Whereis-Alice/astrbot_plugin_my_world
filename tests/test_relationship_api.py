@@ -9,6 +9,28 @@ class RelationshipApiTests(unittest.IsolatedAsyncioTestCase):
     asyncSetUp = scope.ScopeApiTests.asyncSetUp
     call = scope.ScopeApiTests.call
 
+    async def test_optional_notes_and_explicit_boundaries_survive_save_and_reload(self):
+        initial = (await self.call('relationships/rules'))['data']
+        self.assertTrue(initial['actions'])
+        self.assertTrue(all('enabled' in action for action in initial['actions']))
+        profile = initial['profile']
+        level = next(item for item in profile['levels'] if item['name'] == '朋友')
+        self.assertEqual((level['prompt'], level['deny']), ('', []))
+        level.update(prompt='以前一起照料过花园', prompt_customized=True,
+                     deny=['hug', 'kiss', 'leg_photo'], deny_customized=True)
+        next(item for item in profile['bonds'] if item['name'] == '朋友')['prompt'] = '住在同一条街'
+        saved = await self.call('relationships/rules', method='POST', profile=profile,
+                                fingerprint=initial['fingerprint'])
+        self.assertEqual(saved['status_code'], 200)
+        self.plugin.engine.reload_config()
+        current = (await self.call('relationships/rules'))['data']['profile']
+        level = next(item for item in current['levels'] if item['name'] == '朋友')
+        self.assertEqual(level['deny'], ['hug', 'kiss', 'leg_photo'])
+        self.assertEqual(level['prompt'], '以前一起照料过花园')
+        self.assertEqual(next(item for item in current['bonds'] if item['name'] == '朋友')['prompt'], '住在同一条街')
+        self.assertNotIn('address', level)
+        self.assertNotIn('proactive_per_day', level)
+
     async def test_relation_mutations_cannot_target_another_contact_or_life(self):
         store = self.plugin.engine.profiles
         store.touch(self.session, '42')

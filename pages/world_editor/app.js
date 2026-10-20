@@ -1,9 +1,11 @@
+import { relationshipBoundaryEditor } from "./relationship-boundary.js";
 import { createContactWorkbench } from "./contact-workbench.js";
 import { createSocialLearning } from "./social-learning.js";
 import { createRelationshipsPage } from "./relationships.js";
 import { createModelCallsPage } from "./model-calls.js";
 import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js";
 import { memorySearchFields } from "./memory-settings.js";
+import { relationshipPromptEditor } from "./relationship-prompt.js";
 import { mountLifeWorkspace } from "./life-workspace.js";
 import { openBrowseSettings } from "./browse-settings.js";
 import { personAvatar, personColor, bindPeopleSort } from "./people-ui.js";
@@ -1236,31 +1238,31 @@ const KNOBS = [
     hint: "她想你的速度、主动来找你的次数，以及她多想要人陪着贴着。",
     levels: [
       { "profile.miss_growth_per_min": 0.0005, "profile.miss_threshold": 0.8,
-        "profile.miss_push_daily_max": 1, "profile.miss_cooldown_min_minutes": 40,
+        "profile.miss_cooldown_min_minutes": 40,
         "profile.miss_cooldown_max_minutes": 120, "profile.miss_push_threshold": 0.9,
         "profile.miss_loneliness_weight": 0.4,
         "state_dynamics.desire_growth_per_min": 0.00012,
         "state_dynamics.desire_push_threshold": 0.9 },
       { "profile.miss_growth_per_min": 0.0008, "profile.miss_threshold": 0.7,
-        "profile.miss_push_daily_max": 1, "profile.miss_cooldown_min_minutes": 25,
+        "profile.miss_cooldown_min_minutes": 25,
         "profile.miss_cooldown_max_minutes": 90, "profile.miss_push_threshold": 0.8,
         "profile.miss_loneliness_weight": 0.6,
         "state_dynamics.desire_growth_per_min": 0.00018,
         "state_dynamics.desire_push_threshold": 0.85 },
       { "profile.miss_growth_per_min": 0.0012, "profile.miss_threshold": 0.6,
-        "profile.miss_push_daily_max": 2, "profile.miss_cooldown_min_minutes": 15,
+        "profile.miss_cooldown_min_minutes": 15,
         "profile.miss_cooldown_max_minutes": 60, "profile.miss_push_threshold": 0.70,
         "profile.miss_loneliness_weight": 0.8,
         "state_dynamics.desire_growth_per_min": 0.000231,
         "state_dynamics.desire_push_threshold": 0.75 },
       { "profile.miss_growth_per_min": 0.0018, "profile.miss_threshold": 0.5,
-        "profile.miss_push_daily_max": 3, "profile.miss_cooldown_min_minutes": 10,
+        "profile.miss_cooldown_min_minutes": 10,
         "profile.miss_cooldown_max_minutes": 45, "profile.miss_push_threshold": 0.6,
         "profile.miss_loneliness_weight": 1.0,
         "state_dynamics.desire_growth_per_min": 0.0003,
         "state_dynamics.desire_push_threshold": 0.65 },
       { "profile.miss_growth_per_min": 0.0026, "profile.miss_threshold": 0.4,
-        "profile.miss_push_daily_max": 5, "profile.miss_cooldown_min_minutes": 5,
+        "profile.miss_cooldown_min_minutes": 5,
         "profile.miss_cooldown_max_minutes": 30, "profile.miss_push_threshold": 0.5,
         "profile.miss_loneliness_weight": 1.2,
         "state_dynamics.desire_growth_per_min": 0.0004,
@@ -1655,6 +1657,7 @@ function bondsEditor(world) {
       });
       row.appendChild(del);
       rows.appendChild(row);
+      rows.appendChild(relationshipPromptEditor({item, kind: "关系", el, onChange: markDirty}));
     });
     const add = el("button", "small ghost", "＋ 加一种关系");
     add.type = "button";
@@ -1685,20 +1688,20 @@ function bondsEditor(world) {
 }
 
 /**
- * 亲密度分级：每一级的称呼、这一档还不能做的动作、主动频率，以及给模型的提示词。
+ * 相处距离：好感区间，以及可选的额外说明和动作边界。
  *
  * 每一档自己也是一行摘要（点开才铺开改）——七八档全摊开就是一整屏。
  */
 function levelsEditor(world) {
   world.profile = world.profile || {};
   if (!Array.isArray(world.profile.levels)) world.profile.levels = [];
-  const box = foldEditor("亲密度分级", "按好感度分档：称呼、这一档还不能做的动作、主动频率。");
+  const box = foldEditor("亲密度分级", "按好感度描述相处距离；具体言行遵循原有人设，额外说明可选。");
   const preset = el("button", "small ghost", "使用十档相处方案");
   preset.type = "button";
   preset.addEventListener("click", async () => {
     if (!await confirmDialog({title: "使用十档相处方案", danger: false,
       message: DETAILED_LEVELS.map(level => level.name).join(" → ")
-        + "。将替换档位的称呼、边界提示和频率，并换算各关系的上下限；现有关系、好感和自然形成开关保留。保存后生效。",
+        + "。将替换档位、边界和频率，并换算各关系的上下限；额外说明默认留空，现有关系、好感和自然形成开关保留。保存后生效。",
       confirmText: "应用到草稿"})) return;
     applyDetailedLevels(world.profile);
     markDirty();
@@ -1709,8 +1712,8 @@ function levelsEditor(world) {
     el(
       "p",
       "muted",
-      "按好感度分档：每档自己的称呼、这一档**还不能做**的动作、每天最多主动找几次，"
-        + "以及这一档给模型的提示词。动作写 id，逗号分隔。点一条展开改这一档。",
+      "档位只描述当前相处距离，不规定撒娇、吃醋或说话方式；具体表现遵循原有人设和情境。"
+        + "需要时展开「额外说明」补充；明确配置的行为边界仍然生效。点一条展开编辑。",
     ),
   );
   const rows = el("div", "list-editor-rows");
@@ -1726,20 +1729,12 @@ function levelsEditor(world) {
       const head = el("summary", "level-head");
       const title = el("b", "level-name", "");
       const range = el("span", "muted", "");
-      const address = el("span", "muted", "");
-      const freq = el("span", "muted", "");
       head.appendChild(title);
       head.appendChild(range);
-      head.appendChild(address);
-      head.appendChild(freq);
       card.appendChild(head);
       const syncHead = () => {
         title.textContent = item.name || "未命名";
         range.textContent = `好感 ${levelNum(item.min_affinity)} ~ ${levelNum(item.max_affinity)}`;
-        address.textContent = `称呼「${item.address || "不指定"}」`;
-        freq.textContent = Number(item.proactive_per_day)
-          ? `每天主动 ${levelNum(item.proactive_per_day)} 次`
-          : "不主动";
       };
 
       const body = el("div", "level-body");
@@ -1777,25 +1772,6 @@ function levelsEditor(world) {
           width: 64,
         }),
       );
-      edit.appendChild(el("span", "muted", "称呼"));
-      edit.appendChild(
-        cellInput(item.address || "", (value) => {
-          item.address = value;
-          syncHead();
-        }, { width: 56 }),
-      );
-      edit.appendChild(el("span", "muted", "每天主动"));
-      edit.appendChild(
-        cellInput(item.proactive_per_day ?? 0, (value) => {
-          item.proactive_per_day = num(value);
-          syncHead();
-        }, {
-          type: "number",
-          min: 0,
-          max: 20,
-          width: 52,
-        }),
-      );
       const del = el("button", "icon-btn", "✕");
       del.type = "button";
       del.title = "删掉这一档";
@@ -1813,28 +1789,9 @@ function levelsEditor(world) {
       edit.appendChild(del);
       body.appendChild(edit);
 
-      const promptArea = document.createElement("textarea");
-      promptArea.rows = 2;
-      promptArea.placeholder = "这一档给模型的提示词";
-      promptArea.value = item.prompt || "";
-      promptArea.addEventListener("change", () => {
-        item.prompt = promptArea.value;
-        markDirty();
-      });
-      body.appendChild(promptArea);
+      body.appendChild(relationshipPromptEditor({item, kind: "档位", el, onChange: markDirty}));
 
-      const io = el("div", "list-row");
-      io.appendChild(el("span", "muted", "这一档还不能做"));
-      io.appendChild(
-        cellInput((item.deny || []).join(","), (value) => {
-          item.deny = splitIds(value);
-        }, {
-          placeholder: "动作 id，逗号分隔（留空 = 不限制）",
-          width: 260,
-          title: "写进提示词的「这一档还不能做」，她说得出但不会做——分寸由她自己克制",
-        }),
-      );
-      body.appendChild(io);
+      body.appendChild(relationshipBoundaryEditor({item, actions: world.actions || [], el, onChange: markDirty}));
       card.appendChild(body);
       rows.appendChild(card);
       syncHead();
@@ -1846,9 +1803,7 @@ function levelsEditor(world) {
         name: "新档位",
         min_affinity: 0,
         max_affinity: 10,
-        address: "你",
         deny: [],
-        proactive_per_day: 0,
         prompt: "",
       });
       markDirty();
@@ -1861,9 +1816,7 @@ function levelsEditor(world) {
     el(
       "p",
       "hint-line",
-      "分级表字段：name / min_affinity / max_affinity（好感区间）/ address（称呼）/ " +
-        "deny（这一档**还不能做**的动作 id，会写成「这一档还不能做」给她看；留空 = 不限制）/ " +
-        "proactive_per_day（每天最多主动找他几次）/ prompt（这一级写给模型的提示词文本，可随便改）。",
+      "每档设置名称与好感区间即可。额外说明和动作边界均可留空；需要限制时按动作名称搜索勾选。",
     ),
   );
   box.appendChild(
@@ -1871,7 +1824,7 @@ function levelsEditor(world) {
       "p",
       "hint-line",
       "生效亲密度 = 好感度达到的档位，先被关系的「最低档」抬起、再被「最高档」压下：" +
-        "绑成男友之后哪怕好感还没养起来也能抱抱，而群友聊再久也上不去。改完点右上角「保存」。",
+        "这是相处距离的数值范围，不代表必须采取某种亲昵行为；言行仍由人设和情境决定。改完点右上角「保存」。",
     ),
   );
   return box;
@@ -5612,17 +5565,17 @@ function renderStatusSections(data, stateLabel) {
       if (item.waiting) {
         return `${item.name}（刚聊过，${item.ready_in_minutes} 分钟后才会开始想）`;
       }
-      const flag = item.will_reach_out ? "，到点了会去找" : "";
+      const flag = item.will_reach_out ? "，可以考虑联系" : "";
       return `${item.name} ${Number(item.value || 0).toFixed(2)}${flag}`;
     });
     const quota = miss.push_cap
-      ? `今天还能主动找 ${Number(miss.push_left || 0)}/${miss.push_cap} 次`
-      : "";
+      ? `生活组主动联系剩余 ${Number(miss.push_left || 0)}/${miss.push_cap} 次`
+      : "生活组主动联系额度为 0";
     statusLine(
       runtimeBox,
       "想找的人",
       (parts.length ? parts.join(" · ") : "（暂时没惦记谁）")
-        + `｜阈值 ${Number(miss.threshold || 0).toFixed(2)} 就会主动去找`
+        + `｜想念阈值 ${Number(miss.threshold || 0).toFixed(2)}，是否联系由她决定`
         + (quota ? `｜${quota}` : "")
         + (miss.enabled === false ? "｜（主动找人已关闭）" : ""),
       "",
@@ -16532,6 +16485,7 @@ const SETTINGS_TABS = [
     label: "聊天与表达",
     hint: "多久开口、说什么、怎么分句",
     sections: [
+      "主动联系",
       "手感（滑块）",
       "自主决策",
       "孤独感与插话",
@@ -16800,6 +16754,22 @@ function renderSettings() {
     ui.scope ? "这些规则只用于当前会话或共享生活组。" : "这些是默认规则，所有未单独配置的会话都会继承。",
     "新手只需要改「全局提示词」，其它保持默认即可。",
   );
+  const contactSection = settingsSection("主动联系", "上限用于防止打扰；她是否联系仍由人设、状态和情境决定。日程、事件和正常回复使用各自的开关。");
+  contactSection._fields.appendChild(checkboxField("允许自主搭话", world.proactive_chat_enabled !== false,
+    value => {world.proactive_chat_enabled = value;},
+    {hint: "控制当前配置范围；顶栏全局开关暂停时，全部会话均暂停自主搭话。"}));
+  for (const [key, label, fallback, hint] of [
+    ["proactive_daily_max", "每天最多主动联系", 6, "每个生活组共用。一次计划在一个会话中连续说话只算一次；填 0 暂停自主联系。"],
+    ["proactive_person_daily_max", "每天最多联系同一个人", 2, "按实际会话分别计数，所有档位共用。填 0 不主动联系具体的人。"],
+  ]) {
+    const field = inputField(label, world.profile?.[key] ?? fallback,
+    value => {world.profile ||= {}; world.profile[key] = Math.min(1000, Math.max(0, Math.round(num(value, fallback))));},
+    {type: "number", min: 0, max: 1000, step: "1", hint});
+    field.querySelector("input").setAttribute("aria-label", label);
+    contactSection._fields.appendChild(field);
+  }
+  contactSection._fields.appendChild(el("p", "hint-line full", "只在平台成功接收后计数；规划、安静活动、调试回显和发送失败不扣次数。刚聊过或主动联系无人回应时，会继续遵循冷却保护。"));
+  form.appendChild(contactSection);
   const basicFull = el("div", "full");
   const wizardRow = el("div", "row");
   const wizardButton = el("button", "small primary", "重新运行设置向导…");
@@ -16820,11 +16790,6 @@ function renderSettings() {
     }),
   );
   basic._fields.appendChild(basicFull);
-  basic._fields.appendChild(checkboxField(
-    "允许自主搭话", world.proactive_chat_enabled !== false,
-    (value) => (world.proactive_chat_enabled = value),
-    { hint: "控制当前配置范围的自主搭话；顶部全局开关暂停时全部会话均不自主搭话。日程、事件和正常回复保留。" },
-  ));
   basic._fields.appendChild(
     inputField("世界名称", world.name || "小世界", (value) => (world.name = value), {
       hint: "只用于展示。",

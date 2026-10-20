@@ -582,9 +582,8 @@ class RecallMixin:
             if isinstance(item, dict)
         }
         ready_map = dict(getattr(state, "miss_ready_at", None) or {})
-        cap = max(0, int(config.miss_push_daily_max or 0))
-        day = self._today_key(now)
-        push_left = max(0, cap - (int(state.miss_push_count or 0) if state.miss_push_day == day else 0))
+        status = self.contact_status(session_id, now=now)
+        cap, push_left = status["cap"], status["left"]
         people: list[dict[str, Any]] = []
         for uid, value in (state.miss or {}).items():
             uid = str(uid or "")
@@ -613,8 +612,9 @@ class RecallMixin:
                 reasons.append("先做完手上的事")
             if not self.engagement.can_speak(state) or self.engagement.proactive_blocked(state):
                 reasons.append("还在发言冷却中")
-            if push_left <= 0 or self.profiles.proactive_quota_left(self.profile_session(state, uid, session_id), uid, now=now) <= 0:
-                reasons.append("今天的主动联系额度已用完")
+            contact = self.contact_status(self.profile_session(state, uid, session_id), uid, now=now)
+            if contact["reason"]:
+                reasons.append(contact["reason"])
             if not self._within_hourly_limit(state):
                 reasons.append("本小时自主行为额度已用完")
             if self.llm is None:
@@ -669,16 +669,13 @@ class RecallMixin:
         }
 
     def _miss_push_left(self, state: WorldState) -> int:
-        """今天还能软推几次（整个会话组一份，按世界日期算）。"""
+        """今天生活组还剩多少实际主动联系额度；想念计划次数只作运行记录。"""
 
-        cap = max(0, int(getattr(self.world.profile, "miss_push_daily_max", 0) or 0))
-        if cap <= 0:
-            return 0
         today = self._today_key(self._now())
         if str(state.miss_push_day or "") != today:
             state.miss_push_day = today
             state.miss_push_count = 0
-        return max(0, cap - int(state.miss_push_count or 0))
+        return self.contact_status(state.session_id)["left"]
 
     def _top_miss_candidate(
         self, state: WorldState, *, eagerness: float = 1.0
@@ -707,7 +704,7 @@ class RecallMixin:
             view = self.profiles.view(self.profile_session(state, uid), uid)
             if view is None or self._miss_ignored(view):
                 continue
-            if self.profiles.proactive_quota_left(self.profile_session(state, uid), uid) <= 0:
+            if self.contact_status(self.profile_session(state, uid), uid)["reason"]:
                 continue
             if best is None or score > best[1]:
                 best = (uid, score)

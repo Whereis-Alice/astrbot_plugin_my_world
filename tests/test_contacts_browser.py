@@ -184,7 +184,7 @@ class ContactsBrowserTests(unittest.TestCase):
 
     def test_relationship_settings_expose_manual_default_and_apply_tier_draft(self):
         self.page.locator('button[data-tab="settings"]').click()
-        self.page.locator('#settings-tabs').get_by_role('button', name='记忆与上下文').click()
+        self.page.locator('#settings-tabs').get_by_role('button', name='记忆与资料').click()
         def fold(title):
             return self.page.locator('details.fold-editor').filter(
                 has=self.page.locator('summary', has_text=title))

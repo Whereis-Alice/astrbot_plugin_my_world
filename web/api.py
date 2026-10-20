@@ -445,7 +445,7 @@ class WebApiMixin(LifeApiMixin):
         fingerprint = hashlib.sha256(json.dumps(profile, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         if str(getattr(request, "method", "GET")).upper() != "POST":
             return json_response({"profile": profile, "fingerprint": fingerprint,
-                "actions": [{"id": action.id, "name": action.name or action.id} for action in self.engine.world.actions]})
+                "actions": [{"id": action.id, "name": action.name or action.id, "enabled": action.enabled} for action in self.engine.world.actions]})
         if payload.get("fingerprint") != fingerprint:
             return error_response("关系规则已经变更，请重新打开后再修改")
         candidate = payload.get("profile")

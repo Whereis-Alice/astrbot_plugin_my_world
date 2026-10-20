@@ -489,6 +489,9 @@ class ActionsMixin:
                 int(plan.get("valid_until") or 0),
                 int(state.world_time) + max(1, math.ceil(self.world.limits.plan_valid_duration / self.tick_seconds)),
             )
+        if state.current_plan:
+            state.current_plan.setdefault("contact_id", outcome.contact_id)
+            state.current_plan.setdefault("contact_people", sorted(outcome.contact_people))
         if note:
             outcome.notes.append(note)
 
@@ -555,6 +558,10 @@ class ActionsMixin:
         if browsing is not None:
             # Reading is an isolated activity; ignore any accompanying speech/tools.
             return self.start_chat_browse(state, browsing.type)
+        for candidate in actions:
+            definition = self.world.action_map().get(candidate.type)
+            if definition is not None and definition.target_type == "user" and candidate.target:
+                outcome.contact_people.add(str(candidate.target))
         executed = False
         max_actions = self.world.limits.max_actions_per_message
         queued_actions = list(actions)[:max_actions]
@@ -733,28 +740,11 @@ class ActionsMixin:
                 and str(getattr(definition, "target_type", "")) == "user"
                 and bool(getattr(self.world.profile, "enabled", True))
             ):
-                # 她**主动**对某个人做事（抱抱、戳一戳这些）受"这一级每天最多主动找他几次"限制：
-                # 陌生 / 客气级别是 0 次（不主动动手），越亲近额度越大。
-                view = self.profiles.view(self.profile_session(state, action.target, outcome.place), action.target)
-                left = self.profiles.proactive_quota_left(self.profile_session(state, action.target, outcome.place), action.target)
-                if left <= 0:
-                    cap = getattr(getattr(view, "level", None), "proactive_per_day", 0)
-                    outcome.notes.append(
-                        f"主动找 {action.target} 的次数今天用完了（这一级最多 {cap} 次），跳过这一步"
-                    )
-                    await self._log_event(
-                        state,
-                        "skip",
-                        {
-                            "action": action.type,
-                            "note": f"主动找 {action.target} 的今日额度用完了（这一级 {cap} 次）",
-                        },
-                        outcome=outcome,
-                    )
+                token = f"{outcome.contact_id}:{outcome.home()}"
+                status = self.contact_status(outcome.home(), action.target, token=token)
+                if status["reason"]:
+                    outcome.notes.append(f"主动找 {action.target} 的次数今天用完了：{status['reason']}，跳过这一步")
                     continue
-                self.profiles.note_proactive(
-                    self.profile_session(state, action.target, outcome.place), action.target, now=self._now()
-                )
             before_action = state.current_action
             answered = await self._start_action(
                 state,
@@ -864,11 +854,19 @@ class ActionsMixin:
             if not self.speech_allowed(outcome.home(), kind):
                 sent_count += 1
                 continue
+            receipt, blocked = self._reserve_contact(outcome, outcome.home(), [kind])
+            if blocked:
+                outcome.notes.append(blocked)
+                sent_count += 1
+                continue
+            sent = False
             try:
                 sent = bool(await self.say_sink(outcome.home(), line))
             except Exception as exc:
                 self._log("debug", f"即时发言失败：{exc}")
                 sent = False
+            finally:
+                self._finish_contact(receipt, sent)
             if not sent:
                 # 发不出去（会话没配 / 平台在冷却里）：从这里开始都留到收尾一起发，别丢
                 break
@@ -960,6 +958,9 @@ class ActionsMixin:
             reason=f"到了{self._node_name(target_node)}之后要做的事",
             source="auto_travel",
         )
+        if state.current_plan:
+            state.current_plan["contact_id"] = outcome.contact_id
+            state.current_plan["contact_people"] = sorted(outcome.contact_people)
 
     def _node_name(self, node_id: str) -> str:
         node = self.node(node_id)

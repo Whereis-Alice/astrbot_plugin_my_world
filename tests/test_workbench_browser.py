@@ -160,7 +160,7 @@ class WorkbenchBrowserTests(unittest.TestCase):
         self.page.locator('#status-session').dispatch_event('change')
         expect(details).to_have_attribute('open','')
         self.page.locator('button[data-tab="settings"]').click()
-        self.page.locator('#settings-tabs').get_by_text('世界与事件',exact=True).click()
+        self.page.locator('#settings-tabs').get_by_text('生活与作息',exact=True).click()
         self.page.get_by_text('作息与夜晚',exact=True).click()
         expect(self.page.get_by_text('作息模式',exact=True)).to_be_visible()
         expect(self.page.get_by_text('自主作息偏好',exact=True)).to_be_visible()

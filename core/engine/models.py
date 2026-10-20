@@ -7,6 +7,7 @@ from dataclasses import (
     field,
 )
 from typing import Any
+from uuid import uuid4
 from ..state import chat_event_key
 
 
@@ -120,6 +121,8 @@ class TickOutcome:
     speech_kinds: dict[str, list[str]] = field(default_factory=dict)
     image_kinds: dict[str, list[str]] = field(default_factory=dict)
     live_kinds: list[str] = field(default_factory=list)
+    contact_id: str = field(default_factory=lambda: uuid4().hex)
+    contact_people: set[str] = field(default_factory=set)
 
     def add_speech(self, text: str, session_id: str = "", *, kind: str | None = None) -> None:
         """记一句她要说的：没说给谁就是这一轮的会话，说了就投到那个会话去。
