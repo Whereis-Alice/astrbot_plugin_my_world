@@ -36,6 +36,8 @@ python -m pytest -q
 
 Linux CI 使用 `python -m playwright install --with-deps chromium` 安装浏览器和系统库。未安装 Playwright 或 Chromium 时，浏览器回归会跳过；完整验收应安装二者。生产环境仍只需要 `requirements.txt` 中的插件依赖。
 
+pytest 的会话夹具统一使用 Asia/Shanghai，与默认测试世界一致，使旧用例里的无时区 `datetime.timestamp()` 与测试时钟处于同一天；测试结束会恢复原环境。其他世界时区的边界用例使用明确时区，不依赖机器所在地。
+
 覆盖范围：提示词分层与注入边界、回合复盘、世界生成解析、引擎状态机、事件与掷骰、
 记忆与画像、编辑器接口与前端引用、旧版接管路径（迁移兜底）等。
 
