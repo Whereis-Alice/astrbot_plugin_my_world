@@ -56,6 +56,10 @@ def locked_life_work(fn):
 
 def decision_state(payload: dict) -> dict:
     result = {k: copy.deepcopy(v) for k, v in payload.items() if k not in TIME_FIELDS}
+    if isinstance(result.get("life_decision"), dict):
+        # The read-only life overview refreshes the same choice's observation
+        # time. Only a changed choice, reason or matter invalidates inference.
+        result["life_decision"].pop("at", None)
     if result.get("current_action"):
         result["current_action"].pop("elapsed_ticks", None)
     # Rule-only numerical evolution can continue; crossing meaningful boundaries
@@ -113,6 +117,8 @@ async def released_life_lock(engine):
             for name in TIME_FIELDS:
                 if name in after:
                     setattr(state, name, copy.deepcopy(after[name]))
+            if isinstance(after.get("life_decision"), dict):
+                state.life_decision = copy.deepcopy(after["life_decision"])
             if state.current_action and latest.current_action:
                 state.current_action["elapsed_ticks"] = latest.current_action.get("elapsed_ticks", 0)
             lease["save"] = True

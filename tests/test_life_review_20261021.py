@@ -5,6 +5,7 @@ from datetime import timedelta
 from unittest.mock import AsyncMock
 
 from core.engine.life_inference import life_work
+from core.engine.life_inference import decision_state
 from core.ports import LLMReply
 from core.world_calendar import validate_calendar
 from tests import test_engine as fixture
@@ -221,6 +222,37 @@ class LifeCancellationTests(unittest.IsolatedAsyncioTestCase):
     node_id = "study"
     asyncSetUp = fixture.EngineTestCase.asyncSetUp
 
+    async def test_refreshing_a_life_overview_keeps_a_pending_decision(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def generate(**kwargs):
+            entered.set()
+            await release.wait()
+            return LLMReply(ok=True, text="继续读下一页")
+
+        self.llm.generate = generate
+        async with self.engine.session_state(S) as state:
+            self.engine.life_choice(state)
+
+        @life_work()
+        async def infer(engine):
+            async with engine.session_state(S):
+                return await engine._ask_llm(S, "", "choose next")
+
+        task = asyncio.create_task(infer(self.engine))
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            self.clock.advance(5)
+            # The life API recomputes this view while holding session_state.
+            async with self.engine.session_state(S) as state:
+                self.engine.life_choice(state)
+            release.set()
+            self.assertEqual(await asyncio.wait_for(task, 2), "继续读下一页")
+            self.assertEqual((await self.engine.load_state(S)).life_decision["at"], self.clock.now())
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+
     async def test_routine_schedule_check_keeps_a_slow_life_decision_and_its_cursor(self):
         entered, release = asyncio.Event(), asyncio.Event()
 
@@ -321,6 +353,13 @@ class LifeCancellationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CalendarShapeTests(unittest.TestCase):
+    def test_life_choice_changes_still_invalidate_a_pending_decision(self):
+        before = {"life_decision": {"at": 1, "kind": "idle", "reason": "暂时空闲"}}
+        refreshed = {"life_decision": {"at": 2, "kind": "idle", "reason": "暂时空闲"}}
+        rest = {"life_decision": {"at": 2, "kind": "rest", "reason": "需要休息"}}
+        self.assertEqual(decision_state(before), decision_state(refreshed))
+        self.assertNotEqual(decision_state(before), decision_state(rest))
+
     def test_invalid_event_collection_is_rejected(self):
         for events in ("broken", {}, ["not an event"], [{"title": "bad", "start": "not a date"}]):
             with self.subTest(events=events), self.assertRaises(ValueError):
