@@ -334,7 +334,7 @@ class ContactsBrowserTests(unittest.TestCase):
             for button in self.page.locator('#tabs button').all():
                 self.assertEqual(button.bounding_box()['width'], widths[0])
             return self.page.locator('.sidebar .tabs').bounding_box()['width']
-        geometry(1600, False, 208)
+        geometry(1600, False, 216)
         manual = geometry(1600, True, 64)
         self.host.screenshot(path=str(self.shots / 'sidebar-manual-rail.png'))
         self.page.evaluate("localStorage.removeItem('mw-sidebar-rail')")
@@ -343,11 +343,11 @@ class ContactsBrowserTests(unittest.TestCase):
         self.page = self.host.frame(name='editor')
         expect(self.page.locator('#app')).to_have_class('app side-rail')
         self.assertEqual(manual, geometry(1024, True, 64))
-        geometry(1024, False, 208)
+        geometry(1024, False, 216)
         expect(self.page.locator('#sidebar-toggle')).to_have_attribute('aria-expanded', 'true')
         self.host.reload()
         self.page = self.host.frame(name='editor')
-        expect(self.page.locator('.sidebar')).to_have_css('width', '208px')
-        geometry(1600, False, 208)
+        expect(self.page.locator('.sidebar')).to_have_css('width', '216px')
+        geometry(1600, False, 216)
         self.host.screenshot(path=str(self.shots / 'sidebar-expanded.png'))
         self.assertEqual(self.errors, [])

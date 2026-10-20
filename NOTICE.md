@@ -38,6 +38,12 @@
 旧数据（`astrbot_plugin_her_world` 或 `astrbot_plugin_virtual_world` 的数据目录）可以在第一次启动时整份搬过来：
 设 `MY_WORLD_MIGRATE_FROM=<旧数据目录>`，或者让插件自动发现同机上的旧目录。
 
+v4.28.0 起，中文展示名改为 **小世界**。技术识别名与数据目录继续使用 `astrbot_plugin_my_world`；原有指令别名继续可用。
+
+## 界面设计参考
+
+v4.28.0 的生活观测站界面参考 [RollPig](https://github.com/casama233/astrbot_plugin_rollpig) 的表面层次、边缘光与图表质感。布局、主题、矢量世界插画与图标在本仓库独立实现，未引入其源码或素材。
+
 ## 联动插件
 
 下列插件由 [Whereis-Alice](https://github.com/Whereis-Alice) 维护；除已明确融合的

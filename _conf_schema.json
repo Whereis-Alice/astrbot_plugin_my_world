@@ -8,7 +8,7 @@
   },
   "web_enabled": {
     "description": "启用网页编辑器",
-    "hint": "在 WebUI 插件详情页显示「我的世界编辑器」。地图、动作、日程、记忆都在里面配。",
+    "hint": "在 WebUI 插件详情页显示「小世界」。地图、动作、日程、记忆都在里面配。",
     "obvious_hint": true,
     "type": "bool",
     "default": true

@@ -1,11 +1,13 @@
 /** Local appearance preferences. No account settings or plugin configuration writes. */
+import { sceneMarkup } from "./world-scene.js?v=4.28.0";
+
 export const APPEARANCES = [
-  { id: "nocturne", mode: "dark", name: "星幕", note: "靛蓝 · 鸢尾紫", colors: ["#11162b", "#a99bff", "#70d8df"] },
-  { id: "aurora", mode: "dark", name: "极光", note: "深海 · 冰川绿", colors: ["#0c252a", "#66dcc6", "#86b8ff"] },
-  { id: "rose", mode: "dark", name: "绯夜", note: "烟紫 · 玫瑰金", colors: ["#291c2a", "#f2a8bc", "#d5bc8b"] },
-  { id: "cloud", mode: "light", name: "云白", note: "雾蓝 · 薰衣草", colors: ["#eef0f9", "#6d5fe9", "#258599"] },
-  { id: "sand", mode: "light", name: "月砂", note: "暖白 · 琥珀", colors: ["#f4efe7", "#a36337", "#8b728f"] },
-  { id: "jade", mode: "light", name: "青瓷", note: "玉白 · 松石绿", colors: ["#eaf3ef", "#237b6e", "#7e74ab"] },
+  { id: "nocturne", mode: "dark", name: "星屿", note: "星轨 · 冷光玻璃", colors: ["#172033", "#626391", "#a7c9cf"] },
+  { id: "aurora", mode: "dark", name: "潮汐", note: "极光 · 深海流线", colors: ["#0d282e", "#2b7c71", "#a2dfcc"] },
+  { id: "rose", mode: "dark", name: "晚樱", note: "花影 · 暖夜缎光", colors: ["#31212c", "#86546e", "#e6b6bc"] },
+  { id: "cloud", mode: "light", name: "晴空", note: "云层 · 轻盈透光", colors: ["#edf4fa", "#b2cbea", "#fffdf1"] },
+  { id: "sand", mode: "light", name: "日晷", note: "刻度 · 温润纸感", colors: ["#f6f0df", "#d8c4a0", "#b5a076"] },
+  { id: "jade", mode: "light", name: "竹间", note: "竹影 · 青瓷釉面", colors: ["#eef4e6", "#aec7ae", "#7fa38b"] },
 ];
 
 let dialog, onChange = () => {};
@@ -42,7 +44,7 @@ export function initialiseAppearance({ changed } = {}) {
   title.id = "appearance-title";
   title.textContent = "为世界换一种光";
   const note = document.createElement("p");
-  note.textContent = "六种配色，选择会保存在这台设备上。";
+  note.textContent = "六座小世界，六种光影与材质。外观仅保存在这台设备。";
   heading.append(title, note);
   const close = document.createElement("button");
   close.type = "button";
@@ -63,6 +65,7 @@ export function initialiseAppearance({ changed } = {}) {
     sample.className = "appearance-sample";
     item.colors.forEach((color, i) => sample.style.setProperty(`--sample-${i}`, color));
     sample.setAttribute("aria-hidden", "true");
+    sample.innerHTML = sceneMarkup(`preview-${item.id}`);
     const name = document.createElement("strong");
     name.textContent = item.name;
     const description = document.createElement("small");

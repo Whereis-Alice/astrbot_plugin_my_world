@@ -1,19 +1,21 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="我的世界 MW">
-  <rect width="512" height="512" rx="104" fill="#171E33"/>
-  <g fill="none" stroke="#7FD9CC" stroke-width="11" stroke-linecap="round">
-    <path d="M256 184a176 92 0 0 1 169 60"/>
-    <path d="M423 254a176 92 0 0 1-165 114"/>
-    <path d="M247 367a176 92 0 0 1-166-95"/>
-    <path d="M82 265a176 92 0 0 1 145-78"/>
-    <path d="M256 184a176 92 0 0 1 169 60"/>
-  </g>
-  <circle cx="256" cy="268" r="112" fill="#2E9E8F"/>
-  <path d="M170 214a112 112 0 0 1 150-37" fill="none" stroke="#46C2AE" stroke-width="10" stroke-linecap="round"/>
-  <rect x="216" y="268" width="80" height="64" rx="8" fill="#F3E9D2"/>
-  <path d="M198 276 L256 212 L314 276 Z" fill="#F0A868"/>
-  <rect x="286" y="222" width="16" height="32" rx="4" fill="#F0A868"/>
-  <rect x="240" y="292" width="28" height="40" rx="6" fill="#171E33"/>
-  <rect x="272" y="286" width="16" height="16" rx="4" fill="#F0A868"/>
-  <circle cx="88" cy="278" r="14" fill="#FFD98A"/>
-  <circle cx="426" cy="278" r="12" fill="#7FD9CC"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="小世界">
+  <defs>
+    <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#29334e"/><stop offset="1" stop-color="#111a2d"/></linearGradient>
+    <linearGradient id="land" x2="1" y2="1"><stop stop-color="#a9e0ce"/><stop offset="1" stop-color="#67a9ab"/></linearGradient>
+    <linearGradient id="roof" x2="1" y2="1"><stop stop-color="#d0c5ff"/><stop offset="1" stop-color="#9285cc"/></linearGradient>
+  </defs>
+  <rect x="1" y="1" width="510" height="510" rx="132" fill="url(#bg)" stroke="#c4d4ff" stroke-opacity=".15" stroke-width="2"/>
+  <circle cx="256" cy="256" r="183" stroke="#c6b8ff" stroke-opacity=".13" fill="none"/>
+  <ellipse cx="256" cy="288" rx="201" ry="71" transform="rotate(-18 256 288)" fill="none" stroke="#9cd9d3" stroke-opacity=".6" stroke-width="4"/>
+  <path d="m126 294 130-52 130 52-130 63z" fill="url(#land)"/>
+  <path d="m126 294 130 63 130-63-51 62-79 26-79-26z" fill="#4c647c"/>
+  <path d="m207 242 53-35 55 35v67l-55 23-53-23z" fill="#e5e6ee"/>
+  <path d="m260 207 55 35v67l-55 23z" fill="#a4afcc"/>
+  <path d="m188 251 70-76 76 56-19 25-55-42-53 57z" fill="url(#roof)"/>
+  <path d="m225 276 20-8v43l-20 8z" fill="#677b99"/>
+  <path d="m276 263 20 10v24l-20-10z" fill="#ffe0a5"/>
+  <path d="M370 110v40m-20-20h40" stroke="#d5c9ff" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="92" cy="335" r="10" fill="#98e0cf"/>
+  <circle cx="412" cy="245" r="6" fill="#c6b8ff"/>
+  <circle cx="158" cy="141" r="4" fill="#c6b8ff" opacity=".5"/>
 </svg>

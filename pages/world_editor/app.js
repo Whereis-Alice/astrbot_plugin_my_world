@@ -1,3 +1,4 @@
+import { updateWorldScene } from "./world-scene.js?v=4.28.0";
 import { relationshipBoundaryEditor } from "./relationship-boundary.js";
 import { createContactWorkbench } from "./contact-workbench.js";
 import { createSocialLearning } from "./social-learning.js";
@@ -11,11 +12,11 @@ import { openBrowseSettings } from "./browse-settings.js";
 import { personAvatar, personColor, bindPeopleSort } from "./people-ui.js";
 import { openRelationshipRulesEditor } from "./relationship-rules.js";
 import { applyDetailedLevels, DETAILED_LEVELS } from "./relationship-preset.js";
-import { initialiseAppearance, openAppearancePicker } from "./appearance.js";
-import { initialiseWorkspace } from "./workspace-ui.js";
+import { initialiseAppearance, openAppearancePicker } from "./appearance.js?v=4.28.0";
+import { initialiseWorkspace } from "./workspace-ui.js?v=4.28.0";
 
 /**
- * 我的世界编辑器前端。
+ * 小世界前端。
  *
  * 设计原则：能点就不要手输、每一个输入框都有悬停说明、按动作类型显示/隐藏无关字段。
  * 运行在 AstrBot 插件 Page 的沙箱 iframe 里，只能通过 window.AstrBotPluginPage bridge
@@ -3230,7 +3231,7 @@ async function boot() {
     // 直接访问页面时拿不到插件页的凭证，接口永远不会响应，这里先给个说法，别留一片空白。
     $("login").classList.remove("hidden");
     $("login-message").textContent =
-      "请在 AstrBot WebUI 的插件详情页里打开本页面（插件管理 → 她的世界 → 我的世界编辑器）。";
+      "请在 AstrBot WebUI 的插件详情页里打开本页面（插件管理 → 小世界）。";
     return;
   }
   try {
@@ -5230,6 +5231,7 @@ function renderChatContext(data) {
  * 数据全部来自已有的状态快照，不额外请求。
  */
 function renderHero(data, stateLabel) {
+  updateWorldScene(data, stateLabel);
   const avatar = $("hero-avatar");
   const nameBox = $("hero-name");
   const subBox = $("hero-sub");
@@ -5693,7 +5695,7 @@ async function renderHistory() {
 function drawHistoryChart(canvas, points) {
   const ratio = window.devicePixelRatio || 1;
   const width = Math.max(320, canvas.clientWidth || 640);
-  const height = 184;
+  const height = 192;
   canvas.width = Math.round(width * ratio);
   canvas.height = Math.round(height * ratio);
   canvas.style.height = `${height}px`;
@@ -5702,7 +5704,7 @@ function drawHistoryChart(canvas, points) {
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   ctx.clearRect(0, 0, width, height);
   // 图例放右上角：挤在左下角会和 0.0 这条网格线的刻度叠在一起
-  const pad = { left: 30, right: 12, top: 30, bottom: 12 };
+  const pad = { left: 30, right: 14, top: 30, bottom: 27 };
   const innerW = width - pad.left - pad.right;
   const innerH = height - pad.top - pad.bottom;
   const style = getComputedStyle(document.body);
@@ -5746,8 +5748,23 @@ function drawHistoryChart(canvas, points) {
     { key: "valence", color: second, label: "效价" },
   ];
   series.forEach((item) => {
+    // A transparent fill gives the curve depth while preserving the actual samples.
+    const area = ctx.createLinearGradient(0, pad.top, 0, height - pad.bottom);
+    area.addColorStop(0, item.color);
+    area.addColorStop(1, "transparent");
+    ctx.beginPath();
+    ctx.moveTo(xOf(first), height - pad.bottom);
+    points.forEach(point => ctx.lineTo(xOf(point.at), yOf(num(point[item.key], 0.5))));
+    ctx.lineTo(xOf(last), height - pad.bottom);
+    ctx.closePath();
+    ctx.globalAlpha = .12;
+    ctx.fillStyle = area;
+    ctx.fill();
+    ctx.globalAlpha = 1;
     ctx.strokeStyle = item.color;
-    ctx.lineWidth = 1.8;
+    ctx.lineWidth = 2;
+    ctx.shadowColor = item.color;
+    ctx.shadowBlur = 6;
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
     ctx.beginPath();
@@ -5758,7 +5775,22 @@ function drawHistoryChart(canvas, points) {
       else ctx.lineTo(x, y);
     });
     ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.beginPath();
+    ctx.arc(xOf(last), yOf(num(points.at(-1)[item.key], .5)), 3, 0, Math.PI * 2);
+    ctx.fillStyle = item.color;
+    ctx.fill();
   });
+  ctx.fillStyle = muted;
+  ctx.font = "9px ui-monospace, Menlo, Consolas, monospace";
+  [first, last].forEach((at, index) => {
+    const label = new Date(at * 1000).toLocaleTimeString("zh-CN", {hour: "2-digit", minute: "2-digit", hour12: false});
+    ctx.textAlign = index ? "right" : "left";
+    ctx.fillText(label, index ? width - pad.right : pad.left, height - 5);
+  });
+  ctx.textAlign = "left";
+  const latest = points.at(-1);
+  canvas.setAttribute("aria-label", `心情趋势，共 ${points.length} 个记录。最近心潮 ${num(latest.affect, .5).toFixed(2)}，效价 ${num(latest.valence, .5).toFixed(2)}。`);
   // 图例：右上角一排，色块 + 文字
   ctx.font = "10px ui-monospace, Menlo, Consolas, monospace";
   const legendWidths = series.map((item) => 14 + ctx.measureText(item.label).width);
@@ -20483,7 +20515,7 @@ function wizardProviderStep(body) {
     el(
       "p",
       "muted",
-      "这些在 AstrBot 面板 → 插件 → 她的世界HW 里选；留空的会按括号里的规则回落到别的槽位，" +
+      "这些在 AstrBot 面板 → 插件 → 小世界 里选；留空的会按括号里的规则回落到别的槽位，" +
         "所以这里全是回落值也能跑。想省钱就把打杂 / 判断换便宜快的模型。",
     ),
   );

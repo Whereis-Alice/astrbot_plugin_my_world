@@ -461,7 +461,7 @@ BRIDGE_JS = r"""
   window.AstrBotPluginPage = {
     ready: async () => ({
       pluginName: "astrbot_plugin_my_world",
-      displayName: "我的世界 MW",
+      displayName: "小世界",
       locale: "zh-CN",
       pluginI18n: {},
     }),

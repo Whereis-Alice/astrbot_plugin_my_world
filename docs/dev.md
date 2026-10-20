@@ -65,7 +65,9 @@ python -m pytest tests/test_life_workspace_browser.py tests/test_visual_workspac
 
 浏览器验收需要 Playwright 与 Chromium，使用临时数据库和合成数据，覆盖桌面、手机、管理抽屉、配置范围、生成、保存与关联跳转。
 
-界面的主题与材质集中在 `atelier.css`，六套本机外观由 `appearance.js` 管理，工作区的次要操作菜单由 `workspace-ui.js` 初始化。`data-theme` 保留深浅语义，`data-palette` 指定配色；不要在组件里为每个主题复制颜色。可用 `python -m pytest tests/test_visual_workspace_browser.py -q` 验证六套主题、键盘关闭与恢复、文字对比度，以及各模块在四种屏幕宽度下的布局；合成截图输出到 `.pytest_cache/generation-ui/`。
+界面的主题与材质集中在 `observatory.css`，六套本机外观由 `appearance.js` 管理，工作区的次要操作菜单由 `workspace-ui.js` 初始化。`data-theme` 保留深浅语义，`data-palette` 指定配色；不要在组件里为每个主题复制颜色。可用 `python -m pytest tests/test_visual_workspace_browser.py -q` 验证六套主题、键盘关闭与恢复、文字对比度，以及各模块在四种屏幕宽度下的布局；合成截图输出到 `.pytest_cache/generation-ui/`。
+
+控制台的矢量世界由 `world-scene.js` 提供，主视窗与六张主题缩略图使用各自的 SVG ID，避免渐变引用串色。视窗文字使用状态快照，装饰插画不推断世界行为；减少动态效果会停用悬浮、指针景深与切页过渡。运行 `python -m pytest tests/test_observatory_browser.py -q` 可生成六主题、390/360px 手机截图，并检查实时状态、曲线无障碍说明、键盘展开与只读操作。截图全部使用合成数据。
 
 单选框通过 `@supports` 渐进使用 `appearance: base-select` 和 `::picker(select)`，保留原生的值、键盘操作和 `change` 事件；不支持时使用原生菜单及明确的选项配色。多选和带 `size` 的列表不启用弹出面板样式。
 

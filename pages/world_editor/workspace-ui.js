@@ -1,6 +1,8 @@
+import { mountWorldScene } from "./world-scene.js?v=4.28.0";
+
 /** Compact reading chrome, with secondary operations available on demand. */
 export function initialiseWorkspace() {
-  document.querySelector(".sidebar-note").textContent = "她的世界，持续生长";
+  mountWorldScene();
   const icons = {
     status: '<rect x="3" y="3" width="18" height="18" rx="4"/><path d="M3 10h18M10 10v11"/>',
     life: '<path d="M12 21V10M12 16C5 16 3 11 3 5c6 0 9 3 9 8M12 12c0-6 3-9 9-9 0 6-3 9-9 9"/>',

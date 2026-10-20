@@ -1,8 +1,8 @@
 {
   "pages": {
     "world_editor": {
-      "title": "Her World Editor",
-      "description": "Configure the map, actions, schedules, memories and session whitelist, import AstrBot tools as actions, and watch her state in real time."
+      "title": "Little World",
+      "description": "Watch her everyday life, feelings and memories; shape her world, activities and routines."
     }
   }
 }

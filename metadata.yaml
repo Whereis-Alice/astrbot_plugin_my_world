@@ -1,11 +1,11 @@
 name: astrbot_plugin_my_world
-display_name: 我的世界 MW
+display_name: 小世界
 desc: >-
   给 Bot 一个会自己长出来的世界：区域、地点、虚拟动作、日程、事件、情绪与场景记忆都由她自己规划；
   主回复仍然走 AstrBot 原生 Agent——人设与处境由本插件注入，工具调用、工具循环、发送全交给宿主，
   不抢工具、不丢上下文。
-short_desc: 她的世界 + 原生工具：虚拟动作 / 日程 / 事件 / 记忆 / 世界生成 / 完整画像
-version: v4.27.1
+short_desc: 她的日常，自有回响：自主生活 / 情绪 / 牵挂 / 日记 / 人际关系 / 世界生成
+version: v4.28.0
 author: Whereis-Alice
 author_url: https://github.com/Whereis-Alice
 repo: https://github.com/Whereis-Alice/astrbot_plugin_my_world
@@ -30,7 +30,7 @@ help: |
   给角色持续运行的生活：地图、活动、作息、事件、情绪、记忆与人际关系。
   聊天使用 AstrBot 原生 Agent；本插件提供角色此刻的处境和生活背景。
 
-  先在目标会话发送 /mw session add，再打开插件页面“我的世界编辑器”。
+  先在目标会话发送 /mw session add，再打开插件页面“小世界”。
   选择人设、调整地图与动作；新建世界每天自动生成两项安排，自主作息默认开启。
   恋爱、主人等特殊关系默认只允许管理员设置，可在关系表逐类开启自然形成。
 

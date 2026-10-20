@@ -1,4 +1,4 @@
-"""AstrBot 我的世界插件（Star 入口）。
+"""AstrBot 小世界插件（Star 入口）。
 
 两条路径：
 
@@ -454,7 +454,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
         if not self.engine.enabled_session_ids():
             self.logger.info(
                 "[my_world] 会话白名单为空，请在群聊里发送「/mw session add」"
-                "或在 WebUI 的我的世界编辑器里添加会话。"
+                "或在 WebUI 的小世界里添加会话。"
             )
 
     # ================= 运行参数 =================
@@ -482,7 +482,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
         )
         if self.web_enabled:
             self.logger.info(
-                "[my_world] 网页编辑器：WebUI 插件详情页 → 「我的世界编辑器」"
+                "[my_world] 网页编辑器：WebUI 插件详情页 → 「小世界」"
             )
 
     def _sync_schedule_tools(self) -> None:
@@ -2452,7 +2452,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
 
     # ================= 用户 / 管理员命令 =================
 
-    @filter.command("mw", alias={"我的世界", "myworld"})
+    @filter.command("mw", alias={"小世界", "我的世界", "myworld"})
     @session_scoped
     async def cmd_hw(self, event: AstrMessageEvent):
         if self.retired:
@@ -2468,7 +2468,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
         if action in ("status", "状态", "where", "在哪"):
             session_id = event.unified_msg_origin
             if not self.engine.is_enabled(session_id):
-                yield event.plain_result("这个会话还没有启用她的世界。用 /mw session add 启用。")
+                yield event.plain_result("这个会话还没有启用小世界。用 /mw session add 启用。")
                 return
             snapshot = await self.engine.snapshot(session_id)
             yield event.plain_result(_render_status(snapshot, self._pronoun()))
@@ -2560,7 +2560,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
 
         if action in ("map", "地图"):
             world = self.engine.world
-            lines = ["她的世界地图（按区域）："]
+            lines = ["小世界地图（按区域）："]
             for zone in world.zones:
                 here = world.nodes_in_zone(zone.id)
                 lines.append(f"【{zone.name}】{len(here)} 个地点")
@@ -2686,7 +2686,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
                     "",
                     f"作用域：{'按会话隔离' if service.session_based else '跨会话共享'}",
                     f"字段锁：{service.store.field_lock_scope_label()}",
-                    "WebUI：插件面板 → 我的世界编辑器 → 通讯录",
+                    "WebUI：插件面板 → 小世界 → 通讯录",
                 ]
             )
             return "\n".join(lines)
@@ -2985,7 +2985,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
         """
         session_id = event.unified_msg_origin
         if not self.engine.is_enabled(session_id):
-            return "这个会话尚未启用我的世界。"
+            return "这个会话尚未启用小世界。"
         with self.engine.config_scope(session_id):
             items, match_reason = await self.engine.lookup_life_memories(session_id, _event_persona_id(event), str(topic or "").strip())
         if not items:
@@ -3005,7 +3005,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
 
     @filter.llm_tool(name="mw_schedule_list")
     async def tool_schedule_list(self, event: AstrMessageEvent) -> str:
-        """查看「我的世界」插件里 Bot 自己的日程表（什么时候会自动做什么）。
+        """查看「小世界」插件里 Bot 自己的日程表（什么时候会自动做什么）。
 
         没有参数，直接调用。
         """
@@ -3020,7 +3020,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
         actions: str,
         days: str = "",
     ) -> str:
-        """给「我的世界」插件里的 Bot 加一条日程：到点她会自动做一串动作。
+        """给「小世界」插件里的 Bot 加一条日程：到点她会自动做一串动作。
 
         Args:
             time(string): 触发时间，24 小时制，例如 07:30
@@ -3058,7 +3058,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
         time: str = "",
         keyword: str = "",
     ) -> str:
-        """删掉「我的世界」插件里 Bot 自己加的一条日程（用户手动配的日程删不掉）。
+        """删掉「小世界」插件里 Bot 自己加的一条日程（用户手动配的日程删不掉）。
 
         Args:
             schedule_id(string): 日程 id，最准；不知道就留空
@@ -3075,7 +3075,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
         sub = rest[0].lower() if rest else ""
         session_id = event.unified_msg_origin
         if not self.engine.is_enabled(session_id):
-            return "这个会话还没有启用她的世界。"
+            return "这个会话还没有启用小世界。"
         if not self._can_admin(event):
             return "只有管理员可以控制群名片。"
         text = " ".join(rest[1:]).strip()
@@ -3086,7 +3086,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
                     self.engine.world, state, node, base=state.bot_base_nickname
                 )
                 lines = [
-                    f"名片管理方：{self.messenger.group_card_owner(session_id) or '我的世界 MW'}",
+                    f"名片管理方：{self.messenger.group_card_owner(session_id) or '小世界'}",
                     f"原名（base）：{state.bot_base_nickname or '（空，还没抓到）'}",
                     f"当前名片：{state.bot_current_nickname or '（未知）'}",
                     f"按当前状态应该显示：{desired or '（算不出来）'}",
@@ -3307,7 +3307,7 @@ def _help_text(pronoun: str = "她") -> str:
     """指令帮助文案。pronoun 由全局设置里的性别决定（她/他/ta）。"""
 
     return (
-        "我的世界指令：\n"
+        "小世界指令：\n"
         f"· /mw status            {pronoun}现在在哪、在做什么、心情如何\n"
         f"· /mw recall <话题>     让{pronoun}回忆某个话题\n"
         f"· /mw memory            看看{pronoun}记得你什么\n"
@@ -3351,7 +3351,7 @@ def _command_args(event: AstrMessageEvent) -> list[str]:
     if not text:
         return []
     parts = text.split()
-    if parts and parts[0].lstrip("/").lower() in ("mw", "我的世界", "myworld"):
+    if parts and parts[0].lstrip("/").lower() in ("mw", "小世界", "我的世界", "myworld"):
         parts = parts[1:]
     return parts
 

@@ -606,7 +606,7 @@ class ProfileCommandsMixin:
             return
         stats = service.stats()
         yield event.plain_result(
-            "通讯录画像已并入「我的世界编辑器 → 通讯录」。\n"
+            "通讯录画像已并入「小世界 → 通讯录」。\n"
             f"当前 {int(stats.get('profile_count') or 0)} 条详细画像记录，"
             f"{int(stats.get('user_count') or 0)} 个联系人。\n"
             f"写操作：{'开启' if service.webui_allow_edit else '只读'}。"
