@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from core.ports import CardResult, LLMReply, PokeResult, ToolInfo, ToolCallResult
 
@@ -25,7 +26,11 @@ class StubClock:
         self._struct = struct
 
     def now_struct(self) -> Any:
-        return self._struct if self._struct is not None else datetime.fromtimestamp(self._now)
+        # Match the default test world's calendar, even on a UTC CI runner.
+        # Explicit wall-clock overrides stay naive for the existing scenarios.
+        return self._struct if self._struct is not None else datetime.fromtimestamp(
+            self._now, ZoneInfo("Asia/Shanghai")
+        ).replace(tzinfo=None)
 
 
 class StubLLM:

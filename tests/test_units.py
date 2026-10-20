@@ -7,6 +7,7 @@ import random
 import sys
 import unittest
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # 这个文件里的检索 / 决策用例走的是旧版工具动作机件；生产默认已停用它们。
@@ -353,15 +354,16 @@ class TestWeather(unittest.TestCase):
     """天气：多久之前的说法、字段拆分、以及写进提示词的那一段。"""
 
     NOW = 1_789_000_000.0  # 2026-09-13 前后，随便一个固定时刻
+    TZ = ZoneInfo("Asia/Shanghai")
 
     def test_age_says_hours_for_today(self):
-        self.assertEqual(age_text(self.NOW - 600, self.NOW), "刚刚")
-        self.assertEqual(age_text(self.NOW - 3 * 3600, self.NOW), "3 小时前")
+        self.assertEqual(age_text(self.NOW - 600, self.NOW, tz=self.TZ), "刚刚")
+        self.assertEqual(age_text(self.NOW - 3 * 3600, self.NOW, tz=self.TZ), "3 小时前")
 
     def test_age_says_yesterday_and_beyond(self):
-        self.assertEqual(age_text(self.NOW - 26 * 3600, self.NOW), "昨天")
-        self.assertEqual(age_text(self.NOW - 50 * 3600, self.NOW), "前天")
-        self.assertEqual(age_text(self.NOW - 5 * 86400, self.NOW), "5 天前")
+        self.assertEqual(age_text(self.NOW - 26 * 3600, self.NOW, tz=self.TZ), "昨天")
+        self.assertEqual(age_text(self.NOW - 50 * 3600, self.NOW, tz=self.TZ), "前天")
+        self.assertEqual(age_text(self.NOW - 5 * 86400, self.NOW, tz=self.TZ), "5 天前")
 
     def test_age_is_empty_without_a_timestamp(self):
         self.assertEqual(age_text(0, self.NOW), "")
@@ -383,7 +385,7 @@ class TestWeather(unittest.TestCase):
 
     def test_prompt_block_keeps_the_age(self):
         record = WeatherRecord(text="武汉｜26℃", at=self.NOW - 2 * 3600)
-        block = weather_prompt_block(record, self.NOW)
+        block = weather_prompt_block(record, self.NOW, tz=self.TZ)
         self.assertIn("# 外面的天气", block)
         self.assertIn("2 小时前", block)
         self.assertIn("武汉｜26℃", block)

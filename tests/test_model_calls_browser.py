@@ -126,7 +126,7 @@ class ModelCallsBrowserTests(unittest.TestCase):
             self.host.set_viewport_size({"width":width,"height":height})
             self.host.screenshot(path=str(self.shots / f"model-calls-overview-{width}.png"), animations="disabled")
             self.assertTrue(self.page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), f"Overflow {width}")
-            self.assertLess(self.page.locator(".calls-ledger").bounding_box()["y"], 500)
+            self.assertLess(self.page.locator(".calls-ledger").bounding_box()["y"], 500, f"Ledger pushed down at {width}px")
             expect(self.page.locator("#save")).not_to_be_visible()
             expect(self.page.locator(".topbar-context")).not_to_be_visible()
             self.page.locator(".calls-row").first.locator("summary").click()

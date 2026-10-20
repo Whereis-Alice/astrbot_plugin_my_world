@@ -90,8 +90,9 @@
   .calls-help { position: static; }
   .calls-help .command-menu-body { right: 10px; }
   .calls-metrics { gap: 8px; }
-  .calls-metric { padding: 10px 12px; gap: 4px; }
-  .calls-metric > strong { font-size: 20px; }
+  .calls-metric { padding: 9px 10px; gap: 3px; }
+  .calls-metric > span { font-size: 11px; line-height: 1.4; }
+  .calls-metric > strong { font-size: 17px; }
   .calls-metric > small { font-size: 9px; }
   .calls-trend { padding: 10px 12px; margin-bottom: 10px; }
   .calls-trend-heading { flex-wrap: wrap; gap: 5px; }
