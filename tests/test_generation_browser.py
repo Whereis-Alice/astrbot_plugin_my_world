@@ -14,6 +14,7 @@ import unittest
 try:
     from playwright.sync_api import expect, sync_playwright
 except ImportError:
+    expect = None
     sync_playwright = None
 
 from tools.render_screenshots import BRIDGE_JS, Handler, PLUGIN_DIR, build_payload

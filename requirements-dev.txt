@@ -1,0 +1,8 @@
+-r requirements.txt
+pytest>=8
+pydantic>=2,<3
+ruff
+# AstrBot supplies Quart in production; the isolated web fixtures need it too.
+quart>=0.20,<1
+# Run the existing editor regressions in CI, including their Chromium runtime.
+playwright>=1.50,<2

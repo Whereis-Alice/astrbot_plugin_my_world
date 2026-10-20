@@ -28,8 +28,13 @@ astrbot_plugin_my_world/
 ## 本地验证与测试
 
 ```powershell
+python -m pip install -r requirements-dev.txt
+python -m playwright install chromium
+python -m ruff check .
 python -m pytest -q
 ```
+
+Linux CI 使用 `python -m playwright install --with-deps chromium` 安装浏览器和系统库。未安装 Playwright 或 Chromium 时，浏览器回归会跳过；完整验收应安装二者。生产环境仍只需要 `requirements.txt` 中的插件依赖。
 
 覆盖范围：提示词分层与注入边界、回合复盘、世界生成解析、引擎状态机、事件与掷骰、
 记忆与画像、编辑器接口与前端引用、旧版接管路径（迁移兜底）等。
