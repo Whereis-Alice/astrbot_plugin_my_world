@@ -13,6 +13,9 @@ from core.state import WorldState
 
 
 class AutomaticDefaultsTests(unittest.TestCase):
+    def test_autonomous_background_budget_defaults_to_one_thousand_calls(self):
+        self.assertEqual(Limits().background_daily_calls, 1000)
+
     def test_fresh_world_arranges_two_plans_without_an_extra_toggle(self):
         with tempfile.TemporaryDirectory() as directory:
             store = ConfigStore(directory)

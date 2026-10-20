@@ -873,7 +873,7 @@ class StateDynamics(Permissive):
 
 
 class Limits(Permissive):
-    background_daily_calls: int = Field(default=120, ge=0, le=10000)
+    background_daily_calls: int = Field(default=1000, ge=0, le=10000)
     background_daily_tokens: int = Field(default=0, ge=0, le=100000000)
     background_concurrency: int = Field(default=1, ge=1, le=12)
     life_matter_enabled: bool = True

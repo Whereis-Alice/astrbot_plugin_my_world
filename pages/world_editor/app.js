@@ -18112,7 +18112,7 @@ function renderSettings() {
   form.appendChild(living);
   const background = settingsSection("后台预算", "生活规划、事件和复盘共用的模型额度；原生聊天的模型与工具由 AstrBot 管理。", "0 表示不设每日调用或 Token 上限；计划决策次数为 0 则关闭该类模型规划。");
   for (const [key, label, fallback, min, max] of [
-    ["background_daily_calls", "每天后台调用预算", 120, 0, 10000], ["background_daily_tokens", "每天后台 token 预算", 0, 0, 100000000],
+    ["background_daily_calls", "每天后台调用预算", 1000, 0, 10000], ["background_daily_tokens", "每天后台 token 预算", 0, 0, 100000000],
     ["background_concurrency", "同时运行的后台模型请求", 1, 1, 12], ["background_llm_timeout_seconds", "后台模型等待上限（秒）", 120, 1, 1800],
     ["llm_plan_min_interval_seconds", "问计划的间隔（秒）", 900, 0, 86400], ["max_llm_plan_per_hour", "每小时最多计划决策次数", 10, 0, 120],
     ["max_llm_text_per_hour", "每小时最多生成发言次数", 20, 0, 10000]]) {

@@ -5,7 +5,7 @@ desc: >-
   主回复仍然走 AstrBot 原生 Agent——人设与处境由本插件注入，工具调用、工具循环、发送全交给宿主，
   不抢工具、不丢上下文。
 short_desc: 她的世界 + 原生工具：虚拟动作 / 日程 / 事件 / 记忆 / 世界生成 / 完整画像
-version: v4.26.1
+version: v4.26.2
 author: Whereis-Alice
 author_url: https://github.com/Whereis-Alice
 repo: https://github.com/Whereis-Alice/astrbot_plugin_my_world
