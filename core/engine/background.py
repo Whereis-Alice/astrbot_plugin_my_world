@@ -10,6 +10,7 @@ from typing import Any
 
 from ..llm_usage import collect_llm_usage
 from ..model_calls import call_context
+from ..model_call_runtime import safe_error
 from .life_inference import LIFE_WORK, released_life_lock
 
 CRITICAL_TICK = ContextVar("world_critical_tick", default=False)
@@ -145,8 +146,8 @@ class BackgroundMixin:
             raise
         except Exception as exc:
             count = min(8, int(failure.get("count", 0)) + 1)
-            failures[failure_key] = {"count": count, "until": now + min(3600, 30 * 2 ** (count - 1)),
-                                     "error": str(exc)[:500] or type(exc).__name__}
+            failures[failure_key] = {"count": count, "until": self._now() + min(3600, 30 * 2 ** (count - 1)),
+                                     "error": safe_error(exc) or type(exc).__name__}
             raise
         finally:
             self._background_active -= 1

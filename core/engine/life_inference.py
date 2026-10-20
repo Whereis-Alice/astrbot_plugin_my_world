@@ -16,7 +16,11 @@ STATE_LEASE = ContextVar("my_world_state_lease", default=None)
 TIME_FIELDS = frozenset({"updated_at", "world_time", "life_updated_at", "energy", "loneliness",
                          "curiosity", "boredom", "affect", "valence", "valence_offset",
                          "affect_synced_at", "mood", "desire", "desire_slept", "sleep_pressure",
-                         "low_valence_since", "storm_since"})
+                         "low_valence_since", "storm_since", "schedule_cursor"})
+# A no-op schedule scan advances its cursor every minute. Preserve that cursor
+# on rejoin, but do not mistake it for a changed appointment or discard every
+# model decision that takes longer than one heartbeat. Actual schedule changes
+# (plans, actions, delays, fired markers and definitions) remain guarded.
 
 
 class LifeWorkDiscarded(asyncio.CancelledError):
@@ -71,6 +75,8 @@ async def released_life_lock(engine):
     state, lock, origin = lease["state"], lease["lock"], lease["origin"]
     world, key = engine.world, engine.state_key(origin)
     persona = await engine._persona_text(origin)
+    world_config = world.model_dump(mode="json")
+    sessions_config = engine.sessions.model_dump(mode="json") if engine.sessions else None
     schedules = engine.schedules.model_dump() if engine.schedules else None
     day = engine.local_now().date()
     await engine.save_state(state)
@@ -87,15 +93,22 @@ async def released_life_lock(engine):
             from ..state import WorldState
             latest = WorldState.from_payload(await engine.db.call("get_state", key), key)
             after = latest.to_payload()
+            before_decision, after_decision = decision_state(before), decision_state(after)
+            changed_fields = sorted(k for k in before_decision.keys() | after_decision.keys()
+                                    if before_decision.get(k) != after_decision.get(k))
             stale = (engine.world is not world or engine.state_key(origin) != key
                      or not engine.is_enabled(origin) or engine.local_now().date() != day
+                     or engine.world.model_dump(mode="json") != world_config
+                     or (engine.sessions.model_dump(mode="json") if engine.sessions else None) != sessions_config
                      or (engine.schedules.model_dump() if engine.schedules else None) != schedules
-                     or await engine._persona_text(origin) != persona or decision_state(before) != decision_state(after))
+                     or await engine._persona_text(origin) != persona or changed_fields)
             if stale:
                 state.__dict__.clear()
                 state.__dict__.update(latest.__dict__)
                 lease["save"] = True
-                engine.decision_trace(origin, "life_inference", "discarded", "思考期间生活或人工设置发生变化，旧决定作废")
+                engine.decision_trace(origin, "life_inference", "discarded",
+                                      "思考期间生活或人工设置发生变化，旧决定作废",
+                                      changed_fields=changed_fields)
                 raise LifeWorkDiscarded()
             for name in TIME_FIELDS:
                 if name in after:
@@ -114,6 +127,11 @@ async def released_life_lock(engine):
                 if commit.done():
                     break
                 cancelled = True
-        commit.result()
-        if cancelled:
+        if cancelled or asyncio.current_task().cancelling():
+            # A stale-result cancellation is handled as a discarded decision by
+            # life_work; an actual unload/shutdown must propagate to its caller.
+            # Observe the commit exception before propagating shutdown.
+            if not commit.cancelled():
+                commit.exception()
             raise asyncio.CancelledError()
+        commit.result()

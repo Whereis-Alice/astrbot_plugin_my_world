@@ -115,6 +115,37 @@ class CalendarDiaryMixin:
         text = await self._persona_text(session_id)
         return text, hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
 
+    def _journal_config_signature(self) -> str:
+        """Also detect in-place edits while journal inference runs without a lock."""
+        payload = {
+            "scope": self._journal_scope(),
+            "sessions": self.sessions.model_dump(mode="json") if self.sessions else None,
+            "world": self.world.model_dump(mode="json"),
+        }
+        return hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+    async def _journal_context_current(
+        self, session_id: str, signature: str, persona: str
+    ) -> bool:
+        return (
+            self.is_enabled(session_id)
+            and not getattr(self, "_background_closed", False)
+            and self._journal_config_signature() == signature
+            and await self._persona_text(session_id) == persona
+        )
+
+    async def _journal_retry_allowed(self, key: str) -> bool:
+        prior = await self.db.call("kv_get", key, {}) or {}
+        return not isinstance(prior, dict) or (
+            float(prior.get("retry_at") or 0) <= self._now()
+            and (
+                prior.get("day") != self._today_key(self._now())
+                or int(prior.get("count") or 0) < 3
+            )
+        )
+
     def _calendar_config_signature(self, cfg, year: int) -> str:
         payload = {
             "year": int(year),
@@ -133,6 +164,14 @@ class CalendarDiaryMixin:
         return hashlib.sha256(
             json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
         ).hexdigest()[:24]
+
+    @staticmethod
+    def _calendar_needs_generation(calendar: dict[str, Any] | None) -> bool:
+        return (
+            calendar is None
+            or calendar.get("_generation") == "public_fallback"
+            or (not calendar.get("events") and not calendar.get("_generation"))
+        )
 
     def _journal_generation_lock(
         self, kind: str, scope: str, persona_key: str, period: str
@@ -225,15 +264,14 @@ class CalendarDiaryMixin:
             and not force
             and cached.get("_config_signature")
             == self._calendar_config_signature(cfg, year)
+            and not self._calendar_needs_generation(cached)
         ):
             return cached
         attempt_key = f"calendar_auto:{scope}:{persona_key}:{year}"
         prior = await self.db.call("kv_get", attempt_key, {}) or {}
-        if automatic and isinstance(prior, dict):
-            if prior.get("day") == self._today_key(self._now()) and int(prior.get("count") or 0) >= 3:
-                return None
-            if float(prior.get("retry_at") or 0) > self._now():
-                return None
+        if automatic and not await self._journal_retry_allowed(attempt_key):
+            return cached
+        context_signature = self._journal_config_signature()
         countries = normalize_countries(getattr(cfg, "countries", None) or [])
         use_public = bool(getattr(cfg, "use_public_calendar", True))
         public, public_notes = (
@@ -275,17 +313,21 @@ class CalendarDiaryMixin:
                     "day": self._today_key(self._now()),
                     "count": (
                         int(prior.get("count") or 0) + 1
-                        if isinstance(prior, dict)
+                        if isinstance(prior, dict) and prior.get("day") == self._today_key(self._now())
                         else 1
                     ),
                     "retry_at": self._now() + 300,
                 },
             )
-        raw = await self._ask_journal(session_id, "calendar", system, prompt)
+        try:
+            raw = await self._ask_journal(session_id, "calendar", system, prompt)
+        except Exception as exc:
+            self._log("warning", f"生活日历模型失败，保留重试机会：{type(exc).__name__}")
+            raw = None
         payload = extract_json_object(raw or "")
         try:
             validated = validate_calendar(
-                payload or {},
+                payload,
                 year=year,
                 configured_type=configured_type,
                 configured_countries=countries,
@@ -296,6 +338,7 @@ class CalendarDiaryMixin:
                 max_events=int(getattr(cfg, "max_events", 120) or 120),
                 public_candidates=public,
             )
+            validated["_generation"] = "model"
         except (TypeError, ValueError):
             if not public or configured_type != "real":
                 return None
@@ -307,21 +350,24 @@ class CalendarDiaryMixin:
                 "timezone": self.world.timezone,
                 "culture_notes": "",
                 "events": public,
+                "_generation": "public_fallback",
             }
         if public_notes:
             validated["public_calendar_notes"] = public_notes
         validated["_config_signature"] = self._calendar_config_signature(cfg, year)
         current_persona, current_key = await self._journal_persona(session_id)
-        if current_persona != persona or current_key != persona_key:
+        if (current_persona != persona or current_key != persona_key
+                or not await self._journal_context_current(session_id, context_signature, persona)):
             return None
         saved = await self.db.call(
             "calendar_year_save", scope, persona_key, year, validated
         )
-        await self.db.call(
-            "kv_set",
-            attempt_key,
-            {"day": self._today_key(self._now()), "count": 0, "retry_at": 0},
-        )
+        if validated.get("_generation") == "model":
+            await self.db.call(
+                "kv_set",
+                attempt_key,
+                {"day": self._today_key(self._now()), "count": 0, "retry_at": 0},
+            )
         await self._log_event_for_calendar(saved, session_id)
         return saved
 
@@ -444,7 +490,8 @@ class CalendarDiaryMixin:
         matters = []
         for item in state.life_matters:
             if (
-                not visible(item, session_id)
+                item.get("who")
+                or not visible(item, session_id)
                 or str(item.get("persona_key") or "") != persona_key
             ):
                 continue
@@ -542,11 +589,9 @@ class CalendarDiaryMixin:
             return None
         attempt_key = f"diary_auto:{scope}:{persona_key}:{day}"
         prior = await self.db.call("kv_get", attempt_key, {}) or {}
-        if automatic and isinstance(prior, dict):
-            if prior.get("day") == self._today_key(self._now()) and int(prior.get("count") or 0) >= 3:
-                return None
-            if float(prior.get("retry_at") or 0) > self._now():
-                return None
+        if automatic and not await self._journal_retry_allowed(attempt_key):
+            return None
+        context_signature = self._journal_config_signature()
         if automatic:
             await self.db.call(
                 "kv_set",
@@ -555,7 +600,7 @@ class CalendarDiaryMixin:
                     "day": self._today_key(self._now()),
                     "count": (
                         int(prior.get("count") or 0) + 1
-                        if isinstance(prior, dict)
+                        if isinstance(prior, dict) and prior.get("day") == self._today_key(self._now())
                         else 1
                     ),
                     "retry_at": self._now() + 900,
@@ -584,7 +629,9 @@ class CalendarDiaryMixin:
             return None
         # Recheck the character identity and calendar day after the model wait.
         current_persona, current_key = await self._journal_persona(session_id)
-        if current_persona != persona or current_key != persona_key:
+        if (current_persona != persona or current_key != persona_key
+                or not await self._journal_context_current(session_id, context_signature, persona)
+                or await self._diary_sources(session_id, day, persona_key) != sources):
             return None
         saved = await self.db.call(
             "diary_upsert",
@@ -621,18 +668,6 @@ class CalendarDiaryMixin:
     async def maintain_calendar_diaries(self) -> None:
         """Fill missing annual calendars and completed-day diaries in the background."""
 
-        active = [
-            task
-            for task in getattr(self, "_life_clock_jobs", {}).values()
-            if task and not task.done()
-        ]
-        schedule_job = getattr(self, "_schedule_model_job", None)
-        if schedule_job is not None and not schedule_job.done():
-            active.append(schedule_job)
-        if active:
-            # Let the clock and scheduled actions own this pass. A later tick
-            # will retry without recording a throttle timestamp.
-            return
         seen: set[str] = set()
         checked = getattr(self, "_calendar_diary_checked_at", None)
         if checked is None:
@@ -643,6 +678,11 @@ class CalendarDiaryMixin:
             if key in seen:
                 continue
             seen.add(key)
+            active = getattr(self, "_life_clock_jobs", {}).get(key)
+            if (active is not None and not active.done()) or self.is_busy(session_id):
+                # A slow character must not block other characters' journals.
+                # Keep this one's throttle untouched for the next maintenance pass.
+                continue
             if float(checked.get(key) or 0) > checked_at - 600:
                 continue
             checked[key] = checked_at
@@ -655,18 +695,20 @@ class CalendarDiaryMixin:
                     and getattr(cfg, "auto_generate", True)
                 ):
                     existing = await self.calendar_for_year(session_id, local.year)
-                    if existing is None:
-                        try:
-                            await self.ensure_calendar(
-                                session_id, local.year, automatic=True
-                            )
-                        except Exception as exc:
-                            self._log(
-                                "warning",
-                                f"生活日历经后台重试仍未完成：{type(exc).__name__}",
-                            )
-                        # A missing annual calendar owns this maintenance turn.
-                        continue
+                    if self._calendar_needs_generation(existing):
+                        attempt_key = f"calendar_auto:{self._journal_scope()}:{(await self._journal_persona(session_id))[1]}:{local.year}"
+                        if await self._journal_retry_allowed(attempt_key):
+                            try:
+                                await self.ensure_calendar(
+                                    session_id, local.year, automatic=True
+                                )
+                            except Exception as exc:
+                                self._log(
+                                    "warning",
+                                    f"生活日历经后台重试仍未完成：{type(exc).__name__}",
+                                )
+                            # At most one potential model request per character/pass.
+                            continue
                 diary = getattr(self.world, "diary", None)
                 if (
                     diary is None
@@ -680,6 +722,9 @@ class CalendarDiaryMixin:
                 for offset in range(1, 8):
                     day = (local.date() - timedelta(days=offset)).isoformat()
                     if await self.diary_for_day(session_id, day):
+                        continue
+                    attempt_key = f"diary_auto:{self._journal_scope()}:{persona_key}:{day}"
+                    if not await self._journal_retry_allowed(attempt_key):
                         continue
                     sources = await self._diary_sources(
                         session_id, day, persona_key

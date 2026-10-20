@@ -99,6 +99,9 @@ def validate_calendar(
 
     if not isinstance(raw, dict):
         raise ValueError("日历必须是 JSON 对象")
+    incoming_events = raw.get("events")
+    if not isinstance(incoming_events, list):
+        raise ValueError("日历 events 必须是列表；空日历需要明确返回 []")
     world_type = str(raw.get("world_type") or configured_type or "original").lower()
     if configured_type in WORLD_TYPES:
         world_type = configured_type
@@ -125,7 +128,7 @@ def validate_calendar(
     }
     events: list[dict[str, Any]] = []
     seen_event_ids: set[str] = set()
-    for incoming in list(raw.get("events") or [])[: max(1, int(max_events))]:
+    for incoming in incoming_events[: max(1, int(max_events))]:
         if not isinstance(incoming, dict):
             continue
         try:
@@ -169,6 +172,8 @@ def validate_calendar(
                 "source_urls": urls,
             }
         )
+    if incoming_events and not events:
+        raise ValueError("日历没有有效日期，保留重试机会")
     # In a real-world calendar, official public dates are facts. In fanfiction
     # and original worlds they remain candidates for the model to explicitly
     # adopt; otherwise a real holiday could leak into an unrelated setting.

@@ -210,6 +210,7 @@ class CalendarDiaryEngineTests(unittest.IsolatedAsyncioTestCase):
             {
                 "year": self.engine.local_now().year,
                 "events": [],
+                "_generation": "model",
                 "_config_signature": self.engine._calendar_config_signature(
                     self.engine.world.calendar, self.engine.local_now().year
                 ),

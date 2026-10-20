@@ -176,8 +176,12 @@ class SleepRhythmMixin:
                 '{"decision":"sleep 或 continue","hours":8,"review_minutes":60,"reason":"具体理由"}'
             )
             try:
-                reply = await asyncio.wait_for(self._ask_llm(state.session_id,
-                    "你正在为自己的生活决定作息。只判断与解释，不发消息、不调用工具。", prompt), timeout=45)
+                # Keep inference in the task owning STATE_LEASE. wait_for(coro)
+                # spawns another task, preventing released_life_lock from releasing
+                # this character's writer lock or rejecting concurrent changes.
+                async with asyncio.timeout(45):
+                    reply = await self._ask_llm(state.session_id,
+                        "你正在为自己的生活决定作息。只判断与解释，不发消息、不调用工具。", prompt)
             except asyncio.TimeoutError:
                 reply = None
             outcome.llm_calls += 1

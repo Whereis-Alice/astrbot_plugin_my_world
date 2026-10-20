@@ -39,6 +39,7 @@ from .models import (
     TickOutcome,
 )
 from .util import _clip_text
+from .life_inference import life_work
 
 
 def _wants_node_actions(value: Any) -> bool:
@@ -906,6 +907,10 @@ class GenerationMixin:
                 for item in (self.schedules.schedules or [])
             ]
         life_lines = [f"当前时间：{self.local_now().strftime('%Y-%m-%d %H:%M')}"]
+        if session_id:
+            # Reuse saved context, without another inference: today's culture and
+            # yesterday's own life should influence what she plans for herself.
+            life_lines.append(await self.life_context_text(session_id))
         if self.world.sleep.mode == "autonomous":
             life_lines.append("整觉时间由独立自主作息决定，日程只安排生活活动，不安排固定入睡；留出休息空间。")
         if session_id:
@@ -964,6 +969,7 @@ class GenerationMixin:
     AUTO_SCHEDULE_KV = "schedule.auto_day"
     """「今天已经自动排过日程了吗」记在 kv 里，按配置范围分开。"""
 
+    @life_work("")
     async def maybe_auto_generate_schedules(self) -> str:
         async with self._auto_schedule_lock:
             return await self._auto_generate_schedules()
