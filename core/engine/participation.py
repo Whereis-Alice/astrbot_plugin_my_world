@@ -13,6 +13,10 @@ from .models import TickOutcome
 
 
 class ParticipationMixin:
+    def claim_chat_scene(self, outcome, target: str, rows: list[dict]) -> None:
+        outcome.chat_claims[target] = [str(row["seq"]) for row in rows]
+        outcome.chat_expires_at[target] = max(float(row.get("at") or 0) for row in rows) + self.world.decider.live_window_seconds
+
     def conversation_scene_hint(self, state, target: str) -> str:
         rows = [row for row in state.recent_chat if self._chat_origin(row, state) == target
                 and self._now() - float(row.get("at") or 0) <= self.world.decider.live_window_seconds][-8:]
@@ -51,6 +55,8 @@ class ParticipationMixin:
             return "paused"
         if not self.world.decider.enabled:
             return "disabled"
+        if not self.world.decider.message_driven:
+            return "message_driven_disabled"
         if state.is_sleeping or state.state == STATE_DROWSY or state.energy < .25:
             return "resting"
         if state.current_action:
@@ -161,6 +167,7 @@ class ParticipationMixin:
                                                 "checked_at": self._now(), "decision": "listening"}
             self.decision_trace(session_id, "participation", "considering", "近期群聊已聚合，判断是否有话想接",
                                 messages=len(rows))
+            self.claim_chat_scene(outcome, session_id, rows)
             node = self.node(state.node_id) or self.node(self.default_node_id())
             messages = await self._generate_text_actions(state, node,
                 PARTICIPATION_MANNERS + "\n这是你旁听到的一段群聊，没有人要求你必须回复。"
@@ -168,18 +175,32 @@ class ParticipationMixin:
                 "旧历史只用来理解关系；只接下面仍在现场的话题。"
                 + self.conversation_scene_hint(state, session_id)
                 + "只输出一条短消息，或空 actions 表示继续听。", session_id=session_id)
-            if not messages or self.participation_gate(state, session_id):
+            if (not messages or self.participation_gate(state, session_id)
+                    or self._now() >= outcome.chat_expires_at[session_id]):
                 self.decision_trace(session_id, "participation", "listening", "这轮继续旁听")
                 return outcome
-            outcome.chat_claims[session_id] = [str(row["seq"]) for row in rows]
             for message in messages[:1]:
                 outcome.add_speech(message)
             self._count_autonomous(state)
         await self._deliver(outcome)
         return outcome
 
+    @staticmethod
+    def _contact_person_key(target: str, user_id: str) -> str:
+        return target.split(":", 1)[0] + ":" + str(user_id)
+
     def _outreach_ledger(self, session_id):
-        return self.db.raw.kv_get("outreach:" + self.state_key(session_id), {}) or {}
+        ledger = self.db.raw.kv_get("outreach:" + self.state_key(session_id), {}) or {}
+        people = {}
+        for uid, record in (ledger.get("people") or {}).items():
+            # v4.29.0 used raw user IDs; their recorded origin supplies the platform.
+            uid = str(record.get("user_id", uid))
+            record = {**record, "user_id": uid}
+            key = self._contact_person_key(str(record.get("origin") or session_id), uid)
+            if key not in people or record.get("at", 0) > people[key].get("at", 0):
+                people[key] = record
+        ledger["people"] = people
+        return ledger
 
     def outreach_gate(self, target: str, *, token: str = "", user_id: str = "") -> str:
         """All autonomous entrances share actual-send cadence and unanswered-person backoff."""
@@ -192,8 +213,9 @@ class ParticipationMixin:
                              and self._now() - last.get("first_at", last.get("at", 0)) <= 120)
             if last and not same_turn and self._now() - last.get("at", 0) < self.world.decider.min_speech_gap_seconds:
                 return "刚说过话，先听一会儿"
-            waiting = (ledger.get("people") or {}).get(str(user_id)) or {}
-            if user_id and waiting and not same_turn and self._now() - waiting.get("at", 0) < self.world.decider.person_retry_hours * 3600:
+            waiting = ledger["people"].get(self._contact_person_key(target, user_id)) or {}
+            same_person_turn = same_turn and waiting.get("token") == token
+            if user_id and waiting and not same_person_turn and self._now() - waiting.get("at", 0) < self.world.decider.person_retry_hours * 3600:
                 return "上次找他还没有回应，先给他一点时间"
         return ""
 
@@ -207,7 +229,8 @@ class ParticipationMixin:
         sessions[target] = {"at": now, "first_at": first, "token": token}
         waiting = ledger.setdefault("people", {})
         for uid in people:
-            waiting[str(uid)] = {"at": now, "token": token, "origin": target}
+            waiting[self._contact_person_key(target, uid)] = {
+                "at": now, "token": token, "origin": target, "user_id": str(uid)}
         # Bounded even in installations with many contacts and changing sessions.
         for field, maximum in (("sessions", 128), ("people", 256)):
             ledger[field] = dict(sorted(ledger[field].items(), key=lambda pair: pair[1].get("at", 0))[-maximum:])
@@ -218,7 +241,7 @@ class ParticipationMixin:
             return
         key = "outreach:" + self.state_key(ctx.session_id)
         ledger = self._outreach_ledger(ctx.session_id)
-        if (ledger.get("people") or {}).pop(str(ctx.user_id), None) is not None:
+        if ledger["people"].pop(self._contact_person_key(ctx.session_id, ctx.user_id), None) is not None:
             self.db.raw.kv_set(key, ledger)
         # An unrelated chat in another session cannot acknowledge this outreach.
         origins = set(getattr(state, "engagement_origins", []) or [])

@@ -1,14 +1,37 @@
 """Successful autonomous contacts share one small, daily ledger in the existing database."""
 from __future__ import annotations
 from typing import Any
+from uuid import uuid4
 from .models import TickOutcome
 
 
 class ProactiveContactMixin:
+    def _contact_started(self, ledger: dict, target: str, token: str) -> float:
+        started = (ledger.get("started_at") or {}).get(token)
+        if started is None:
+            # Older ledgers did not date contacts. Reuse the actual-send record
+            # when available; an undated old plan must not bypass quotas forever.
+            last = (self._outreach_ledger(target).get("sessions") or {}).get(target) or {}
+            if last.get("token") == token:
+                started = last.get("first_at", last.get("at"))
+        return float(started or 0)
+
+    def _contact_token(self, outcome: TickOutcome, target: str) -> str:
+        base = f"{outcome.contact_id}:{target}"
+        token = outcome.contact_tokens.get(base, base)
+        ledger = self.db.raw.kv_get(f"proactive_contacts:{self.state_key(target)}", {}) or {}
+        if ledger.get("day") == self._today_key(self._now()) and token in (ledger.get("contacts") or {}):
+            started = self._contact_started(ledger, target, token)
+            if not started or self._now() - started > 120:
+                token = outcome.contact_tokens[base] = base + ":" + uuid4().hex
+        return token
+
     def contact_speech_allowed(self, outcome: TickOutcome, target: str, kind: str) -> bool:
         if kind in {"reply", "schedule", "event"}:
             return True
-        token = f"{outcome.contact_id}:{target}"
+        if kind == "interject" and self._now() >= outcome.chat_expires_at.get(target, float("inf")):
+            return False
+        token = self._contact_token(outcome, target)
         people = set(outcome.contact_people)
         if ":PrivateMessage:" in target:
             people.add(target.rsplit(":", 1)[-1])
@@ -33,7 +56,8 @@ class ProactiveContactMixin:
         used = len(set(contacts) | set(active))
         total_left = max(0, cap - used)
         person_left = self.profiles.proactive_quota_left(session_id, user_id, now=stamp) if user_id else None
-        already = bool(token and token in contacts)
+        started = self._contact_started(ledger, session_id, token) if token and token in contacts else 0
+        already = bool(started and 0 <= stamp - started <= 120)
         if user_id and person_left is not None:
             person = [session_id, str(user_id)]
             person_left = max(0, person_left - sum(
@@ -52,14 +76,16 @@ class ProactiveContactMixin:
         """No await between checking and reserving; never hold the state lock during send."""
         if not any(kind not in {"reply", "schedule", "event", "quiet"} for kind in kinds):
             return None, ""
+        if "interject" in kinds and self._now() >= outcome.chat_expires_at.get(target, float("inf")):
+            return None, "刚才的话题已不在现场，这轮不再补插话"
         if not self.proactive_chat_allowed(target):
             return None, "自主搭话已暂停"
         # A different module cannot start another contact while this life is sending.
-        if any(item["token"] != f"{outcome.contact_id}:{target}"
+        token = self._contact_token(outcome, target)
+        if any(item["token"] != token
                for item in getattr(self, "_contact_pending", {}).values()
                if item["key"] == f"proactive_contacts:{self.state_key(target)}"):
             return None, "正在发送另一条主动联系"
-        token = f"{outcome.contact_id}:{target}"
         people = set(outcome.contact_people)
         if ":PrivateMessage:" in target:
             people.add(target.rsplit(":", 1)[-1])
@@ -93,6 +119,7 @@ class ProactiveContactMixin:
             if ledger.get("day") != day:
                 ledger = {"day": day, "contacts": {}}
             contacts = ledger.setdefault("contacts", {})
+            ledger.setdefault("started_at", {}).setdefault(receipt["token"], self._now())
             known = contacts.setdefault(receipt["token"], [])
             for session_id, uid in receipt["people"]:
                 if [session_id, uid] not in known:

@@ -341,6 +341,9 @@ class PersonaMixin:
                         system_prompt=system_prompt,
                         prompt=user_prompt,
                     )
+                    if reply is None or not getattr(reply, "ok", True):
+                        from ..model_call_runtime import safe_error
+                        raise RuntimeError(safe_error(getattr(reply, "error", "") or "模型请求未成功"))
                     raw = str(getattr(reply, "text", "") or "")
                     row["raw"] = raw[:2000]
                     # 动作这条线要和真机一致：用**真实白名单**解析，
@@ -386,7 +389,8 @@ class PersonaMixin:
                         str(item) for item in allowed_ids if str(item) != "say"
                     )[:20]
                 except Exception as exc:  # 一轮挂了不该让整份考卷作废
-                    row["error"] = f"{type(exc).__name__}: {exc}"
+                    from ..model_call_runtime import safe_error
+                    row["error"] = f"{type(exc).__name__}: {safe_error(exc)}"
             return row
 
         if variant == "analyst":

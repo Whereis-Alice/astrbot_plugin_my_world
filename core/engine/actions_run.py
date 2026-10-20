@@ -314,6 +314,11 @@ class ActionsRunMixin:
     ) -> bool | None:
         # 这里是所有动作真正开始执行的唯一入口（计划 / 日程 / 自主行为 / 工具后续都走这里），
         # 因此把「能不能做」的校验统一放在这里，避免某条路径绕过检查。
+        if action.interject and self._speech_target(state, action, outcome) != outcome.home():
+            outcome.notes.append("插话只回应原来的聊天现场，已跳过跨会话落点")
+            if from_plan and state.current_plan is not None:
+                advance(state, status="skipped")
+            return False
         from ..models import CHAT_BROWSE_IDS
         if definition.id in CHAT_BROWSE_IDS:
             return self.start_chat_browse(state, definition.id)
@@ -632,7 +637,7 @@ class ActionsRunMixin:
                 outcome.notes.append("刚才的话题已不在现场，这轮不再补插话")
                 messages = []
             else:
-                outcome.chat_claims[outcome.home()] = [str(row["seq"]) for row in rows]
+                self.claim_chat_scene(outcome, outcome.home(), rows)
                 messages = await self._instant_output(
                     state, node, definition, action, session_id=outcome.home())
         else:
@@ -662,7 +667,7 @@ class ActionsRunMixin:
         if definition.id == "share":
             if messages and not dropped:
                 for text in messages:
-                    outcome.add_speech(text, speaker)
+                    outcome.add_speech(text, speaker, kind="interject" if action.interject else None)
                 self._count_share(state)
         elif self._action_speaks(definition):
             if not dropped:
@@ -755,10 +760,12 @@ class ActionsRunMixin:
     ) -> list[str]:
         """瞬时动作的输出文本。"""
 
-        if definition.id == "say":
-            if action.messages:
-                return list(action.messages)[: self.world.limits.max_messages_per_say]
+        if definition.id in {"say", "share"}:
+            if definition.id == "share" and not self._share_allowed(state):
+                return []
             if action.interject:
+                # A planned line may predate a changed topic. Reconsider the live
+                # scene with the existing generation budget rather than echo it.
                 return await self._generate_text_actions(
                     state,
                     node,
@@ -766,9 +773,13 @@ class ActionsRunMixin:
                     "如果你确实有话想接，就自然地接一句（不要逐条复述、不要总结、不要点名批评）；"
                     "先看清那几句是谁在对谁说：没点名找你的话，就当他们在互相聊，"
                     "别把别人话里的「你」当成你自己，也别用「主人」这类专属称呼去接；"
-                    "如果说不出什么，就返回空的动作列表，保持安静。",
+                    "如果说不出什么，就返回空的动作列表，保持安静。"
+                    + self.conversation_scene_hint(state, session_id or state.session_id),
                     session_id=session_id,
                 )
+            if action.messages:
+                return list(action.messages)[: self.world.limits.max_messages_per_say]
+        if definition.id == "say":
             return await self._generate_text_actions(
                 state,
                 node,
@@ -779,10 +790,6 @@ class ActionsRunMixin:
                 autonomy=True,
             )
         if definition.id == "share":
-            if not self._share_allowed(state):
-                return []
-            if action.messages:
-                return list(action.messages)[: self.world.limits.max_messages_per_say]
             return await self._generate_text_actions(
                 state,
                 node,

@@ -60,6 +60,8 @@ class TickOutcome:
 
     chat_claims: dict[str, list[str]] = field(default_factory=dict)
     """Exact observed chat identities; commit only after accepted speech to that target."""
+    chat_expires_at: dict[str, float] = field(default_factory=dict)
+    """A queued interjection cannot outlive the conversation it was written for."""
 
     def take_messages(self) -> list[str]:
         """取走"还没发出去"的几句话（调用方负责真的发出去）。"""
@@ -126,6 +128,7 @@ class TickOutcome:
     live_kinds: list[str] = field(default_factory=list)
     live_origins: list[str] = field(default_factory=list)
     contact_id: str = field(default_factory=lambda: uuid4().hex)
+    contact_tokens: dict[str, str] = field(default_factory=dict)
     contact_people: set[str] = field(default_factory=set)
 
     def add_speech(self, text: str, session_id: str = "", *, kind: str | None = None) -> None:

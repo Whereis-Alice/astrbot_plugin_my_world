@@ -750,7 +750,7 @@ class ActionsMixin:
                 and str(getattr(definition, "target_type", "")) == "user"
                 and bool(getattr(self.world.profile, "enabled", True))
             ):
-                token = f"{outcome.contact_id}:{outcome.home()}"
+                token = self._contact_token(outcome, outcome.home())
                 status = self.contact_status(outcome.home(), action.target, token=token)
                 if status["reason"]:
                     outcome.notes.append(f"主动找 {action.target} 的次数今天用完了：{status['reason']}，跳过这一步")
@@ -880,6 +880,8 @@ class ActionsMixin:
             if not sent:
                 # 发不出去（会话没配 / 平台在冷却里）：从这里开始都留到收尾一起发，别丢
                 break
+            if receipt is None:
+                self.note_visible_speech(outcome.home())
             outcome.live_messages.append(line)
             outcome.live_kinds.append(kind)
             outcome.live_origins.append(outcome.home())
