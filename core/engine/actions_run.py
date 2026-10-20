@@ -319,7 +319,16 @@ class ActionsRunMixin:
             return self.start_chat_browse(state, definition.id)
         if definition.id == "sleep":
             target = self.world.sleep_node_id()
-            if not self._action_usable_now(definition) or (target and state.node_id != target):
+            current_plan = active_plan(state) if from_plan else None
+            fallback_here = bool(
+                current_plan
+                and current_plan.get("sleep_fallback")
+                and current_plan.get("source") in {"sleep_rhythm", "forced"}
+                and definition.available_in(state.node_id)
+            )
+            if not self._action_usable_now(definition) or (
+                target and state.node_id != target and not fallback_here
+            ):
                 note = "当前时段不能睡整觉" if not self._action_usable_now(definition) else f"需要先走到睡眠地点 {target}"
                 outcome.notes.append(note)
                 await self._log_event(state, "skip", {"action": "sleep", "note": note}, outcome=outcome)
@@ -1226,6 +1235,10 @@ class ActionsRunMixin:
                         break
             seconds = seconds or low
             seconds = min(max(seconds, low), high)
+        elif definition.duration_mode == "fixed":
+            # A fixed action owns its duration. Letting a model overwrite it with
+            # an arbitrarily large value can freeze one life for days or longer.
+            seconds = definition.duration or 0
         else:
             seconds = action.duration or definition.duration or 0
         return max(1, int(round(seconds / max(1.0, self.tick_seconds))))

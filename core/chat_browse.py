@@ -62,7 +62,7 @@ def thought_visible(
         # Legacy chat reflections had no origin tag. They are safe to show only
         # in the representative session that owns this persisted world; sibling
         # sessions still require an explicit matching source.
-        origin = fallback_session if fallback_session == session else "<legacy>"
+        origin = fallback_session if fallback_session and fallback_session == session else "<legacy>"
     if origin and origin != session:
         return False
     return not item.get("browse_session") or (

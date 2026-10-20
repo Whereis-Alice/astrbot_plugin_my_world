@@ -18,7 +18,7 @@ def _read_pages(value: Any) -> int:
         return -1
     try:
         number = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return -1
     return number if number >= 0 else -1
 

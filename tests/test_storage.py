@@ -46,6 +46,13 @@ class TestConfigStore(TempDirMixin, unittest.TestCase):
     def test_default_world_loads_without_warnings(self):
         store = ConfigStore(self.tmp_path)
         store.ensure_files()
+        # The shared unittest fixture keeps the pre-v3 default action set so
+        # legacy compatibility can be tested. Match a production new install
+        # before checking that loading the saved default is warning-free.
+        raw = store.raw_world()
+        from core.defaults import apply_default_actions_off
+        apply_default_actions_off(raw["actions"])
+        store.save_world(raw)
         world = store.load_world()
         self.assertEqual([], store.warnings)
         self.assertIn("bedroom", world.node_map())

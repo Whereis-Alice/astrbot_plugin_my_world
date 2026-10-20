@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import Mock
 
 from core.engine import TickOutcome
+from core.json_actions import PlannedAction, parse_plan_payload
 from core import life_matters as matters
 from core.models import ActionDef, MemoryConfig
 from tests import test_engine as fixture
@@ -29,6 +30,51 @@ class LifeDepthTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["thoughts"][0]["content"], "想接着昨天读到的地方往下看。")
         self.assertEqual(payload["thoughts"][0]["detail"]["intent"], "昨天的阅读还留了一个问题")
         self.assertEqual(self.messenger.sent, [])
+
+    async def test_fixed_action_and_model_plan_ttl_cannot_freeze_autonomous_life(self):
+        read = self.engine.world.action_map()["read"]
+        read.duration_mode = "fixed"
+        read.duration = 600
+        state = await self.engine.load_state(S, cold_start=False)
+        self.assertEqual(
+            self.engine._duration_ticks(
+                read, PlannedAction(type="read", duration=30 * 86400), state
+            ),
+            10,
+            "a model cannot stretch a fixed action beyond its configured duration",
+        )
+        self.llm.replies = [
+            json.dumps(
+                {
+                    "plan": [{"action": "read", "duration": 86400}],
+                    "valid_until": 365 * 86400,
+                    "inner": "先读一会儿。",
+                    "reason": "想接着读。",
+                }
+            )
+        ]
+        async with self.engine.session_state(S) as live:
+            plan = await self.engine._ask_llm_for_plan(
+                live, self.engine.node("study"), TickOutcome(S)
+            )
+            self.assertIsNotNone(plan)
+            self.assertLessEqual(
+                float(plan["expires_at"]) - self.clock.now(),
+                self.engine.world.limits.plan_valid_duration,
+            )
+            self.assertLessEqual(
+                int(plan["valid_until"]) - int(live.world_time),
+                self.engine.world.limits.plan_valid_duration // 60,
+            )
+
+    def test_non_finite_model_durations_do_not_break_plan_parsing(self):
+        plan, _warnings = parse_plan_payload(
+            '{"plan":[{"action":"read","duration":1e999}],"valid_until":1e999}',
+            available_actions={"read"},
+        )
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan["steps"][0]["duration"], 0)
+        self.assertEqual(plan["valid_for"], 1800)
 
     async def test_rule_plan_reason_becomes_a_grounded_inner_line(self):
         async with self.engine.session_state(S) as state:

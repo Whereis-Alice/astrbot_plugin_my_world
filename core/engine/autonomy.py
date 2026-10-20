@@ -413,10 +413,17 @@ class AutonomyMixin:
                 plan["send_to"] = ""
                 for step in plan.get("steps", []):
                     step["kind"] = "quiet"
+            configured_valid_for = max(60, int(self.world.limits.plan_valid_duration))
+            try:
+                requested_valid_for = int(plan.get("valid_for", configured_valid_for))
+            except (TypeError, ValueError, OverflowError):
+                requested_valid_for = configured_valid_for
             created = create_plan(
                 steps=plan.get("steps", []),
                 world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds,
-                valid_for=int(plan.get("valid_for", self.world.limits.plan_valid_duration)),
+                # The configured duration is a ceiling for model-authored plans.
+                # A malformed far-future value must not prevent the next decision.
+                valid_for=min(configured_valid_for, requested_valid_for),
                 reason=str(plan.get("reason", "")),
                 source="llm",
                 send_to=str(plan.get("send_to") or ""),

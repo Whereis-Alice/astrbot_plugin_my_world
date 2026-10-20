@@ -681,14 +681,24 @@ class ActionsMixin:
                 )
                 continue
             if definition.id == "sleep" and self.world.sleep_node_id() and state.node_id != self.world.sleep_node_id():
-                target = self.world.sleep_node_id()
-                if find_path(self.world.adjacent(), state.node_id, target) is not None:
-                    await self._travel_then_continue(state, outcome, definition, target,
-                                                     queued_actions[index:], carried=carried)
-                    return True
-                outcome.notes.append(f"无法走到睡眠地点 {target}，这一步不睡")
-                await self._log_event(state, "skip", {"action": definition.id, "note": outcome.notes[-1]}, outcome=outcome)
-                continue
+                fallback_here = bool(
+                    (existing_plan or {}).get("sleep_fallback")
+                    and (existing_plan or {}).get("source") in {"sleep_rhythm", "forced"}
+                    and definition.available_in(state.node_id)
+                )
+                if fallback_here:
+                    # Emergency fallback already selected a valid current place
+                    # after the configured bedroom was unreachable.
+                    pass
+                else:
+                    target = self.world.sleep_node_id()
+                    if find_path(self.world.adjacent(), state.node_id, target) is not None:
+                        await self._travel_then_continue(state, outcome, definition, target,
+                                                         queued_actions[index:], carried=carried)
+                        return True
+                    outcome.notes.append(f"无法走到睡眠地点 {target}，这一步不睡")
+                    await self._log_event(state, "skip", {"action": definition.id, "note": outcome.notes[-1]}, outcome=outcome)
+                    continue
             if not definition.available_in(state.node_id) and not (definition.id == "sleep" and self.world.sleep_node_id() == state.node_id):
                 # A2 兜底：她想去别处做这件事，自己又没写移动 —— 插件带她过去
                 target = (

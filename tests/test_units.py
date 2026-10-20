@@ -1806,6 +1806,14 @@ class TestDirtyStringLists(unittest.TestCase):
 
 
 class TestJsonActions(unittest.TestCase):
+    def test_non_finite_action_numbers_fall_back_to_safe_values(self):
+        result = parse_action_payload(
+            '{"actions":[{"type":"search_web","duration":1e999,"read_pages":1e999}]}',
+            available_actions={"search_web"},
+        )
+        self.assertEqual(result.actions[0].duration, 0)
+        self.assertEqual(result.actions[0].read_pages, -1)
+
     def test_valid_payload(self):
         result = parse_action_payload(
             '{"actions":[{"type":"say","messages":["早","在忙"]},{"type":"think","content":"想他"}]}',

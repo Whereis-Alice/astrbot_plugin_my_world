@@ -116,7 +116,7 @@ class SleepRhythmMixin:
         if not exhausted and (state.world_time < state.no_sleep_until or state.sleep_delayed):
             return
         if exhausted:
-            if now < _number(rhythm.get("retry_at")):
+            if now < _number(rhythm.get("retry_at")) and state.energy > 0.08:
                 return
             if rhythm.get("decision") != "sleep" or rhythm.get("source") != "safety":
                 await self._save_rhythm_decision(state, outcome, "sleep", 9, 15,
@@ -212,25 +212,66 @@ class SleepRhythmMixin:
             return
         if not force and (state.world_time < state.no_sleep_until or state.sleep_delayed):
             return
-        if self._now() < _number(state.sleep_rhythm.get("retry_at")):
-            return
         if await self._defer_rhythm_for_event(state, outcome):
             return
         definition = self.world.action_map().get("sleep")
         target = self.world.sleep_node_id()
-        if definition is None or not definition.enabled or not target:
+        if definition is None or not definition.enabled:
             # 配置未提供睡觉动作/地点，不能虚构动作或每 tick 刷错误。
             state.sleep_rhythm["decision"] = "continue"
             state.sleep_rhythm["next_evaluation_at"] = self._now() + 3600
             state.sleep_rhythm["retry_at"] = self._now() + 3600
             await self._log_event(state, "skip", {"action": "sleep", "note": "自主作息需要启用睡觉动作并配置可用的睡眠地点"})
             return
+        can_rest_here = definition.available_in(state.node_id)
+        if (self._now() < _number(state.sleep_rhythm.get("retry_at"))
+                and (state.energy > 0.08 or not can_rest_here)):
+            return
+        sleep_here = False
+        if not target and can_rest_here:
+            # A world may have no designated bedroom, or the map may be broken.
+            # Rest where the enabled sleep action allows instead of staying awake.
+            target = state.node_id
+            sleep_here = True
         if state.node_id != target:
             movement = self.world.action_map().get("walk_to")
             if movement is None or not movement.enabled or find_path(self.world.adjacent(), state.node_id, target) is None:
-                state.sleep_rhythm["retry_at"] = self._now() + 900
-                await self._log_event(state, "skip", {"action": "sleep", "note": "无法走到睡眠地点，请检查地图连线与移动动作；15 分钟后重试"})
-                return
+                failures = min(8, int(state.sleep_rhythm.get("route_failures") or 0) + 1)
+                state.sleep_rhythm["route_failures"] = failures
+                # Avoid an endless awake loop at zero energy. After a short grace
+                # period (or immediately under exhaustion), use a valid sleep
+                # action at the current node and leave the map warning visible.
+                if can_rest_here and (
+                    state.energy <= 0.08 or failures >= 2
+                ):
+                    target = state.node_id
+                    sleep_here = True
+                    await self._log_event(
+                        state,
+                        "sleep_fallback",
+                        {
+                            "action": "sleep",
+                            "note": "无法走到卧室，这次先在当前地点休息；地图路线仍建议检查",
+                            "node": state.node_id,
+                        },
+                        outcome=outcome,
+                    )
+                else:
+                    retry = min(3600, 300 * 2 ** (failures - 1))
+                    state.sleep_rhythm["retry_at"] = self._now() + retry
+                    await self._log_event(
+                        state,
+                        "skip",
+                        {
+                            "action": "sleep",
+                            "note": f"无法走到睡眠地点，{retry // 60} 分钟后重试；连续失败会改为原地休息",
+                        },
+                    )
+                    return
+            else:
+                state.sleep_rhythm["route_failures"] = 0
+        if sleep_here:
+            state.sleep_rhythm["route_failures"] = 0
         current = state.current_action or {}
         if current or active_plan(state):
             # 普通睡意先收尾；过劳时可以终止持续动作，但先走完正在行走的这一段。
@@ -253,6 +294,8 @@ class SleepRhythmMixin:
         plan = create_plan(steps=steps, world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds,
             valid_for=12 * 3600,
             reason=str(state.sleep_rhythm.get("reason") or "休息"), source="forced" if force else "sleep_rhythm")
+        if plan is not None and sleep_here:
+            plan["sleep_fallback"] = True
         await self._apply_plan(state, self.node(state.node_id), outcome, plan)
         await self._tick_plan(state, self.node(state.node_id), outcome, depth=0)
 

@@ -528,13 +528,13 @@ def parse_action_payload(
         action.search_depth = depth if depth in ("quick", "standard", "deep") else ""
         try:
             wanted_reads = int(item.get("read_pages", -1))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             wanted_reads = -1
         action.read_pages = wanted_reads if wanted_reads >= 0 else -1
 
         try:
             action.duration = max(0, int(item.get("duration", 0) or 0))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             action.duration = 0
 
         actions.append(action)
@@ -1013,7 +1013,7 @@ def parse_plan_payload(
         return None, warnings + ["计划为空"]
     try:
         valid_for = int(payload.get("valid_until", 1800) or 1800)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         valid_for = 1800
     plan = {
         "steps": normalized,
@@ -1046,7 +1046,7 @@ def _clean_send_to(value: Any) -> str:
 def _to_int(value: Any, default: int = 0) -> int:
     try:
         return max(0, int(value))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 

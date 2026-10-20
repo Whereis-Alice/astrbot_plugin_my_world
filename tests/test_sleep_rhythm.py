@@ -3,6 +3,7 @@
 import asyncio
 import unittest
 from datetime import datetime
+from unittest.mock import patch
 
 from core.defaults import default_world
 from core.engine import MessageContext, MyWorldEngine, TickOutcome
@@ -542,6 +543,7 @@ class SleepRhythmTests(unittest.IsolatedAsyncioTestCase):
         await tick_and_settle()
         await tick_and_settle()
         async with self.engine.session_state(fixture.OTHER_SESSION) as state:
+            self.assertIsNotNone(state.current_action)
             self.assertEqual(state.current_action["type"], "sleep")
             self.assertEqual(state.current_action["duration_ticks"], 420)
             state.current_action["elapsed_ticks"] = 419
@@ -753,7 +755,8 @@ class SleepRhythmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.sleep_rhythm["decision"], "continue")
         self.assertEqual(state.sleep_history, [])
         self.assertAlmostEqual(self.engine._rhythm_awake_hours(state), 14)
-        await self.engine.maybe_decide(fixture.SESSION, force=True)
+        with patch.object(self.engine.decider, "should_ask_llm", return_value=False):
+            await self.engine.maybe_decide(fixture.SESSION, force=True)
         await self.assess()
         state = await self.get_state()
         self.assertNotEqual((state.current_action or {}).get("type"), "sleep")
@@ -773,6 +776,56 @@ class SleepRhythmTests(unittest.IsolatedAsyncioTestCase):
                 await self.set_state(**{protection:0})
                 await self.engine.maybe_decide(fixture.SESSION, force=True)
                 self.assertEqual((await self.get_state()).current_action["type"], "walk_to")
+
+    async def test_unreachable_bedroom_falls_back_in_place_at_exhaustion(self):
+        self.engine.world.sleep.node_id = "bedroom"
+        sleep = self.engine.world.action_map()["sleep"]
+        sleep.enabled, sleep.scope, sleep.allowed_nodes = True, "global", []
+        async with self.engine.session_state(fixture.SESSION) as state:
+            state.node_id, state.state, state.energy = "study", "idle", 0.0
+            state.current_action = state.current_plan = None
+            state.sleep_rhythm.update(
+                decision="sleep",
+                duration_seconds=8 * 3600,
+                reason="已经太久没睡了",
+                awake_since=self.clock.now() - 22 * 3600,
+                retry_at=self.clock.now() + 900,
+            )
+            outcome = TickOutcome(fixture.SESSION)
+            with patch("core.engine.sleep_rhythm.find_path", return_value=None):
+                await self.engine._tick_sleep_rhythm(state, outcome)
+            self.assertIsNotNone(state.current_action, outcome.notes)
+            self.assertEqual(state.current_action["type"], "sleep")
+            self.assertEqual(state.node_id, "study")
+            self.assertTrue(state.current_plan["sleep_fallback"])
+        events = await self.db.call(
+            "query_events", session_id=fixture.SESSION, event_type="sleep_fallback", limit=10
+        )
+        self.assertTrue(events)
+
+    async def test_unreachable_bedroom_without_local_sleep_respects_backoff(self):
+        self.engine.world.sleep.node_id = "bedroom"
+        sleep = self.engine.world.action_map()["sleep"]
+        sleep.enabled, sleep.scope, sleep.allowed_nodes = True, "node", ["bedroom"]
+        retry_at = self.clock.now() + 900
+        async with self.engine.session_state(fixture.SESSION) as state:
+            state.node_id, state.state, state.energy = "study", "idle", 0.0
+            state.current_action = state.current_plan = None
+            state.sleep_rhythm.update(
+                decision="sleep",
+                duration_seconds=8 * 3600,
+                awake_since=self.clock.now() - 22 * 3600,
+                retry_at=retry_at,
+            )
+            outcome = TickOutcome(fixture.SESSION)
+            with patch("core.engine.sleep_rhythm.find_path", return_value=None):
+                await self.engine._run_rhythm_sleep(state, outcome, force=True)
+            self.assertIsNone(state.current_action)
+            self.assertEqual(state.sleep_rhythm["retry_at"], retry_at)
+        events = await self.db.call(
+            "query_events", session_id=fixture.SESSION, event_type="skip", limit=10
+        )
+        self.assertEqual(events, [])
 
     async def test_sleep_notes_do_not_repeat_an_old_bedtime_reason_after_waking(self):
         async with self.engine.session_state(fixture.SESSION) as state:

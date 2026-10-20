@@ -150,10 +150,16 @@ class ChatBrowseMixin:
         now, sid = self._now(), action["browse_session"]
         rows = action["browse_rows"]
         valid_seqs = {row["seq"] for row in rows}
+        text = " ".join(str(payload.get("inner") or "").split())[:120]
         cited = payload.get("source_seqs")
-        if not isinstance(cited, list) or any(type(seq) is not int or seq not in valid_seqs for seq in cited):
+        if not isinstance(cited, list):
+            # An empty feeling needs no citation. Missing citation must still move
+            # the reading cursor, otherwise the same chat is read forever.
+            if text:
+                return
+            cited = []
+        elif any(type(seq) is not int or seq not in valid_seqs for seq in cited):
             return
-        text = " ".join(payload["inner"].split())[:120]
         if text and not cited:
             return
         progress = dict(state.chat_browsing.get("sessions") or {})

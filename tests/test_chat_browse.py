@@ -236,6 +236,15 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.engine.start_chat_browse(state, "browse_phone"))
         self.assertFalse(any(row["source"] == "chat_browse" for row in self.engine.memory.db.query_memories(session_id=S)))
 
+    async def test_empty_feeling_without_citations_still_consumes_the_reading_cursor(self):
+        action = await self.prepare()
+        self.llm.replies = [json.dumps({"inner": "", "meaningful": False})]
+        await self.engine._complete_chat_browse(S, action["id"])
+        state = await self.engine.load_state(S)
+        self.assertEqual(state.thoughts, [])
+        self.assertEqual(state.chat_browsing["sessions"][S]["seq"], action["browse_rows"][-1]["seq"])
+        self.assertIsNone(state.current_action)
+
     async def test_invalid_citation_does_not_commit_progress(self):
         action = await self.prepare()
         state = await self.complete(action, source_seqs=[99999])
