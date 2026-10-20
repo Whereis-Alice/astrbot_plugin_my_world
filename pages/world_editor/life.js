@@ -208,44 +208,18 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
   return {reload, select: view => workspace?.select(view), openSchedules: () => workspace?.openSchedules()};
 }
 
-export function renderLifeFocus(container, data, {el, open, config}) {
+export function renderLifeFocus(container, data, {el, open}) {
   container.replaceChildren();
   const active = (data.life_matters || []).filter(item => !CLOSED.has(item.status));
   const focus = active.find(item => item.status === "working") || active[0];
-  const clock = String(data.clock_text || "").replace(/^现在是[：:]\s*/, "");
-  const match = clock.match(/(\d{1,2}):(\d{2})(?::\d{2})?/);
-  const hour = match ? Number(match[1]) : null;
-  const period = hour === null ? "此时此刻" : hour < 5 || hour >= 21 ? "夜深" : hour < 9 ? "清晨" : hour < 12 ? "上午" : hour < 17 ? "午后" : "傍晚";
-  container.dataset.period = hour === null ? "unknown" : hour < 5 || hour >= 21 ? "night" : hour < 9 ? "morning" : hour < 17 ? "day" : "evening";
-  const scene = el("div", "life-scene"); scene.setAttribute("aria-hidden", "true");
-  for (const part of ["sky", "orb", "hill", "hill-far", "frame", "sill", "plant", "book"]) scene.append(el("span", `life-scene-${part}`));
-  const copy = el("div", "life-focus-copy");
-  const heading = el("div", "life-focus-heading"); heading.append(el("span", "people-eyebrow", `${period} · 日子在继续`));
+  const heading = el("div", "life-focus-heading"); heading.append(el("span", "people-eyebrow", "日子在继续"));
   const link = el("button", "ghost small", "生活事项 ↗"); link.type = "button"; link.addEventListener("click", open); heading.append(link);
-  copy.append(heading, el("h3", "", focus?.text || data.activity?.label || "慢慢过好今天"),
+  container.append(heading, el("h3", "", focus?.text || data.activity?.label || "慢慢过好今天"),
     el("p", "", focus?.motivation || data.activity_reason || "在自己的节奏里活动与休息。"));
-  if (clock) {
-    const time = el("time", "life-focus-clock", clock);
-    time.title = "角色当前世界的时间"; copy.append(time);
-  }
   if (focus) {
     const next = el("div", "life-focus-next"); next.append(el("span", "people-eyebrow", focus.obstacle ? "此刻的阻碍" : "下一小步"), el("span", "", focus.obstacle || focus.next_step || "还在想，从哪里开始"));
-    copy.append(next, el("small", "muted", `${STATE(focus)} · ${PROGRESS(focus)}`));
+    container.append(next, el("small", "muted", `${STATE(focus)} · ${PROGRESS(focus)}`));
   }
-  const settings = el("div", "life-focus-settings");
-  const configured = config?.sessions?.sessions?.find(item => item.session_id === data.session_id);
-  if (configured) {
-    const enabled = configured.enabled !== false;
-    const state = el("span", `life-setting${enabled ? " is-enabled" : ""}`, enabled ? "生活已启用" : "会话已停用");
-    state.title = "当前会话的启用设置"; settings.append(state);
-  }
-  if (config?.schedules?.auto) {
-    const auto = config.schedules.auto.enabled === true;
-    const state = el("span", `life-setting${auto ? " is-enabled" : ""}`, auto ? "自动安排已开启" : "自动安排未开启");
-    state.title = "当前世界的自动日程设置"; settings.append(state);
-  }
-  if (settings.children.length) copy.append(settings);
-  container.append(copy, scene);
 }
 
 export function openLifeSettings({world, el, openCustomDialog, markDirty, isCurrent = () => true}) {
@@ -255,7 +229,7 @@ export function openLifeSettings({world, el, openCustomDialog, markDirty, isCurr
     const body = el("div", "life-budget-settings"); host.append(body);
     for (const [key, label, fallback, min, max] of [
       ["life_matter_active_max", "活跃事项上限", 6, 1, 20], ["life_matter_daily_minutes", "每件事每天最多投入（分钟）", 90, 5, 480],
-      ["life_matter_interval_minutes", "再次推进前的间隔（分钟）", 60, 5, 1440], ["background_daily_calls", "每天后台调用预算", 1000, 0, 10000],
+      ["life_matter_interval_minutes", "再次推进前的间隔（分钟）", 60, 5, 1440], ["background_daily_calls", "每天后台调用预算", 120, 0, 10000],
       ["background_daily_tokens", "每天后台 token 预算", 0, 0, 100000000], ["background_concurrency", "同时运行的后台模型请求", 1, 1, 12]]) {
       const wrap = el("label", "field"), input = el("input"); input.type = "number"; input.min = min; input.max = max; input.value = limits[key] ?? fallback;
       wrap.append(el("span", "", label), input); body.append(wrap); controls.push(() => { if (!input.checkValidity()) throw new Error(`${label}超出范围`); limits[key] = Number(input.value); });

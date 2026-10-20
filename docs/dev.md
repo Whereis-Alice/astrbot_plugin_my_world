@@ -58,8 +58,6 @@ python -m pytest tests/test_life_workspace_browser.py tests/test_visual_workspac
 
 浏览器验收需要 Playwright 与 Chromium，使用临时数据库和合成数据，覆盖桌面、手机、管理抽屉、配置范围、生成、保存与关联跳转。
 
-v4.26 的边界回归位于 `test_life_clock_boundaries.py`、`test_integration_integrity.py`、`test_delivery_integrity.py`、`test_automatic_defaults_and_limits.py` 与 `test_studio_browser.py`，覆盖停机、跨日、部分发送、并发原生回复、卸载、零额度与场景长文本。`python tools/simulate_day.py --days 7 --tick 300 --quiet` 可检查无模型七天内的安静活动和睡眠兜底。
-
 界面的主题与材质集中在 `atelier.css`，六套本机外观由 `appearance.js` 管理，工作区的次要操作菜单由 `workspace-ui.js` 初始化。`data-theme` 保留深浅语义，`data-palette` 指定配色；不要在组件里为每个主题复制颜色。可用 `python -m pytest tests/test_visual_workspace_browser.py -q` 验证六套主题、键盘关闭与恢复、文字对比度，以及各模块在四种屏幕宽度下的布局；合成截图输出到 `.pytest_cache/generation-ui/`。
 
 单选框通过 `@supports` 渐进使用 `appearance: base-select` 和 `::picker(select)`，保留原生的值、键盘操作和 `change` 事件；不支持时使用原生菜单及明确的选项配色。多选和带 `size` 的列表不启用弹出面板样式。

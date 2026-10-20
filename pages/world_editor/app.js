@@ -5147,7 +5147,6 @@ function actionLabel(id) {
 
 /** 左栏「当前状态」：没选会话时的占位。 */
 function setStatusEmpty(text) {
-  $("life-focus")?.classList.add("hidden");
   $("status-head").innerHTML = "";
   renderHero(null, "");
   ["status-time", "status-progress", "status-runtime"].forEach((id) => {
@@ -7128,11 +7127,10 @@ async function refreshStatus() {
     if ($("status-session").value !== sessionId || ui.statusRequest !== requestId) return;
     ui.status = data;
     clearStatusEmpty();
-    $("life-focus").classList.remove("hidden");
     // 扩展想显示的状态优先（例如亲密扩展在戏里时说"兴奋中"）：
     // 这是编辑器里的一行字，群名片不受影响
     const stateLabel = stateLabelOf(data.state, data);
-    renderLifeFocus($("life-focus"), data, {el, config: ui.config, open: () => showTab("life")});
+    renderLifeFocus($("life-focus"), data, {el, open: () => showTab("life")});
     renderHero(data, stateLabel);
     renderStatusSections(data, stateLabel);
     renderToolWarnings();
@@ -15976,11 +15974,7 @@ function renderThoughts(data) {
     health.classList.remove("hidden");
     health.dataset.ok = String(Boolean(info.clock_recent && info.enabled));
     health.querySelector("summary").textContent = `${info.message} · ${info.current}`;
-    const budget = info.background_budget || {};
-    const budgetText = info.autonomous_generation === "budget_exhausted"
-      ? `今日自主模型预算已用完（调用 ${budget.calls ?? 0}/${budget.call_limit || "不限"}）；聊后复盘仍会记录，自主生活改用规则继续。`
-      : `今日自主模型预算尚可用（调用 ${budget.calls ?? 0}/${budget.call_limit || "不限"}）。`;
-    health.querySelector("p").textContent = `${info.note} 最近生活推进：${info.last_tick_at ? formatStamp(info.last_tick_at) : "暂无记录"}；最近规划尝试：${info.last_plan_at ? formatStamp(info.last_plan_at) : "暂无记录"}；最近内心：${info.last_thought_at ? formatStamp(info.last_thought_at) : "暂无记录"}。${budgetText}`;
+    health.querySelector("p").textContent = `${info.note} 最近生活推进：${info.last_tick_at ? formatStamp(info.last_tick_at) : "暂无记录"}；最近规划尝试：${info.last_plan_at ? formatStamp(info.last_plan_at) : "暂无记录"}。调用失败与预算可在「模型调用」和「运行」中查看。`;
   }
   ui.thoughtRenderLimit = 40;
   renderThoughtsPage();
@@ -18112,7 +18106,7 @@ function renderSettings() {
   form.appendChild(living);
   const background = settingsSection("后台预算", "生活规划、事件和复盘共用的模型额度；原生聊天的模型与工具由 AstrBot 管理。", "0 表示不设每日调用或 Token 上限；计划决策次数为 0 则关闭该类模型规划。");
   for (const [key, label, fallback, min, max] of [
-    ["background_daily_calls", "每天后台调用预算", 1000, 0, 10000], ["background_daily_tokens", "每天后台 token 预算", 0, 0, 100000000],
+    ["background_daily_calls", "每天后台调用预算", 120, 0, 10000], ["background_daily_tokens", "每天后台 token 预算", 0, 0, 100000000],
     ["background_concurrency", "同时运行的后台模型请求", 1, 1, 12], ["background_llm_timeout_seconds", "后台模型等待上限（秒）", 120, 1, 1800],
     ["llm_plan_min_interval_seconds", "问计划的间隔（秒）", 900, 0, 86400], ["max_llm_plan_per_hour", "每小时最多计划决策次数", 10, 0, 120],
     ["max_llm_text_per_hour", "每小时最多生成发言次数", 20, 0, 10000]]) {
