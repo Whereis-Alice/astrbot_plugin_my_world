@@ -156,6 +156,25 @@ class TestMainImport(unittest.TestCase):
         for name in ("on_llm_request", "on_any_message", "cmd_hw", "initialize", "terminate"):
             self.assertTrue(callable(getattr(cls, name)), name)
 
+    def test_ambient_participation_is_queued_only_by_the_late_hook(self):
+        from unittest.mock import Mock
+        self.assertEqual(self.module.MyWorldPlugin.on_group_participation.__module__, self.module.__name__)
+        plugin = self._plugin()
+        self.addCleanup(plugin.db.raw.close)
+        session = "aiocqhttp:GroupMessage:1"
+        plugin.store.add_session(session, session_type="group", platform="aiocqhttp")
+        plugin.engine.reload_config()
+        plugin.engine.queue_participation = Mock()
+        event = _GateEvent("山顶的风车真好看", wake=False, mention=False, session=session)
+        asyncio.run(plugin.on_any_message(event))
+        plugin.engine.queue_participation.assert_not_called()
+        asyncio.run(plugin.on_group_participation(event))
+        plugin.engine.queue_participation.assert_called_once_with(session)
+        plugin.engine.queue_participation.reset_mock()
+        event._wake = True  # A higher-priority router has accepted a native reply.
+        asyncio.run(plugin.on_group_participation(event))
+        plugin.engine.queue_participation.assert_not_called()
+
     def test_plugin_instantiates_and_registers_web_apis(self):
         context = self.module.Context()
         config = self.module.AstrBotConfig(

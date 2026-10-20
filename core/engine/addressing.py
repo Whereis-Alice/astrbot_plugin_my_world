@@ -88,8 +88,10 @@ class AddressingMixin:
         "有人在指使我"，答非所问还会乱做动作。
         """
 
-        if ctx.is_private or ctx.is_mentioned:
+        if ctx.is_private or ctx.is_mentioned or ctx.addressing == "me":
             return "direct"
+        if ctx.addressing == "others" or (ctx.at_targets and ctx.addressing != "me"):
+            return "interject"
         if ctx.is_soft_wake:
             # 没人 @ 她，但路由判定这句就是冲她说的：按"对她说"处理，
             # 只是提示词里会写清"没人点名"，别写成"有人 @ 你"。
@@ -100,12 +102,16 @@ class AddressingMixin:
                 return "direct"
         # 上下文里最后一条通常就是刚记下的这条消息（先记后回），
         # 把它去掉，看前一条是谁说的：她刚说完话就有人接上，多半还在同一个话题里。
-        context = self.chat_context(state)
+        context = self.chat_window(state, ctx.session_id)
+        context = [row for row in context if self._chat_origin(row, state) == ctx.session_id
+                   and self._now() - float(row.get("at") or 0) <= 120]
         prior = list(context)
         if prior and not prior[-1].get("is_self"):
             prior = prior[:-1]
-        if prior and prior[-1].get("is_self"):
-            return "direct"
+        if (prior and prior[-1].get("is_self") and len(prior) >= 2
+                and str(prior[-2].get("user_id") or "") == str(ctx.user_id or "")
+                and (self._router_row_for(ctx) or {}).get("directed") is not False):
+            return "soft"
         return "interject"
 
     def speech_density_hint(self, state: WorldState, *, direct: bool = False) -> str:

@@ -76,6 +76,9 @@ class CuddleMixin:
             view = self.profiles.view(self.profile_session(state, uid, session_id), uid)
             if view is None or self._miss_ignored(view):
                 continue
+            status = self.contact_status(self.profile_session(state, uid, session_id), uid)
+            if status["reason"]:
+                continue
             level = getattr(view, "level", None)
             rows.append(
                 {

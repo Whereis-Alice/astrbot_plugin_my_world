@@ -178,6 +178,7 @@ class AutonomousContinuityTests(unittest.IsolatedAsyncioTestCase):
         self.engine.decider.rule_plan = lambda *args, **kwargs: create_plan(
             steps=[{"action": "read", "duration": 120}], world_time=10,
             valid_for=3600, reason="继续读书", source="rule")
+        self.engine.decider.should_ask_llm = lambda state: False
         async with self.engine.session_state(engine.SESSION) as state:
             state.current_action = None
             state.current_plan = None

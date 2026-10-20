@@ -133,6 +133,7 @@ from .limits import LimitsMixin
 from .group_chat import GroupChatMixin
 from .send import SendMixin
 from .proactive_contact import ProactiveContactMixin
+from .participation import ParticipationMixin
 from .snapshot import SnapshotMixin
 from .turn import TurnMixin
 from .social import SocialMixin
@@ -255,6 +256,7 @@ class MyWorldEngine(
     GroupChatMixin,
     SendMixin,
     ProactiveContactMixin,
+    ParticipationMixin,
     SnapshotMixin,
     TurnMixin,
     SocialMixin,

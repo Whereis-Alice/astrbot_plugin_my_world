@@ -1,0 +1,334 @@
+"""Conversation opportunities, transport receipts and cross-module contact boundaries."""
+from __future__ import annotations
+
+import asyncio
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import AsyncMock
+
+from core.config_store import ConfigStore
+from core.db import AsyncDatabase
+from core.engine import MyWorldEngine, MessageContext, TickOutcome
+from core.json_actions import PlannedAction
+from core.state import STATE_IDLE, STATE_SLEEPING
+from tests.stub_ports import StubClock, StubLLM, StubMessenger, StubPersona
+
+GROUP = "aiocqhttp:GroupMessage:1001"
+OTHER = "aiocqhttp:GroupMessage:2002"
+PRIVATE = "aiocqhttp:PrivateMessage:alice"
+SAY = '{"actions":[{"type":"say","messages":["那个我也想试试。"]}]}'
+
+
+class ParticipationTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        store = ConfigStore(Path(folder.name))
+        store.ensure_files()
+        for sid, kind in ((GROUP, "group"), (OTHER, "group"), (PRIVATE, "private")):
+            store.add_session(sid, session_type=kind, platform="aiocqhttp", cold_start_node="lobby")
+        raw = store.raw_world()
+        raw["sleep"]["mode"] = "fixed"
+        raw["calendar"]["auto_generate"] = False
+        raw["diary"]["automatic"] = False
+        store.save_world(raw)
+        self.db = AsyncDatabase(store.db_path)
+        self.addAsyncCleanup(self.db.close)
+        self.clock = StubClock()
+        self.llm = StubLLM([SAY])
+        self.messenger = StubMessenger()
+        self.engine = MyWorldEngine(store=store, db=self.db, llm=self.llm,
+            persona=StubPersona("你喜欢风车和旅行，说话简短。"),
+            messenger=self.messenger, clock=self.clock)
+        self.addAsyncCleanup(self.engine.close_background)
+        async with self.engine.session_state(GROUP) as state:
+            state.state = STATE_IDLE
+            state.energy = .9
+            state.current_action = None
+            state.current_plan = None
+
+    async def chat(self, text="想去看看风车", *, uid="alice", sid=GROUP, mine=False, age=0, **extra):
+        async with self.engine.session_state(sid) as state:
+            row = state.note_chat(user_id="__self__" if mine else uid, name=uid, text=text,
+                now=self.clock.now() - age, origin=sid, is_self=mine, **extra)
+            return dict(row)
+
+    async def burst(self):
+        await self.chat("周末想去山上看看风车", uid="alice")
+        await self.chat("我也想去，山顶应该风很大", uid="bob")
+
+    async def test_recent_context_is_not_live_conversation(self):
+        await self.chat("两个小时前的话题", age=7200)
+        await self.chat("旧回复", uid="bob", age=7199)
+        state = await self.engine.load_state(GROUP, cold_start=False)
+        self.assertTrue(self.engine.chat_context(state))
+        self.assertFalse(self.engine.group_is_chatting(state))
+        self.assertFalse(self.engine.group_is_alive(state))
+        self.assertIsNone(await self.engine.maybe_participate(GROUP))
+        self.assertEqual(self.llm.calls, [])
+
+    async def test_join_is_one_short_line_and_commits_exact_observed_boundary(self):
+        await self.burst()
+        outcome = await self.engine.maybe_participate(GROUP)
+        self.assertIsNotNone(outcome)
+        self.assertEqual(self.messenger.sent, [(GROUP, ["那个我也想试试。"])])
+        state = await self.engine.load_state(GROUP, cold_start=False)
+        self.assertGreater(state.last_interject_at, 0)
+        self.assertEqual(state.participation[GROUP]["decision"], "joined")
+        self.assertEqual(self.engine.live_chat(state), [])
+        self.assertIn("没有人要求你必须回复", self.llm.calls[0]["prompt"])
+        self.assertIn("你喜欢风车", self.llm.calls[0]["system_prompt"])
+
+    async def test_empty_actions_listens_without_retrying_the_same_burst(self):
+        self.llm.replies = ['{"actions":[]}']
+        await self.burst()
+        await self.engine.maybe_participate(GROUP)
+        self.clock.advance(120)
+        await self.engine.maybe_participate(GROUP)
+        self.assertEqual(len(self.llm.calls), 1)
+        self.assertEqual(self.messenger.sent, [])
+        state = await self.engine.load_state(GROUP, cold_start=False)
+        self.assertEqual(state.last_interject_at, 0)
+        self.assertFalse(state.awaiting_reply)
+        self.assertFalse(self.engine.group_is_chatting(state))
+
+    async def test_silence_markers_and_fenced_json_never_leak(self):
+        for body in ("<NO_RESPONSE>", "<no_reply />", '```json\n{"actions":[]}\n```',
+                     '{"actions":[{"type":"say","messages":["<NO_RESPONSE>"]}]}'):
+            with self.subTest(body=body):
+                self.llm.replies = [body]
+                async with self.engine.session_state(GROUP) as state:
+                    messages = await self.engine._generate_text_actions(state,
+                        self.engine.node(state.node_id), "旁听", session_id=GROUP)
+                outcome = TickOutcome(GROUP, messages=messages)
+                await self.engine._deliver(outcome)
+                self.assertEqual(self.messenger.sent, [])
+
+    async def test_paused_resting_busy_and_pending_reply_make_no_model_call(self):
+        await self.burst()
+        for field, value in (("state", STATE_SLEEPING), ("energy", .1),
+                             ("current_action", {"type": "read_book"})):
+            with self.subTest(field=field):
+                async with self.engine.session_state(GROUP) as state:
+                    old = getattr(state, field)
+                    setattr(state, field, value)
+                self.assertIsNone(await self.engine.maybe_participate(GROUP))
+                async with self.engine.session_state(GROUP) as state:
+                    setattr(state, field, old)
+        self.engine.register_incoming(GROUP, "@她 有个问题")
+        self.assertIsNone(await self.engine.maybe_participate(GROUP))
+        self.assertEqual(self.llm.calls, [])
+
+    async def test_private_chat_does_not_start_an_ambient_worker(self):
+        self.engine.queue_participation(PRIVATE)
+        self.assertFalse(getattr(self.engine, "_background_jobs", {}))
+        self.assertIsNone(await self.engine.maybe_participate(PRIVATE))
+
+    async def test_message_burst_uses_one_settler_without_occupying_model_workers(self):
+        self.engine.queue_participation(GROUP)
+        self.engine.queue_participation(GROUP)
+        self.assertEqual(len(self.engine._participation_settlers), 1)
+        await asyncio.sleep(0)
+        self.assertEqual(getattr(self.engine, "_background_running_jobs", 0), 0)
+        await self.engine.close_background()
+        self.assertEqual(self.engine._participation_settlers, {})
+
+    async def test_quiet_interruptible_activity_continues_while_she_briefly_joins(self):
+        await self.burst()
+        async with self.engine.session_state(GROUP) as state:
+            state.current_action = {"type": "life_simulation", "duration_ticks": 30,
+                                    "elapsed_ticks": 2, "intent": "慢慢看风车的图册"}
+        await self.engine.maybe_participate(GROUP)
+        state = await self.engine.load_state(GROUP, cold_start=False)
+        self.assertEqual(state.current_action["type"], "life_simulation")
+        self.assertEqual(state.current_action["elapsed_ticks"], 2)
+        self.assertTrue(self.messenger.sent)
+
+    async def test_failed_send_does_not_consume_quota_or_interjection_cooldown(self):
+        self.messenger.send_text = AsyncMock(return_value=False)
+        await self.burst()
+        await self.engine.maybe_participate(GROUP)
+        state = await self.engine.load_state(GROUP, cold_start=False)
+        self.assertEqual(state.last_interject_at, 0)
+        self.assertFalse(state.awaiting_reply)
+        self.assertEqual(self.engine.contact_status(GROUP)["left"], 6)
+        self.assertEqual(self.engine._watermark(state, GROUP), (0, 0))
+
+    async def test_new_message_during_inference_discards_old_speech(self):
+        await self.burst()
+        entered, release = asyncio.Event(), asyncio.Event()
+        original = self.llm.generate
+        async def delayed(**kwargs):
+            entered.set()
+            await release.wait()
+            return await original(**kwargs)
+        self.llm.generate = delayed
+        job = asyncio.create_task(self.engine.maybe_participate(GROUP))
+        await asyncio.wait_for(entered.wait(), 5)
+        await self.chat("改主意了，周末下雨不去了")
+        release.set()
+        self.assertIsNone(await asyncio.wait_for(job, 5))
+        self.assertEqual(self.messenger.sent, [])
+
+    async def test_last_burst_during_inference_is_reconsidered_without_another_message(self):
+        # Skip wall-clock delays; production bounds are validated by config.
+        self.engine.world.decider.settle_seconds = 0
+        self.engine.world.decider.evaluation_cooldown_seconds = 0
+        self.llm.replies = [SAY, SAY]
+        await self.burst()
+        entered, release = asyncio.Event(), asyncio.Event()
+        original = self.llm.generate
+        calls = 0
+        async def delayed(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                entered.set()
+                await release.wait()
+            return await original(**kwargs)
+        self.llm.generate = delayed
+        self.engine.queue_participation(GROUP)
+        await asyncio.wait_for(entered.wait(), 5)
+        await self.chat("改主意了，下雨就去室内看模型", uid="bob")
+        self.engine.queue_participation(GROUP)
+        release.set()
+        await asyncio.wait_for(self.engine._participation_settlers[self.engine.state_key(GROUP)], 5)
+        self.assertEqual(calls, 2)
+        self.assertEqual(len(self.messenger.sent), 1)
+        self.assertIn("室内看模型", self.llm.calls[-1]["system_prompt"])
+
+    async def test_native_agent_turn_blocks_all_autonomous_contact_until_sent(self):
+        turn = {"session_id": GROUP, "started_at": self.clock.now()}
+        self.engine.begin_native_turn(turn)
+        self.assertTrue(self.engine.contact_status(GROUP)["reason"])
+        self.engine.end_native_turn(turn)
+        self.assertFalse(self.engine.contact_status(GROUP)["reason"])
+        self.engine.begin_native_turn(turn)
+        self.clock.advance(301)
+        self.assertFalse(self.engine.contact_status(GROUP)["reason"])
+
+    async def test_new_message_during_send_is_not_marked_answered(self):
+        await self.burst()
+        async def sending(target, messages):
+            await self.chat("我还想带上相机", uid="bob")
+            return True
+        self.messenger.send_text = AsyncMock(side_effect=sending)
+        await self.engine.maybe_participate(GROUP)
+        state = await self.engine.load_state(GROUP, cold_start=False)
+        self.assertEqual([r["text"] for r in self.engine.live_chat(state)], ["我还想带上相机"])
+
+    async def test_event_scene_exposes_only_its_target_conversation(self):
+        await self.chat("群里正在聊风车")
+        await self.chat("私聊里的一件私事", sid=PRIVATE)
+        state = await self.engine.load_state(GROUP, cold_start=False)
+        hint = self.engine.conversation_scene_hint(state, GROUP)
+        self.assertIn("群里正在聊风车", hint)
+        self.assertNotIn("私聊里的一件私事", hint)
+
+    async def test_schedule_event_and_native_reply_all_create_space_before_contact(self):
+        for kind in ("schedule", "event", "reply"):
+            with self.subTest(kind=kind):
+                await self.engine._deliver(TickOutcome(GROUP, messages=["我回来啦"], speech_kind=kind))
+                blocked = TickOutcome(GROUP, messages=["现在有人吗？"])
+                await self.engine._deliver(blocked)
+                self.assertTrue(self.engine.outreach_gate(GROUP))
+                self.assertFalse(blocked.messages)
+                self.clock.advance(91)
+        await self.engine.record_self_reply(GROUP, "知道啦")
+        self.assertTrue(self.engine.outreach_gate(GROUP))
+
+    async def test_same_contact_can_flush_split_lines_but_new_module_cannot(self):
+        outcome = TickOutcome(GROUP, messages=["一会儿见"])
+        await self.engine._deliver(outcome)
+        receipt, reason = self.engine._reserve_contact(outcome, GROUP, [""])
+        self.assertFalse(reason)
+        self.engine._finish_contact(receipt, False)
+        other = TickOutcome(GROUP)
+        receipt, reason = self.engine._reserve_contact(other, GROUP, [""])
+        self.assertIsNone(receipt)
+        self.assertTrue(reason)
+
+    async def test_pending_send_blocks_another_contact_without_spending_quota(self):
+        one, two = TickOutcome(GROUP), TickOutcome(GROUP)
+        receipt, reason = self.engine._reserve_contact(one, GROUP, [""])
+        self.assertFalse(reason)
+        blocked, reason = self.engine._reserve_contact(two, GROUP, [""])
+        self.assertIsNone(blocked)
+        self.assertTrue(reason)
+        self.engine._finish_contact(receipt, False)
+        self.assertEqual(self.engine.contact_status(GROUP)["left"], 6)
+
+    async def test_unanswered_person_is_shared_between_group_and_private(self):
+        sessions = self.engine.store.raw_sessions()
+        sessions["groups"] = [{"id": "friends", "name": "朋友们", "sessions": [GROUP, PRIVATE],
+                               "main_session": GROUP}]
+        self.engine.store.save_sessions(sessions)
+        self.engine.reload_config()
+        one = TickOutcome(GROUP, messages=["Alice，风车的照片找到了"], contact_people={"alice"})
+        await self.engine._deliver(one)
+        self.clock.advance(100)
+        self.assertTrue(self.engine.contact_status(PRIVATE, "alice")["reason"])
+        self.assertFalse(self.engine.contact_status(PRIVATE, "bob")["reason"])
+        self.clock.advance(6 * 3600)
+        self.assertFalse(self.engine.contact_status(PRIVATE, "alice")["reason"])
+
+    async def test_person_backoff_survives_reload_and_a_reply_elsewhere_clears_it(self):
+        sessions = self.engine.store.raw_sessions()
+        sessions["groups"] = [{"id": "friends", "name": "朋友们", "sessions": [GROUP, PRIVATE],
+                               "main_session": GROUP}]
+        self.engine.store.save_sessions(sessions)
+        self.engine.reload_config()
+        self.engine.note_visible_speech(GROUP, token="outgoing", people=["alice"])
+        self.clock.advance(100)
+        self.engine.reload_config()
+        self.assertTrue(self.engine.contact_status(PRIVATE, "alice")["reason"])
+        await self.engine.note_presence(MessageContext(PRIVATE, user_id="alice", text="照片看到了", is_private=True))
+        self.assertFalse(self.engine.contact_status(PRIVATE, "alice")["reason"])
+
+    async def test_only_direct_response_clears_waiting_person(self):
+        self.engine.note_visible_speech(GROUP, token="outgoing", people=["alice"])
+        self.clock.advance(100)
+        await self.engine.note_presence(MessageContext(GROUP, user_id="alice", text="Bob你看这个", addressing="others"))
+        self.assertTrue(self.engine.contact_status(GROUP, "alice")["reason"])
+        await self.engine.note_presence(MessageContext(GROUP, user_id="alice", text="好的呀", is_mentioned=True))
+        self.assertFalse(self.engine.contact_status(GROUP, "alice")["reason"])
+
+    async def test_reply_to_another_person_does_not_become_direct_by_adjacency(self):
+        await self.chat("风车呢", uid="alice")
+        await self.chat("在山顶", mine=True)
+        state = await self.engine.load_state(GROUP, cold_start=False)
+        self.assertEqual(self.engine.reply_addressing(state,
+            MessageContext(GROUP, user_id="bob", text="你今天去哪玩")), "interject")
+        self.assertEqual(self.engine.reply_addressing(state,
+            MessageContext(GROUP, user_id="alice", text="你也去吗", addressing="others")), "interject")
+
+    async def test_old_own_message_or_another_session_cannot_claim_response(self):
+        await self.chat("前天的话", mine=True, age=7200)
+        state = await self.engine.load_state(GROUP, cold_start=False)
+        self.assertEqual(self.engine.reply_addressing(state,
+            MessageContext(GROUP, user_id="alice", text="你看这个")), "interject")
+        self.assertEqual(self.engine.reply_addressing(state,
+            MessageContext(OTHER, user_id="alice", text="你看这个")), "interject")
+
+    async def test_schedule_silence_marker_and_new_chinese_commands_are_not_chat(self):
+        await self.engine._deliver(TickOutcome(GROUP, messages=["<NO_RESPONSE>"], speech_kind="schedule"))
+        self.assertEqual(self.messenger.sent, [])
+        for command in ("/小世界 状态", "小世界 event 一件事", "/小世界"):
+            self.assertTrue(self.engine.is_plugin_command(command))
+
+    async def test_plan_creation_alone_does_not_mark_interjection_sent(self):
+        async with self.engine.session_state(GROUP) as state:
+            await self.engine._apply_plan(state, self.engine.node(state.node_id), TickOutcome(GROUP),
+                {"steps": [{"action": "say", "interject": True}], "reason": "想接一句"})
+            self.assertEqual(state.last_interject_at, 0)
+
+    async def test_queued_interjection_does_not_reply_to_expired_topic(self):
+        await self.chat("很早的话", age=7200)
+        async with self.engine.session_state(GROUP) as state:
+            outcome = TickOutcome(GROUP)
+            await self.engine._start_action(state, self.engine.node(state.node_id), outcome,
+                self.engine.world.action_map()["say"], PlannedAction(type="say", interject=True),
+                autonomous=True, depth=0)
+            self.assertEqual(outcome.messages, [])
+        self.assertEqual(self.llm.calls, [])

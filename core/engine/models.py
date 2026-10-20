@@ -58,6 +58,9 @@ class TickOutcome:
 
         return str(self.speech_home or self.session_id)
 
+    chat_claims: dict[str, list[str]] = field(default_factory=dict)
+    """Exact observed chat identities; commit only after accepted speech to that target."""
+
     def take_messages(self) -> list[str]:
         """取走"还没发出去"的几句话（调用方负责真的发出去）。"""
 

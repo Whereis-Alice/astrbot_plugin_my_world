@@ -493,9 +493,9 @@ class GroupChatMixin:
         """
 
         need = max(1, int(self.world.decider.min_messages_to_interject))
-        others = [
-            item for item in self.chat_context(state) if not item.get("is_self")
-        ]
+        target = self.talking_session(state) or state.session_id
+        checked = int((state.participation.get(target) or {}).get("checked_seq") or 0)
+        others = [row for row in self.live_chat(state, target) if int(row.get("seq") or 0) > checked]
         return len(others) >= need
 
     def group_is_alive(self, state: WorldState, *, minutes: int = 0) -> bool:
@@ -506,9 +506,10 @@ class GroupChatMixin:
         「有人吗」，群友视角就是一句没头没尾的怪话。
         """
 
-        window = max(1, int(minutes or self.world.decider.chat_window_minutes or 20)) * 60
+        window = max(1, int(minutes)) * 60 if minutes else self.world.decider.live_window_seconds
+        target = self.talking_session(state) or state.session_id
         for item in state.chat_window(now=self._now(), seconds=window):
-            if item.get("is_self"):
+            if item.get("is_self") or self._chat_origin(item, state) != target:
                 continue
             if str(item.get("text") or "").strip():
                 return True

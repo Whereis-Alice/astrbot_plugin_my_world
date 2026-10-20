@@ -1,5 +1,5 @@
 /** Local appearance preferences. No account settings or plugin configuration writes. */
-import { sceneMarkup } from "./world-scene.js?v=4.28.0";
+import { sceneMarkup } from "./world-scene.js?v=4.29.0";
 
 export const APPEARANCES = [
   { id: "nocturne", mode: "dark", name: "星屿", note: "星轨 · 冷光玻璃", colors: ["#172033", "#626391", "#a7c9cf"] },

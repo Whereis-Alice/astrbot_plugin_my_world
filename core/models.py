@@ -1522,6 +1522,17 @@ class DeciderConfig(Permissive):
     enabled: bool = True
     """是否允许她主动接别人的话（插话总开关）。"""
 
+    message_driven: bool = True
+    """群聊新消息聚合后，允许结合人设和现场自然接话。"""
+    live_window_seconds: int = Field(default=180, ge=30, le=1800)
+    """真正的群聊现场窗口；与长期上下文保留时长分开。"""
+    settle_seconds: float = Field(default=4, ge=1, le=10)
+    evaluation_cooldown_seconds: int = Field(default=60, ge=15, le=600)
+    min_speech_gap_seconds: int = Field(default=90, ge=0, le=3600)
+    """所有主动入口与最近一次实际发言的最短间隔；直接回应不受限。"""
+    person_retry_hours: float = Field(default=6, ge=0, le=72)
+    """某人未回应时，再次主动联系前至少等待多久，跨群聊和私聊共用。"""
+
     interject_threshold: float = 0.6
     """孤独感高于这个值（且群里正在聊天、插话开关打开）时，她会想插一句。"""
 
@@ -3393,6 +3404,12 @@ FIELD_LABELS: dict[str, str] = {
     "decider.interject_threshold": "多孤独才插话（越大越难）",
     "decider.interject_cooldown_minutes": "插话后至少安静几分钟",
     "decider.min_messages_to_interject": "群里至少聊几条她才插嘴",
+    "decider.message_driven": "新消息到来后自然接话",
+    "decider.live_window_seconds": "群聊现场窗口（秒）",
+    "decider.settle_seconds": "等待群友连发结束（秒）",
+    "decider.evaluation_cooldown_seconds": "两次接话判断间隔（秒）",
+    "decider.min_speech_gap_seconds": "主动开口前留白（秒）",
+    "decider.person_retry_hours": "未回应联系人等待（小时）",
     "profile.miss_growth_per_min": "想念涨得多快（每分钟）",
     "state_dynamics.desire_relief": "被亲近一次欲求落多少",
     "state_dynamics.desire_relief_floor": "亲昵最低把欲求卸到这儿",

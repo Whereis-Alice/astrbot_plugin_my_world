@@ -41,7 +41,7 @@ class ProactiveContactMixin:
                 for receipt in active.values()))
             if already and person in contacts[token] and self.world.profile.proactive_person_daily_max > 0:
                 person_left = max(1, person_left)
-        reason = ""
+        reason = self.outreach_gate(session_id, token=token, user_id=user_id)
         if cap <= 0 or (total_left <= 0 and not already):
             reason = "今天的主动联系总额度已用完"
         elif person_left is not None and person_left <= 0:
@@ -54,6 +54,11 @@ class ProactiveContactMixin:
             return None, ""
         if not self.proactive_chat_allowed(target):
             return None, "自主搭话已暂停"
+        # A different module cannot start another contact while this life is sending.
+        if any(item["token"] != f"{outcome.contact_id}:{target}"
+               for item in getattr(self, "_contact_pending", {}).values()
+               if item["key"] == f"proactive_contacts:{self.state_key(target)}"):
+            return None, "正在发送另一条主动联系"
         token = f"{outcome.contact_id}:{target}"
         people = set(outcome.contact_people)
         if ":PrivateMessage:" in target:
@@ -72,6 +77,7 @@ class ProactiveContactMixin:
         if identity in self._contact_pending:
             return None, "同一次主动联系正在发送"
         receipt = {"key": key, "day": identity[1], "token": token,
+                   "target": target,
                    "people": [[target, str(uid)] for uid in sorted(people)], "identity": identity}
         self._contact_pending[identity] = receipt
         return receipt, ""
@@ -93,5 +99,8 @@ class ProactiveContactMixin:
                     self.profiles.note_proactive(session_id, uid, now=self._now())
                     known.append([session_id, uid])
             self.db.raw.kv_set(receipt["key"], ledger)
+            target = receipt["target"]
+            self.note_visible_speech(target, token=receipt["token"],
+                                     people=[uid for _, uid in receipt["people"]])
         finally:
             self._contact_pending.pop(receipt["identity"], None)

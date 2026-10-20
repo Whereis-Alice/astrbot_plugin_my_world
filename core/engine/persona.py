@@ -248,7 +248,12 @@ class PersonaMixin:
                         text=text,
                         is_private=True,
                     )
-                    if variant == "lean":
+                    if variant == "participation":
+                        from ..participation import PARTICIPATION_MANNERS
+                        user_prompt = (PARTICIPATION_MANNERS + "\n# 旁听的群聊（没有人要求你必须回复）\n"
+                            + text + '\n只输出 JSON：{"actions":[{"type":"say","messages":["..."]}]}；'
+                            '不适合接话时输出 {"actions":[]}。')
+                    elif variant == "lean":
                         system_prompt = lean_prompt(system_prompt)
                     elif variant == "analyst":
                         channel = director_llm or self.judge_llm or self.helper_llm
@@ -358,8 +363,11 @@ class PersonaMixin:
                         )
                         if spoken:
                             row["reply"] = spoken[:say_limit]
-                        elif raw.strip() and not raw.lstrip().startswith("{"):
+                        elif raw.strip() and extract_json_object(raw) is None and not raw.lstrip().startswith(("{", "```")):
                             row["reply"] = [raw.strip()[:200]]
+                    if variant == "participation":
+                        from ..participation import speakable
+                        row["reply"] = [text for text in row["reply"] if speakable(text)]
                     if parsed.reasoning:
                         row["reasoning"] = parsed.reasoning
                     row["actions"] = [action.type for action in parsed.actions]

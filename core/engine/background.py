@@ -83,6 +83,7 @@ class BackgroundMixin:
     async def close_background(self) -> None:
         self._background_closed = True
         tasks = list(getattr(self, "_background_jobs", {}).values())
+        tasks += list(getattr(self, "_participation_settlers", {}).values())
         tasks += list(getattr(self, "_life_clock_jobs", {}).values()) + list(getattr(self, "_life_delivery_jobs", set()))
         if getattr(self, "_schedule_delivery_job", None):
             tasks.append(self._schedule_delivery_job)

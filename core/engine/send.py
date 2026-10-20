@@ -321,7 +321,8 @@ class SendMixin:
                 kind = kinds[i] if i < len(kinds) else outcome.speech_kind
                 target = key or outcome.home()
                 protected = kind in {"reply", "event", "schedule"}
-                return self.speech_allowed(target, kind) and (protected or (
+                from ..participation import speakable
+                return (images or kind == "reply" or speakable(lines[i])) and self.speech_allowed(target, kind) and (protected or (
                     not block_contact and self.contact_speech_allowed(outcome, target, kind)))
             mask = [allowed(i) for i in range(len(lines))]
             if key == "" and not images:
@@ -408,16 +409,21 @@ class SendMixin:
         delivered_images: dict[str, int] = {}
         autonomous_kinds = {"reply", "schedule", "event", "quiet"}
         autonomous_delivered = False
+        autonomous_targets: set[str] = set()
+        interject_delivered = False
         for index, message in enumerate(outcome.live_messages):
             target = outcome.live_origins[index] if index < len(outcome.live_origins) else outcome.home()
             kind = outcome.live_kinds[index] if index < len(outcome.live_kinds) else outcome.speech_kind
             delivered.setdefault(target, []).append(message)
             autonomous_delivered = autonomous_delivered or kind not in autonomous_kinds
+            if kind not in autonomous_kinds:
+                autonomous_targets.add(target)
+            interject_delivered = interject_delivered or kind == "interject"
         sent = False
         attempted = False
         # Reserve only while sending, and count only platform-accepted content.
         async def send_target(target, view, echoes=()):
-            nonlocal sent, attempted, autonomous_delivered
+            nonlocal sent, attempted, autonomous_delivered, interject_delivered
             self._filter_proactive_speech(view)
             kinds = []
             if view.messages:
@@ -451,10 +457,15 @@ class SendMixin:
                             received_counts[message] -= 1
                             kind = message_kinds[index] if index < len(message_kinds) else view.speech_kind
                             actual_auto_text = actual_auto_text or kind not in autonomous_kinds
+                            interject_delivered = interject_delivered or kind == "interject"
                     contact_sent = actual_auto_text
                     if actual_messages:
                         delivered.setdefault(target, []).extend(actual_messages)
                         autonomous_delivered = autonomous_delivered or actual_auto_text
+                        if actual_auto_text:
+                            autonomous_targets.add(target)
+                        else:
+                            self.note_visible_speech(target)
                     if not accepted:
                         outcome.notes.append(f"发到 {target} 失败：平台没有接收")
                         self._log("warning", f"发到 {target} 失败：平台没有接收")
@@ -464,6 +475,10 @@ class SendMixin:
                     if accepted:
                         delivered_images[target] = delivered_images.get(target, 0) + len(target_images)
                         autonomous_delivered = autonomous_delivered or auto_images
+                        if auto_images:
+                            autonomous_targets.add(target)
+                        else:
+                            self.note_visible_speech(target)
                     contact_sent = contact_sent or bool(accepted and auto_images)
             except Exception as exc:
                 outcome.notes.append(f"发到 {target} 失败：{exc}")
@@ -489,7 +504,22 @@ class SendMixin:
             async with self.session_state(outcome.session_id) as state:
                 if autonomous_delivered:
                     self.engagement.on_bot_spoke(state)
+                    state.engagement_origins = sorted(autonomous_targets)
+                if interject_delivered:
+                    state.last_interject_at = self._now()
                 for target in dict.fromkeys([*delivered, *delivered_images]):
+                    if outcome.chat_claims.get(target):
+                        seqs = set(outcome.chat_claims[target])
+                        # Archive sequence numbers also exist on transports without message IDs.
+                        observed = [row for row in state.recent_chat
+                                    if self._chat_origin(row, state) == target and str(row.get("seq")) in seqs]
+                        if observed:
+                            previous, seq = self._watermark(state, target)
+                            self._set_watermark(state, target,
+                                until=max(previous, max(float(row.get("at") or 0) for row in observed)),
+                                seq=max(seq, max(int(row["seq"]) for row in observed)))
+                        state.participation[target] = {**state.participation.get(target, {}),
+                                                       "decision": "joined", "sent_at": self._now()}
                     messages = delivered.get(target, [])
                     detail = {"messages": messages, "images": delivered_images.get(target, 0),
                               "style_cell": state.last_style_cell, "say_limit": int(state.last_say_limit or 0)}

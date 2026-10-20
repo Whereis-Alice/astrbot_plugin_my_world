@@ -1234,7 +1234,7 @@ class ReplyMixin:
             self._tag_chat_origin(state, ctx.session_id, recorded)
         self._note_session_activity(state, ctx)
         state.last_user_activity_at = now
-        self.engagement.on_user_replied(state)
+        self.note_contact_response(state, ctx)
         # 名字/昵称也在这儿再刷一次（不带计数，免得和 note_presence 里那次重复）
         self.profiles.touch(
             ctx.session_id, ctx.user_id, ctx.user_name, now=now, count_message=False

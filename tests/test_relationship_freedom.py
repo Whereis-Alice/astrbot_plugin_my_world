@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import AsyncMock
 
 from core.defaults import default_world
-from core.engine import TickOutcome
+from core.engine import MessageContext, TickOutcome
 from core.json_actions import PlannedAction
 from core.models import IntimacyLevel, parse_world
 from core.planner import create_plan
@@ -154,6 +154,8 @@ class SuccessfulContactTests(unittest.IsolatedAsyncioTestCase):
         other = fixtures.OTHER_SESSION
         self.assertEqual(self.engine.contact_status(other)["left"], 1)
         self.assertEqual(self.engine.contact_status(other, "42")["person_left"], 1)
+        self.assertTrue(self.engine.contact_status(other, "42")["reason"])
+        await self.engine.note_presence(MessageContext(other, user_id="42", text="看到了", is_mentioned=True))
         second = TickOutcome(other, contact_id="second", contact_people={"42"})
         second.add_speech("在这边接着聊")
         await self.engine._deliver(second)

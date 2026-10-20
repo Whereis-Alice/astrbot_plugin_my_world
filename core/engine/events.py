@@ -972,6 +972,9 @@ class EventsMixin:
                 act_rounds_left=rounds_left,
                 session_directory=self.session_directory(state),
             )
+            prompt += self.conversation_scene_hint(state, outcome.home())
+            prompt += ("\n要说的话要符合人设和此刻场合。求助只问清楚这一件具体的事，"
+                       "不要点名催促、重复征集或逐条播报；没必要分享时 say 各项可以留空数组。")
             reply = await self._ask_llm(state.session_id, system, prompt)
             outcome.llm_calls += 1
             parsed = parse_decision(

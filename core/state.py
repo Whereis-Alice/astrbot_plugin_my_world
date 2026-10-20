@@ -623,6 +623,9 @@ class WorldState:
     unanswered_count: int = 0
     last_engagement_time: int = 0
     awaiting_reply: bool = False
+    engagement_origins: list[str] = field(default_factory=list)
+    participation: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """Per-session observed burst boundary, retained even when she chooses to listen."""
     cooldown_until: int = 0
     proactive_block_until: int = 0
     """在这个 tick 之前不要主动开口（刚回过话之后的冷却）。被动回复不受影响。"""

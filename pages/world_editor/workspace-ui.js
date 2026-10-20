@@ -1,4 +1,4 @@
-import { mountWorldScene } from "./world-scene.js?v=4.28.0";
+import { mountWorldScene } from "./world-scene.js?v=4.29.0";
 
 /** Compact reading chrome, with secondary operations available on demand. */
 export function initialiseWorkspace() {

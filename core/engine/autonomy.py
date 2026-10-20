@@ -188,8 +188,6 @@ class AutonomyMixin:
             for step in plan.get("steps", []):
                 if isinstance(step, dict) and not step.get("kind"):
                     step["kind"] = outcome.speech_kind
-        if any(step.get("interject") for step in plan.get("steps", [])):
-            state.last_interject_at = self._now()
         state.current_plan = plan
         # 留一份「最近一次生成的计划」：做完之后提示词里还要能提到它
         state.last_plan = {

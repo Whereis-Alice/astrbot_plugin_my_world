@@ -49,7 +49,7 @@ class MessageRulesMixin:
         # 「mw event h」。光认带斜杠那几种写法挡不住，这里再按「第一个词 + 子命令」认一次，
         # 不然指令会被记成"他刚说的话"，她会一本正经地回一句"你怎么又敲这指令"。
         parts = cls.command_words(raw)
-        if not parts or parts[0] not in ("mw", "我的世界", "myworld"):
+        if not parts or parts[0] not in ("mw", "小世界", "我的世界", "myworld"):
             return False
         if len(parts) == 1:
             return True
@@ -62,7 +62,7 @@ class MessageRulesMixin:
         parts = cls.command_words(text)
         return bool(
             len(parts) >= 2
-            and parts[0] in ("mw", "我的世界", "myworld")
+            and parts[0] in ("mw", "小世界", "我的世界", "myworld")
             and parts[1] in ("event", "事件")
         )
 

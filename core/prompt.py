@@ -24,6 +24,7 @@ from typing import Any
 
 from .memory import RecalledMemory
 from .models import NodeDef, WorldConfig, pronoun_for
+from .participation import PARTICIPATION_MANNERS
 from .mood import day_mood_info, desire_text
 from .extensions import JsonField, normalize_json_field
 from .state import (
@@ -3400,10 +3401,11 @@ class PromptBuilder:
         "- 不要和最近说过的话重复，换一种说法和句式；\n"
         "- 某个话题还留在你的记忆 / 备忘里，**不代表要再答一遍**：那只是你还记得；\n"
         "- 只有别人又说了新话、有个问题还没答完、或者真出了新事情，才接着往下说；\n"
-        "- 你上一句没人接时，优先说你自己的状态或正在做的事，要不就安静；\n"
+        "- 你上一句没人接时，先继续自己的生活；不要补一句追问，也不要换到私聊再问；\n"
         "- 真要延续旧话题就用「刚才那个……」补新的信息，别把上次的结论再讲一遍；\n"
         "- 真没什么想说的就**保持安静**——不开口比硬找一句更像真人。\n"
     )
+    AUTONOMOUS_MANNERS += PARTICIPATION_MANNERS
     """自己开口（不是被搭话）时的通用分寸：自主发言和插话共用同一份。"""
 
     def _event_digest_block(self, state: WorldState) -> str:

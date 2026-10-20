@@ -383,9 +383,7 @@ class RelationsMixin:
             # 意图路由放行时交过来的事前判定：按事件身份盖到这一批对应的留档上
             self._stamp_router_view(state, ctx, recorded)
         state.last_user_activity_at = self._now()
-        if ctx.is_wake:
-            # 有人 @她，就算一次有效互动
-            self.engagement.on_user_replied(state)
+        self.note_contact_response(state, ctx)
 
     def _note_images(self, state: WorldState, urls: list[str] | None) -> None:
         """记住自上次回复以来收到的图片。

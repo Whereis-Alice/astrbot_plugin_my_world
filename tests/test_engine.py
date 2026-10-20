@@ -1975,7 +1975,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             text = self.engine.session_directory(state)
         self.assertIn("群 1001「小米粥群」", text)
         self.assertIn("私聊 2692047521「主人」", text)
-        self.assertIn("主人最近跟你说话是", text)
+        self.assertIn("主人最近在这里发言是", text)
         # 备注优先：私聊有备注就写备注，不写平台名
         self.engine.note_session_name(PRIVATE_SESSION, "某个平台昵称")
         async with self.engine.session_state(SESSION) as state:
@@ -8740,6 +8740,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             )
 
         # ③ 早安：睡醒那一刻问一次（这条走的是 _finish_action 的睡醒分支）
+        self.clock.advance(8 * 3600)
         self.llm.replies = [
             '{"plan":[{"action":"say","messages":["早…困死了"]}],"reason":"醒了打个招呼"}'
         ]
@@ -11997,7 +11998,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(mode, "direct")
 
-    async def test_reply_to_her_own_last_line_is_direct(self):
+    async def test_same_person_continuing_her_last_line_is_soft_addressed(self):
         """她刚说完话，有人顺着接一句 —— 这算在跟她对话。"""
 
         await self.engine.handle_incoming(self.ctx(text="你在干嘛"))
@@ -12014,7 +12015,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             state,
             self.ctx(text="看什么书", is_mentioned=False, user_id="42", user_name="小明"),
         )
-        self.assertEqual(mode, "direct")
+        self.assertEqual(mode, "soft")
 
     async def test_interjection_prompt_does_not_claim_it_is_for_her(self):
         await self.engine.handle_incoming(self.ctx(text="你们中午吃什么"))

@@ -478,11 +478,11 @@ class SessionsMixin:
             at = float(info.get("at") or 0.0)
             who = " ".join(str(info.get("user_name") or "").split())[:12]
             if at <= 0:
-                when = "还没有人跟你说过话"
+                when = "还没有近期发言记录"
             else:
                 minutes = max(0, int((now - at) // 60))
                 when = (
-                    f"{who or '有人'}最近跟你说话是 "
+                    f"{who or '有人'}最近在这里发言是 "
                     + ("刚刚" if minutes < 1 else f"{minutes} 分钟前" if minutes < 60 else f"{minutes // 60} 小时前")
                 )
             lines.append(f"- {self.session_label(session_id, state)}：{when}")

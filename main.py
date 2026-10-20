@@ -126,6 +126,7 @@ from .core.model_call_runtime import observe_native_response
 from .core.model_calls import call_context, model_operation
 from .adapters.messenger import AstrBotMessenger
 from .adapters.persona import AstrBotPersona
+from .adapters.participation import ParticipationHooksMixin
 from .adapters.profile_commands import (
     ProfileCommandsMixin,
     install_profile_commands,
@@ -307,7 +308,7 @@ def _extra_components(chain: Any, *, skip_plain: bool = True) -> list[Any]:
     "给 Bot 一个私有空间、动作、日程、场景记忆和工具能力，让 ta 像住在群里一样生活。",
     PLUGIN_VERSION,
 )
-class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
+class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, ParticipationHooksMixin, Star):
     def __init__(self, context: Context, config: AstrBotConfig) -> None:
         super().__init__(context, config)
         self.config = config
@@ -1238,20 +1239,6 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
             return self._self_initiated_depth > 0
         return task in self._self_initiated_tasks
 
-    def _should_expect_reply(self, event: Any) -> bool:
-        """这条消息"看起来会走到回复"吗（用来提前登记连发合并）。
-
-        只有会被回复的消息才登记：群里没点名她的闲聊不登记，
-        否则群一直有人说话，她的安静期就永远刷新不完。
-        """
-
-        text = str(event.get_message_str() or "")
-        if _is_command(text) or _is_command_event(event):
-            return False
-        return bool(
-            event.is_wake_up() or _is_at_bot(event) or event.is_private_chat()
-        )
-
     def _reply_lock(self, session_id: str) -> asyncio.Lock:
         # 锁按"她"分（会话组的代表）：同一个她的两个会话不能同时开两条回复管线，
         # 否则两边会轮流改同一份状态，计划和动作互相踩
@@ -1581,6 +1568,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
         )
         self.engine.decision_trace(session_id, "prepare", "awaiting_native", "已交给 AstrBot 原生 Agent",
                                    memory_ids=list(plan.recalled_ids), message_ids=[str(row.get("message_id") or "") for row in plan.batch])
+        self.engine.begin_native_turn(event.get_extra(MW_TURN_EXTRA))
         if self.debug:
             self.logger.info(
                 f"[my_world] 注入接管 {session_id}："
@@ -1900,9 +1888,11 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
         if "reply" not in turn and not turn.get("response_error"):
             return
         event.set_extra(MW_TURN_EXTRA, None)
+        self.engine.end_native_turn(turn)
         session_id = str(turn.get("session_id") or "")
         if not session_id or turn.get("response_error"):
             return
+        self.engine.note_visible_speech(session_id)
         try:
             if "interaction_entries" in turn:
                 await self.engine.mark_reply_batch_replied(session_id, batch=turn["interaction_entries"])
@@ -2436,6 +2426,8 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
                 event_id=str(identity.get("event_id") or ""),
                 is_wake=bool(event.is_wake_up()),
                 is_private=bool(event.is_private_chat()),
+                is_mentioned=_is_at_bot(event),
+                is_soft_wake=_is_soft_wake(event),
                 group_name=_group_name(event),
                 chat_images=list(sources),
                 at_targets=_at_targets(event),
@@ -2449,6 +2441,12 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
                 router=_router_view(event),
             )
         )
+
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE, priority=-100)
+    @session_scoped
+    async def on_group_participation(self, event: AstrMessageEvent) -> None:
+        """Let higher-priority routers and native Agent replies own the event first."""
+        self._queue_ambient_participation(event)
 
     # ================= 用户 / 管理员命令 =================
 

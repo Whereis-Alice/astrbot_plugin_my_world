@@ -626,9 +626,19 @@ class ActionsRunMixin:
                 await self._tick_plan(state, node, outcome, depth=depth + 1)
             return answered
 
-        messages = await self._instant_output(
-            state, node, definition, action, session_id=outcome.home()
-        )
+        if action.interject:
+            rows = self.live_chat(state, outcome.home())
+            if not rows:
+                outcome.notes.append("刚才的话题已不在现场，这轮不再补插话")
+                messages = []
+            else:
+                outcome.chat_claims[outcome.home()] = [str(row["seq"]) for row in rows]
+                messages = await self._instant_output(
+                    state, node, definition, action, session_id=outcome.home())
+        else:
+            messages = await self._instant_output(
+                state, node, definition, action, session_id=outcome.home()
+            )
         speaker = self._speech_target(state, action, outcome)
         dropped = speaker is None and bool(messages)
         if dropped:
@@ -657,7 +667,7 @@ class ActionsRunMixin:
         elif self._action_speaks(definition):
             if not dropped:
                 for text in messages:
-                    outcome.add_speech(text, speaker)
+                    outcome.add_speech(text, speaker, kind="interject" if action.interject else None)
         elif definition.id == "think" and action.content:
             await self._remember_inner_thought(
                 state,
@@ -1195,9 +1205,12 @@ class ActionsRunMixin:
             if item.type == "say" and item.messages:
                 return item.messages
         cleaned = reply.strip()
+        from ..participation import speakable
+        if not speakable(cleaned):
+            return []
         if not cleaned:
             return []
-        if cleaned.lstrip().startswith("{"):
+        if extract_json_object(cleaned) is not None or cleaned.lstrip().startswith(("{", "```")):
             # 模型又回了一段 JSON、但里面没有能说的话（例如 actions 是空的 = 她不想开口）：
             # **绝不能**把整段 JSON（连 reasoning 一起）当成台词发出去
             payload = extract_json_object(cleaned)

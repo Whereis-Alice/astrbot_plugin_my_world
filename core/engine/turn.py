@@ -45,6 +45,7 @@ class TurnMixin:
             state.note_reply(clean, session_id=session_id)
             self._tag_chat_origin(state, session_id, recorded, original_text=clean)
             self._count_passive_reply(state)
+            self.note_visible_speech(session_id)
 
     @session_scoped
     @model_operation("reflection", "本轮结束，复盘对话与状态")

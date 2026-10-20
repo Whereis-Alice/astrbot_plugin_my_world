@@ -269,6 +269,7 @@ class SnapshotMixin:
                 "say_limit": int(state.last_say_limit or 0),
             },
             "interject": dict(state.interject_stats or {}),
+            "participation": dict(state.participation.get(session_id) or {}),
             "tool_breakers": self.tool_breaker_state(),
             "current_action": {key: value for key, value in state.current_action.items()
                                if not key.startswith("browse_") and key != "identity"} if state.current_action else None,

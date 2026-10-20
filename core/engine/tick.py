@@ -993,6 +993,8 @@ class TickMixin:
                 if str(item).strip()
             ),
         )
+        if outcome.speech_kind != "reply":
+            prompt += "\n" + self.prompts.AUTONOMOUS_MANNERS
         # 用过了就清掉：这段时间发生的事只带出来一次
         state.event_digest = []
         reply = await self._ask_llm(

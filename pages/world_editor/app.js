@@ -1,9 +1,9 @@
-import { updateWorldScene } from "./world-scene.js?v=4.28.0";
+import { updateWorldScene } from "./world-scene.js?v=4.29.0";
 import { relationshipBoundaryEditor } from "./relationship-boundary.js";
 import { createContactWorkbench } from "./contact-workbench.js";
 import { createSocialLearning } from "./social-learning.js";
 import { createRelationshipsPage } from "./relationships.js";
-import { createModelCallsPage } from "./model-calls.js";
+import { createModelCallsPage } from "./model-calls.js?v=4.29.0";
 import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js";
 import { memorySearchFields } from "./memory-settings.js";
 import { relationshipPromptEditor } from "./relationship-prompt.js";
@@ -12,8 +12,8 @@ import { openBrowseSettings } from "./browse-settings.js";
 import { personAvatar, personColor, bindPeopleSort } from "./people-ui.js";
 import { openRelationshipRulesEditor } from "./relationship-rules.js";
 import { applyDetailedLevels, DETAILED_LEVELS } from "./relationship-preset.js";
-import { initialiseAppearance, openAppearancePicker } from "./appearance.js?v=4.28.0";
-import { initialiseWorkspace } from "./workspace-ui.js?v=4.28.0";
+import { initialiseAppearance, openAppearancePicker } from "./appearance.js?v=4.29.0";
+import { initialiseWorkspace } from "./workspace-ui.js?v=4.29.0";
 
 /**
  * 小世界前端。
@@ -5494,6 +5494,10 @@ function renderStatusSections(data, stateLabel) {
     disabled: "插话已关闭",
   };
   const interject = data.interject || {};
+  if (data.participation?.decision) {
+    statusLine(runtimeBox, "群聊参与",
+      data.participation.decision === "joined" ? "接上了刚才的话题" : "听过近期群聊，继续旁听");
+  }
   const interjectParts = Object.keys(interject).map(
     (key) => `${interjectLabels[key] || key} ${interject[key]}`,
   );
@@ -16523,7 +16527,7 @@ const SETTINGS_TABS = [
       "主动联系",
       "手感（滑块）",
       "自主决策",
-      "孤独感与插话",
+      "群聊参与与分寸",
       "没人理她时怎么办",
       "说话频率与预算",
       "说话节奏",
@@ -17888,19 +17892,18 @@ function renderSettings() {
   /* --- 孤独感与插话 --- */
   world.decider = world.decider || {};
   const interject = settingsSection(
-    "孤独感与插话",
-    "控制她什么时候会主动接别人的话。",
-    "插话需要同时满足：群里最近有人说话、孤独感高过阈值、没在冷却、且没超过每小时上限。",
+    "群聊参与与分寸",
+    "先听懂现场，再决定是否接一句。",
+    "新消息聚合后，她会结合人设、兴趣和生活判断是否想接话，也可以保持安静。孤独感只推动例行自主决定；睡眠、忙碌、插话冷却和联系额度继续生效。",
   );
   interject._fields.appendChild(
     inputField(
-      "孤独感阈值",
+      "例行决策的孤独感阈值",
       num(world.decider.interject_threshold, 0.6),
       (value) => (world.decider.interject_threshold = num(value, 0.6)),
       {
         hint:
-          "孤独感高于这个值（0~1）她才会想插话。调低=更爱接话，调高=更安静。" +
-          "（心潮不参与这个判断——它只决定她说话有多动情。）",
+          "例行决策时多孤独才想接话（0~1）；新消息接话由现场与兴趣判断。",
         type: "number",
         step: "0.05",
         min: 0,
@@ -17921,10 +17924,10 @@ function renderSettings() {
   );
   interject._fields.appendChild(
     inputField(
-      "多久内算「正在聊」（分钟）",
-      num(world.decider.chat_window_minutes, 180),
-      (value) => (world.decider.chat_window_minutes = num(value, 180)),
-      { hint: "这个时间窗内有人说话，才算群里在聊天。", type: "number" },
+      "群聊现场窗口（秒）",
+      num(world.decider.live_window_seconds, 180),
+      (value) => (world.decider.live_window_seconds = num(value, 180)),
+      { hint: "只把近期消息当成正在聊的话题；历史上下文依然保留。", type: "number", min: 30, max: 1800 },
     ),
   );
   interject._fields.appendChild(
@@ -17943,6 +17946,20 @@ function renderSettings() {
       { hint: "两次主动插话之间至少隔这么久，防止她变成话痨。", type: "number" },
     ),
   );
+  interject._fields.appendChild(checkboxField(
+    "新消息到来后自然接话", world.decider.message_driven !== false,
+    (value) => (world.decider.message_driven = value),
+    { hint: "等群友连着说完，再考虑是否有真正想接的一点；关闭后保留例行生活决策。" },
+  ));
+  [
+    ["settle_seconds", "等群友说完（秒）", 4, 1, 10, "短暂等待连发；连续热聊最多聚合 12 秒。"],
+    ["evaluation_cooldown_seconds", "两次接话判断间隔（秒）", 60, 15, 600, "保持安静也算一次判断，不会逐条调用模型。"],
+    ["min_speech_gap_seconds", "主动开口前留白（秒）", 90, 0, 3600, "她刚回应、播报日程或说过事件后，其他主动模块先留一点空间。"],
+    ["person_retry_hours", "未回应联系人等待（小时）", 6, 0, 72, "某人没接话时，群聊和私聊共用等待；明确回应她后解除。"],
+  ].forEach(([key, label, fallback, min, max, hint]) => {
+    interject._fields.appendChild(inputField(label, num(world.decider[key], fallback),
+      (value) => (world.decider[key] = num(value, fallback)), { type: "number", min, max, hint }));
+  });
   // 「带多少条聊天进提示词」在下面的「上下文」卡片里统一配置
   form.appendChild(interject);
 
