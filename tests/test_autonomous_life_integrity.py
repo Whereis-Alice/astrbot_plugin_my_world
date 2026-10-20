@@ -135,7 +135,7 @@ class AutonomousLifeIntegrityTests(unittest.IsolatedAsyncioTestCase):
         entered, release = asyncio.Event(), asyncio.Event()
         today = self.engine._today_key(self.clock.now())
 
-        async def generate(*args):
+        async def generate(*args, **kwargs):
             entered.set()
             await release.wait()
             return {"schedules": [{"id": "draft", "date": today, "time": "23:59", "once": True,
@@ -400,7 +400,7 @@ class AutonomousLifeIntegrityTests(unittest.IsolatedAsyncioTestCase):
         entered, release = asyncio.Event(), asyncio.Event()
         today = self.engine._today_key(self.clock.now())
 
-        async def generate(*args):
+        async def generate(*args, **kwargs):
             entered.set()
             await release.wait()
             return {"schedules": [{"id": "old_draft", "date": today, "time": "23:59",
@@ -423,6 +423,42 @@ class AutonomousLifeIntegrityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "")
         self.assertNotEqual(self.db.raw.kv_get("schedule.auto_day:global"), today)
         self.assertNotIn("old_draft", {row["id"] for row in self.store.raw_schedules()["schedules"]})
+
+    async def test_auto_schedule_uses_the_initial_persona_across_an_aba_switch(self):
+        raw = self.store.raw_schedules()
+        raw["auto"] = {"enabled": True, "hour": 0, "per_day": 1}
+        self.store.save_schedules(raw)
+        self.engine.reload_config()
+        entered, release = asyncio.Event(), asyncio.Event()
+        today = self.engine._today_key(self.clock.now())
+        original = self.persona.text
+        snapshots = []
+
+        async def generate(*args, **kwargs):
+            snapshots.append(kwargs.get("persona_snapshot"))
+            entered.set()
+            await release.wait()
+            return {
+                "schedules": [
+                    {
+                        "id": "snapshot_draft",
+                        "date": today,
+                        "time": "23:59",
+                        "action_chain": [{"type": "think", "content": "看看书"}],
+                    }
+                ]
+            }
+
+        self.engine.generate_schedules = AsyncMock(side_effect=generate)
+        task = asyncio.create_task(self.engine.maybe_auto_generate_schedules())
+        await asyncio.wait_for(entered.wait(), 2)
+        self.persona.text = "临时切换后的人设"
+        self.persona.text = original
+        release.set()
+        result = await task
+        self.assertIn("1 条", result)
+        self.assertEqual(snapshots, [original])
+        self.assertIn("snapshot_draft", {row["id"] for row in self.store.raw_schedules()["schedules"]})
 
     async def test_auto_schedule_discards_drafts_when_the_world_reloads(self):
         async def change():

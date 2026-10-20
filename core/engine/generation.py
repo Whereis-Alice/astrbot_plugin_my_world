@@ -874,7 +874,12 @@ class GenerationMixin:
         }
 
     async def generate_schedules(
-        self, count: Any = 0, flavor: str = "", extra_prompt: str = ""
+        self,
+        count: Any = 0,
+        flavor: str = "",
+        extra_prompt: str = "",
+        *,
+        persona_snapshot: str | None = None,
     ) -> dict[str, Any]:
         """按她的生活节奏生成日程草稿（不落库，先给用户改）。
 
@@ -910,8 +915,13 @@ class GenerationMixin:
                               (state.recent_events or [])[-8:] if isinstance(event, dict))
             life_lines.append(self._own_topic_block(state))
             life_lines.append("生活事项有独立的推进安排；日程请为它们留出空档，不要重复建立同一项目的动作或把规划当成完成。")
+        persona_text = (
+            persona_snapshot
+            if persona_snapshot is not None
+            else await self._persona_text(session_id)
+        )
         system_prompt, prompt = self.prompts.build_schedule_generator_prompt(
-            persona_text=await self._persona_text(session_id),
+            persona_text=persona_text,
             zones=[
                 {"id": zone.id, "name": zone.name or zone.id, "note": zone.note}
                 for zone in self.world.zones
@@ -1022,7 +1032,10 @@ class GenerationMixin:
         ]
         dropped = len(rows) - len(kept)
         result = await self.generate_schedules(
-            wanted, "once", str(getattr(config, "extra_prompt", "") or "")
+            wanted,
+            "once",
+            str(getattr(config, "extra_prompt", "") or ""),
+            persona_snapshot=persona,
         )
         current_persona = await self._persona_text(session_id)
         if (self.world is not world or self.schedules is not schedules or self.config_scope_id != scope
