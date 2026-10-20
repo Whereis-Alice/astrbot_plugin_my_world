@@ -347,6 +347,7 @@ class WorldState:
     life_decision: dict[str, Any] = field(default_factory=dict)
     life_resume: dict[str, Any] = field(default_factory=dict)
     life_artifacts: dict[str, Any] = field(default_factory=dict)
+    last_quiet_plan_at: float = 0.0
 
     last_say_limit: int = 0
     """那一次实际生效的句数上限（风格格、群聊硬顶、配置、密度提醒取更严格者）。"""

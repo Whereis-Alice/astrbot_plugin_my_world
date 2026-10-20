@@ -213,6 +213,9 @@ class MattersMixin:
             if "text" in changes and not str(changes["text"]).strip():
                 raise ValueError("事项内容不能为空")
             changed_goal = "text" in changes and str(changes["text"]).strip() != item["text"]
+            if changed_goal:
+                for row in [*item.get("stage_notes", []), *item.get("steps", [])]:
+                    row.setdefault("goal", item["text"])
             for key in ("text", "motivation", "next_step"):
                 if key in changes:
                     item[key] = str(changes[key]).strip()[:160 if key == "text" else 300]
@@ -289,6 +292,9 @@ class MattersMixin:
                 return
             item["plan_attempts"] = int(item.get("plan_attempts", 0)) + 1
             snapshot = copy.deepcopy(item)
+            snapshot["stage_notes"] = matters.current_stage_notes(item)[-3:]
+            snapshot["steps"] = [s for s in item.get("steps", []) if s.get("status") == "done"][-12:] + [s for s in item.get("steps", []) if s.get("status") != "done"][:6]
+            snapshot["history"] = snapshot.get("history", [])[-12:]
             interrupted = [event for event in item.get("history", []) if event.get("kind") == "paused_step"
                            and now - float(event.get("at") or 0) <= 7 * 86400]
             snapshot["rhythm_hint"] = "最近多次被打断，优先拆成5到15分钟的小步；不代表喜好改变" if len(interrupted) >= 2 else ""
@@ -309,6 +315,8 @@ class MattersMixin:
                     "text描述她在自己世界里做的具体小步，按在线时间投入后形成模拟经历。"
                     "不要因没有真实电脑、文件、素材或工具而阻塞个人项目；不能声称操作了现实服务器或生成了真实文件。"
                     "对现实用户的发送、购买等约定只能模拟准备，兑现仍需聊天中的真实依据。"
+                    "若已有stage_notes，下一阶段必须接着其中的具体内容和next_focus推进："
+                    "延续已有草稿、结论或未解问题，不重新从头概述同一个目标；不把模拟笔记说成真实资料验证。"
                     "有可做部分先安排可做部分，blocked只描述剩余阻碍，不能抹掉可做步骤。"
                     '格式：{"motivation":"一句动机","steps":[{"text":"具体下一步","action":"候选ID",'
                     '"node":"候选地点","minutes":20,"day_offset":0}],"blocked":""}。最多6步，每步5到60分钟。'
@@ -340,6 +348,7 @@ class MattersMixin:
                 if definition and definition.duration_mode == "llm":
                     minutes = min(max(minutes, max(1, definition.duration_min / 60)), max(1, definition.duration_max / 60))
                 steps.append({"id": f"{item['id']}_{item['revision']}_{index}", "text": str(step["text"])[:300],
+                              "goal": item["text"],
                               "action": step["action"], "node": step.get("node", state.node_id), "minutes": minutes,
                               "not_before": now + day_offset * 86400, "status": "pending"})
             if steps:
@@ -368,11 +377,17 @@ class MattersMixin:
         with model_context("life_matter", f"核对生活事项 {snapshot['id']} 的实际阶段结果", session_id):
             raw = await self._ask_judge(session_id,
                 "根据事项目标和实际动作收据，判断整个目标是否已达成，只输出JSON。"
-                '格式：{"outcome":"completed|continue|blocked","reason":""}。'
+                '格式：{"outcome":"completed|continue|blocked","reason":"",'
+                '"stage":{"summary":"这一阶段具体留下什么","content":"具体草稿、推演、结论或未解问题",'
+                '"next_focus":"下阶段从哪一处继续","basis_step_ids":["本阶段已完成步骤ID"]}}。'
                 "个人项目属于角色世界内的生活，life_simulation步骤是AI模拟，不要求真实电脑、文件或工具。"
                 "只根据已经投入时间的步骤核对进展，不把未做的计划算作完成。"
                 "reason可概括她在世界内完成了什么，但不得声称操作了现实服务器、通过真实测试或产生可下载文件。"
                 "普通阅读只能证明阅读；模拟步骤完成后可以确认相应的世界内目标。"
+                "stage只对应已完成且有投入收据的新步骤，不能重复旧stage_notes引用过的步骤。"
+                "content要留下下一阶段真正能用的内容，例如短小草稿、设计取舍或具体未解问题，"
+                "不是再说一遍已经进行了活动。不捏造真实书籍原文、检索结论或现实验证。"
+                "原有人设和能力优先，不从这次活动创造新身份、喜好或高超技能。"
                 "现实用户的约定仍需兑现依据。可以继续则continue，暂时无法继续则blocked。",
                 json.dumps({"persona": persona, "matter": snapshot}, ensure_ascii=False))
         result = extract_json_object(raw or "") or {}
@@ -385,13 +400,28 @@ class MattersMixin:
                 return
             reason = str(result.get("reason") or "尚未取得可核对的目标结果")[:300]
             outcome = result.get("outcome")
+            if outcome not in {"completed", "continue", "blocked"}:
+                return  # Failed/malformed review is not a new life result.
+            stage = matters.record_stage(item, result.get("stage"), now=self._now())
+            if result.get("stage") and not stage:
+                self.decision_trace(session_id, "life_stage", "rejected", "阶段笔记未引用有效的新完成步骤，保留原进度等待复核", matter_id=item["id"])
+                return
+            if stage:
+                matters.history(item, "stage_note", stage["summary"], self._now(), basis_step_ids=stage["basis_step_ids"])
+                state.life_artifacts[item["id"]] = {"label": item["text"], "result": stage["summary"],
+                    "content": stage["content"], "at": self._now(), "scope": "simulation", "session": item["session"]}
+                state.life_artifacts = dict(list(state.life_artifacts.items())[-40:])
+                self.memory.remember(session_id=item["session"], persona_id="", node_id=state.node_id,
+                    content=f"（角色世界内的阶段笔记，AI模拟）{item['text']}：{stage['summary']}\n{stage['content']}",
+                    memory_type="scene", source="life_matter", context=json.dumps(stage, ensure_ascii=False),
+                    participants=[item["who"]] if item.get("who") else [])
             if outcome == "completed" and item["kind"] != "promise":
                 receipts = [s.get("result", {}) for s in item["steps"] if s.get("status") == "done"]
                 item.update(status="completed", progress=100, needs_review=False, next_step="", completed_at=self._now(),
-                            result="；".join(str(r.get("result") or "") for r in receipts)[-500:])
+                            result=stage["summary"] if stage else "；".join(str(r.get("result") or "") for r in receipts)[-500:])
                 matters.history(item, "completed", "依据世界内活动确认完成；" + reason, self._now())
             elif outcome == "continue":
-                item.update(status="active", needs_review=False, needs_replan=True, next_step=reason, last_attempt_at=0)
+                item.update(status="active", needs_review=False, needs_replan=True, next_step=(stage or {}).get("next_focus") or reason, last_attempt_at=0)
                 matters.history(item, "continue_stage", "进入下一阶段：" + reason, self._now())
             else:
                 item.update(status="waiting", obstacle=reason, resume_at=self._now() + 3600,

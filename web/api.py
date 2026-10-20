@@ -2252,6 +2252,8 @@ class WebApiMixin(LifeApiMixin):
                 "warnings": self.engine.load_warnings,
                 # 模型槽位当前用的是哪个（向导里做"模型配了吗"的检查用；只有 id，没有 key）
                 "providers": self._provider_slots(),
+                "embedding_providers": self.embedding.choices(),
+                "embedding_default": str(self.config.get("embedding_provider_id") or ""),
                 # 图片转述缓存的使用情况（编辑器里显示"省了多少次识别"）
                 "vision_cache": await self._vision_cache_stats(),
                 # 当前天气：地图页顶部横幅直接用它

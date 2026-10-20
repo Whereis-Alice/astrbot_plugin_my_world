@@ -103,6 +103,14 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
     }
     body.append(line("世界内的生活", "编程、创作等个人活动由 AI 模拟，不操作真实电脑或文件；对现实用户的约定仍需实际兑现。"));
     if (steps.children.length) body.append(line("一件事，分成几小步", "进度按已进行的世界内活动计算。"), steps);
+    for (const stage of [...(item.stage_notes || [])].reverse()) {
+      const note = el("section", "life-stage-note");
+      note.append(el("small", "people-eyebrow", `阶段笔记 · 世界内模拟 · ${TIME(stage.at)}`),
+        el("h3", "", stage.summary), el("p", "life-stage-content", stage.content));
+      if (stage.goal && stage.goal !== item.text) note.append(line("当时的目标", stage.goal));
+      if (stage.next_focus) note.append(line("接下来从这里继续", stage.next_focus));
+      body.append(note);
+    }
     const timeline = el("div", "life-timeline");
     for (const event of [...(item.history || [])].reverse()) {
       const row = el("div", "life-timeline-item"); row.append(el("time", "", TIME(event.at)), el("p", "", event.text));
@@ -214,10 +222,11 @@ export function renderLifeFocus(container, data, {el, open}) {
   }
 }
 
-export function openLifeSettings({world, el, openCustomDialog, markDirty}) {
-  const limits = {...world.limits}, memory = {...world.memory};
+export function openLifeSettings({world, el, openCustomDialog, markDirty, isCurrent = () => true}) {
+  const limits = {...world.limits};
   const controls = [];
-  openCustomDialog({title: "生活的节奏与后台预算", confirmText: "应用设置", hint: "应用后使用顶栏「保存」写入配置。0 表示不设对应预算上限。", build: body => {
+  openCustomDialog({title: "生活的节奏与后台预算", confirmText: "应用设置", hint: "应用后使用顶栏「保存」写入配置。0 表示不设对应预算上限。", build: host => {
+    const body = el("div", "life-budget-settings"); host.append(body);
     for (const [key, label, fallback, min, max] of [
       ["life_matter_active_max", "活跃事项上限", 6, 1, 20], ["life_matter_daily_minutes", "每件事每天最多投入（分钟）", 90, 5, 480],
       ["life_matter_interval_minutes", "再次推进前的间隔（分钟）", 60, 5, 1440], ["background_daily_calls", "每天后台调用预算", 120, 0, 10000],
@@ -225,13 +234,10 @@ export function openLifeSettings({world, el, openCustomDialog, markDirty}) {
       const wrap = el("label", "field"), input = el("input"); input.type = "number"; input.min = min; input.max = max; input.value = limits[key] ?? fallback;
       wrap.append(el("span", "", label), input); body.append(wrap); controls.push(() => { if (!input.checkValidity()) throw new Error(`${label}超出范围`); limits[key] = Number(input.value); });
     }
-    for (const [object, key, label, fallback] of [[limits, "life_matter_enabled", "自动推进生活事项", true], [limits, "life_matter_self_start", "空闲时会自己产生个人打算", true], [memory, "semantic_enabled", "启用可选语义召回", false], [memory, "life_rerank", "主动查询生活记忆时重排（额外一次判断请求）", false]]) {
-      const wrap = el("label", "field"), input = el("input"); input.type = "checkbox"; input.checked = object[key] ?? fallback; wrap.append(input, el("span", "", label)); body.append(wrap); controls.push(() => { object[key] = input.checked; });
+    for (const [object, key, label, fallback] of [[limits, "life_matter_enabled", "自动推进生活事项", true], [limits, "life_matter_self_start", "空闲时会自己产生个人打算", true]]) {
+      const wrap = el("label", "field memory-toggle"), input = el("input"); input.type = "checkbox"; input.checked = object[key] ?? fallback; wrap.append(el("span", "", label), input); body.append(wrap); controls.push(() => { object[key] = input.checked; });
     }
-    body.append(el("p", "muted", "Token 缺失时保留保守的预算占位，界面仍标为未知。语义索引失败时保留记忆并使用关键词检索。"));
+    body.append(el("p", "muted", "Token 缺失时保留保守的预算占位，界面仍标为未知。记忆与模型检索请在「设置 → 记忆与资料」调整。"));
     body.append(el("p", "muted", "生活事项在角色世界内模拟推进，无需电脑环境。日程、睡眠、精力和后台预算共同决定她何时继续。"));
-    for (const [key, label] of [["semantic_endpoint", "嵌入服务 API 基址（含 /v1）"], ["semantic_model", "嵌入模型名称"], ["semantic_api_key_env", "保存 API Key 的服务器环境变量名"]]) {
-      const wrap = el("label", "field"), input = el("input"); input.value = memory[key] || ""; wrap.append(el("span", "", label), input); body.append(wrap); controls.push(() => { memory[key] = input.value.trim(); });
-    }
-  }, onSubmit: () => { controls.forEach(read => read()); world.limits = limits; world.memory = memory; markDirty(); return true; }});
+  }, onSubmit: () => { if (!isCurrent()) throw new Error("配置范围已改变，请重新打开设置"); controls.forEach(read => read()); world.limits = limits; markDirty(); return true; }});
 }

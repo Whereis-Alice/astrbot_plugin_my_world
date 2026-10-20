@@ -117,6 +117,21 @@ class LifeBrowserTests(unittest.TestCase):
         self.host.screenshot(path=str(self.shots/'life-simulation-settings-phone.png'))
         self.assertEqual(self.errors, [])
 
+    def test_concrete_stage_notes_are_visible_on_desktop_and_phone(self):
+        self.page.evaluate("""()=>{lifeData.items[0].stage_notes=[{at:Date.now()/1000,scope:'simulation',summary:'写下风车停转的开头',
+          content:'风车停转的早晨，她在塔底发现一封没有署名的信。\\n接下来需要写清楚她为何迟迟没有拆开。',next_focus:'从信件的线索继续写人物分歧',basis_step_ids:['s1']}]}""")
+        self.page.locator('#life-tools summary').click()
+        self.page.locator('#life-refresh').click()
+        self.page.locator('.life-card[data-id="lm_book"]').click()
+        expect(self.page.locator('.life-stage-note')).to_contain_text('没有署名的信')
+        expect(self.page.locator('.life-stage-note')).to_contain_text('世界内模拟')
+        for width,height in [(1440,1000),(390,844)]:
+            self.host.set_viewport_size({'width':width,'height':height})
+            self.page.locator('.life-stage-note').scroll_into_view_if_needed()
+            self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'))
+            self.host.screenshot(path=str(self.shots/f'life-stage-note-{width}.png'))
+        self.assertEqual(self.errors, [])
+
     def test_old_save_cannot_close_a_new_session_drawer(self):
         self.page.evaluate("""() => {
           const read=AstrBotPluginPage.apiGet, write=AstrBotPluginPage.apiPost;

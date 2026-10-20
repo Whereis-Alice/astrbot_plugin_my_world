@@ -318,6 +318,7 @@ class EvidenceAndSemanticTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.db.close)
         self.world, _ = parse_world(default_world())
         self.world.memory_scope_mode = "group"
+        self.world.memory.semantic_source = "custom"
         self.memory = MemoryEngine(self.db, self.world)
 
     async def test_source_snapshot_and_idempotency_survive_manual_revision(self):

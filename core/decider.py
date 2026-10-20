@@ -316,6 +316,9 @@ class Decider:
         #      再由今天的基调给它们拨权重，从够格的里面挑一件。
         #      （精力那条是安全阀，按原样强制，不参与加权。）
         candidates: list[tuple[str, dict[str, Any]]] = []
+        lived = self._custom_life_plan(state, grounded_only=True)
+        if lived:
+            candidates.append(("everyday", lived))
 
         # （原来这里有一条"孤独 → 走到大厅喊一声"。删掉了：
         #   她说话是发到会话里的，跟站在哪个房间无关，走那几步纯属浪费；
@@ -509,30 +512,52 @@ class Decider:
                 return False
         return True
 
-    def _custom_life_plan(self, state):
+    def _custom_life_plan(self, state, *, grounded_only: bool = False):
         from .life import life_role
         if state.energy < .4 or state.boredom <= .45:
             return None
         from .life_matters import routine_hints
-        preferred = {item["action"]: item["weight"] for item in routine_hints(state, now=self._now())}
-        for action in sorted(self.world.actions, key=lambda a: -preferred.get(a.id, 0)):
+        hour = self.local_hour()
+        period = "早晨" if 5 <= hour < 11 else "白天" if 11 <= hour < 18 else "晚间" if 18 <= hour < 23 else "夜间"
+        preferred = {item["action"]: item for item in routine_hints(state, now=self._now()) if item["period"] == period}
+        recent = {key: row for key, row in state.life_interests.items()
+                  if 0 <= self._now() - float(row.get("last_at") or 0) < 90 * 60}
+        choices = []
+        graph = self.world.adjacent()
+        nodes = sorted(self.world.nodes, key=lambda node: node.id != state.node_id)
+        for action in self.world.actions:
             if (not action.enabled or action.idle or action.llm_level != "template"
-                    or action.target_type != "none" or life_role(action) not in {"interest", "explore"}):
+                    or action.target_type != "none" or life_role(action) not in {"interest", "explore"}
+                    or action.tool_list() or action.trigger_command or action.on_complete.trigger not in {"none", "llm_followup"}):
                 continue
-            for node in self.world.nodes:
+            if grounded_only and (action.id in recent or (action.id not in preferred and not recent)):
+                continue
+            for node in nodes:
                 if not action.available_in(node.id):
                     continue
                 if node.id != state.node_id and not self.action_usable("walk_to"):
                     continue
-                if find_path(self.world.adjacent(), state.node_id, node.id) is None:
+                if find_path(graph, state.node_id, node.id) is None:
                     continue
-                plan = create_plan(steps=[*self._travel_then(state.node_id, node.id, self.world.adjacent()),
+                score = (0.2 if node.id == state.node_id else 0) + min(2, preferred.get(action.id, {}).get("weight", 0))
+                reason = f"有点空闲，想{action.name}"
+                if action.id in recent:
+                    score -= 2
+                elif recent:
+                    last = max(recent.values(), key=lambda row: row.get("last_at", 0))
+                    reason = f"刚才已投入一段时间{last['label']}，现在换成{action.name}，缓一缓"
+                if action.id in preferred and action.id not in recent:
+                    reason = f"{preferred[action.id]['explanation']}；现在条件合适，接着{action.name}"
+                plan = create_plan(steps=[*self._travel_then(state.node_id, node.id, graph),
                                           {"action": action.id, "duration": self._action_duration(action.id)}],
                                    world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds,
-                                   valid_for=self._plan_valid(), reason=f"有点空闲，想{action.name}", source="rule")
+                                   valid_for=self._plan_valid(), reason=reason, source="rule")
                 if self._valid_candidate(state, plan):
-                    return plan
-        return None
+                    choices.append((score, plan))
+                    break
+        if not choices:
+            return None
+        return max(choices, key=lambda row: row[0])[1]
 
     def forced_plan(self, state: WorldState, flag: str) -> dict[str, Any] | None:
         """极端保护触发的计划。"""

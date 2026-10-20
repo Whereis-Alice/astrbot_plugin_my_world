@@ -171,7 +171,7 @@ class FrontendSyntaxTest(unittest.TestCase):
         self.assertIn('settingsSection(\n    pronoun(),', source)
         self.assertIn('"persona",', source)
         # tab 归口按稳定 key，不按标题（标题会变）
-        self.assertIn('sections: ["基础", "persona", "persona_brief", "她的初始状态"]', source)
+        self.assertIn('sections: ["基础", "persona", "persona_brief", "她的初始状态",', source)
 
     def test_relationship_settings_have_a_real_ui(self) -> None:
         """关系表 / 亲密度分级不能再是一整块 JSON——那是让用户对着括号数数。"""

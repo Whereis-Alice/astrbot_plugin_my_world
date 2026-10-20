@@ -120,6 +120,7 @@ from .core.request_context import (
 )
 from .adapters.commands import AstrBotCommands
 from .adapters.llm import AstrBotLLM
+from .adapters.embedding import AstrBotEmbedding
 from .adapters.reflection import ReflectionMixin
 from .core.model_call_runtime import observe_native_response
 from .core.model_calls import call_context, model_operation
@@ -335,6 +336,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
     def __init__(self, context: Context, config: AstrBotConfig) -> None:
         super().__init__(context, config)
         self.config = config
+        self.embedding = AstrBotEmbedding(self)
 
         self.enabled = _cfg_bool(config.get("enabled"), True)
         self.web_enabled = _cfg_bool(config.get("web_enabled"), True)
@@ -437,6 +439,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Star):
             store=self.store,
             db=self.db,
             llm=AstrBotLLM(self, sampling=self.sampling_params()),
+            embedding=self.embedding,
             helper_llm=AstrBotLLM(self, self.helper_provider_id, role="helper", sampling=self.sampling_params()),
             judge_llm=AstrBotLLM(self, self.judge_provider_id, role="judge", sampling=self.sampling_params()),
             creator_llm=AstrBotLLM(self, self.creator_provider_id, role="creator", sampling=self.sampling_params()),

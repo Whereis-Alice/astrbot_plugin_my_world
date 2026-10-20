@@ -1028,6 +1028,8 @@ class MemoryConfig(Permissive):
     sleep_review: bool = True
     """睡眠时整理生活经历，可与人物资料整理分别开关。"""
     semantic_enabled: bool = False
+    semantic_source: Literal["provider", "custom"] = "provider"
+    semantic_provider_id: str = ""
     semantic_endpoint: str = ""
     semantic_model: str = ""
     semantic_api_key_env: str = ""
@@ -1044,6 +1046,10 @@ class MemoryConfig(Permissive):
     @classmethod
     def _life_settings(cls, data: Any) -> Any:
         from .life_memory import clean_memory_settings
+        if isinstance(data, dict) and "semantic_source" not in data:
+            data = dict(data)
+            if data.get("semantic_endpoint") and data.get("semantic_model"):
+                data["semantic_source"] = "custom"
         return clean_memory_settings({"memory": data})["memory"] if isinstance(data, dict) else data
 
     recall_penalty_minutes: int = 120

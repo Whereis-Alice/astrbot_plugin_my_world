@@ -14,18 +14,12 @@
     "default": true
   },
   "reply_mode": {
+    "invisible": true,
     "description": "回复方式",
     "hint": "inject（默认，推荐）：只把她的世界与处境注入宿主请求，主回复、工具循环、发送全走 AstrBot 原生；takeover：旧版自己调模型自己发（已废弃，仅作迁移兜底）。",
     "obvious_hint": true,
     "type": "string",
     "default": "inject"
-  },
-  "legacy_tool_actions": {
-    "description": "启用旧版工具 / 指令动作",
-    "hint": "默认关：旧版工具动作会被标成「旧版」并停用，工具调用交给 AstrBot 原生 Agent。只有暂时还离不开旧行为时才打开。",
-    "obvious_hint": false,
-    "type": "bool",
-    "default": false
   },
   "llm_provider_id": {
     "description": "插件用主模型",
@@ -117,6 +111,13 @@
     "type": "string",
     "default": ""
   },
+  "embedding_provider_id": {
+    "description": "生活记忆嵌入模型",
+    "hint": "选择 AstrBot 已配置的嵌入模型，复用它的地址和密钥。列表在插件加载时更新；新增模型后重载插件。留空不指定默认模型，可在编辑器「记忆与资料 → 生活记忆」中单独选择。是否启用语义召回也在那里设置。",
+    "type": "string",
+    "default": "",
+    "options": [""]
+  },
   "event_provider_id": {
     "description": "事件模型（事件结算）",
     "hint": "事件最后怎么样了由它一句话定下场：写的是人话，还带着情绪与能力值的变化。留空跟随打杂模型。",
@@ -155,7 +156,7 @@
   },
   "reply_hook_bridge": {
     "description": "插件自己发送的消息也过其他插件的钩子",
-    "hint": "旧版接管与主动发言由插件自己发送消息时，按同样的时机补发 AstrBot 的钩子（LLM 响应后 / 发送前 / 发完消息）。默认注入模式下主回复由原生管线发送，本开关只影响插件自己发的那些话。",
+    "hint": "插件自己发送主动消息时，补发 AstrBot 的钩子（LLM 响应后 / 发送前 / 发完消息），方便其他插件处理。正常聊天的主回复由 AstrBot 原生管线发送；这个开关只影响插件发送的消息。",
     "obvious_hint": true,
     "type": "bool",
     "default": true
@@ -168,6 +169,7 @@
     "default": true
   },
   "migrate_from_original": {
+    "invisible": true,
     "description": "自动接管原插件的数据",
     "hint": "第一次启动时，如果本插件的数据目录还是空的、而同一台机器上的原插件（astrbot_plugin_virtual_world）有数据，就把那份地图 / 动作 / 日程 / 记忆 / 日志整份复制过来（只复制一次，绝不覆盖已有数据）。确认没问题后记得把原插件停用——两个同时跑会各写各的库。",
     "obvious_hint": true,
@@ -224,7 +226,7 @@
   },
   "weaver_auto_adopt_new_builtin_fields": {
     "description": "升级时补齐新增画像字段",
-    "hint": "开启后新版本带来的基础字段会自动追加，且不会覆盖你的排序和删减。",
+    "hint": "自动补齐预设中的基础画像字段，保留你的排序与主动删减。",
     "obvious_hint": false,
     "type": "bool",
     "default": true

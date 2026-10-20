@@ -430,6 +430,7 @@ class SnapshotMixin:
             ],
         }
 
+    @session_scoped
     async def thoughts_payload(self, session_id: str, limit: int = 300) -> dict[str, Any]:
         """「内心活动」那一页要的数据：她自己留下的心里话，越新越靠前。"""
 
@@ -468,7 +469,18 @@ class SnapshotMixin:
                 }
             )
         rows.reverse()
-        return {"session": session_id, "thoughts": rows}
+        recent = bool(state.life_updated_at and self._now() - state.life_updated_at < max(180, self.tick_seconds * 3))
+        enabled = self.is_enabled(session_id)
+        action = state.current_action or {}
+        label = self.world.action_map().get(str(action.get("type") or ""))
+        current = "正在睡觉" if state.is_sleeping else (label.name if label else "安静活动或休息")
+        return {"session": session_id, "thoughts": rows, "health": {
+            "enabled": enabled, "clock_recent": recent,
+            "last_tick_at": state.life_updated_at, "last_plan_at": state.last_llm_plan_at,
+            "current": current,
+            "message": "生活时钟正常" if recent and enabled else "此会话尚未启用生活" if not enabled else "暂未检测到近期生活时钟，请检查运行页",
+            "note": "这里只记录实际留下的想法。规则活动、休息和未成功的模型请求不会补造内心独白。",
+        }}
 
     async def clear_thoughts(self, session_id: str) -> int:
         """清掉留下的心里话（只删这一份记录，记忆和日志都不动）。"""

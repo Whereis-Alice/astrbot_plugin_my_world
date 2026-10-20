@@ -3,6 +3,7 @@ import { createSocialLearning } from "./social-learning.js";
 import { createRelationshipsPage } from "./relationships.js";
 import { createModelCallsPage } from "./model-calls.js";
 import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js";
+import { memorySearchFields } from "./memory-settings.js";
 import { mountLifeWorkspace } from "./life-workspace.js";
 import { openBrowseSettings } from "./browse-settings.js";
 import { personAvatar, personColor, bindPeopleSort } from "./people-ui.js";
@@ -10042,21 +10043,29 @@ function editAutoEvents() {
 
 function editMemoryPolicy() {
   if (!canEditLifeSettings()) return;
-  const memory = ui.config.world.memory || (ui.config.world.memory = {});
-  openFormDialog({
+  const world = ui.config.world, scope = ui.scope;
+  const memory = {...world.memory};
+  const reads = [];
+  openCustomDialog({
     title: "生活回忆设置",
     hint: "记录她的生活、内心与梦。人物资料在通讯录管理，群词典独立维护，聊天往事交给 Anamnesis。",
     confirmText: "应用设置",
-    values: {automatic: memory.automatic_recall || "auto", chars: memory.recall_max_chars ?? 1200, sleep_review: memory.sleep_review !== false},
-    fields: [
-      {key: "automatic", label: "何时回想生活", type: "select", options: [{value: "auto", label: "根据地点与话题自动回想"}, {value: "manual", label: "只在主动查询时回想"}]},
-      {key: "sleep_review", label: "睡眠时整理生活经历", type: "checkbox", hint: "独立于人物画像整理，只处理已发生的生活；梦始终标明为梦。"},
-      {key: "chars", label: "自动回忆字符预算", type: "number", hint: "包含时间和经历细节；0 表示关闭自动注入，主动查询仍可用。"},
-    ],
-    onSubmit: (values) => {
-      memory.automatic_recall = values.automatic;
-      memory.sleep_review = Boolean(values.sleep_review);
-      memory.recall_max_chars = Math.max(0, Math.min(12000, Math.round(num(values.chars, 1200))));
+    build: body => {
+      const basics = el("div", "memory-policy-basics"); body.append(basics);
+      const mode = el("select"); mode.add(new Option("根据地点与话题自动回想", "auto")); mode.add(new Option("只在主动查询时回想", "manual")); mode.value = memory.automatic_recall || "auto";
+      const chars = el("input"); chars.type = "number"; chars.min = 0; chars.max = 12000; chars.value = memory.recall_max_chars ?? 1200;
+      const review = el("input"); review.type = "checkbox"; review.checked = memory.sleep_review !== false;
+      mode.dataset.dialogKey = "automatic"; chars.dataset.dialogKey = "chars"; review.dataset.dialogKey = "sleep_review";
+      for (const [name, input] of [["何时回想生活", mode], ["自动回忆字符预算", chars], ["睡眠时整理生活经历", review]]) {
+        const wrap = el("label", "field"); if (input.type === "checkbox") wrap.classList.add("memory-toggle"); wrap.append(el("span", "", name), input); basics.append(wrap);
+      }
+      reads.push(() => { if (!chars.checkValidity()) throw new Error("自动回忆字符预算需在 0 到 12000 之间"); memory.automatic_recall = mode.value; memory.recall_max_chars = Number(chars.value); memory.sleep_review = review.checked; });
+      memorySearchFields({container: body, memory, providers: ui.config.embedding_providers, defaultProvider: ui.config.embedding_default, el});
+    },
+    onSubmit: () => {
+      if (ui.scope !== scope || ui.config.world !== world) { toast("配置范围已改变，请重新打开设置"); return false; }
+      reads.forEach(read => read());
+      world.memory = memory;
       markDirty();
       toast("生活回忆设置已修改，点顶栏「保存」后生效");
       return true;
@@ -11652,12 +11661,14 @@ function renderActionForm() {
     pillsField(
       "执行层级",
       action.llm_level || "template",
-      LLM_LEVELS,
+      LLM_LEVELS.filter(item => !["tool", "command"].includes(item.key)
+        || ["tool", "command"].includes(action.llm_level)
+        || ui.config.world.actions.some(a => a.enabled && ["tool", "command"].includes(a.llm_level))),
       (value) => {
         action.llm_level = value;
         renderActionForm();
       },
-      { hint: "决定这个动作要不要动用模型；工具调用已经交回 AstrBot 原生 Agent（旧版层级只作迁移）。" },
+      { hint: "决定这个动作使用固定表现还是模型生成。聊天中的工具调用由 AstrBot 原生 Agent 处理。" },
     ),
   );
   form.appendChild(
@@ -13725,7 +13736,7 @@ function scheduleRunTimeline(steps) {
     return el(
       "p",
       "muted schedule-run-empty",
-      "这条记录来自旧版本，只保存了动作链摘要；从本版开始会保存每一步的完整过程。",
+      "这条记录只保存了动作链摘要，没有可展开的步骤明细。",
     );
   }
   const labels = {
@@ -15979,6 +15990,8 @@ async function loadThoughts() {
   const list = $("thoughts-list");
   if (!list) return;
   const session = $("thought-session") ? $("thought-session").value : "";
+  const requestId = ui.thoughtRequest = (ui.thoughtRequest || 0) + 1;
+  $("thoughts-health")?.classList.add("hidden");
   list.innerHTML = "";
   ui.thoughtRows = [];
   ui.thoughtRenderLimit = 40;
@@ -15988,8 +16001,11 @@ async function loadThoughts() {
   }
   list.appendChild(el("p", "muted", "读取中…"));
   try {
-    renderThoughts(await apiGet("thoughts", { session, limit: 300 }));
+    const data = await apiGet("thoughts", { session, limit: 300 });
+    if (requestId !== ui.thoughtRequest || $("thought-session")?.value !== session) return;
+    renderThoughts(data);
   } catch (error) {
+    if (requestId !== ui.thoughtRequest) return;
     list.innerHTML = "";
     list.appendChild(el("p", "muted", error.message || "读取失败"));
   }
@@ -15999,6 +16015,14 @@ function renderThoughts(data) {
   const list = $("thoughts-list");
   if (!list) return;
   ui.thoughtRows = (data && data.thoughts) || [];
+  const health = $("thoughts-health");
+  if (health && data.health) {
+    const info = data.health;
+    health.classList.remove("hidden");
+    health.dataset.ok = String(Boolean(info.clock_recent && info.enabled));
+    health.querySelector("summary").textContent = `${info.message} · ${info.current}`;
+    health.querySelector("p").textContent = `${info.note} 最近生活推进：${info.last_tick_at ? formatStamp(info.last_tick_at) : "暂无记录"}；最近规划尝试：${info.last_plan_at ? formatStamp(info.last_plan_at) : "暂无记录"}。调用失败与预算可在「模型调用」和「运行」中查看。`;
+  }
   ui.thoughtRenderLimit = 40;
   renderThoughtsPage();
 }
@@ -16032,7 +16056,7 @@ function renderThoughtsPage() {
     const hasSnapshot = ["env", "state", "mood", "who", "intent"].some((key) =>
       String(detail[key] || "").trim(),
     );
-    if (!hasSnapshot) head.appendChild(el("span", "thought-legacy", "旧记录"));
+    if (!hasSnapshot) head.appendChild(el("span", "thought-legacy", "未附状态快照"));
     item.appendChild(head);
 
     // 每条都按同一份详细快照展示；旧记录确实没有的字段会明确写出来。
@@ -16495,17 +16519,17 @@ const SETTINGS_TABS = [
     key: "basic",
     label: "基础",
     hint: "她是谁、生活在什么样的世界、谁是管理员",
-    sections: ["基础", "persona", "persona_brief", "她的初始状态"],
+    sections: ["基础", "persona", "persona_brief", "她的初始状态", "群名片同步"],
   },
   {
     key: "state",
-    label: "状态与外观",
-    hint: "数值怎么变、她的本事、睡觉、群名片",
-    sections: ["状态变化速度", "她的本事（能力值）", "睡眠与打断", "群名片同步"],
+    label: "生活与作息",
+    hint: "生活事项、睡眠、状态变化和后台预算",
+    sections: ["生活事项", "后台预算", "状态变化速度", "她的本事（能力值）", "睡眠与打断", "作息与夜晚"],
   },
   {
     key: "talk",
-    label: "说话与决策",
+    label: "聊天与表达",
     hint: "多久开口、说什么、怎么分句",
     sections: [
       "手感（滑块）",
@@ -16514,6 +16538,8 @@ const SETTINGS_TABS = [
       "没人理她时怎么办",
       "说话频率与预算",
       "说话节奏",
+      "上下文",
+      "图片转述",
     ],
   },
   {
@@ -16522,7 +16548,6 @@ const SETTINGS_TABS = [
     hint: "她遇上什么事、怎么求助、动作与地点、工具、天气",
     sections: [
       "事件",
-      "作息与夜晚",
       "她自己的账",
       "干涉与线索",
       "动作与地点",
@@ -16532,13 +16557,11 @@ const SETTINGS_TABS = [
   },
   {
     key: "mind",
-    label: "记忆与上下文",
-    hint: "记得什么、怎么把信息喂给模型",
+    label: "记忆与资料",
+    hint: "自己的生活记忆、嵌入检索和人物资料",
     sections: [
-      "记忆",
+      "生活记忆",
       "用户画像",
-      "上下文",
-      "图片转述",
     ],
   },
   {
@@ -17580,10 +17603,6 @@ function renderSettings() {
     ["max_actions_per_message", "一次最多执行几个动作", "一条消息里允许的动作数量"],
     ["plan_valid_duration", "计划有效期（秒）", "一次 LLM 计划覆盖多长时间，默认 1800（30 分钟）"],
     ["max_action_chain_depth", "动作链最大深度", "防止动作套动作无限循环"],
-    ["background_llm_timeout_seconds", "后台模型等待上限（秒）", "决策、复盘、事件与睡眠整理的单次等待上限，默认 120 秒；原生聊天独立运行。"],
-    ["llm_plan_min_interval_seconds", "问计划的间隔（秒）", "两次「问大模型要计划」之间至少隔多久，默认 900"],
-    ["max_llm_plan_per_hour", "每小时最多计划决策次数", "降低 token 消耗"],
-    ["max_llm_text_per_hour", "每小时最多生成发言次数", "超出后她这一轮保持安静（不会再退到一句写死的通用台词）"],
     [
       "max_arrival_decisions_per_hour",
       "每小时最多抵达决策次数",
@@ -18110,10 +18129,30 @@ function renderSettings() {
   );
   form.appendChild(sleep);
 
+  const living = settingsSection("生活事项", "她愿意持续做的个人项目、念头与约定。手机与电脑的阅读设置也可从生活页顶栏直接打开。");
+  for (const [key, label, fallback] of [["life_matter_enabled", "自动推进生活事项", true], ["life_matter_self_start", "空闲时会自己产生个人打算", true]]) {
+    living._fields.appendChild(checkboxField(label, world.limits[key] ?? fallback, value => { world.limits[key] = value; }));
+  }
+  for (const [key, label, fallback, min, max] of [
+    ["life_matter_active_max", "活跃事项上限", 6, 1, 20], ["life_matter_daily_minutes", "每件事每天最多投入（分钟）", 90, 5, 480],
+    ["life_matter_interval_minutes", "再次推进前的间隔（分钟）", 60, 5, 1440]]) {
+    living._fields.appendChild(inputField(label, world.limits[key] ?? fallback, value => { world.limits[key] = num(value, fallback); }, {type: "number", min, max}));
+  }
+  form.appendChild(living);
+  const background = settingsSection("后台预算", "生活规划、事件和复盘共用的模型额度；原生聊天的模型与工具由 AstrBot 管理。", "0 表示不设每日调用或 Token 上限；计划决策次数为 0 则关闭该类模型规划。");
+  for (const [key, label, fallback, min, max] of [
+    ["background_daily_calls", "每天后台调用预算", 120, 0, 10000], ["background_daily_tokens", "每天后台 token 预算", 0, 0, 100000000],
+    ["background_concurrency", "同时运行的后台模型请求", 1, 1, 12], ["background_llm_timeout_seconds", "后台模型等待上限（秒）", 120, 1, 1800],
+    ["llm_plan_min_interval_seconds", "问计划的间隔（秒）", 900, 0, 86400], ["max_llm_plan_per_hour", "每小时最多计划决策次数", 10, 0, 120],
+    ["max_llm_text_per_hour", "每小时最多生成发言次数", 20, 0, 10000]]) {
+    background._fields.appendChild(inputField(label, world.limits[key] ?? fallback, value => { world.limits[key] = num(value, fallback); }, {type: "number", min, max}));
+  }
+  form.appendChild(background);
+
   /* --- 记忆 --- */
   const memory = settingsSection(
-    "记忆",
-    "记忆什么时候能被想起来。",
+    "生活记忆",
+    "自己的经历、内心与梦，以及回想它们时使用的模型。聊天往事交给 Anamnesis，人物资料独立管理。",
     "记忆始终绑定「会话 + 人格 + 地点 + 人」，默认不会跨群泄露。",
   );
   memory._fields.appendChild(
@@ -18150,6 +18189,7 @@ function renderSettings() {
   memory._fields.appendChild(inputField("自动回忆字符预算", num(world.memory.recall_max_chars, 1200),
     value => { world.memory.recall_max_chars = Math.max(0, Math.min(12000, Math.round(num(value, 1200)))); },
     {type: "number", min: 0, max: 12000, hint: "含时间、经历与细节；0 表示关闭自动注入。人物画像与群词典独立管理。"}));
+  memorySearchFields({container: memory._fields, memory: world.memory, providers: ui.config.embedding_providers, defaultProvider: ui.config.embedding_default, el, onChange: markDirty});
   form.appendChild(memory);
 
   /* --- 动作与地点 --- */
@@ -18905,7 +18945,7 @@ function renderSettings() {
     el(
       "p",
       "hint-line",
-      "详细字段、字段锁、画像历史、审计与备份已并入「通讯录」；旧心迹画像数据会在启动时自动继承。",
+      "在「通讯录」中查看和管理详细画像、字段锁、画像历史、审计与备份。",
     ),
   );
   profileSection._fields.appendChild(
@@ -20871,7 +20911,11 @@ const lifePage = createLifePage({root: $("tab-life"), apiGet, apiPost, el, toast
   workspace: lifeWorkspace,
   onData: data => { ui.lifeData = data; },
   getSession: () => $("status-session").value,
-  openSettings: () => openLifeSettings({world: ui.config.world, el, openCustomDialog, markDirty}),
+  openSettings: () => {
+    if (!canEditLifeSettings()) return;
+    const world = ui.config.world, scope = ui.scope;
+    openLifeSettings({world, el, openCustomDialog, markDirty, isCurrent: () => ui.config.world === world && ui.scope === scope});
+  },
   openBrowseSettings: () => openBrowseSettings({world: ui.config.world, sessions: (ui.sessions || []).map(item => ({...item, label: contactSessionLabel(item)})),
     scopeLabel: $("config-scope").selectedOptions[0]?.textContent || "全局默认", el, openCustomDialog, markDirty}),
   openCalls: id => { showTab("model-calls"); const input = $("calls-search"); if (input) { input.value = id; input.dispatchEvent(new Event("input")); } },

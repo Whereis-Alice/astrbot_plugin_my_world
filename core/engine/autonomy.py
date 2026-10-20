@@ -97,6 +97,13 @@ class AutonomyMixin:
         """
 
         plan = self.decider.rule_plan(state, group_chatting=False, interject_allowed=False)
+        # Speech cooldowns are not thought cooldowns. Use the existing planning
+        # channel/budget, at most once an hour while quiet; no separate worker.
+        if (state.energy >= .4 and not self.decider.sleep_pressure_high(state)
+                and self._now() - state.last_quiet_plan_at >= 3600
+                and self._llm_plan_allowed(state) and self.decider.should_ask_llm(state)):
+            state.last_quiet_plan_at = self._now()
+            plan = await self._ask_llm_for_plan(state, node, outcome, quiet=True) or plan
         if plan is None:
             return
         steps = []
@@ -104,7 +111,10 @@ class AutonomyMixin:
             definition = self.world.action_map().get(str(step.get("action") or ""))
             if definition is None or definition.id in {"say", "share", "poke"}:
                 continue
-            if definition.llm_level in {"tool", "command"} or step.get("interject"):
+            if (definition.llm_level in {"tool", "command"} or step.get("interject")
+                    or definition.target_type not in {"none", "node"}
+                    or definition.tool_list() or definition.trigger_command
+                    or definition.on_complete.trigger not in {"none", "llm_followup"}):
                 continue
             steps.append({**step, "kind": "quiet"})
         if not steps:
@@ -295,6 +305,7 @@ class AutonomyMixin:
         force: bool = False,
         hint: str = "",
         with_extension: bool = True,
+        quiet: bool = False,
     ) -> dict[str, Any] | None:
         if self.llm is None:
             return None
@@ -305,13 +316,18 @@ class AutonomyMixin:
         _cell, say_limit, style_text = self.style_for(state, state.session_id)
         # 配额用尽的动作：计划里既不列出来，也不接受模型写它
         blocked_actions = self._hidden_actions(state)
+        if quiet:
+            blocked_actions.update(a.id for a in self.world.actions
+                if a.id in {"say", "share", "poke"} or a.llm_level in {"tool", "command"}
+                or a.target_type not in {"none", "node"} or a.tool_list() or a.trigger_command
+                or a.on_complete.trigger not in {"none", "llm_followup"})
         if self.world.sleep.mode == "autonomous":
             blocked_actions.add("sleep")
         system_prompt = self.prompts.build_autonomous_system_prompt(
             persona_text=persona_text,
             state=state,
             node=node,
-            available_tools=self.available_tools(),
+            available_tools=[] if quiet else self.available_tools(),
             memories=self.memory.recall(
                 automatic=True,
                 session_id=state.session_id, persona_id="", node_id=state.node_id, limit=4
@@ -321,7 +337,7 @@ class AutonomyMixin:
             # 计划轮**没有**明确目标会话（她还没决定说给谁）：故意不传 session_id，
             # 按代表会话取一份窗口、别处的当背景——这就是"全组视图"的语义。
             # 别照抄这条到定向入口上（那些地方必须传目标会话，见 chat_window 的说明）。
-            recent_chat=self.chat_window(state),
+            recent_chat=[] if quiet else self.chat_window(state),
             mode="plan",
             reasoning=bool(self.world.reasoning_enabled),
             style_block=style_text,
@@ -329,7 +345,7 @@ class AutonomyMixin:
             session_directory=self.session_directory(state),
             current_session=state.session_id,
             session_labels=self.session_labels(state),
-            profile_text=self.profile_block(state),
+            profile_text="" if quiet else self.profile_block(state),
             # 这是"她自己决定下一步做什么"的那一轮：好奇心可以推动她去问人
             extra_notes=[
                 note for note in [self.extra_reminders(state, autonomy=True)] if note
@@ -343,6 +359,13 @@ class AutonomyMixin:
             if layer:
                 system_prompt = f"{system_prompt}\n\n{layer}"
         note = self.autonomous_prompt_note(state, respect_pause=outcome.speech_kind not in {"reply", "schedule", "event"})
+        from ..life_matters import activity_basis
+        basis = activity_basis(state, now=self._now())
+        hint += ("\n只安排安静的个人活动；不发消息、不调用工具，不因想法而越过发言限制。" if quiet else "")
+        if basis:
+            hint += "\n近期实际生活依据：\n" + basis
+        hint += ("\n先依照原有人设，再结合精力、困意、近期经历与未完事项选择。reason说明此刻为何这样安排；"
+                 "有相关经历才引用，不把活动投入当成新喜好，不凭空补经历。也可以安静休息。")
         prompt = (
             (f"{hint}\n\n" if hint else "")
             + ("\n\n" + note + "\n\n" if note else "")
@@ -372,6 +395,10 @@ class AutonomyMixin:
             valid_nodes=set(self.world.node_map()),
         )
         if plan:
+            if quiet:
+                plan["send_to"] = ""
+                for step in plan.get("steps", []):
+                    step["kind"] = "quiet"
             created = create_plan(
                 steps=plan.get("steps", []),
                 world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds,
@@ -381,6 +408,7 @@ class AutonomyMixin:
                 send_to=str(plan.get("send_to") or ""),
             )
             if created is not None:
+                created["inner"] = str(plan.get("inner") or "")
                 # 留下模型原话，日志页里能看到"她为什么这么安排"
                 created["raw"] = _clip_text(reply, 240)
             return created

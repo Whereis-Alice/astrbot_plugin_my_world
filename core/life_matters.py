@@ -11,6 +11,52 @@ CLOSED = {"completed", "abandoned", "expired"}
 RETIRED_COMPUTER_KEYS = frozenset({"executions", "artifacts", "execution_review_required", "capability_key", "failure_count"})
 
 
+def activity_basis(state, *, now: float) -> str:
+    """Only shared personal activity is motivation for autonomous life."""
+    rows = []
+    for item in sorted(state.life_interests.values(), key=lambda r: r.get("last_at", 0), reverse=True):
+        if 0 <= now - float(item.get("last_at") or 0) <= 3 * 86400:
+            rows.append(f"- 实际活动：{str(item.get('label') or '')[:80]}；累计投入{float(item.get('minutes') or 0):g}分钟。")
+    for item in state.life_matters:
+        if item.get("who") or item.get("kind") == "promise":
+            continue
+        for stage in current_stage_notes(item)[-1:]:
+            if 0 <= now - float(stage.get("at") or 0) <= 3 * 86400:
+                rows.append(f"- 世界内阶段：{item['text']}；{stage['summary']}；后续：{stage.get('next_focus') or '可以先放下'}")
+    return "\n".join(rows[:8])[:1600]
+
+
+def current_stage_notes(item: dict) -> list[dict]:
+    return [row for row in item.get("stage_notes", []) if row.get("goal", item["text"]) == item["text"]]
+
+
+def record_stage(item: dict, payload: Any, *, now: float) -> dict | None:
+    """Attach bounded simulated content only to newly completed, timed steps."""
+    if not isinstance(payload, dict):
+        return None
+    summary, content = payload.get("summary"), payload.get("content")
+    ids = payload.get("basis_step_ids")
+    if not isinstance(summary, str) or not summary.strip() or not isinstance(content, str) or not content.strip():
+        return None
+    if not isinstance(ids, list) or not ids or len(ids) > 6 or any(not isinstance(x, str) for x in ids):
+        return None
+    known = {s["id"]: s for s in item.get("steps", []) if s.get("status") == "done"
+             and not s.get("stage_noted")
+             and s.get("goal", item.get("text")) == item.get("text")
+             and s.get("result", {}).get("ok") and s.get("result", {}).get("kind") in {"life_simulation", "in_world_action"}
+             and float(s.get("result", {}).get("minutes") or 0) > 0}
+    used = {sid for row in item.get("stage_notes", []) for sid in row.get("basis_step_ids", [])}
+    if not set(ids) <= known.keys() or set(ids) & used:
+        return None
+    stage = {"at": now, "goal": item.get("text", ""), "summary": summary.strip()[:240], "content": content.strip()[:1200],
+             "next_focus": str(payload.get("next_focus") or "").strip()[:240],
+             "basis_step_ids": list(dict.fromkeys(ids)), "scope": "simulation"}
+    item["stage_notes"] = [*item.get("stage_notes", []), stage][-8:]
+    for sid in stage["basis_step_ids"]:
+        known[sid]["stage_noted"] = True
+    return stage
+
+
 def stable_interests(state, *, now: float = 0) -> list[dict]:
     """Several actual sessions across three days, rather than a sampled personality change."""
     return [{"action": key, **value} for key, value in state.life_interests.items()
@@ -202,6 +248,8 @@ def context_block(state, *, session_id: str, user_id: str = "", now: float = 0) 
         rows.append(f"- [{item['id']}] {item['text']}；动机：{item.get('motivation') or '原先想做的事'}；"
                     f"状态：{item['status']}；{progress_label(item)}；"
                     f"下一步：{item.get('next_step') or '尚待安排'}；阻碍：{item.get('obstacle') or '无'}")
+        for stage in current_stage_notes(item)[-1:]:
+            rows[-1] += f"\n  世界内阶段所得（模拟内容）：{stage['summary']}；{stage['content'][:500]}；后续切入：{stage.get('next_focus') or '尚未确定'}"
     block = ("# 你一直在推进的生活事项\n这些是角色世界内的活动；标为生活模拟的进展属于AI模拟经历，不能当作现实操作依据。"
             "只依据已记录的活动回忆进展，未开始的打算、梦和口头声称都不算完成。"
             "可以自然提起，不要逐条念清单。涉及他人的事情只能在来源会话提及。\n" + "\n".join(rows[:6])) if rows else ""

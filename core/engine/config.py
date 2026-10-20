@@ -141,6 +141,7 @@ class ConfigMixin:
         )
         # 记忆按会话各存一份，召回时把同组的会话一起当条件（改组不会把记忆挂错地方）
         memory = MemoryEngine(self.db.raw, world, sessions_of=self.group_sessions)
+        memory.semantic.provider = self.embedding
         # 用户画像：按实际会话各存一份，记忆回答"发生过什么"，它回答"这个人是谁"
         profiles = ProfileStore(
             self.db.raw, world, group_of=self.state_key, day_provider=self._today_key

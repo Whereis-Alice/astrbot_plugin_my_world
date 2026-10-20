@@ -1,4 +1,4 @@
-"""Optional OpenAI-compatible embeddings. Facts are primary; vectors are rebuildable cache."""
+"""Optional native or compatible embeddings; vectors are a rebuildable cache."""
 from __future__ import annotations
 
 import asyncio
@@ -34,10 +34,18 @@ class SemanticMemory:
         self.locks: dict[tuple, asyncio.Lock] = {}
         self.retry_at = 0.0
         self.status = "未启用"
+        self.provider = None
+
+    def model_identity(self) -> str:
+        config = self.memory.world.memory
+        if config.semantic_source == "provider":
+            info = self.provider.describe(config.semantic_provider_id) if self.provider else {}
+            return "provider:" + str(info.get("fingerprint") or config.semantic_provider_id)
+        return config.semantic_endpoint + "|" + config.semantic_model
 
     def _key(self, session: str, persona: str, query: str, mode: str = "", *, automatic: bool = False) -> tuple:
         config = self.memory.world.memory
-        return session, persona, revision(query), config.semantic_endpoint, config.semantic_model, mode or self.memory.world.memory_scope_mode, config.automatic_recall if automatic else "explicit"
+        return session, persona, revision(query), self.model_identity(), mode or self.memory.world.memory_scope_mode, config.automatic_recall if automatic else "explicit"
 
     def cached(self, session: str, persona: str, query: str, *, mode: str = "", automatic: bool = False) -> dict[int, float]:
         now = time.time()
@@ -65,6 +73,8 @@ class SemanticMemory:
         if secret:
             headers["Authorization"] = "Bearer " + secret
         body = json.dumps({"model": config.semantic_model, "input": texts}).encode()
+        native = config.semantic_source == "provider" and self.provider is not None
+        info = self.provider.describe(config.semantic_provider_id) if native else {}
         started, clock = time.time(), time.monotonic()
         data, status, error = {}, "success", ""
         def request():
@@ -72,8 +82,14 @@ class SemanticMemory:
                 data = json.load(response)
             return data
         try:
-            data = await asyncio.to_thread(request)
-            values = [item["embedding"] for item in sorted(data["data"], key=lambda item: item["index"])]
+            if config.semantic_source == "provider":
+                if not native:
+                    raise ValueError("宿主未提供嵌入模型")
+                async with asyncio.timeout(8):
+                    values = await self.provider.embed(texts, config.semantic_provider_id)
+            else:
+                data = await asyncio.to_thread(request)
+                values = [item["embedding"] for item in sorted(data["data"], key=lambda item: item["index"])]
             if len(values) != len(texts) or not values or not values[0] or any(
                     not isinstance(vector, list) or len(vector) != len(values[0]) or len(vector) > 16384
                     or any(not isinstance(x, (int, float)) or not math.isfinite(x) for x in vector) for vector in values):
@@ -91,7 +107,7 @@ class SemanticMemory:
             context = call_context()
             usage = normalized_usage(data.get("usage"))
             row = {"started_at": started, "duration_ms": round((time.monotonic() - clock) * 1000),
-                   "session_id": context.get("session_id", ""), "provider_id": "semantic_embedding", "model": config.semantic_model,
+                   "session_id": context.get("session_id", ""), "provider_id": info.get("id") or "semantic_embedding", "model": info.get("model") or config.semantic_model,
                    "purpose": "embedding", "reason": context.get("reason") or "可选语义记忆召回与索引更新",
                    "chain": context.get("chain", []), "role": "embedding", "trace_id": context.get("trace_id") or uuid4().hex,
                    "status": status, "error": error, "coverage": "direct", "usage": usage, "attempt": 1}
@@ -103,7 +119,14 @@ class SemanticMemory:
 
     async def prepare(self, session: str, persona: str, query: str, *, mode: str = "", automatic: bool = False) -> None:
         config = self.memory.world.memory
-        if not config.semantic_enabled or not config.semantic_endpoint or not config.semantic_model or not query.strip() or time.time() < self.retry_at:
+        if not config.semantic_enabled or not query.strip() or time.time() < self.retry_at:
+            return
+        if config.semantic_source == "provider":
+            if not self.provider or not self.provider.describe(config.semantic_provider_id).get("ready"):
+                self.status = "未选择可用的 AstrBot 嵌入模型，使用关键词召回"
+                return
+        elif not config.semantic_endpoint or not config.semantic_model:
+            self.status = "嵌入服务配置不完整，使用关键词召回"
             return
         if automatic and (config.automatic_recall == "manual" or config.recall_max_chars == 0):
             return
@@ -121,7 +144,7 @@ class SemanticMemory:
                     session_ids=self.memory.sessions(session))
                 if not candidates:
                     return
-                model_key = revision(config.semantic_endpoint + "|" + config.semantic_model)
+                model_key = revision(self.model_identity())
                 ids = [row["id"] for row in candidates]
                 known = {}
                 # Read revisions only, and only for the already authorised

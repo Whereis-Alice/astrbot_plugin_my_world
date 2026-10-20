@@ -132,6 +132,8 @@ class LimitsMixin:
         """是否还允许问 LLM 要计划（间隔 + 每小时次数双重限制）。"""
 
         limits = self.world.limits
+        if limits.max_llm_plan_per_hour <= 0:
+            return False
         if self._now() - float(state.last_llm_plan_at or 0.0) < max(
             0, int(limits.llm_plan_min_interval_seconds)
         ):

@@ -473,6 +473,7 @@ class SemanticCoexistenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_chat_is_excluded_from_automatic_and_explicit_embedding(self):
         self.world.memory.semantic_enabled = True
         self.world.memory.semantic_endpoint = "https://example.invalid/v1"
+        self.world.memory.semantic_source = "custom"
         self.world.memory.semantic_model = "test"
         self.world.memory.automatic_recall = "auto"
         self.world.memory_scope_mode = "group"

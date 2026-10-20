@@ -269,6 +269,7 @@ class MyWorldEngine(
         creator_llm=None,
         event_llm=None,
         consolidate_llm=None,
+        embedding=None,
         describer=None,
         messenger=None,
         tools=None,
@@ -290,6 +291,7 @@ class MyWorldEngine(
 
         self.extensions = extensions if extensions is not None else ExtensionHost()
         self.llm = llm
+        self.embedding = embedding
         # 辅助模型：只负责"把意图翻译成工具参数"，留空时复用主模型
         self.helper_llm = helper_llm or llm
         # 判断模型：「挑一个 / 打分 / 抽字段」这类纯判断走它；没配就跟随打杂模型。
