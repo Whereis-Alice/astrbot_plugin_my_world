@@ -26,11 +26,9 @@ class MattersMixin:
         thread = self._active_thread(state)
         schedules = [self._next_schedule(sid) for sid in self.group_sessions(state.session_id)]
         minutes = [row["in_minutes"] for row in schedules if row is not None]
-        choice = choose_life(state, now=self._now(), critical=bool(thread and self._thread_critical(thread)),
-                             schedule_minutes=min(minutes) if minutes else None,
-                             sleep_requested=self.world.sleep.mode == "autonomous")
-        state.life_decision = choice
-        return choice
+        return choose_life(state, now=self._now(), critical=bool(thread and self._thread_critical(thread)),
+                           schedule_minutes=min(minutes) if minutes else None,
+                           sleep_requested=self.world.sleep.mode == "autonomous")
 
     def _matter_can_work(self, state) -> bool:
         return state.state == "idle" and self.life_choice(state)["kind"] in {"idle", "matter"}

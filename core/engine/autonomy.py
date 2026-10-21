@@ -54,10 +54,14 @@ class AutonomyMixin:
                 return None
             if state.is_sleeping or state.state == STATE_DROWSY:
                 return None
-            if self.world.sleep.mode == "autonomous" and state.sleep_rhythm.get("decision") == "sleep":
+            sleep_pending = self.world.sleep.mode == "autonomous" and state.sleep_rhythm.get("decision") == "sleep"
+            choice = None if sleep_pending else self.life_choice(state)
+            if choice is not None:
+                state.life_decision = choice
+            if sleep_pending:
                 await self._run_rhythm_sleep(state, outcome)
-            elif self.life_choice(state)["kind"] in {"event", "schedule", "continue"}:
-                outcome.notes.append(state.life_decision["reason"])
+            elif choice is not None and choice["kind"] in {"event", "schedule", "continue"}:
+                outcome.notes.append(choice["reason"])
             elif self.maybe_start_chat_browse(state):
                 outcome.notes.append("空闲时安静翻阅近期消息")
             elif not self.proactive_chat_allowed(session_id):

@@ -41,8 +41,10 @@ class BackgroundFairnessTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 active -= 1
 
-        keys = ["weather", "daily_schedule", "profile_sync"] + [
-            f"{kind}:{i}" for kind in ("life_seed", "matter", "memory", "decision") for i in range(20)]
+        keys = ["weather", "daily_schedule", "profile_sync", "calendar_diary"] + [
+            f"{kind}:{i}" for kind in (
+                "life_seed", "matter", "memory", "decision", "social", "chat_browse", "participation"
+            ) for i in range(20)]
         tasks = [engine.queue_background(key, lambda k=key: work(k)) for key in keys]
         self.assertTrue(all(task is not None for task in tasks), "fixed admission order must not discard the tail")
         await started.wait()

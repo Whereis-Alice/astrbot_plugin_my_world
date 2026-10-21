@@ -17,6 +17,19 @@ class LifeApiTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(module, "request", request):
             return await self.routes[endpoint]()
 
+    async def test_reading_life_does_not_rewrite_the_saved_decision(self):
+        engine = self.plugin.engine
+        saved = {"kind": "continue", "reason": "保留正在做的事", "at": 123, "matter_id": "lm_example"}
+        async with engine.session_state(self.session) as state:
+            state.life_decision = dict(saved)
+
+        response = await self.call("life", session=self.session)
+
+        self.assertEqual(response["status_code"], 200)
+        self.assertIn("choice", response["data"])
+        state = await engine.load_state(self.session, cold_start=False)
+        self.assertEqual(state.life_decision, saved)
+
     async def test_create_pause_edit_and_manual_result_leave_history(self):
         result = await self.call("life/update", method="POST", session=self.session, operation="create", text="学一首歌")
         self.assertEqual(result["status_code"], 200)
