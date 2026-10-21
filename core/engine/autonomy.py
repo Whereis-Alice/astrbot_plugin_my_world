@@ -377,11 +377,7 @@ class AutonomyMixin:
             if layer:
                 system_prompt = f"{system_prompt}\n\n{layer}"
         note = self.autonomous_prompt_note(state, respect_pause=outcome.speech_kind not in {"reply", "schedule", "event"})
-        from ..life_matters import activity_basis
-        basis = activity_basis(state, now=self._now())
         hint += ("\n只安排安静的个人活动；不发消息、不调用工具，不因想法而越过发言限制。" if quiet else "")
-        if basis:
-            hint += "\n近期实际生活依据：\n" + basis
         hint += ("\n先依照原有人设，再结合精力、困意、近期经历与未完事项选择。reason说明此刻为何这样安排；"
                  "有相关经历才引用，不把活动投入当成新喜好，不凭空补经历。也可以安静休息。")
         prompt = (

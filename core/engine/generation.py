@@ -906,6 +906,8 @@ class GenerationMixin:
                 {"id": item.id, "time": item.time, "note": item.note}
                 for item in (self.schedules.schedules or [])
             ]
+        persona_text = (persona_snapshot if persona_snapshot is not None
+                        else await self._persona_text(session_id))
         life_lines = [f"当前时间：{self.local_now().strftime('%Y-%m-%d %H:%M')}"]
         if session_id:
             # Reuse saved context, without another inference: today's culture and
@@ -918,13 +920,10 @@ class GenerationMixin:
             life_lines.append(f"地点：{self.node_label(state.node_id)}；状态：{state.state}；精力：{state.energy:.2f}")
             life_lines.extend(self.prompts._event_line(event) for event in
                               (state.recent_events or [])[-8:] if isinstance(event, dict))
-            life_lines.append(self._own_topic_block(state))
+            from hashlib import sha256
+            life_lines.append(self._own_topic_block(state,
+                persona_key=sha256(persona_text.encode("utf-8")).hexdigest()[:24]))
             life_lines.append("生活事项有独立的推进安排；日程请为它们留出空档，不要重复建立同一项目的动作或把规划当成完成。")
-        persona_text = (
-            persona_snapshot
-            if persona_snapshot is not None
-            else await self._persona_text(session_id)
-        )
         system_prompt, prompt = self.prompts.build_schedule_generator_prompt(
             persona_text=persona_text,
             zones=[

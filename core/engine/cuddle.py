@@ -381,7 +381,8 @@ class CuddleMixin:
         )
 
     def extra_reminders(
-        self, state: WorldState, *, autonomy: bool = False, ctx: Any = None, include_life: bool = True
+        self, state: WorldState, *, autonomy: bool = False, ctx: Any = None, include_life: bool = True,
+        persona_key: str = ""
     ) -> str:
         """给提示词的几段提醒：有点想谁 + 刚想起的事（后者读过一次就不再重复提）。
 
@@ -401,7 +402,7 @@ class CuddleMixin:
         parts.append(self._heart_knot_block(state, ctx, autonomy=autonomy))
         parts.append(self._grudge_block(state, ctx, autonomy=autonomy))
         if include_life:
-            parts.append(self._own_topic_block(state, ctx, autonomy=autonomy))
+            parts.append(self._own_topic_block(state, ctx, autonomy=autonomy, persona_key=persona_key))
         if autonomy:
             parts.append(self._ask_about_block(state))
         pending = str(getattr(state, "pending_review", "") or "").strip()

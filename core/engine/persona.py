@@ -5,6 +5,7 @@ from __future__ import annotations
 from ..model_calls import model_operation
 
 import asyncio
+from hashlib import sha256
 from types import SimpleNamespace
 from typing import Any
 from ..json_actions import (
@@ -212,12 +213,13 @@ class PersonaMixin:
                 return row
             async with gate:
                 try:
-                    _cell, say_limit, style_text = self.style_for(state, session_id)
+                    _cell, say_limit, style_text = self.style_for(state, session_id, remember=False)
                     eval_rows = [*recent_chat, {"name": user_name, "user_id": str(item.get("user_id") or who_id or ""),
                         "origin": session_id, "text": text, "at": self._now()}]
                     request = self.context_request(state, session_id,
                         task="participation" if variant == "participation" else "reply",
                         rows=eval_rows, text=text, focus=str(item.get("user_id") or who_id or ""))
+                    request.life_persona = sha256(persona.encode("utf-8")).hexdigest()[:24]
                     # Read-only retrieval: evaluations must not count recalls, log or mutate state.
                     if variant == "participation":
                         system_prompt, user_prompt, quote_targets = self.participation_prompt(

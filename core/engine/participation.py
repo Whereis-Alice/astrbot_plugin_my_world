@@ -89,13 +89,13 @@ class ParticipationMixin:
             rows = [row for row in state.recent_chat if self._chat_origin(row, state) == target
                     and self._now() - float(row.get("at") or 0) <= max(600, self._participation_window(source))
                     and not self.is_plugin_command(str(row.get("text") or ""))]
-        from ..context_selection import CONTEXT_GUIDANCE, ContextItem, relevance, select_context
-        from ..context_sources import life_items
+        from ..context_selection import CONTEXT_GUIDANCE, relevance, select_context
+        from ..context_sources import life_items, memory_context_items
         request = request or self.context_request(state, target, task="participation", rows=rows)
         from hashlib import sha256
         request.life_persona = sha256(persona.encode("utf-8")).hexdigest()[:24]
         rows = self.context_chat(state, request, rows)
-        _, _, style = self.style_for(state, target)
+        _, _, style = self.style_for(state, target, remember=False)
         life = {"mood": state.mood,
                 "local_time": self.local_now().isoformat(timespec="minutes")}
         materials = []
@@ -104,21 +104,15 @@ class ParticipationMixin:
         # unrelated unfinished project as a new topic every time she joins a chat.
         if self.world.state_dynamics.own_topic_enabled:
             materials = [item for item in life_items(state, request)
-                         if relevance(request.query, item.summary + item.detail)]
+                         if relevance(request.query, item.topic_text)]
             import re
             if re.search(r"你.{0,6}(?:在(?:哪|做|干)|忙什么|刚才|最近怎么样|今天怎么样|做完)", request.query):
                 node = self.node(state.node_id)
                 action = state.current_action or {}
                 life.update(place=node.name if node else "", activity=str(action.get("desc") or action.get("intent") or "自由活动"))
-        for memory in self.context_memories(state, request, rows):
-            label = "本会话阅读时的主观感想，非亲历：" if memory.source == "chat_browse" else "相关经历："
-            if memory.private_matter:
-                label = "本会话约定的生活进展（准备与模拟不等于现实兑现）："
-            materials.append(ContextItem(f"memory:{memory.id}", "memory",
-                label + ("涉及用户ID：" + "、".join(memory.participants or memory.related_users) + "\n" if memory.participants or memory.related_users else "")
-                + memory.render(stamp=self.prompts._memory_stamp(memory.created_at, self.local_now())),
-                at=memory.created_at, people=tuple(memory.participants or memory.related_users),
-                session=memory.session_id if memory.source_scoped else ""))
+        materials += memory_context_items(state, request, self.context_memories(state, request, rows),
+            stamp=lambda at: self.prompts._memory_stamp(at, self.local_now()),
+            life_enabled=self.world.state_dynamics.own_topic_enabled)
         background = select_context(request, materials).render()
         profile = self.context_profiles(state, request)
         background = "\n\n".join(part for part in (CONTEXT_GUIDANCE, profile, self.context_emotions(state, request), background) if part)
@@ -154,6 +148,7 @@ class ParticipationMixin:
                 and not self.is_plugin_command(str(row.get("text") or ""))]
         request = self.context_request(state, target, task="participation", rows=rows)
         await self.prepare_context_memory(request)
+        self.style_for(state, target)
         system, prompt, targets = self.participation_prompt(state, target,
             await self._persona_text(target), request=request, rows=rows, source=source)
         self.record_context_selection(request)

@@ -240,6 +240,20 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
     }
     body.append(line("世界内的生活", "编程、创作等个人活动由 AI 模拟，不操作真实电脑或文件；对现实用户的约定仍需实际兑现。"));
     if (steps.children.length) body.append(line("一件事，分成几小步", "进度按已进行的世界内活动计算。"), steps);
+    const unfinished = (item.steps || []).find(step => step.status !== "done" && (!step.goal || step.goal === item.text));
+    if (!CLOSED.has(item.status) && unfinished?.worked_minutes > 0) {
+      const saved = unfinished.bookmark && (!unfinished.bookmark.goal || unfinished.bookmark.goal === item.text) ? unfinished.bookmark : {};
+      const openQuestion = saved.open_question !== undefined ? saved.open_question : unfinished.open_question;
+      const bookmark = el("section", "life-stage-note life-bookmark");
+      bookmark.append(el("small", "people-eyebrow", "中途书签 · 尚未完成"),
+        el("h3", "", unfinished.text),
+        el("p", "muted", `已投入 ${unfinished.worked_minutes} 分钟 · 还需约 ${Math.max(0, unfinished.minutes - unfinished.worked_minutes)} 分钟`));
+      if (saved.note) bookmark.append(el("p", "life-stage-content", saved.note));
+      bookmark.append(line("下一处", saved.next_focus || unfinished.focus || unfinished.text));
+      if (openQuestion) bookmark.append(line("还没解开的地方", openQuestion));
+      bookmark.append(el("small", "muted", "世界内的中途记录；接续方向不代表已经取得成果。"));
+      body.append(bookmark);
+    }
     for (const stage of [...(item.stage_notes || [])].reverse()) {
       const note = el("section", "life-stage-note");
       note.append(el("small", "people-eyebrow", `阶段笔记 · 世界内模拟 · ${TIME(stage.at)}`),

@@ -106,7 +106,9 @@ class TurnMixin:
             )
             prompt += "\n\n# 基础人设（判断行为的依据，不得改写）\n" + persona_text
             prompt += "\n\n# 本轮可用的直接发言证据\n" + json.dumps(sources, ensure_ascii=False)
-            prompt += "\n\n" + self._own_topic_block(state, ctx)
+            from hashlib import sha256
+            prompt += "\n\n" + self._own_topic_block(state, ctx,
+                persona_key=sha256(persona_text.encode("utf-8")).hexdigest()[:24])
         if tool_trace:
             prompt += ("\n\n# 本轮原生工具的实际记录\n只有成功的实际结果覆盖具体目标才可确认该事项完成。"
                        "检索到旧记录、获取资料、准备成功不等于外部操作已完成；失败或结果不明确就留空。\n"

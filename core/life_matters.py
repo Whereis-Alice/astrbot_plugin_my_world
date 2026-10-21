@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from hashlib import sha256
 from datetime import date
+import math
+import re
+import unicodedata
 from typing import Any
 from uuid import uuid4
 
@@ -11,23 +14,145 @@ CLOSED = {"completed", "abandoned", "expired"}
 RETIRED_COMPUTER_KEYS = frozenset({"executions", "artifacts", "execution_review_required", "capability_key", "failure_count"})
 
 
-def activity_basis(state, *, now: float) -> str:
+def activity_basis(state, *, now: float, persona_key: str = "") -> str:
     """Only shared personal activity is motivation for autonomous life."""
     rows = []
     for item in sorted(state.life_interests.values(), key=lambda r: r.get("last_at", 0), reverse=True):
         if 0 <= now - float(item.get("last_at") or 0) <= 3 * 86400:
             rows.append(f"- 实际活动：{str(item.get('label') or '')[:80]}；累计投入{float(item.get('minutes') or 0):g}分钟。")
     for item in state.life_matters:
-        if item.get("who") or item.get("kind") == "promise":
+        if (item.get("who") or item.get("kind") == "promise"
+                or (item.get("persona_key") and item["persona_key"] != persona_key)):
             continue
         for stage in current_stage_notes(item)[-1:]:
             if 0 <= now - float(stage.get("at") or 0) <= 3 * 86400:
-                rows.append(f"- 世界内阶段：{item['text']}；{stage['summary']}；后续：{stage.get('next_focus') or '可以先放下'}")
-    return "\n".join(rows[:8])[:1600]
+                rows.append(f"- 世界内阶段：{item['text']}；{stage_record_text(stage)}")
+    # A limit may omit a record, never cut off its qualifications or question.
+    selected, used = [], 0
+    for row in rows:
+        if len(selected) < 8 and used + len(row) + bool(selected) <= 1600:
+            selected.append(row)
+            used += len(row) + (len(selected) > 1)
+    return "\n".join(selected)
 
 
 def current_stage_notes(item: dict) -> list[dict]:
     return [row for row in item.get("stage_notes", []) if row.get("goal", item["text"]) == item["text"]]
+
+
+def stage_record_text(stage: dict) -> str:
+    """Keep the activity headline subordinate to its concrete qualifications."""
+    return (f"活动概述（不是独立的结论依据）：{stage.get('summary') or ''}；"
+            f"具体记录与限定（回答依据优先）：{stage.get('content') or '未记录具体结论'}；"
+            f"后续待做：{stage.get('next_focus') or '尚未确定'}。"
+            "正文里仍未确认的关系，不因标题写了完成或对照而变成已确认。")
+
+
+def _minutes(value: Any) -> float:
+    try:
+        number = float(value)
+        return max(0, number) if math.isfinite(number) else 0
+    except (ValueError, TypeError, OverflowError):
+        return 0
+
+
+def current_bookmark(item: dict) -> dict:
+    """Read the unfinished step without inventing content or mutating its clock."""
+    if item.get("status") in CLOSED:
+        return {}
+    step = next((s for s in item.get("steps", []) if s.get("status") != "done"
+                 and s.get("goal", item.get("text")) == item.get("text")), None)
+    if not step or _minutes(step.get("worked_minutes")) <= 0:
+        return {}
+    return _step_bookmark(item, step)
+
+
+def _step_bookmark(item: dict, step: dict) -> dict:
+    saved = step.get("bookmark") if isinstance(step.get("bookmark"), dict) else {}
+    if saved.get("goal", item.get("text")) != item.get("text"):
+        saved = {}
+    worked = _minutes(step.get("worked_minutes"))
+    return {**saved, "matter_id": item["id"], "step_id": step["id"], "goal": item["text"],
+            "step": step.get("text", ""), "worked_minutes": worked,
+            "remaining_minutes": max(0, _minutes(step.get("minutes")) - worked),
+            "focus": str(step.get("focus") or step.get("text") or "")[:300],
+            "open_question": str(saved.get("open_question", step.get("open_question")) or "")[:240],
+            "next_focus": str(saved.get("next_focus") or step.get("focus") or step.get("text") or "")[:300]}
+
+
+def pending_review_bookmarks(item: dict) -> list[dict]:
+    """Handoff old thoughts until review, without reopening a completed timer."""
+    if not item.get("needs_review") or item.get("status") in CLOSED:
+        return []
+    return [_step_bookmark(item, step) for step in item.get("steps", [])
+            if step.get("status") == "done" and not step.get("stage_noted")
+            and step.get("goal", item.get("text")) == item.get("text")
+            and _minutes(step.get("worked_minutes")) > 0]
+
+
+def _thought_key(text: str) -> str:
+    return re.sub(r"[\W_]+", "", unicodedata.normalize("NFKC", text).casefold())
+
+
+def capture_bookmark(item: dict, step: dict, *, now: float, reason: str = "") -> None:
+    if (step.get("status") == "done" or _minutes(step.get("worked_minutes")) <= 0
+            or step.get("goal", item.get("text")) != item.get("text")):
+        return
+    saved = step.get("bookmark") if isinstance(step.get("bookmark"), dict) else {}
+    if saved.get("goal", item.get("text")) != item.get("text"):
+        saved = {}
+    step["bookmark"] = {**saved, "goal": item["text"], "at": now,
+                        "worked_minutes": step["worked_minutes"],
+                        "reason": str(reason or saved.get("reason") or "在线活动仍在推进")[:240]}
+
+
+def record_bookmark_note(item: dict, payload: Any, basis: dict, *, now: float) -> bool:
+    """A note is a bounded in-world thought, never a completion receipt."""
+    if (not isinstance(payload, dict) or item.get("status") in CLOSED | {"paused"}
+            or item.get("revision") != basis.get("revision") or item.get("text") != basis.get("goal")
+            or payload.get("matter_id") != item.get("id") or payload.get("step_id") != basis.get("step_id")):
+        return False
+    current = current_bookmark(item)
+    note = payload.get("note")
+    if (not current or current["step_id"] != basis.get("step_id")
+            or _minutes(basis.get("worked_minutes")) <= 0
+            or current["worked_minutes"] < _minutes(basis.get("worked_minutes"))):
+        return False
+    # Repeating a planned instruction is not a new observation. Preserve the
+    # existing thought if a rhythm call merely copies the step description.
+    changes = {}
+    instructions = {_thought_key(str(step.get(key) or "")) for step in item.get("steps", [])
+                    if step.get("id") == current["step_id"] for key in ("text", "focus")}
+    if (isinstance(note, str) and note.strip()
+            and _thought_key(note) not in instructions | {_thought_key(item["text"])}):
+        changes["note"] = note.strip()[:600]
+    for key in ("next_focus", "open_question"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            changes[key] = value.strip()[:240]
+    if all(current.get(key, "") == value for key, value in changes.items()):
+        return False
+    step = next(s for s in item["steps"] if s["id"] == current["step_id"])
+    capture_bookmark(item, step, now=now)
+    step["bookmark"].update(changes, note_basis_minutes=basis["worked_minutes"], noted_at=now, scope="simulation")
+    history(item, "bookmark_note", changes.get("note") or changes.get("next_focus") or changes.get("open_question")
+            or "更新中途书签，清除旧的接续点或疑问",
+            now, step_id=step["id"], scope="simulation")
+    return True
+
+
+def bookmark_basis(state, *, persona_key: str) -> list[dict]:
+    """Only personal unfinished work can enter shared autonomous rhythm calls."""
+    rows = []
+    for item in state.life_matters:
+        if (item.get("who") or item.get("kind") == "promise" or item.get("status") in CLOSED | {"paused"}
+                or (item.get("persona_key") and item["persona_key"] != persona_key)):
+            continue
+        bookmark = current_bookmark(item)
+        if bookmark:
+            rows.append({**bookmark, "revision": item.get("revision"),
+                         "previous_stage": current_stage_notes(item)[-1:]})
+    return sorted(rows, key=lambda row: float(row.get("at") or 0), reverse=True)[:2]
 
 
 def record_stage(item: dict, payload: Any, *, now: float) -> dict | None:
@@ -239,19 +364,25 @@ def complete_step(state, matter_id: str, step_id: str, *, now: float,
     return True
 
 
-def context_block(state, *, session_id: str, user_id: str = "", now: float = 0) -> str:
+def context_block(state, *, session_id: str, user_id: str = "", now: float = 0,
+                  persona_key: str = "") -> str:
     items = ensure(state, now)
     rows = []
     for item in items:
         if item.get("status") in CLOSED or not visible(item, session_id):
             continue
-        if user_id and item.get("who") and item["who"] != user_id:
+        if item.get("persona_key") and item["persona_key"] != persona_key:
+            continue
+        if item.get("who") and item["who"] != user_id:
             continue
         rows.append(f"- [{item['id']}] {item['text']}；动机：{item.get('motivation') or '原先想做的事'}；"
                     f"状态：{item['status']}；{progress_label(item)}；"
                     f"下一步：{item.get('next_step') or '尚待安排'}；阻碍：{item.get('obstacle') or '无'}")
         for stage in current_stage_notes(item)[-1:]:
-            rows[-1] += f"\n  世界内阶段所得（模拟内容）：{stage['summary']}；{stage['content'][:500]}；后续切入：{stage.get('next_focus') or '尚未确定'}"
+            rows[-1] += f"\n  世界内阶段所得（模拟内容）：{stage_record_text(stage)}"
+        for bookmark in pending_review_bookmarks(item):
+            rows[-1] += (f"\n  计时结束前的思路（尚待复核）：{bookmark.get('note') or '未记录新发现'}；"
+                         f"未解问题：{bookmark['open_question'] or '未记录'}")
     block = ("# 你一直在推进的生活事项\n这些是角色世界内的活动；标为生活模拟的进展属于AI模拟经历，不能当作现实操作依据。"
             "只依据已记录的活动回忆进展，未开始的打算、梦和口头声称都不算完成。"
             "可以自然提起，不要逐条念清单。涉及他人的事情只能在来源会话提及。\n" + "\n".join(rows[:6])) if rows else ""
@@ -264,8 +395,14 @@ def context_block(state, *, session_id: str, user_id: str = "", now: float = 0) 
     if routines:
         block += "\n# 可参考的生活节奏\n以下是实际重复发生的时段，只在符合人设、困意和日程时作为轻微倾向；不能推断她喜欢或讨厌什么。\n" + "\n".join(
             f"- {item['explanation']}。可以沿用，也可以改变，不必排满时间。" for item in routines)
-    artifacts = [item for item in state.life_artifacts.values() if item.get("session") == session_id][-3:]
+    known = {item['id']: item for item in items}
+    artifacts = [artifact for key, artifact in state.life_artifacts.items()
+                 if artifact.get("session") == session_id and key in known
+                 and visible(known[key], session_id)
+                 and (not known[key].get("who") or known[key]["who"] == user_id)
+                 and (not known[key].get("persona_key") or known[key]["persona_key"] == persona_key)
+                 and artifact.get("label") == known[key].get("text")][-3:]
     if artifacts:
         block += "\n# 已留下的生活阶段记录\n这些活动和模拟成果只属于角色世界，不代表操作了现实文件、完成真实测试、寄送或向聊天发送成功。\n" + "\n".join(
-            f"- [{item.get('scope', 'in_world')}] {item['label']}：{item['result']}" for item in artifacts)
+            f"- [{item.get('scope', 'in_world')}] {item['label']}：{stage_record_text({'summary': item['result'], 'content': item.get('content')})}" for item in artifacts)
     return block

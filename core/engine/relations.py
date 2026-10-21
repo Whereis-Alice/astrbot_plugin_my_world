@@ -244,12 +244,13 @@ class RelationsMixin:
                 content=f"（后来搁置、尚未确认完成的打算）{text}", memory_type=INNER, weight=0.3,
                 participants=[str(item["who"])] if item.get("who") else [])
 
-    def _own_topic_block(self, state: WorldState, ctx: Any = None, *, autonomy: bool = False) -> str:
+    def _own_topic_block(self, state: WorldState, ctx: Any = None, *, autonomy: bool = False,
+                         persona_key: str = "") -> str:
         from ..life_matters import context_block
         if not self.world.state_dynamics.own_topic_enabled:
             return ""
         return context_block(state, session_id=str(getattr(ctx, "session_id", "") or state.session_id),
-                             user_id=str(getattr(ctx, "user_id", "") or ""), now=self._now())
+                             user_id=str(getattr(ctx, "user_id", "") or ""), now=self._now(), persona_key=persona_key)
 
     def _said_when_text(self, stamp: float) -> str:
         """「（今天记的）/（3 天前记的）」这种尾巴。"""

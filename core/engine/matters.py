@@ -148,14 +148,18 @@ class MattersMixin:
             total += minutes
         action["matter_accounted_ticks"] = elapsed
         if total:
+            matters.capture_bookmark(item, step, now=self._now() if at is None else at)
             matters.sync(state)
         return total
 
     def pause_matter_action(self, state, action: dict, *, at: float | None = None) -> None:
         self.settle_life_practice(state, action, at=at)
-        if self.settle_matter_work(state, action, at=at):
-            item = matters.find(state, str(action.get("matter_id") or ""))
-            step = next(s for s in item["steps"] if s["id"] == action.get("matter_step_id"))
+        settled = self.settle_matter_work(state, action, at=at)
+        item = matters.find(state, str(action.get("matter_id") or ""))
+        step = next((s for s in (item or {}).get("steps", []) if s["id"] == action.get("matter_step_id")), None)
+        if item and step:
+            matters.capture_bookmark(item, step, now=self._now() if at is None else at, reason="暂时放下，保留当前切入点")
+        if settled:
             matters.history(item, "paused_step", f"暂时放下，已经投入 {step['worked_minutes']:g} 分钟", self._now())
 
     def _stop_matter_work(self, state: WorldState, matter_id: str) -> None:
@@ -323,7 +327,10 @@ class MattersMixin:
                     "延续已有草稿、结论或未解问题，不重新从头概述同一个目标；不把模拟笔记说成真实资料验证。"
                     "有可做部分先安排可做部分，blocked只描述剩余阻碍，不能抹掉可做步骤。"
                     '格式：{"motivation":"一句动机","steps":[{"text":"具体下一步","action":"候选ID",'
-                    '"node":"候选地点","minutes":20,"day_offset":0}],"blocked":""}。最多6步，每步5到60分钟。'
+                    '"node":"候选地点","minutes":20,"day_offset":0,"focus":"具体从哪里下手",'
+                    '"open_question":"这一步准备弄清的问题"}],"blocked":""}。最多6步，每步5到60分钟。'
+                    "focus和open_question是待做的方向，不是已经想通的结论。已有bookmark时接着其next_focus与未解点，"
+                    "不要重新从头开始，也不要把中途想法当成阶段完成。"
                     "day_offset是从今天起经过几天才适合做，可跨多日，不要为填满日程而强行赶完。",
                     json.dumps({"persona": persona,
                                 "matter": snapshot, "available": candidates}, ensure_ascii=False))
@@ -353,6 +360,8 @@ class MattersMixin:
                     minutes = min(max(minutes, max(1, definition.duration_min / 60)), max(1, definition.duration_max / 60))
                 steps.append({"id": f"{item['id']}_{item['revision']}_{index}", "text": str(step["text"])[:300],
                               "goal": item["text"],
+                              "focus": str(step.get("focus") or step["text"])[:300],
+                              "open_question": str(step.get("open_question") or "")[:240],
                               "action": step["action"], "node": step.get("node", state.node_id), "minutes": minutes,
                               "not_before": now + day_offset * 86400, "status": "pending"})
             if steps:
@@ -391,6 +400,8 @@ class MattersMixin:
                 "stage只对应已完成且有投入收据的新步骤，不能重复旧stage_notes引用过的步骤。"
                 "content要留下下一阶段真正能用的内容，例如短小草稿、设计取舍或具体未解问题，"
                 "不是再说一遍已经进行了活动。不捏造真实书籍原文、检索结论或现实验证。"
+                "已有bookmark中的未解点不能因计时结束自动消失；仍无依据就保留未确认。"
+                "summary必须与content的限定一致，正文仍在核对时，标题写核对进展或仍待核实，不能写已确认。"
                 "原有人设和能力优先，不从这次活动创造新身份、喜好或高超技能。"
                 "现实用户的约定仍需兑现依据。可以继续则continue，暂时无法继续则blocked。",
                 json.dumps({"persona": persona, "matter": snapshot}, ensure_ascii=False))
@@ -417,7 +428,8 @@ class MattersMixin:
                 state.life_artifacts = dict(list(state.life_artifacts.items())[-40:])
                 self.memory.remember(session_id=item["session"], persona_id="", node_id=state.node_id,
                     content=f"（角色世界内的阶段笔记，AI模拟）{item['text']}：{stage['summary']}\n{stage['content']}",
-                    memory_type="scene", source="life_matter", context=json.dumps(stage, ensure_ascii=False),
+                    memory_type="scene", source="life_matter", context=json.dumps({**stage,
+                        "matter_id": item["id"], "persona_key": item.get("persona_key", "")}, ensure_ascii=False),
                     participants=[item["who"]] if item.get("who") else [])
             if outcome == "completed" and item["kind"] != "promise":
                 receipts = [s.get("result", {}) for s in item["steps"] if s.get("status") == "done"]
@@ -524,6 +536,7 @@ class MattersMixin:
         simulated = definition.id == LIFE_SIMULATION_ACTION.id
         description = step["text"] if simulated else definition.name
         receipt = {"ok": True, "kind": "life_simulation" if simulated else "in_world_action", "action": definition.id,
+                   "matter_id": item["id"], "step_id": step_id, "goal": item["text"], "persona_key": item.get("persona_key", ""),
                    "at": self._now(), "minutes": step.get("worked_minutes", 0), "attempt_minutes": minutes,
                    "result": f"{'世界内模拟' if simulated else '世界内进行了'}「{description}」，累计投入 {step.get('worked_minutes', 0):g} 分钟"}
         if step["worked_minutes"] + .01 < step["minutes"]:

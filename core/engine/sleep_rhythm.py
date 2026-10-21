@@ -7,9 +7,11 @@ from ..model_calls import model_operation
 import asyncio
 import json
 import math
+from hashlib import sha256
 from typing import Any
 
 from ..json_actions import extract_json_object
+from .. import life_matters as matters
 from ..planner import active_plan, create_plan
 from ..pathfinding import find_path
 from ..state import STATE_DROWSY, STATE_IDLE, WorldState
@@ -163,6 +165,11 @@ class SleepRhythmMixin:
             }
             background = await self.task_background(state, task="sleep", query="作息 疲劳 未完事项 次日安排 休息")
             persona = await self._persona_text(state.session_id)
+            persona_key = sha256(persona.encode("utf-8")).hexdigest()[:24]
+            bases = (matters.bookmark_basis(state, persona_key=persona_key)
+                     if self.world.limits.life_matter_enabled and self.world.state_dynamics.own_topic_enabled else [])
+            if bases:
+                context["已经投入的中途书签"] = bases
             prompt = (
                 f"人设：\n{persona}\n作息偏好：{config.rhythm_prompt[:1200]}\n"
                 + json.dumps(context, ensure_ascii=False, default=str) + "\n" + background
@@ -171,7 +178,15 @@ class SleepRhythmMixin:
                 f"小睡不足不能当完整的一晚；普通群聊热闹不代表必须一直陪聊。"
                 f"睡眠时长在 {low/3600:g}~{high/3600:g} 小时，清醒上限 {config.max_awake_hours:g} 小时。"
                 f"继续活动最多 {interval} 分钟后再看。只输出 JSON："
-                '{"decision":"sleep 或 continue","hours":8,"review_minutes":60,"reason":"具体理由"}'
+                '{"decision":"sleep 或 continue","hours":8,"review_minutes":60,"reason":"具体理由",'
+                '"life_bookmark":null}。'
+                "没有实质新思路时life_bookmark保持null，已有具体笔记会原样保留。"
+                "有新思路才填对象：matter_id和step_id沿用所附书签的ID，note写具体观察、取舍或疑问；"
+                "不要把字段说明、目标或计划复述当成新笔记。可用next_focus与open_question更新接续点和未解问题；"
+                "不变的字段省略，明确解决疑问时才将open_question置空。"
+                "仅可整理书签中已有实际投入的个人步骤，衔接上次笔记。"
+                "focus是待做方向，不能把它说成已完成。没有新想法就省略，不重复抄写。"
+                "这些只属于角色世界内的草稿，不完成步骤、不证明现实操作成功，不写成聊天消息。"
             )
             try:
                 # Keep inference in the task owning STATE_LEASE. wait_for(coro)
@@ -191,6 +206,12 @@ class SleepRhythmMixin:
                     interval = int(min(interval, max(15, _number(data.get("review_minutes"), interval))))
                     reason = str(data.get("reason") or reason).strip()[:240]
                     source = "llm"
+                    payload = data.get("life_bookmark")
+                    if isinstance(payload, dict):
+                        basis = next((row for row in bases if row["matter_id"] == payload.get("matter_id")), None)
+                        item = matters.find(state, str(payload.get("matter_id") or ""))
+                        if basis and item:
+                            matters.record_bookmark_note(item, payload, basis, now=self._now())
             except (ValueError, TypeError):
                 pass
         await self._save_rhythm_decision(state, outcome, decision, hours, interval, reason, source)

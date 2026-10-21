@@ -132,6 +132,37 @@ class LifeBrowserTests(unittest.TestCase):
             self.host.screenshot(path=str(self.shots/f'life-stage-note-{width}.png'))
         self.assertEqual(self.errors, [])
 
+    def test_cleared_bookmark_question_does_not_restore_the_plan_question(self):
+        self.page.evaluate("""()=>{lifeData.items[0].steps[1]={id:'next',text:'继续对照两封信',
+          status:'pending',minutes:25,worked_minutes:7,open_question:'旧计划中待核实的邮戳',
+          bookmark:{note:'已转到比较两封信的署名',open_question:''}}}""")
+        self.page.locator('#life-tools summary').click()
+        self.page.locator('#life-refresh').click()
+        self.page.locator('.life-card[data-id="lm_book"]').click()
+        expect(self.page.locator('.life-bookmark')).to_contain_text('已转到比较两封信的署名')
+        expect(self.page.locator('.life-bookmark')).not_to_contain_text('旧计划中待核实的邮戳')
+        expect(self.page.locator('.life-bookmark')).not_to_contain_text('还没解开的地方')
+        self.assertEqual(self.errors, [])
+
+    def test_midstep_bookmark_is_visible_on_desktop_and_phone(self):
+        self.page.evaluate("""()=>{const item=lifeData.items[0];item.steps[1]={id:'next',text:'核对第二封信的邮戳',
+          action:'read',status:'pending',minutes:25,worked_minutes:7,focus:'比较信封的手写日期',
+          bookmark:{goal:item.text,note:'两封信的署名不同，还不能确认是不是同一个人写的。',
+            next_focus:'从第二封信背面的字迹继续',open_question:'邮戳是否晚了一天'}}}""")
+        self.page.locator('#life-tools summary').click()
+        self.page.locator('#life-refresh').click()
+        self.page.locator('.life-card[data-id="lm_book"]').click()
+        expect(self.page.locator('.life-bookmark')).to_contain_text('尚未完成')
+        expect(self.page.locator('.life-bookmark')).to_contain_text('已投入 7 分钟')
+        expect(self.page.locator('.life-bookmark')).to_contain_text('还需约 18 分钟')
+        expect(self.page.locator('.life-bookmark')).to_contain_text('第二封信背面的字迹')
+        for width,height in [(1440,1000),(390,844)]:
+            self.host.set_viewport_size({'width':width,'height':height})
+            self.page.locator('.life-bookmark').scroll_into_view_if_needed()
+            self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'))
+            self.host.screenshot(path=str(self.shots/f'life-bookmark-{width}.png'))
+        self.assertEqual(self.errors, [])
+
     def test_old_save_cannot_close_a_new_session_drawer(self):
         self.page.evaluate("""() => {
           const read=AstrBotPluginPage.apiGet, write=AstrBotPluginPage.apiPost;

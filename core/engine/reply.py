@@ -6,6 +6,7 @@ from ..model_calls import model_operation
 
 import asyncio
 import time
+from hashlib import sha256
 from typing import Any
 from ..config_scope import session_scoped
 from ..json_actions import parse_action_payload
@@ -673,11 +674,12 @@ class ReplyMixin:
                     extra_notes = [*(extra_notes or []), vocabulary]
                 request = self.context_request(state, ctx.session_id, task="reply", text="\n".join(texts),
                     focus=ctx.user_id, persona=ctx.persona_id)
+                persona_text = await self._persona_text(state.session_id)
+                request.life_persona = sha256(persona_text.encode("utf-8")).hexdigest()[:24]
                 memories = self.context_memories(state, request, recall_records)
                 background_chat = self.context_chat(state, request,
                     self.chat_context_for_reply(state, ctx, exclude_entries=self.reply_batch_entries(batch)))
                 profile_context = self.context_profiles(state, request)
-                persona_text = await self._persona_text(state.session_id)
                 # 有人正在跟她说话：话太密时只提醒别刷屏，不把她按成哑巴
                 _cell, say_limit, style_text = self.style_for(
                     state, ctx.session_id, direct=True

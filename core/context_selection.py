@@ -13,6 +13,7 @@ from typing import Any
 _STOP = frozenset(("这个", "那个", "一个", "自己", "我们", "你们", "他们", "什么", "怎么",
                    "可以", "就是", "还是", "已经", "现在", "时候", "一下", "今天", "最近"))
 _WORDS = re.compile(r"[a-z0-9_]{2,}|[\u3400-\u9fff]+", re.I)
+_PARTICLES = frozenset("的了呢吧啊呀嘛")
 
 
 def search_terms(text: str) -> list[str]:
@@ -24,7 +25,7 @@ def search_terms(text: str) -> list[str]:
         else:
             for i in range(len(word) - 1):
                 part = word[i:i + 2]
-                if part not in _STOP:
+                if part not in _STOP and not _PARTICLES.intersection(part):
                     result[part] = None
     return list(result)
 
@@ -71,7 +72,10 @@ def request_for(*, task: str, session: str, now: float, query: str = "",
     # Focus/actual message authors establish identity, never nicknames or quoted IDs.
     people = people[:6]
     # Include the conversation leading to a short continuation, not only its last line.
-    context = "\n".join(str(row.get("raw_text") or row.get("text") or "") for row in rows[-12:])
+    from .evidence import split_external_memory
+    context = "\n".join(split_external_memory(str(row.get("raw_text") or row.get("text") or ""))[0]
+                        for row in rows[-12:])
+    query = split_external_memory(query)[0]
     request = ContextRequest(task, session, now, (context + "\n" + query).strip(),
                              tuple(people), persona, evidence, focus_user=str(focus or ""))
     from .evidence import direct_text
@@ -99,6 +103,12 @@ class ContextItem:
     dependencies: tuple[str, ...] = ()
     supersedes: tuple[str, ...] = ()
     source: str = ""
+    match_text: str | None = None
+
+    @property
+    def topic_text(self) -> str:
+        """Source content for matching; presentation labels are not evidence."""
+        return self.summary + "\n" + self.detail if self.match_text is None else self.match_text
 
 
 @dataclass
@@ -144,7 +154,7 @@ def select_context(request: ContextRequest, items: list[ContextItem], *,
     ranked = []
     preferred = _PREFER.get(request.task, set())
     for item in eligible.values():
-        match = relevance(request.query, item.summary + "\n" + item.detail)
+        match = relevance(request.query, item.topic_text)
         person = bool(set(item.people) & set(request.people))
         age = max(0, request.now - item.at) if item.at else float("inf")
         recent = max(0, 1 - age / 86400) if item.kind not in {"relationship", "world"} else 0
@@ -326,7 +336,11 @@ CONTEXT_GUIDANCE = (
     "以下材料按当前事情选取，不代表全部记忆。没出现不等于从未发生。"
     "身份以会话中的用户ID和已确认关系为准，同名不能认成同一个人。"
     "旧经历、当时想法、梦境和世界内模拟分别理解；计划和准备不代表已经完成。"
+    "未完步骤只能说正在做或还没确认，不能把投入过时间说成已经核实。"
     "背景可以影响分寸与心情，不必逐条说出来。先接眼前的话，相关时才提自己的生活。"
+    "交谈中被问进展时，说具体正在看什么、哪里还没想明白；未问时长就不照抄计时或剩余估时。"
+    "阶段标题只是活动概述，结论以正文的具体记录和未解问题为准。"
+    "没有记录的日期、数量、差值、已完成的比较和发现不要补写；未确认就直说还在确认。"
     "需要核实旧约定或具体原话时使用可用的回忆/画像工具；没有依据就保留不确定性。"
 )
 

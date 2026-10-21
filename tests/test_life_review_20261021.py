@@ -232,7 +232,8 @@ class LifeCancellationTests(unittest.IsolatedAsyncioTestCase):
 
         self.llm.generate = generate
         async with self.engine.session_state(S) as state:
-            self.engine.life_choice(state)
+            state.life_decision = self.engine.life_choice(state)
+            saved_decision = dict(state.life_decision)
 
         @life_work()
         async def infer(engine):
@@ -245,10 +246,12 @@ class LifeCancellationTests(unittest.IsolatedAsyncioTestCase):
             self.clock.advance(5)
             # The life API recomputes this view while holding session_state.
             async with self.engine.session_state(S) as state:
-                self.engine.life_choice(state)
+                refreshed_choice = self.engine.life_choice(state)
+                self.assertEqual(refreshed_choice["at"], self.clock.now())
+                self.assertEqual(state.life_decision, saved_decision, "overview reads cannot overwrite an actual decision")
             release.set()
             self.assertEqual(await asyncio.wait_for(task, 2), "继续读下一页")
-            self.assertEqual((await self.engine.load_state(S)).life_decision["at"], self.clock.now())
+            self.assertEqual((await self.engine.load_state(S)).life_decision, saved_decision)
         finally:
             release.set()
             await asyncio.gather(task, return_exceptions=True)

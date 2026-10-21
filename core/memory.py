@@ -484,6 +484,7 @@ class MemoryEngine:
         path is read-only: selecting a memory is different from mentioning it.
         """
         from .context_selection import ContextItem, relevance, search_terms, select_context
+        from .context_sources import life_memory_metadata
         config = self.world.memory
         if config.automatic_recall == "manual" or config.recall_max_chars <= 0:
             return []
@@ -509,6 +510,9 @@ class MemoryEngine:
                         semantic[mid] = max(score, semantic.get(mid, 0))
         by_key, materials = {}, []
         for row in candidates:
+            meta = life_memory_metadata(str(row.get("source") or ""), row.get("context"))
+            if meta.get("persona_key") and meta["persona_key"] != request.life_persona:
+                continue  # Filter before relevance, semantic scores and selection traces.
             people = tuple(str(uid) for uid in (*row.get("related_users", []), *row.get("participants", [])))
             related = bool(set(people) & set(request.people))
             if row.get("source") == "life_matter" and people:
@@ -537,7 +541,7 @@ class MemoryEngine:
                 at=recalled.created_at, people=people,
                 session=recalled.session_id if recalled.source_scoped else "",
                 priority=semantic.get(recalled.id, 0) * 3 + (0.2 if row.get("pinned") else 0),
-                source=recalled.source))
+                source=recalled.source, match_text=content))
         selected = select_context(request, materials, budget=min(config.recall_max_chars, request.budget // 2),
                                   channel="memories", max_items=limit)
         return [by_key[item.key] for item, _ in selected.rows]

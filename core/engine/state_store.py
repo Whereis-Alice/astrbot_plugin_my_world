@@ -255,7 +255,7 @@ class StateStoreMixin:
         }
 
     def style_for(
-        self, state: WorldState, session_id: str, *, direct: bool = False
+        self, state: WorldState, session_id: str, *, direct: bool = False, remember: bool = True
     ) -> tuple[StyleCell | None, int, str]:
         """这一轮的表达方式：（格子、生效句数上限、进提示词的文字）。
 
@@ -268,17 +268,20 @@ class StateStoreMixin:
 
         configured = int(self.world.limits.max_messages_per_say or 3)
         if not bool(getattr(self.world, "style_injection", True)):
-            state.last_style_cell = ""
-            state.last_say_limit = max(1, configured)
-            return None, state.last_say_limit, ""
+            limit = max(1, configured)
+            if remember:
+                state.last_style_cell = ""
+                state.last_say_limit = limit
+            return None, limit, ""
         cell = cell_for(state.affect, state.valence)
         group = self.chat_is_group(session_id)
         limit = min(configured, cell.say_limit, 2 if group else 3)
         if self.speech_density_hint(state, direct=direct) and not direct:
             limit = min(limit, 1)
         limit = max(1, limit)
-        state.last_style_cell = cell.key
-        state.last_say_limit = limit
+        if remember:
+            state.last_style_cell = cell.key
+            state.last_say_limit = limit
         # 长期低落时补一句"想自己待会儿"：安全阀是行为倾向，不是给她安排动作
         note = ""
         if float(state.valence) < 0.35:

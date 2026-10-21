@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from hashlib import sha256
 import time
 from typing import Any
 from ..config_scope import session_scoped
@@ -656,10 +657,12 @@ class SnapshotMixin:
 
         state = await self.load_state(session_id, cold_start=False)
         node = self.node(state.node_id)
-        _cell, say_limit, style_text = self.style_for(state, session_id)
+        _cell, say_limit, style_text = self.style_for(state, session_id, remember=False)
         request = self.context_request(state, session_id, task="plan", persona=persona_id)
+        persona = await self._persona_text(session_id)
+        request.life_persona = sha256(persona.encode("utf-8")).hexdigest()[:24]
         text = self.prompts.build_autonomous_system_prompt(
-            persona_text=await self._persona_text(session_id),
+            persona_text=persona,
             state=state,
             node=node,
             available_tools=self.available_tools(),

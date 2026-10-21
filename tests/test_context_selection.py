@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+from hashlib import sha256
 import tempfile
 import unittest
 from pathlib import Path
@@ -261,6 +262,19 @@ class ContextIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await self.engine.preview_autonomous_prompt(GROUP)
         self.assertEqual(self.db.raw.memory_by_id(mid), before)
 
+    async def test_prompt_builder_is_read_only_but_production_remembers_the_current_style(self):
+        for enabled in (True, False):
+            with self.subTest(style_enabled=enabled):
+                self.engine.world.style_injection = enabled
+                self.state.last_style_cell, self.state.last_say_limit = "previous-style", 7
+                self.state.recent_chat = [self.row("风车怎么样了？")]
+                before = copy.deepcopy(self.state.to_payload())
+                self.prompt()
+                self.assertEqual(self.state.to_payload(), before)
+                await self.engine.participation_text(self.state, GROUP)
+                self.assertNotEqual(self.state.last_say_limit, 7)
+                self.assertNotEqual(self.state.last_style_cell, "previous-style")
+
     async def test_ambient_evaluation_uses_production_builder_and_does_not_mutate_world(self):
         self.remember("昨天和阿梨一起看过风车", related_users=["alice"])
         async with self.engine.session_state(GROUP) as state:
@@ -272,6 +286,28 @@ class ContextIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("context_selection", result["results"][0])
         self.assertEqual((await self.engine.load_state(GROUP)).to_payload(), before)
         self.assertEqual(self.messenger.sent, [])
+
+    async def test_persona_linked_progress_is_recalled_before_preview_evaluation_and_reply(self):
+        persona_key = sha256(PERSONA.encode("utf-8")).hexdigest()[:24]
+        matter = make("核对风车故事中的两封信", now=self.clock.now(), session=GROUP,
+                      persona_key=persona_key)
+        async with self.engine.session_state(GROUP) as state:
+            state.life_matters = [matter]
+            state.state, state.energy = "idle", .9
+            state.recent_chat = [self.row("风车故事里的信封怎么样了")]
+        self.remember("风车故事的信封背面有蓝色邮戳", source="life_matter",
+            context=json.dumps({"matter_id": matter["id"], "persona_key": persona_key}))
+        before = (await self.engine.load_state(GROUP)).to_payload()
+        preview = await self.engine.preview_autonomous_prompt(GROUP)
+        self.assertIn("蓝色邮戳", preview)
+        await self.engine.run_eval(GROUP, [{"user_text": "风车故事里的信封怎么样了"}])
+        self.assertIn("蓝色邮戳", self.llm.calls[-1]["system_prompt"])
+        self.assertEqual((await self.engine.load_state(GROUP)).to_payload(), before)
+        ctx = MessageContext(session_id=GROUP, user_id="alice", user_name="阿梨",
+                             text="风车故事里的信封怎么样了", is_private=False)
+        await self.engine.handle_incoming(ctx)
+        await self.engine.handle_reply(ctx)
+        self.assertIn("蓝色邮戳", self.llm.calls[-1]["system_prompt"])
 
     async def test_semantic_failure_keeps_lexical_facts_without_an_extra_decision_model(self):
         self.remember("和阿梨一起看过风车", related_users=["alice"])

@@ -92,7 +92,7 @@ class ContextMixin:
     async def task_background(self, state, *, task: str, query: str, required: str = "", evidence: bool = False,
                               request: ContextRequest | None = None) -> str:
         """Specialised jobs keep their own required evidence, share only background selection."""
-        from ..context_sources import life_items
+        from ..context_sources import life_items, memory_context_items
         from ..context_selection import CONTEXT_GUIDANCE, ContextItem, select_context
         if request is None:
             request = self.context_request(state, state.session_id, task=task, text=query, rows=[])
@@ -101,12 +101,11 @@ class ContextMixin:
         materials = life_items(state, request) if self.world.state_dynamics.own_topic_enabled else []
         # Sleep and diary use their bounded evidence, never a random social memory.
         if task not in {"sleep", "diary", "review", "generation"}:
-            materials.extend(ContextItem(f"memory:{item.id}", "memory",
-                item.render(stamp=self.prompts._memory_stamp(item.created_at, self.local_now())),
-                at=item.created_at, session=item.session_id if item.source_scoped else "",
-                people=tuple(item.participants or item.related_users))
-                for item in self.context_memories(state, request)
-                if not item.source_scoped and not item.participants and not item.related_users)
+            memories = [item for item in self.context_memories(state, request)
+                        if not item.source_scoped and not item.participants and not item.related_users]
+            materials += memory_context_items(state, request, memories,
+                stamp=lambda at: self.prompts._memory_stamp(at, self.local_now()),
+                life_enabled=self.world.state_dynamics.own_topic_enabled)
         if required:
             materials.append(ContextItem("task:evidence", "event", required, required=True))
         result = select_context(request, materials, channel="task")

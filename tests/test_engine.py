@@ -2526,16 +2526,20 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         """她自己的事：答应过的记着，做完了划掉。"""
 
         ctx = self.ctx(user_id="9", user_name="小刚")
+        _, persona_key = await self.engine._journal_persona(SESSION)
         async with self.engine.session_state(SESSION) as state:
             await self.engine.note_own_topic(
                 state, "答应给他看照片", user_id="9", user_name="小刚"
             )
-            prompt = self.engine.extra_reminders(state, ctx=ctx)
+            prompt = self.engine.extra_reminders(state, ctx=ctx, persona_key=persona_key)
             self.assertIn("你一直在推进的生活事项", prompt)
             self.assertIn("答应给他看照片", prompt)
+            # 未确认当前人设或切换人设时，不能带入旧人设的私事。
+            self.assertNotIn("答应给他看照片", self.engine.extra_reminders(state, ctx=ctx))
+            self.assertNotIn("答应给他看照片", self.engine.extra_reminders(state, ctx=ctx, persona_key="other-persona"))
             # 对别人不说这件事
             other = self.ctx(user_id="7", user_name="小红")
-            self.assertNotIn("答应给他看照片", self.engine.extra_reminders(state, ctx=other))
+            self.assertNotIn("答应给他看照片", self.engine.extra_reminders(state, ctx=other, persona_key=persona_key))
             # 做完划掉
             self.assertEqual(self.engine.mark_own_topic_done(state, user_id="9"), 0)
             self.assertEqual(self.engine.mark_own_topic_done(state, user_id="9", matter_id=state.life_matters[0]["id"],

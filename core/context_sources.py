@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 from typing import Any
+import json
 
 from .context_selection import (CONTEXT_GUIDANCE, ContextItem, ContextRequest,
-                                section_items, select_context)
+                                relevance, section_items, select_context)
 
 
 def life_items(state: Any, request: ContextRequest) -> list[ContextItem]:
-    from .life_matters import CLOSED, current_stage_notes, progress_label, stable_interests, visible
+    from .life_matters import (CLOSED, current_bookmark, current_stage_notes, pending_review_bookmarks,
+                              progress_label, stable_interests, stage_record_text, visible)
     from .chat_browse import thought_visible
     result = []
     for index, item in enumerate(getattr(state, "life_matters", []) or []):
@@ -23,24 +25,67 @@ def life_items(state: Any, request: ContextRequest) -> list[ContextItem]:
             continue
         status = str(item.get("status") or "active")
         title = str(item.get("text") or "")
+        goal_state = {"completed": "已确认完成", "abandoned": "已放下", "paused": "暂停",
+                      "expired": "已过期"}.get(status, "尚未完成")
         summary = (f"# {'本会话的约定' if who else '一直在推进的生活事项'}\n"
-                   f"[{item.get('id') or index}] {title}；状态：{status}；{progress_label(item)}；"
-                   f"下一步：{item.get('next_step') or '尚待安排'}；阻碍：{item.get('obstacle') or '无'}。\n"
+                   f"[{item.get('id') or index}] 目标（{goal_state}）：{title}；状态：{status}；"
+                   f"当前阶段活动：{progress_label(item)}，不是整个目标的完成度；"
+                   f"下一步（待做）：{item.get('next_step') or '尚待安排'}；阻碍：{item.get('obstacle') or '无'}。\n"
                    "世界内的准备或模拟不代表现实操作成功，约定是否兑现以实际结果为准。")
+        topic = [title, str(item.get("motivation") or ""), str(item.get("result") or "")]
+        steps = [step for step in item.get("steps", []) if step.get("goal", title) == title]
+        bookmark = current_bookmark(item)
+        if item.get("needs_review"):
+            done = "；".join(str(step.get("text") or "") for step in steps if step.get("status") == "done")
+            summary += (f"\n待复核的活动：{done or '尚无'}。这里只确认做过活动，尚无该阶段的内容结论；"
+                        "不能从步骤结束推断整个目标达成，也不能补出未记录的发现。")
+            for last in pending_review_bookmarks(item):
+                summary += (f"\n计时结束前最后留下的思路（尚待复核）：{last.get('note') or '未记录新发现'}；"
+                            f"未解问题：{last['open_question'] or '未记录'}；"
+                            f"接续位置（待做）：{last['next_focus']}。计时结束没有自动解决这些疑问。")
+                topic.extend(str(last.get(key) or "") for key in ("note", "open_question", "next_focus"))
+        elif status not in CLOSED:
+            pending = next((step for step in steps if step.get("status") != "done"), None)
+            if pending:
+                summary += f"\n尚未完成的步骤：{pending.get('text') or ''}"
+                question = bookmark.get("open_question") if bookmark else pending.get("open_question")
+                if question:
+                    summary += f"；仍待核实：{question}"
+        topic.extend(str(step.get(key) or "") for step in steps for key in ("text", "focus", "open_question"))
+        if item.get("result"):
+            summary += f"\n最新结果：{item['result']}"
+        for event in reversed(item.get("history", [])):
+            if event.get("manual"):
+                summary += f"\n最近的人工调整（{event.get('kind') or '调整'}）：{event.get('text') or ''}"
+                break
+        stages = current_stage_notes(item)
+        if stages:
+            stage = stages[-1]
+            summary += "\n最近阶段记录（世界内模拟，正文与疑问须一起理解）：" + stage_record_text(stage)
+            topic.extend(str(stage.get(key) or "") for key in ("summary", "content", "next_focus"))
+        if bookmark:
+            summary += (f"\n中途书签（步骤尚未做完）：{bookmark['step']}；继续位置：{bookmark['next_focus']}。"
+                        "尚未确认这一步的结果，投入和思路都不代表已完成或已核实。")
+            if bookmark.get("note"):
+                summary += f"\n世界内中途思路：{bookmark['note']}"
+            if bookmark.get("open_question"):
+                summary += f"\n未解问题：{bookmark['open_question']}"
+            topic.extend(str(bookmark.get(key) or "") for key in ("note", "next_focus", "open_question"))
         detail = summary + (f"\n原先的动机：{item['motivation']}" if item.get("motivation") else "")
-        for stage in current_stage_notes(item)[-1:]:
-            detail += (f"\n阶段记录（世界内模拟内容）：{stage.get('summary') or ''}；"
-                       f"{stage.get('content') or ''}；后续：{stage.get('next_focus') or '尚未确定'}")
+        if bookmark:
+            detail += (f"\n计时依据（不是成果）：已投入{bookmark['worked_minutes']:g}分钟；"
+                       f"预计还需{bookmark['remaining_minutes']:g}分钟，估时可能变化。")
         result.append(ContextItem(f"matter:{item.get('id') or index}", "matter", summary, detail,
             at=float(item.get("updated_at") or item.get("created_at") or 0),
             people=(who,) if who else (), session=str(item.get("session") or "") if who else "",
             continuing=status not in CLOSED | {"paused"},
-            priority=.5 if request.task in {"plan", "sleep"} and status not in CLOSED else 0))
+            priority=.5 if request.task in {"plan", "sleep"} and status not in CLOSED else 0,
+            match_text="\n".join(topic)))
     for index, item in enumerate(stable_interests(state, now=request.now)):
         result.append(ContextItem(f"interest:{index}", "experience",
             f"# 近期反复投入的实际活动\n{item['label']}：在 {len(item['days'])} 个不同日期做过，"
             f"累计 {item['minutes']:g} 分钟。投入记录不是新的喜好或性格设定。",
-            at=float(item.get("last_at") or 0)))
+            at=float(item.get("last_at") or 0), match_text=str(item["label"])))
     for index, item in enumerate(getattr(state, "thoughts", []) or []):
         if not isinstance(item, dict) or not item.get("content"):
             continue
@@ -54,8 +99,65 @@ def life_items(state: Any, request: ContextRequest) -> list[ContextItem]:
         result.append(ContextItem(f"thought:{index}", "thought",
             ("# 翻消息时留下的感受（主观想法，非亲历或人物事实）\n" if item.get("browse_session")
              else "# 当时留下的内心（主观感受，不是客观事实，也不直接复述）\n") + str(item["content"]),
-            at=float(item.get("at") or 0), session=origin, expires=float(item.get("expires_at") or 0)))
+            at=float(item.get("at") or 0), session=origin, expires=float(item.get("expires_at") or 0),
+            match_text=str(item["content"])))
     return result
+
+
+def life_memory_metadata(source: str, context: Any) -> dict:
+    """Only explicit provenance links records; similar wording is insufficient."""
+    if source != "life_matter":
+        return {}
+    try:
+        value = json.loads(context) if isinstance(context, str) else context
+        return value if isinstance(value, dict) else {}
+    except (ValueError, TypeError):
+        return {}
+
+
+def memory_context_items(state: Any, request: ContextRequest, memories, *, stamp=None,
+                         life_enabled: bool = True) -> list[ContextItem]:
+    """Recall a dated fragment together with its current matter, or omit it."""
+    matters = {row.key: row for row in life_items(state, request)} if life_enabled else {}
+    raw_matters = {str(row.get("id")): row for row in state.life_matters if isinstance(row, dict)}
+    result = {}
+    for memory in memories:
+        if memory.source_scoped and memory.session_id != request.session:
+            continue
+        people = tuple(memory.participants or memory.related_users)
+        if memory.private_matter and (request.task in {"plan", "sleep", "diary"} or not set(people) & set(request.people)):
+            continue
+        meta = life_memory_metadata(memory.source, memory.context)
+        if meta.get("persona_key") and meta["persona_key"] != request.life_persona:
+            continue
+        label = "# 相关经历（当时的事，按记录理解）\n"
+        dependencies = ()
+        if memory.source == "chat_browse":
+            label = "# 阅读本会话时的感想（主观想法，不是亲历或人物事实）\n"
+        elif memory.source == "life_matter":
+            if not life_enabled:
+                continue
+            if request.task == "participation" and not relevance(request.query, memory.content):
+                continue  # A fresh life memory is not an invitation to announce it.
+            label = "# 当时的生活进展（准备与模拟不等于现实兑现，以所附最新状态为准）\n"
+            mid = str(meta.get("matter_id") or "")
+            if mid:
+                key = "matter:" + mid
+                if key not in matters:
+                    continue  # Deleted, private or another persona: no orphan fragments.
+                result[key] = matters[key]
+                dependencies = (key,)
+                if meta.get("goal") and meta["goal"] != raw_matters[mid].get("text"):
+                    label += f"历史目标：{meta['goal']}；已调整，不证明当前目标已完成。\n"
+            else:
+                label += "旧记录缺少事项关联，只代表当时片段，不能证明当前状态或目标已完成。\n"
+        body = label + ("涉及用户ID：" + "、".join(people) + "\n" if people else "")
+        body += memory.render(stamp=stamp(memory.created_at) if stamp else "")
+        key = f"memory:{memory.id}"
+        result[key] = ContextItem(key, "memory", body, at=memory.created_at, people=people,
+            session=memory.session_id if memory.source_scoped else "", dependencies=dependencies,
+            source=memory.source, match_text=memory.content)
+    return list(result.values())
 
 
 def runtime_context(prompts: Any, state: Any, node: Any, request: ContextRequest,
@@ -93,20 +195,8 @@ def runtime_context(prompts: Any, state: Any, node: Any, request: ContextRequest
         candidates += section_items(values.get(name, ""), key=name, kind=kind,
             continuing=name == "pending_event", required=(planning and name == "abilities_line")
             or name in {"weather", "recent_search"})
-    for item in values.get("memories") or []:
-        # Browse impressions/private promises keep their original disclosure scope.
-        if item.source_scoped and item.session_id != request.session:
-            continue
-        label = "# 相关经历（当时的事，按记录理解）\n"
-        if item.source == "chat_browse":
-            label = "# 阅读本会话时的感想（主观想法，不是亲历或人物事实）\n"
-        elif item.private_matter:
-            label = "# 本会话约定的生活进展（准备与模拟不等于现实兑现）\n"
-        candidates.append(ContextItem(f"memory:{item.id}", "memory",
-            label + ("涉及用户ID：" + "、".join(item.participants or item.related_users) + "\n" if item.participants or item.related_users else "")
-            + item.render(stamp=prompts._memory_stamp(item.created_at, now)),
-            at=item.created_at, people=tuple(item.participants or item.related_users),
-            session=item.session_id if item.source_scoped else "", priority=.3))
+    candidates += memory_context_items(state, request, values.get("memories") or [],
+        stamp=lambda at: prompts._memory_stamp(at, now), life_enabled=prompts.world.state_dynamics.own_topic_enabled)
     event_lines = []
     for index, item in enumerate(state.recent_events or []):
         if prompts._trivial_event(item):

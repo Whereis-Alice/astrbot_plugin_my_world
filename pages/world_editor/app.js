@@ -4,7 +4,7 @@ import { createContactWorkbench } from "./contact-workbench.js";
 import { createSocialLearning } from "./social-learning.js";
 import { createRelationshipsPage } from "./relationships.js";
 import { createModelCallsPage } from "./model-calls.js?v=4.29.0";
-import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js?v=4.31.0";
+import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js?v=4.34.0";
 import { memorySearchFields } from "./memory-settings.js";
 import { relationshipPromptEditor } from "./relationship-prompt.js";
 import { mountLifeWorkspace } from "./life-workspace.js";
@@ -18127,7 +18127,7 @@ function renderSettings() {
   const naturalSilence = checkboxField(
     "自然沉默", world.decider.natural_silence === true,
     value => (world.decider.natural_silence = value),
-    { hint: "默认关闭：进入接话请求后直接生成回应，不因没话想说而旁听。开启：允许她选择不说。新消息接话与浏览后接话共用；睡眠、授权、过期话题和生成失败仍会停止发送。" },
+    { hint: "默认关闭，接话请求直接生成回应；开启后允许选择不说。新消息与浏览接话共用，仍遵守作息、授权和话题时效。" },
   );
   naturalSilence.querySelector("input").setAttribute("aria-label", "自然沉默");
   interject._fields.appendChild(naturalSilence);
