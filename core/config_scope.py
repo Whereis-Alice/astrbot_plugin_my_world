@@ -16,6 +16,7 @@ GLOBAL_KEYS = frozenset(
         "admin_ids",
         "proactive_chat_paused",
         "proactive_session_whitelist",
+        "life_share_session_whitelist",
         "wizard_done",
         "schema_version",
         "default_actions_disabled",
@@ -139,10 +140,17 @@ class ScopedConfigMixin:
             return True
         if not self.autonomous_speech_allowed(session_id):
             return False
+        if kind == "browse_reply":
+            with self.config_scope(session_id):
+                return bool(self.proactive_chat_allowed(session_id)
+                            and self.world.chat_browse.enabled and self.world.chat_browse.reply_enabled)
         if kind == "participation":
             with self.config_scope(session_id):
                 return bool(self.proactive_chat_allowed(session_id)
                             and self.world.decider.enabled and self.world.decider.message_driven)
+        if kind in {"", "life_share", "schedule", "event"}:
+            if str(session_id or "") not in self._base_runtime["world"].life_share_session_whitelist:
+                return False
         if kind == "schedule":
             with self.config_scope(session_id):
                 return bool(self.world.schedule_speech_enabled)

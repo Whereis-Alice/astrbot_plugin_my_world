@@ -327,7 +327,7 @@ class SendMixin:
                     if contact_reserved:
                         # This delivery already holds its allowance. Rechecking the
                         # ledger would mistake our own reservation for another contact.
-                        return kind not in {"interject", "participation"} or self._now() < outcome.chat_expires_at.get(sid, float("inf"))
+                        return kind not in {"interject", "participation", "browse_reply"} or self._now() < outcome.chat_expires_at.get(sid, float("inf"))
                     return self.contact_speech_allowed(outcome, sid, kind)
                 return (images or kind == "reply" or speakable(lines[i])) and any(
                     self.speech_allowed(sid, kind) and (protected or (
@@ -401,7 +401,7 @@ class SendMixin:
         is_event_speech = bool(kinds & {"event", "schedule"})
         # 排在后面的回话（当时有人跟她说话，她在忙，轮到她时才说）同样不算"主动开口"：
         # 被"主动发言冷却"吞掉的话，对方再也等不到那句回应，而计划上却记成"已经说过了"
-        is_reply_speech = bool(kinds & {"reply", "participation"})
+        is_reply_speech = bool(kinds & {"reply", "participation", "browse_reply"})
         # 已经即时发出去的几句挡不回来：这一轮不能再看冷却，否则群里会"说了一句就没下文"，
         # 那句即时发言也不进聊天记录（下一轮她就不知道自己刚说过）
         spoke_live = bool(outcome.live_messages)
@@ -416,7 +416,7 @@ class SendMixin:
         # 计划里有一句话并不意味着她已经说出口。先收平台回执，再写聊天与冷却。
         delivered: dict[str, list[str]] = {}
         delivered_images: dict[str, int] = {}
-        autonomous_kinds = {"reply", "schedule", "event", "quiet", "participation"}
+        autonomous_kinds = {"reply", "schedule", "event", "quiet", "participation", "browse_reply"}
         autonomous_delivered = False
         autonomous_targets: set[str] = set()
         interject_delivered = False
@@ -464,10 +464,10 @@ class SendMixin:
                     ordered_kinds = [line_kinds[line].popleft() if line_kinds[line] else "reply"
                                      for line in target_ordered]
                     quote_index = next((i for i, kind in enumerate(ordered_kinds)
-                                        if kind in {"interject", "participation"}), 0)
+                                        if kind in {"interject", "participation", "browse_reply"}), 0)
                     with quote_send(target, view.reply_targets.get(target, ""), quote_index), guard_send(
                         lambda sid, i: self.speech_allowed(sid, ordered_kinds[i]) and (
-                            ordered_kinds[i] not in {"interject", "participation"}
+                            ordered_kinds[i] not in {"interject", "participation", "browse_reply"}
                             or (not self.native_turn_busy(sid)
                                 and self._now() < view.chat_expires_at.get(sid, float("inf"))))):
                         accepted = bool(await self.messenger.send_text(target, target_ordered))
@@ -532,6 +532,7 @@ class SendMixin:
                 speech_kinds={"": list(outcome.speech_kinds.get(target, []))},
                 image_kinds={"": list(outcome.image_kinds.get(target, []))})
             await send_target(target, view)
+        outcome.delivered_messages.update(delivered)
         if delivered or delivered_images:
             async with self.session_state(outcome.session_id) as state:
                 if autonomous_delivered:

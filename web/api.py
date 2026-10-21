@@ -2316,19 +2316,23 @@ class WebApiMixin(LifeApiMixin):
         if not isinstance(payload.get("enabled"), bool):
             return error_response("enabled 必须是布尔值")
         world = self.store.raw_world()
-        if "whitelist" in payload:
-            whitelist = payload["whitelist"]
+        for field, key in (("whitelist", "proactive_session_whitelist"),
+                           ("life_share_whitelist", "life_share_session_whitelist")):
+            if field not in payload:
+                continue
+            whitelist = payload[field]
             if not isinstance(whitelist, list) or any(not isinstance(sid, str) or not sid.strip() for sid in whitelist):
-                return error_response("whitelist 必须是会话 ID 列表")
+                return error_response(f"{field} 必须是会话 ID 列表")
             known = {row.session_id for row in self.store.load_sessions().sessions}
             if any(sid not in known for sid in whitelist):
                 return error_response("白名单只能选择已登记的会话")
-            world["proactive_session_whitelist"] = list(dict.fromkeys(whitelist))
+            world[key] = list(dict.fromkeys(whitelist))
         world["proactive_chat_paused"] = not payload["enabled"]
         self.store.save_world(world, reason="更新全局自主发言授权")
         self.engine.reload_config()
         return json_response({"ok": True, "enabled": payload["enabled"],
-                              "whitelist": world.get("proactive_session_whitelist", [])})
+                              "whitelist": world.get("proactive_session_whitelist", []),
+                              "life_share_whitelist": world.get("life_share_session_whitelist", [])})
 
     def _provider_slots(self) -> dict[str, str]:
         """六个模型槽位现在指向哪个 Provider（只给 id，不含 key）。
@@ -2371,7 +2375,8 @@ class WebApiMixin(LifeApiMixin):
         # The immediate master switch is changed only through config/proactive.
         saved = self.store.raw_world()
         world = {**world, "proactive_chat_paused": bool(saved.get("proactive_chat_paused", False)),
-                 "proactive_session_whitelist": saved.get("proactive_session_whitelist", [])}
+                 "proactive_session_whitelist": saved.get("proactive_session_whitelist", []),
+                 "life_share_session_whitelist": saved.get("life_share_session_whitelist", [])}
         try:
             warnings = self.store.save_world(world)
         except ValidationError as exc:
@@ -3501,7 +3506,10 @@ class WebApiMixin(LifeApiMixin):
         session_id = self._scope(payload.get("session"))
         if not session_id:
             return error_response("缺少 session 参数")
-        removed = await self.engine.clear_thoughts(session_id)
+        category = payload.get("category", "all")
+        if not isinstance(category, str) or category not in {"all", "inner", "browse"}:
+            return error_response("未知的内心活动分类")
+        removed = await self.engine.clear_thoughts(session_id, category)
         return json_response({"ok": True, "removed": removed})
 
     async def api_memory_create(self):

@@ -11,12 +11,12 @@ export function openBrowseSettings({world, sessions = [], scopeLabel = "全局�
 
 export function browseSettings({world, sessions = [], el, body}) {
   const draft = {enabled: false, phone: false, computer_nodes: [], sessions: [], cooldown_minutes: 120,
-    daily_max: 3, ...READING, remember_meaningful: true, ...world.chat_browse};
+    daily_max: 3, ...READING, remember_meaningful: true, reply_enabled: false, ...world.chat_browse};
   const readers = [], inputs = {};
   const panel = el("div", "browse-settings");
   const intro = el("div", "browse-intro");
   intro.append(el("span", "people-eyebrow", "安静翻消息"), el("h3", "", "看看消息，也留一点自己的想法"),
-    el("p", "muted", "她可以在空闲时看看近期消息，然后继续自己的生活。提供的设备应符合原有人设；这项日常默认关闭，不会主动发消息。"));
+    el("p", "muted", "她可以在空闲时看看近期消息，然后继续自己的生活。提供的设备应符合原有人设；默认安静阅读，感想单独留在「内心活动 → 翻消息时」。"));
   panel.append(intro);
   const content = el("div", "browse-settings-content");
   function toggle(parent, key, label) {
@@ -66,7 +66,13 @@ export function browseSettings({world, sessions = [], el, body}) {
   content.insertBefore(reading, content.querySelector(".browse-choices"));
   const cadence = el("section", "browse-cadence"); cadence.append(el("h3", "", "多久翻一次"));
   numbers(cadence, [["cooldown_minutes", "两次浏览至少间隔（分钟）", 30, 1440, "分钟"], ["daily_max", "每天最多浏览次数", 1, 12, "次"]]);
+  cadence.append(el("p", "muted", "这是最短间隔。时间到了，会等下一个有新消息、设备可用的空闲时刻；不会打断睡眠或手头的事。次数按开始浏览计算，没有特别感想也算读过。"));
   content.append(cadence);
+  const reply = el("section", "browse-reply");
+  reply.append(el("h3", "", "看完，也可以接一句"));
+  toggle(reply, "reply_enabled", "浏览后允许她判断是否接话");
+  reply.append(el("p", "muted", "默认关闭。开启后仍由她判断，没话想说就安静离开；只接来源会话里仍在进行的话题，可以选择回应哪条消息，不补回过时聊天、不播报自己的生活。发言还需在「设置 → 自主发言」全局白名单中获准，群聊和私聊均可。"));
+  content.append(reply);
   const memory = el("div", "browse-memory");
   toggle(memory, "remember_meaningful", "有持续意义的感受可留下生活记忆");
   memory.append(el("p", "muted", "普通感想保留 24 小时；有意义的感受保留来源，不成为群聊摘要。共享生活组共用次数与冷却，每次阅读仍服从后台预算。读取量越大，单次模型输入消耗越多。"));

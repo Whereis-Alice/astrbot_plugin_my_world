@@ -132,6 +132,7 @@ class ContextIntegrationTests(unittest.IsolatedAsyncioTestCase):
             store.add_session(sid, session_type="group", platform="aiocqhttp", cold_start_node="lobby")
         raw = store.raw_world()
         raw["proactive_session_whitelist"] = [GROUP]
+        raw["life_share_session_whitelist"] = [GROUP]
         raw["calendar"]["auto_generate"] = False
         raw["diary"]["automatic"] = False
         store.save_world(raw)
@@ -184,16 +185,18 @@ class ContextIntegrationTests(unittest.IsolatedAsyncioTestCase):
         system, prompt, _ = self.prompt()
         self.assertNotIn("私下约定的秘密", system + prompt)
 
-    async def test_participation_recovers_related_experience_relationship_and_actual_activity(self):
+    async def test_participation_recovers_related_experience_and_uses_activity_only_when_asked(self):
         self.engine.profiles.touch(GROUP, "alice", name="阿梨", now=self.clock.now())
         self.remember("昨天和阿梨一起修过风车的叶片", related_users=["alice"])
         self.state.current_action = {"type": "read_book", "desc": "正在读航空史"}
         system, prompt, _ = self.prompt()
         self.assertIn("昨天和阿梨一起修过风车", system)
-        self.assertIn("正在读航空史", system)
+        self.assertNotIn("正在读航空史", system)
         self.assertIn("alice", system + prompt)
         self.assertNotIn("可达地点", system)
         self.assertNotIn('"plan"', system)
+        asked_system, _, _ = self.prompt("你现在在做什么？")
+        self.assertIn("正在读航空史", asked_system)
 
     async def test_dream_cannot_be_injected_as_a_real_experience(self):
         self.remember("风车飞上天空", memory_type=DREAM)

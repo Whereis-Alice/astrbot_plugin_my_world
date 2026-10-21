@@ -29,6 +29,7 @@ class ConfigScopeTests(unittest.IsolatedAsyncioTestCase):
         self.store.add_session(B)
         world = self.store.raw_world()
         world["proactive_session_whitelist"] = [A, B]
+        world["life_share_session_whitelist"] = [A, B]
         self.store.save_world(world)
         self.db = AsyncDatabase(self.store.db_path)
         self.addAsyncCleanup(self.db.close)

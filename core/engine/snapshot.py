@@ -474,6 +474,7 @@ class SnapshotMixin:
                     "browse_session": str(item.get("browse_session") or ""),
                     "browse_label": self.session_label(item["browse_session"], state) if item.get("browse_session") else "",
                     "browse_sources": list(item.get("browse_sources") or []),
+                    "browse_replied": bool(item.get("browse_replied")),
                 }
             )
         rows.reverse()
@@ -504,7 +505,7 @@ class SnapshotMixin:
             "这里只记录实际留下的想法。聊后复盘与手动生成不占自主生活预算；"
             "预算用完后，规则决定仍会留下简短选择依据。"
         )
-        return {"session": session_id, "thoughts": rows, "health": {
+        return {"session": session_id, "thoughts": rows, "browse": self.chat_browse_status(state, session_id), "health": {
             "enabled": enabled, "clock_recent": recent,
             "last_tick_at": state.life_updated_at, "last_plan_at": state.last_llm_plan_at,
             "last_thought_at": max((float(row.get("at") or 0) for row in rows), default=0.0),
@@ -525,7 +526,7 @@ class SnapshotMixin:
             "note": note,
         }}
 
-    async def clear_thoughts(self, session_id: str) -> int:
+    async def clear_thoughts(self, session_id: str, category: str = "all") -> int:
         """清掉留下的心里话（只删这一份记录，记忆和日志都不动）。"""
 
         if not session_id:
@@ -534,7 +535,9 @@ class SnapshotMixin:
             before = len(state.thoughts)
             state.thoughts = [
                 item for item in state.thoughts
-                if not thought_visible(
+                if (category == "browse" and not item.get("browse_session"))
+                or (category == "inner" and item.get("browse_session"))
+                or not thought_visible(
                     item, session_id, 0, fallback_session=state.session_id
                 )
             ]

@@ -45,6 +45,8 @@ class ChatBrowseBrowserTests(unittest.TestCase):
         expect(self.page.get_by_label('她有一部手机（随身可用）', exact=True)).not_to_be_checked()
         self.page.get_by_label('空闲时可以安静翻消息', exact=True).check()
         self.page.get_by_label('她有一部手机（随身可用）', exact=True).check()
+        expect(self.page.get_by_label('浏览后允许她判断是否接话', exact=True)).not_to_be_checked()
+        self.page.get_by_label('浏览后允许她判断是否接话', exact=True).check()
         computers = self.page.get_by_role('group', name='哪些地点有电脑', exact=True).get_by_role('checkbox')
         computers.first.check()
         computer = computers.first.input_value()
@@ -60,6 +62,7 @@ class ChatBrowseBrowserTests(unittest.TestCase):
         self.page.wait_for_function('browseWrites.length>0')
         config = self.page.evaluate('browseWrites.at(-1).chat_browse')
         self.assertTrue(config['enabled'] and config['phone'])
+        self.assertTrue(config['reply_enabled'])
         self.assertEqual(config['computer_nodes'], [computer])
         self.assertEqual(config['sessions'], [source])
         self.assertEqual((config['daily_max'], config['max_chars']), (2, 1800))
@@ -69,15 +72,21 @@ class ChatBrowseBrowserTests(unittest.TestCase):
     def test_cancel_keeps_original_device_settings(self):
         self.settings()
         self.page.get_by_label('她有一部手机（随身可用）', exact=True).check()
+        self.page.get_by_label('浏览后允许她判断是否接话', exact=True).check()
         self.page.locator('#dialog-cancel').click()
         self.settings()
         expect(self.page.get_by_label('她有一部手机（随身可用）', exact=True)).not_to_be_checked()
+        expect(self.page.get_by_label('浏览后允许她判断是否接话', exact=True)).not_to_be_checked()
         self.assertEqual(self.errors, [])
 
     def test_reading_feelings_have_collapsible_safe_evidence_and_responsive_layout(self):
         self.page.evaluate("""() => {
           const read = AstrBotPluginPage.apiGet;
-          AstrBotPluginPage.apiGet=(key,params)=>key==='thoughts'?Promise.resolve({session:params.session,thoughts:[{
+          AstrBotPluginPage.apiGet=(key,params)=>key==='thoughts'?Promise.resolve({session:params.session,
+          browse:{reason:'等待最短浏览间隔结束',started_today:2,daily_max:10,cooldown_minutes:120,
+            next_at:Date.now()/1000+3600,last_read_at:Date.now()/1000-3600,last_result:'feeling',
+            reply_enabled:false,reply_allowed:false,note:'空闲、有未读消息和可用设备时才浏览。'},
+          thoughts:[{at:Date.now()/1000,source:'聊完后',content:'下次再问问那盆花长得怎么样。'}, {
             at:Date.now()/1000,node_name:'窗边',source:'翻消息时',browse_session:'qq:GroupMessage:1001',browse_label:'午后茶室 · 群 1001',
             content:'听他们聊起窗边的花，也想在自己的窗边慢慢养一盆。',
             detail:{env:'窗边',state:'browsing',mood:'平静',intent:'安静看看，然后继续自己的生活'},
@@ -86,8 +95,17 @@ class ChatBrowseBrowserTests(unittest.TestCase):
         }""")
         self.page.locator('button[data-tab="thoughts"]').click()
         expect(self.page.locator('.thought-row')).to_have_count(1)
+        expect(self.page.locator('.thought-row')).to_contain_text('下次再问问')
+        expect(self.page.locator('#thoughts-browse-status')).to_be_hidden()
+        self.page.get_by_role('tab', name='翻消息时', exact=True).click()
+        expect(self.page.locator('.thought-row')).to_have_count(1)
         expect(self.page.locator('.thought-row')).to_contain_text('午后茶室 · 群 1001')
         expect(self.page.locator('.thought-row')).to_contain_text('翻消息中')
+        expect(self.page.locator('#thoughts-browse-status')).to_contain_text('2 / 10')
+        expect(self.page.locator('#thoughts-browse-status')).to_contain_text('至少间隔 120 分钟')
+        self.page.get_by_role('button', name='浏览设置', exact=True).click()
+        expect(self.page.locator('#dialog-title')).to_have_text('手机与电脑')
+        self.page.locator('#dialog-cancel').click()
         expect(self.page.locator('.thought-browse-sources')).not_to_have_attribute('open', '')
         self.page.locator('.thought-browse-sources summary').click()
         expect(self.page.locator('.thought-browse-sources p')).to_contain_text('<img')
@@ -98,6 +116,28 @@ class ChatBrowseBrowserTests(unittest.TestCase):
             self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'))
             self.host.screenshot(path=str(self.shots/f'browse-thought-{palette}-{width}.png'))
         self.assertIsNone(self.page.evaluate('window.badBrowse'))
+        self.assertEqual(self.errors, [])
+
+    def test_clear_only_current_thought_category_and_keyboard_tabs(self):
+        self.page.evaluate("""() => {
+          const post = AstrBotPluginPage.apiPost; window.clearedThoughts=[];
+          AstrBotPluginPage.apiPost=(key,data)=>{
+            if(key==='thoughts/clear'){clearedThoughts.push(structuredClone(data));return Promise.resolve({ok:true,removed:1});}
+            return post(key,data);
+          };
+        }""")
+        self.page.locator('button[data-tab="thoughts"]').click()
+        self.page.get_by_role('tab', name='心里的话', exact=True).press('End')
+        expect(self.page.get_by_role('tab', name='翻消息时', exact=True)).to_have_attribute('aria-selected', 'true')
+        self.page.locator('#thoughts-clear').click()
+        self.page.locator('#dialog-ok').click()
+        self.page.wait_for_function('clearedThoughts.length===1')
+        self.assertEqual(self.page.evaluate('clearedThoughts[0].category'), 'browse')
+        self.page.get_by_role('tab', name='翻消息时', exact=True).press('Home')
+        self.page.locator('#thoughts-clear').click()
+        self.page.locator('#dialog-ok').click()
+        self.page.wait_for_function('clearedThoughts.length===2')
+        self.assertEqual(self.page.evaluate('clearedThoughts[1].category'), 'inner')
         self.assertEqual(self.errors, [])
 
     def test_settings_dark_light_and_phone_fit_dialog(self):

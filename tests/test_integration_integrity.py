@@ -31,6 +31,7 @@ class IntegrationIntegrityTests(unittest.IsolatedAsyncioTestCase):
         engine = self.plugin.engine
         world = self.plugin.store.raw_world()
         world["proactive_session_whitelist"] = [self.session]
+        world["life_share_session_whitelist"] = [self.session]
         self.plugin.store.save_world(world)
         engine.reload_config()
         self.plugin.typing_delay_for = lambda _text: .001

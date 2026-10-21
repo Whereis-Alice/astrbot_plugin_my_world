@@ -1,4 +1,4 @@
-"""Quiet reading: bounded evidence, isolated feelings, no sends/tools or replay."""
+"""Quiet reading with isolated feelings and an explicitly optional reply."""
 import asyncio
 import copy
 import json
@@ -10,6 +10,7 @@ from core.json_actions import PlannedAction
 from core.models import ActionDef, ChatBrowseConfig, normalize_legacy_keys
 from core.engine.models import MessageContext
 from core.ports import LLMReply
+from core.speech_policy import reply_target
 from core.state import WorldState
 from tests import test_engine as fixture
 
@@ -48,18 +49,20 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
             thought_visible(tagged, G, self.clock.now(), fallback_session=S)
         )
 
-    async def prepare(self, source=S):
-        self.configure()
+    async def prepare(self, source=S, message_id="", **config):
+        self.configure(**config)
         async with self.engine.session_state(S) as state:
             state.state, state.current_action, state.current_plan = "idle", None, None
             state.energy = .8
-            self.note(state, origin=source)
+            self.note(state, origin=source, message_id=message_id)
             self.assertTrue(self.engine.start_chat_browse(state, "browse_phone"))
             return copy.deepcopy(state.current_action)
 
-    async def complete(self, action, **payload):
+    async def complete(self, action, decision=None, **payload):
         self.llm.replies = [json.dumps({"inner": "也想在自己的窗边留一小盆花。", "source_seqs": [action["browse_rows"][0]["seq"]],
             "meaningful": False, "valence_delta": .01, **payload}, ensure_ascii=False)]
+        if decision is not None:
+            self.llm.replies.append(decision)
         await self.engine._complete_chat_browse(S, action["id"])
         return await self.engine.load_state(S)
 
@@ -232,9 +235,149 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
         action = await self.prepare()
         state = await self.complete(action, inner="", source_seqs=[])
         self.assertEqual(state.thoughts, [])
+        status = self.engine.chat_browse_status(state, S)
+        self.assertEqual((status["started_today"], status["completed_today"], status["last_result"]), (1, 1, "quiet"))
+        self.assertEqual(status["reason"], "等待最短浏览间隔结束")
         self.clock.advance(7201)
         self.assertFalse(self.engine.start_chat_browse(state, "browse_phone"))
         self.assertFalse(any(row["source"] == "chat_browse" for row in self.engine.memory.db.query_memories(session_id=S)))
+
+    async def test_idle_reading_no_longer_depends_on_random_chance(self):
+        self.configure(cooldown_minutes=120)
+        async with self.engine.session_state(S) as state:
+            self.note(state)
+            state.energy = .8
+            self.engine.rng = Mock(random=Mock(return_value=1), choice=Mock(return_value="browse_phone"), randint=Mock(return_value=3))
+            self.assertTrue(self.engine.maybe_start_chat_browse(state))
+        self.engine.rng.random.assert_not_called()
+
+    async def test_enabled_reply_can_still_choose_silence_and_scene_is_not_retried(self):
+        action = await self.prepare(reply_enabled=True)
+        state = await self.complete(action, decision='{"say":"","reply_to":""}')
+        self.assertEqual(len(self.llm.calls), 2)
+        self.assertEqual(self.messenger.sent, [])
+        self.assertFalse(state.thoughts[-1]["browse_replied"])
+        self.assertIsNone(await self.engine.maybe_participate(S, source="browse"))
+        self.assertEqual(len(self.llm.calls), 2)
+
+    async def test_reply_uses_live_target_and_quote_without_life_sharing_or_message_driven(self):
+        action = await self.prepare(reply_enabled=True)
+        self.engine.world.life_share_session_whitelist = []
+        self.engine.world.decider.message_driven = False
+        # A stable reading identity was captured before changing message-driven config.
+        async with self.engine.session_state(S) as state:
+            state.current_action["identity"] = self.engine._browse_identity()
+            self.note(state, "这盆花该放哪里？", message_id="flower-live")
+        quotes = []
+        async def send(target, messages):
+            quotes.append((target, reply_target(target)))
+            self.messenger.sent.append((target, list(messages)))
+            return True
+        self.messenger.send_text = send
+        state = await self.complete(action, decision='{"say":"窗边有散光的地方就很好。","reply_to":"m2"}')
+        self.assertEqual(self.messenger.sent, [(S, ["窗边有散光的地方就很好。"])])
+        self.assertEqual(quotes, [(S, "flower-live")])
+        self.assertTrue(state.thoughts[-1]["browse_replied"])
+        self.assertFalse(state.awaiting_reply)
+        self.assertEqual(self.engine.contact_status(S)["left"], 6)
+        self.assertIn("不主动介绍自己的日程", self.llm.calls[1]["system_prompt"])
+
+    async def test_expired_chat_is_not_replied_to_after_reading(self):
+        action = await self.prepare(reply_enabled=True)
+        self.clock.advance(901)
+        state = await self.complete(action, decision='{"say":"过时的接话"}')
+        self.assertEqual(len(self.llm.calls), 1)
+        self.assertEqual(self.messenger.sent, [])
+        self.assertEqual(state.chat_browsing["sessions"][S]["result"], "feeling")
+
+    async def test_reading_duration_does_not_expire_the_message_she_just_read(self):
+        action = await self.prepare(reply_enabled=True, message_id="flower-browsed")
+        self.clock.advance(8 * 60)
+        quotes = []
+        async def send(target, messages):
+            quotes.append((target, reply_target(target)))
+            self.messenger.sent.append((target, list(messages)))
+            return True
+        self.messenger.send_text = send
+        state = await self.complete(action, decision='{"say":"花开在窗边真好。","reply_to":"m1"}')
+        self.assertEqual(len(self.llm.calls), 2)
+        self.assertEqual(self.messenger.sent, [(S, ["花开在窗边真好。"])])
+        self.assertEqual(quotes, [(S, "flower-browsed")])
+        self.assertTrue(state.thoughts[-1]["browse_replied"])
+
+    async def test_browse_reply_expiring_during_generation_is_not_sent(self):
+        action = await self.prepare(reply_enabled=True)
+        self.clock.advance(8 * 60)
+        self.llm.replies = ['{"say":"已经错过的话题"}']
+        original = self.llm.generate
+        async def slow(**kwargs):
+            self.clock.advance(7 * 60 + 1)
+            return await original(**kwargs)
+        self.llm.generate = slow
+        self.engine._ask_judge = AsyncMock(return_value=json.dumps({
+            "inner": "看完了，先不说话。", "source_seqs": [action["browse_rows"][0]["seq"]]}))
+        await self.engine._complete_chat_browse(S, action["id"])
+        state = await self.engine.load_state(S)
+        self.assertEqual(len(self.llm.calls), 1)
+        self.assertEqual(self.messenger.sent, [])
+        self.assertFalse(state.thoughts[-1]["browse_replied"])
+        self.assertEqual(state.chat_browsing["sessions"][S]["result"], "feeling")
+
+    async def test_revoking_speech_during_reading_preserves_feeling_and_stops_reply(self):
+        action = await self.prepare(reply_enabled=True)
+        async def revoke(*args, **kwargs):
+            self.engine.world.proactive_session_whitelist = []
+            return json.dumps({"inner": "读完只留一点自己的想法", "source_seqs": [action["browse_rows"][0]["seq"]]})
+        self.engine._ask_judge = AsyncMock(side_effect=revoke)
+        await self.engine._complete_chat_browse(S, action["id"])
+        state = await self.engine.load_state(S)
+        self.assertEqual(state.thoughts[-1]["content"], "读完只留一点自己的想法")
+        self.assertEqual(self.llm.calls, [])
+        self.assertEqual(self.messenger.sent, [])
+
+    async def test_normal_reply_in_progress_defers_optional_browse_reply(self):
+        action = await self.prepare(reply_enabled=True)
+        turn = {"session_id": S, "started_at": self.clock.now()}
+        self.engine.begin_native_turn(turn)
+        state = await self.complete(action, decision='{"say":"不该抢答"}')
+        self.assertEqual(len(self.llm.calls), 1)
+        self.assertEqual(self.messenger.sent, [])
+        self.assertTrue(state.thoughts)
+
+    async def test_browse_reply_can_use_private_source_without_leaking_to_shared_group(self):
+        self.add_group(sessions=[S, P])
+        action = await self.prepare(source=P, reply_enabled=True)
+        self.engine.world.life_share_session_whitelist = []
+        state = await self.complete(action, decision='{"say":"那就把花放在窗边试试。"}')
+        self.assertEqual(self.messenger.sent, [(P, ["那就把花放在窗边试试。"])])
+        self.assertEqual(state.thoughts[-1]["browse_session"], P)
+        self.assertTrue(state.thoughts[-1]["browse_replied"])
+        self.assertEqual((await self.engine.thoughts_payload(S))["thoughts"], [])
+
+    async def test_browse_permission_does_not_grant_speech_in_other_shared_sessions(self):
+        self.add_group(sessions=[S, P])
+        action = await self.prepare(source=P, reply_enabled=True)
+        self.engine.world.proactive_session_whitelist = [S]
+        state = await self.complete(action, decision='{"say":"不该发到私聊"}')
+        self.assertEqual(self.messenger.sent, [])
+        self.assertEqual(len(self.llm.calls), 1)
+        self.assertTrue(state.thoughts)
+
+    async def test_clear_browse_subpage_preserves_progress_inner_and_other_source(self):
+        self.add_group(sessions=[S, P])
+        action = await self.prepare()
+        state = await self.complete(action)
+        async with self.engine.session_state(S) as state:
+            state.add_thought("普通生活想法", source="自主生活")
+            state.add_thought("只属于私聊的阅读感想", source="翻消息时")
+            state.thoughts[-1].update(browse_session=P, expires_at=self.clock.now() + 3600)
+            progress = copy.deepcopy(state.chat_browsing)
+        self.assertEqual(await self.engine.clear_thoughts(S, "browse"), 1)
+        state = await self.engine.load_state(S)
+        self.assertEqual([row["content"] for row in state.thoughts], ["普通生活想法", "只属于私聊的阅读感想"])
+        self.assertEqual(state.chat_browsing, progress)
+        self.assertEqual(await self.engine.clear_thoughts(S, "inner"), 1)
+        self.assertEqual([row["content"] for row in (await self.engine.load_state(S)).thoughts], ["只属于私聊的阅读感想"])
 
     async def test_empty_feeling_without_citations_still_consumes_the_reading_cursor(self):
         action = await self.prepare()
@@ -270,7 +413,7 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
         self.configure()
         async with self.engine.session_state(S) as state:
             self.note(state)
-            for change in [{"state": "sleeping"}, {"state": "drowsy"}, {"energy": .3}, {"current_action": {"type": "read"}}]:
+            for change in [{"state": "sleeping"}, {"state": "drowsy"}, {"energy": .2}, {"current_action": {"type": "read"}}]:
                 saved = {key: getattr(state, key) for key in change}
                 for key, value in change.items():
                     setattr(state, key, value)

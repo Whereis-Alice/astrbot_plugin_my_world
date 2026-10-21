@@ -17,7 +17,12 @@ from ..models import CHAT_BROWSE_IDS
 class ChatBrowseMixin:
     def _browse_identity(self) -> str:
         # Stable across clock/background contexts, unlike a per-turn life lease.
-        return hashlib.sha256(self.world.model_dump_json().encode()).hexdigest()
+        config = self.world.model_dump(mode="json")
+        # Revoking speech must stop the optional reply, not throw away a reading.
+        for key in ("proactive_chat_paused", "proactive_session_whitelist", "life_share_session_whitelist"):
+            config.pop(key, None)
+        config["chat_browse"].pop("reply_enabled", None)
+        return hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
 
     def _browse_sources(self, state) -> list[str]:
         config = self.world.chat_browse
@@ -27,7 +32,7 @@ class ChatBrowseMixin:
     def _browse_ready(self, state, action_id: str) -> bool:
         config, now = self.world.chat_browse, self._now()
         book = state.chat_browsing
-        if (not config.enabled or state.is_sleeping or state.state == "drowsy" or state.energy < .4
+        if (not config.enabled or state.is_sleeping or state.state == "drowsy" or state.energy < .25
                 or (self.world.sleep.mode == "autonomous" and state.sleep_rhythm.get("decision") == "sleep")
                 or self.life_choice(state)["kind"] in {"rest", "event", "schedule"}
                 or now < float(book.get("next_at") or 0)
@@ -40,10 +45,50 @@ class ChatBrowseMixin:
         if state.current_action or state.current_plan:
             return False
         devices = [aid for aid in sorted(CHAT_BROWSE_IDS) if self._browse_ready(state, aid)]
-        # A free-time option, not a response to each arriving message.
-        if not devices or self.rng.random() >= .12:
+        # The first suitable free moment after the minimum gap. Another random
+        # 12% lottery made a two-hour gap silently turn into most of a day.
+        if not devices:
             return False
         return self.start_chat_browse(state, self.rng.choice(devices))
+
+    def chat_browse_status(self, state, session_id: str) -> dict:
+        """Read-only diagnostics; an empty feeling is still a completed reading."""
+        config, now, book = self.world.chat_browse, self._now(), state.chat_browsing
+        progress = (book.get("sessions") or {}).get(session_id) or {}
+        count = int(book.get("count") or 0) if book.get("day") == self._today_key(now) else 0
+        action = state.current_action or {}
+        if not config.enabled:
+            reason = "未开启空闲浏览"
+        elif action.get("type") in CHAT_BROWSE_IDS:
+            reason = "正在翻阅消息" if not action.get("inference_started") else "正在消化刚读过的消息"
+        elif state.is_sleeping or state.state == "drowsy":
+            reason = "正在休息，醒来后再看"
+        elif state.energy < .25:
+            reason = "精力偏低，先休息恢复"
+        elif count >= config.daily_max:
+            reason = "今天的浏览次数已用完"
+        elif now < float(book.get("next_at") or 0):
+            reason = "等待最短浏览间隔结束"
+        elif action or state.current_plan:
+            reason = "先做完手头的事，空闲时再看"
+        elif self.life_choice(state)["kind"] in {"rest", "event", "schedule"} or (
+                self.world.sleep.mode == "autonomous" and state.sleep_rhythm.get("decision") == "sleep"):
+            reason = "先处理当前生活安排或休息"
+        elif not (config.phone or state.node_id in config.computer_nodes):
+            reason = "当前位置没有可用设备"
+        elif not any(reading_view(state, sid, config, now) for sid in self._browse_sources(state)):
+            reason = "目前没有可读的新消息"
+        else:
+            reason = "条件已就绪，下次空闲决策时浏览"
+        return {"enabled": config.enabled, "reason": reason, "started_today": count,
+            "daily_max": config.daily_max, "cooldown_minutes": config.cooldown_minutes,
+            "next_at": float(book.get("next_at") or 0), "last_read_at": progress.get("at", 0),
+            "completed_today": int(progress.get("completed") or 0) if progress.get("day") == self._today_key(now) else None,
+            "last_result": progress.get("result", ""), "reply_enabled": config.reply_enabled,
+            "last_error_at": float(book.get("last_error_at") or 0),
+            "reply_allowed": self.speech_allowed(session_id, "browse_reply"),
+            "shared": len(self.group_sessions(state.session_id)) > 1,
+            "note": "间隔是最短冷却，不是定时任务；空闲、有未读消息和可用设备时才浏览。读完可以没有感想，也可以不接话。"}
 
     def start_chat_browse(self, state, action_id: str) -> bool:
         if state.current_action or state.current_plan or not self._browse_ready(state, action_id):
@@ -109,6 +154,7 @@ class ChatBrowseMixin:
 
     @session_scoped
     async def _complete_chat_browse(self, session_id: str, action_id: str) -> None:
+        completed = False
         async with self.session_state(session_id) as state:
             action = state.current_action or {}
             if action.get("id") != action_id:
@@ -143,10 +189,25 @@ class ChatBrowseMixin:
                 self._stop_chat_browse(state, snapshot)
                 return
             if isinstance(payload, dict) and isinstance(payload.get("inner"), str):
-                self._apply_browse_feeling(state, snapshot, payload)
+                completed = self._apply_browse_feeling(state, snapshot, payload)
+            if not completed:
+                state.chat_browsing["last_error_at"] = self._now()
             self._stop_chat_browse(state, snapshot)
 
-    def _apply_browse_feeling(self, state, action: dict, payload: dict) -> None:
+        # Reading and speaking have different scopes and authorization. Only the
+        # source conversation's still-live scene may be considered, through the
+        # same bounded response/quote path as normal participation, with a short
+        # look-back after reading. No historical replay, tools or forced speech.
+        target = snapshot["browse_session"]
+        if completed and self.speech_allowed(target, "browse_reply"):
+            outcome = await self.maybe_participate(target, source="browse")
+            async with self.session_state(session_id) as state:
+                sent = bool(outcome and outcome.delivered_messages.get(target))
+                for thought in state.thoughts:
+                    if thought.get("browse_id") == action_id:
+                        thought["browse_replied"] = sent
+
+    def _apply_browse_feeling(self, state, action: dict, payload: dict) -> bool:
         now, sid = self._now(), action["browse_session"]
         rows = action["browse_rows"]
         valid_seqs = {row["seq"] for row in rows}
@@ -156,23 +217,28 @@ class ChatBrowseMixin:
             # An empty feeling needs no citation. Missing citation must still move
             # the reading cursor, otherwise the same chat is read forever.
             if text:
-                return
+                return False
             cited = []
         elif any(type(seq) is not int or seq not in valid_seqs for seq in cited):
-            return
+            return False
         if text and not cited:
-            return
+            return False
         progress = dict(state.chat_browsing.get("sessions") or {})
-        progress[sid] = {"seq": max(valid_seqs), "at": now}
+        previous = progress.get(sid) or {}
+        day = self._today_key(now)
+        progress[sid] = {"seq": max(valid_seqs), "at": now, "day": day,
+            "completed": (int(previous.get("completed") or 0) if previous.get("day") == day else 0) + 1,
+            "result": "feeling" if text else "quiet"}
         state.chat_browsing["sessions"] = {key: value for key, value in progress.items() if key in self._browse_sources(state)}
+        state.chat_browsing.pop("last_error_at", None)
         expire_feelings(state, now)
         if not text:
-            return
+            return True
         quotes = [row for row in rows if row["seq"] in cited][:2]
         state.add_thought(text, source="翻消息时", detail={"env": self._node_name(state.node_id), "state": "browsing",
             "mood": state.mood, "intent": "安静看看，然后继续自己的生活"})
         thought = state.thoughts[-1]
-        thought.update(at=now, browse_session=sid, expires_at=now + 24 * 3600,
+        thought.update(at=now, browse_session=sid, browse_id=action["id"], browse_replied=False, expires_at=now + 24 * 3600,
                        browse_sources=[{"seq": row["seq"], "at": row["at"], "name": row["name"], "text": row["text"][:100]} for row in quotes])
         try:
             delta = float(payload.get("valence_delta") or 0)
@@ -191,3 +257,4 @@ class ChatBrowseMixin:
                 scope="group", weight=.3, conflict_policy="skip_conflict",
                 context=json.dumps({"kind": "chat_browse", "session": sid, "at": now, "reason": reason,
                                     "source_seqs": cited[:20]}, ensure_ascii=False))
+        return True

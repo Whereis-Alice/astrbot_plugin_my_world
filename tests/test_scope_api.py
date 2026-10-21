@@ -17,15 +17,41 @@ class ScopeApiTests(unittest.IsolatedAsyncioTestCase):
         stale = self.plugin.store.raw_world()
         result = await self.call("config/proactive", method="POST", enabled=True, whitelist=[self.session])
         self.assertEqual(result["status_code"], 200, result)
+        self.assertTrue(self.plugin.engine.speech_allowed(self.session, "participation"))
+        self.assertFalse(self.plugin.engine.speech_allowed(self.session, "event"))
+        result = await self.call("config/proactive", method="POST", enabled=True,
+                                 life_share_whitelist=[self.session])
+        self.assertEqual(result["status_code"], 200, result)
         self.assertTrue(self.plugin.engine.speech_allowed(self.session, "event"))
         await self.call("config/world", method="POST", world=stale)
         self.assertEqual(self.plugin.engine.world.proactive_session_whitelist, [self.session])
+        self.assertEqual(self.plugin.engine.world.life_share_session_whitelist, [self.session])
         for bad in ("all", [42], ["unregistered"], [""]):
             result = await self.call("config/proactive", method="POST", enabled=True, whitelist=bad)
             self.assertEqual(result["status_code"], 400)
         result = await self.call("config/proactive", method="POST", config_scope=self.session, enabled=True, whitelist=[])
         self.assertEqual(result["status_code"], 200)
         self.assertFalse(self.plugin.engine.speech_allowed(self.session, "schedule"))
+
+    async def test_invalid_life_whitelist_does_not_partially_change_global_permissions(self):
+        before = self.plugin.store.raw_world()
+        for bad in ("all", [42], ["unregistered"], [""]):
+            result = await self.call("config/proactive", method="POST", enabled=False,
+                                     whitelist=[self.session], life_share_whitelist=bad)
+            self.assertEqual(result["status_code"], 400, result)
+            self.assertEqual(self.plugin.store.raw_world(), before)
+
+    async def test_clear_thought_category_is_validated(self):
+        self.plugin.engine.clear_thoughts = AsyncMock(return_value=1)
+        result = await self.call("thoughts/clear", method="POST", session=self.session, category="browse")
+        self.assertEqual(result["status_code"], 200)
+        self.plugin.engine.clear_thoughts.assert_awaited_once_with(self.session, "browse")
+        self.plugin.engine.clear_thoughts.reset_mock()
+        for invalid in ("unknown", None, [], {}):
+            result = await self.call("thoughts/clear", method="POST", session=self.session, category=invalid)
+            self.assertEqual(result["status_code"], 400)
+        self.plugin.engine.clear_thoughts.assert_not_awaited()
+
     async def asyncSetUp(self):
         self.module = load_plugin_module()
         directory = tempfile.TemporaryDirectory()

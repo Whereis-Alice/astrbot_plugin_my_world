@@ -9,6 +9,7 @@ from ..models import (
 )
 from ..mood import day_mood_branch
 from ..state import WorldState
+from ..speech_policy import speech_origin
 from .constants import (
     ASK_ABOUT_CURIOSITY,
     OUTDOOR_HINT_HOURS,
@@ -96,6 +97,7 @@ class CuddleMixin:
         rows.sort(key=lambda item: (-item["affinity"], item["user_id"]))
         return rows
 
+    @speech_origin("outreach")
     async def _maybe_desire_push(
         self,
         state: WorldState,
@@ -251,6 +253,7 @@ class CuddleMixin:
             "last_push_at": float(getattr(state, "desire_push_at", 0.0) or 0.0),
         }
 
+    @speech_origin("outreach")
     async def _maybe_miss_push(
         self,
         state: WorldState,
@@ -294,7 +297,7 @@ class CuddleMixin:
             "若决定联系，按话题隐私与场合选择群聊或私聊。\n"
             "注意：**换地方说 ≠ 把刚才那句话再说一遍**。"
             "如果你刚在群里说过一句、没人理，那就别把它原样搬到私聊——"
-            "要么接着往下说（“刚才那个…”），要么说点别的（你正在做的事、你自己的事）。\n"
+            "没有回应就先放下；有新的具体联系缘由再联系，不借自己的生活进展另起汇报。\n"
             f"他现在能在这些地方跟你说上话：{where or '（还没记录到他最近在哪儿说话）'}。\n"
             + self.autonomous_prompt_note(state)
             + "\n按你自己的节奏安排这一轮要做什么，输出计划 JSON。"

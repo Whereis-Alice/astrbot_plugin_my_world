@@ -8,7 +8,7 @@ import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js?v=4
 import { memorySearchFields } from "./memory-settings.js";
 import { relationshipPromptEditor } from "./relationship-prompt.js";
 import { mountLifeWorkspace } from "./life-workspace.js";
-import { openBrowseSettings } from "./browse-settings.js";
+import { openBrowseSettings } from "./browse-settings.js?v=4.33.0";
 import { personAvatar, personColor, bindPeopleSort } from "./people-ui.js";
 import { openRelationshipRulesEditor } from "./relationship-rules.js";
 import { applyDetailedLevels, DETAILED_LEVELS } from "./relationship-preset.js";
@@ -3358,6 +3358,7 @@ const GLOBAL_CONFIG_KEYS = new Set([
   "admin_ids",
   "proactive_chat_paused",
   "proactive_session_whitelist",
+  "life_share_session_whitelist",
   "wizard_done",
   "schema_version",
   "default_actions_disabled",
@@ -3365,7 +3366,7 @@ const GLOBAL_CONFIG_KEYS = new Set([
 
 function configFingerprint() {
   return JSON.stringify([ui.config.world, ui.config.schedules, ui.config.sessions, [...ui.scopeBlocks].sort()],
-    (key, value) => ["proactive_chat_paused", "proactive_session_whitelist"].includes(key) ? undefined : value);
+    (key, value) => ["proactive_chat_paused", "proactive_session_whitelist", "life_share_session_whitelist"].includes(key) ? undefined : value);
 }
 
 function currentConfigBlock() {
@@ -16020,9 +16021,13 @@ async function loadThoughts() {
   const session = $("thought-session") ? $("thought-session").value : "";
   const requestId = ui.thoughtRequest = (ui.thoughtRequest || 0) + 1;
   $("thoughts-health")?.classList.add("hidden");
+  $("thoughts-browse-status")?.classList.add("hidden");
   list.innerHTML = "";
   ui.thoughtRows = [];
+  ui.browseStatus = null;
   ui.thoughtRenderLimit = 40;
+  renderThoughtsPage();
+  list.replaceChildren();
   if (!session) {
     list.appendChild(el("p", "muted", "还没有白名单会话。"));
     return;
@@ -16043,6 +16048,7 @@ function renderThoughts(data) {
   const list = $("thoughts-list");
   if (!list) return;
   ui.thoughtRows = (data && data.thoughts) || [];
+  ui.browseStatus = data.browse || null;
   const health = $("thoughts-health");
   if (health && data.health) {
     const info = data.health;
@@ -16059,12 +16065,32 @@ function renderThoughtsPage() {
   const list = $("thoughts-list");
   if (!list) return;
   list.innerHTML = "";
-  const rows = ui.thoughtRows || [];
+  const browsing = ui.thoughtTab === "browse";
+  const all = ui.thoughtRows || [];
+  const rows = all.filter(row => Boolean(row.browse_session) === browsing);
+  $("thoughts-content")?.setAttribute("aria-labelledby", browsing ? "thought-tab-browse" : "thought-tab-inner");
+  document.querySelectorAll("[data-thought-tab]").forEach(button => {
+    const selected = (button.dataset.thoughtTab === "browse") === browsing;
+    button.setAttribute("aria-selected", String(selected));
+    button.tabIndex = selected ? 0 : -1;
+    button.onclick = () => {ui.thoughtTab = button.dataset.thoughtTab; ui.thoughtRenderLimit = 40; renderThoughtsPage();};
+    button.onkeydown = event => {
+      if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+        event.preventDefault();
+        const next = event.key === "Home" ? "inner" : event.key === "End" ? "browse" : browsing ? "inner" : "browse";
+        ui.thoughtTab = next; ui.thoughtRenderLimit = 40; renderThoughtsPage(); $("thought-tab-" + next)?.focus();
+      }
+    };
+  });
+  $("thoughts-hint").textContent = browsing
+    ? "安静读过的消息，也会在心里留下回声。这里单独保留最近 24 小时的阅读感想；没有特别感受时，也算一次浏览。"
+    : "聊后的心里话和自主生活的想法，按时间留下。翻消息产生的感想可以在「翻消息时」子页查看。";
+  renderBrowseStatus(browsing);
   const note = $("thoughts-note");
   if (!rows.length) {
     if (note) note.textContent = "";
     list.appendChild(
-      el("p", "muted", "还没有记录：等她说完一轮话，或者自己做一次决定，这里就会有。"),
+      el("p", "muted", browsing ? "这会儿还没有阅读感想。她可能尚未浏览，也可能读过后没有特别感受；浏览进度见上方。" : "还没有记录：等她说完一轮话，或者自己做一次决定，这里就会有。"),
     );
     return;
   }
@@ -16115,7 +16141,7 @@ function renderThoughtsPage() {
 
     if (row.browse_session) {
       const evidence = el("details", "thought-browse-sources");
-      evidence.append(el("summary", "", "阅读依据 · 仅留下感想，未发送消息"));
+      evidence.append(el("summary", "", row.browse_replied ? "阅读依据 · 已自然接话" : "阅读依据 · 仅留下感想，未发送消息"));
       for (const source of row.browse_sources || []) {
         const quote = el("blockquote");
         quote.append(el("small", "muted", `${source.name || "消息"} · ${source.at ? formatStamp(source.at) : "时间未记录"}`), el("p", "", String(source.text || "")));
@@ -16167,19 +16193,53 @@ function renderThoughtsPage() {
 async function clearThoughts() {
   const session = $("thought-session") ? $("thought-session").value : "";
   if (!session) return;
+  const category = ui.thoughtTab === "browse" ? "browse" : "inner";
   const sure = await confirmDialog({
-    title: "清空内心活动",
-    message: "只清掉这一栏留下的心里话；她的状态、记忆、日志和日程都不动。",
+    title: category === "browse" ? "清空阅读感想" : "清空心里的话",
+    message: "只清掉当前子页的记录；其他子页、浏览进度、状态、记忆、日志和日程都不动。",
     confirmText: "清空",
   });
   if (!sure) return;
   try {
-    const result = await apiPost("thoughts/clear", { session });
+    const result = await apiPost("thoughts/clear", { session, category });
     toast(result.removed ? `清掉了 ${result.removed} 条` : "本来就是空的");
     loadThoughts();
   } catch (error) {
     toast(error.message || "清空失败");
   }
+}
+
+function renderBrowseStatus(visible) {
+  const box = $("thoughts-browse-status"), info = ui.browseStatus;
+  if (!box) return;
+  box.classList.toggle("hidden", !visible || !info);
+  box.replaceChildren();
+  if (!visible || !info) return;
+  const head = el("div", "browse-status-heading");
+  head.append(el("span", "panel-eyebrow", "READING / 阅读节奏"), el("strong", "", info.reason || "等待空闲"));
+  const settings = el("button", "ghost small", "浏览设置"); settings.type = "button";
+  settings.onclick = openCurrentBrowseSettings;
+  head.append(settings); box.append(head);
+  const grid = el("div", "browse-status-grid");
+  for (const [label, value, detail] of [
+    [info.shared ? "生活组今日开始" : "今日开始浏览", `${info.started_today || 0} / ${info.daily_max || 0}`, "开始次数，包含中断或未留下感想的浏览"],
+    ["本会话最近读完", info.last_read_at ? formatStamp(info.last_read_at) : "暂无完成记录", info.last_result === "quiet" ? "这次读过了，没有特别感想" : info.last_result === "feeling" ? "留下了一点感想" : "旧版未统计完成次数"],
+    ["最早可再浏览", info.next_at > Date.now() / 1000 ? formatStamp(info.next_at) : "间隔已满足", `至少间隔 ${info.cooldown_minutes || 120} 分钟，仍需等到空闲`],
+    ["浏览后接话", info.reply_enabled ? (info.reply_allowed ? "由她决定" : "未获发言授权") : "安静阅读", "开启也允许沉默；只接仍在进行的话题"],
+  ]) {
+    const item = el("div", "browse-status-item");
+    item.append(el("small", "", label), el("strong", "", value), el("span", "muted", detail)); grid.append(item);
+  }
+  box.append(grid, el("p", "muted", info.note || ""));
+  if (info.last_error_at) box.append(el("p", "muted", `最近一次未能完成阅读：${formatStamp(info.last_error_at)}。浏览未推进，下次空闲时再试；详情可在「模型调用」查看。`));
+}
+
+function openCurrentBrowseSettings() {
+  if (!canEditLifeSettings()) return;
+  openBrowseSettings({world: ui.config.world,
+    sessions: (ui.sessions || []).map(item => ({...item, label: contactSessionLabel(item)})),
+    scopeLabel: $("config-scope").selectedOptions[0]?.textContent || "全局默认",
+    el, openCustomDialog, markDirty});
 }
 
 /* ---------------- 运行记录：每一拍 tick 都干了什么 ---------------- */
@@ -16826,31 +16886,44 @@ function renderProactiveAccess(fields) {
   master.type = "button";
   master.onclick = () => { const input = $("proactive-enabled"); input.checked = !input.checked; input.dispatchEvent(new Event("change")); };
   heading.append(master); box.append(heading);
-  const status = el("p", "proactive-access-note", ui.scope ? "这是全局授权，独立配置不能扩大名单。请在「全局默认」范围修改并应用。" : "只勾选你允许她主动参与的群和私聊；同一生活组的其他会话不会自动获准。名单为空时，她安静生活，仍能正常回复。");
+  const status = el("p", "proactive-access-note", ui.scope ? "这是全局授权，独立配置不能扩大名单。请在「全局默认」范围修改并应用。" : "「主动发言」允许接话和找人；额外勾选「生活分享」才允许她主动说自己的经历、动作进展、早晚安和日程事件。两份名单同时命中才可分享生活，正常被问起时仍能回答。群聊和私聊都可单独选择，共享生活不会共享授权。");
   box.append(status);
   const list = el("div", "proactive-session-list"), selected = new Set(world.proactive_session_whitelist || []);
+  const lifeSelected = new Set(world.life_share_session_whitelist || []);
   const sessions = [...ui.sessions];
-  for (const sid of selected) if (!sessions.some(s => s.session_id === sid)) sessions.push({session_id:sid, note:"已移除的会话 · 请取消授权"});
+  for (const sid of new Set([...selected, ...lifeSelected])) if (!sessions.some(s => s.session_id === sid)) sessions.push({session_id:sid, note:"已移除的会话 · 请取消授权"});
   for (const session of sessions) {
-    const row = el("label", "proactive-session"), input = document.createElement("input");
-    input.type = "checkbox"; input.checked = selected.has(session.session_id); input.disabled = Boolean(ui.scope);
-    input.setAttribute("aria-label", `允许主动发言：${session.note || session.group_name || session.session_id}`);
-    input.onchange = () => { if (input.checked) selected.add(session.session_id); else selected.delete(session.session_id); };
+    const row = el("div", "proactive-session");
     const text = el("span"); text.append(el("strong", "", session.note || session.group_name || sessionShortName(session.session_id)), el("small", "", session.session_id));
-    row.append(input, text); list.append(row);
+    const permissions = el("div", "proactive-session-permissions");
+    for (const [label, selection] of [["主动发言", selected], ["生活分享", lifeSelected]]) {
+      const field = el("label"), input = document.createElement("input");
+      input.type = "checkbox"; input.checked = selection.has(session.session_id); input.disabled = Boolean(ui.scope);
+      input.setAttribute("aria-label", `允许${label}：${session.note || session.group_name || session.session_id}`);
+      input.onchange = () => {
+        if (input.checked) selection.add(session.session_id); else selection.delete(session.session_id);
+        result.textContent = permissionCount();
+      };
+      field.append(input, el("span", "", label)); permissions.append(field);
+    }
+    row.append(text, permissions); list.append(row);
   }
   if (!sessions.length) list.append(el("p", "muted", "还没有登记会话，先去「会话」页添加。"));
   box.append(list);
   const foot = el("div", "proactive-access-foot"), apply = el("button", "primary small", "应用全局白名单");
   apply.type = "button"; apply.disabled = Boolean(ui.scope);
-  const result = el("span", "muted", `已授权 ${selected.size} 个会话`); result.setAttribute("role", "status");
+  const permissionCount = () => `主动发言 ${selected.size} 处 · 可分享生活 ${[...lifeSelected].filter(sid => selected.has(sid)).length} 处`;
+  const result = el("span", "muted", permissionCount()); result.setAttribute("role", "status");
   apply.onclick = async () => {
     apply.disabled = true;
     try {
-      await apiPost("config/proactive", {enabled: !ui.config.world.proactive_chat_paused, whitelist:[...selected]});
+      await apiPost("config/proactive", {enabled: !ui.config.world.proactive_chat_paused,
+        whitelist:[...selected], life_share_whitelist:[...lifeSelected]});
       world.proactive_session_whitelist = [...selected];
-      if (ui.config.global_config) ui.config.global_config.world.proactive_session_whitelist = [...selected];
-      result.textContent = `已生效 · 授权 ${selected.size} 个会话`;
+      world.life_share_session_whitelist = [...lifeSelected];
+      if (ui.config.global_config) Object.assign(ui.config.global_config.world,
+        {proactive_session_whitelist:[...selected], life_share_session_whitelist:[...lifeSelected]});
+      result.textContent = `已生效 · ${permissionCount()}`;
       renderConfigScope(); toast("全局白名单已生效，待发送内容也会重新核验");
     } catch (error) { result.textContent = error.message || "保存失败"; toast(result.textContent); }
     finally { apply.disabled = false; }
@@ -19924,6 +19997,7 @@ function renderSettings() {
       const parsed = JSON.parse(rawArea.value);
       parsed.proactive_chat_paused = ui.config.world.proactive_chat_paused === true;
       parsed.proactive_session_whitelist = [...(ui.config.world.proactive_session_whitelist || [])];
+      parsed.life_share_session_whitelist = [...(ui.config.world.life_share_session_whitelist || [])];
       ui.config.world = parsed;
       renderEverything();
       toast("已应用到编辑器，记得点右上角「保存」");
@@ -21145,8 +21219,7 @@ const lifePage = createLifePage({root: $("tab-life"), apiGet, apiPost, el, toast
     const world = ui.config.world, scope = ui.scope;
     openLifeSettings({world, el, openCustomDialog, markDirty, isCurrent: () => ui.config.world === world && ui.scope === scope});
   },
-  openBrowseSettings: () => openBrowseSettings({world: ui.config.world, sessions: (ui.sessions || []).map(item => ({...item, label: contactSessionLabel(item)})),
-    scopeLabel: $("config-scope").selectedOptions[0]?.textContent || "全局默认", el, openCustomDialog, markDirty}),
+  openBrowseSettings: openCurrentBrowseSettings,
   openCalls: id => { showTab("model-calls"); const input = $("calls-search"); if (input) { input.value = id; input.dispatchEvent(new Event("input")); } },
   openMemories: text => { showTab("memories"); const input = $("memory-keyword"); if (input) { input.value = text; $("memory-search").click(); } },
 });

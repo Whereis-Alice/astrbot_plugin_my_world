@@ -132,6 +132,8 @@ class TickOutcome:
     contact_id: str = field(default_factory=lambda: uuid4().hex)
     contact_tokens: dict[str, str] = field(default_factory=dict)
     contact_people: set[str] = field(default_factory=set)
+    delivered_messages: dict[str, list[str]] = field(default_factory=dict)
+    """Messages accepted by the platform, used to distinguish thinking from speaking."""
 
     def add_speech(self, text: str, session_id: str = "", *, kind: str | None = None) -> None:
         """记一句她要说的：没说给谁就是这一轮的会话，说了就投到那个会话去。

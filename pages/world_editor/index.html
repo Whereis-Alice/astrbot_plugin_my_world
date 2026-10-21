@@ -10,9 +10,9 @@
     <link rel="stylesheet" href="./workbench.css?v=4.29.0" />
     <link rel="stylesheet" href="./people.css?v=4.29.0" />
     <link rel="stylesheet" href="./model-calls.css?v=4.29.0" />
-    <link rel="stylesheet" href="./life.css?v=4.31.0" />
+    <link rel="stylesheet" href="./life.css?v=4.33.0" />
     <link rel="stylesheet" href="./social-learning.css?v=4.29.0" />
-    <link rel="stylesheet" href="./observatory.css?v=4.31.0" />
+    <link rel="stylesheet" href="./observatory.css?v=4.33.0" />
     <!-- 主题在解析样式前就定下来，避免刷新时先闪一下浅色 -->
     <script>
       (function () {
@@ -769,12 +769,19 @@
               <span class="muted" id="thoughts-note"></span>
             </div>
           </div>
-          <p class="hint-line">
+          <div id="thoughts-tabs" class="thoughts-tabs" role="tablist" aria-label="内心活动分类">
+            <button type="button" role="tab" id="thought-tab-inner" aria-controls="thoughts-content" aria-selected="true" data-thought-tab="inner">心里的话</button>
+            <button type="button" role="tab" id="thought-tab-browse" aria-controls="thoughts-content" aria-selected="false" data-thought-tab="browse">翻消息时</button>
+          </div>
+          <p id="thoughts-hint" class="hint-line">
             每聊完一轮、每做一次自主决定，她心里冒出来的那一两句都会留在这儿；
             每条都保留当时的处境、状态、心情和回复对象，越上面越新。
           </p>
           <details id="thoughts-health" class="thoughts-health hidden"><summary></summary><p></p></details>
-          <div id="thoughts-list" class="list" data-keep-text></div>
+          <div id="thoughts-content" role="tabpanel" aria-labelledby="thought-tab-inner">
+            <div id="thoughts-browse-status" class="browse-status hidden" aria-live="polite"></div>
+            <div id="thoughts-list" class="list" data-keep-text></div>
+          </div>
         </section>
 
         <section id="tab-model-calls" class="tab">
@@ -1214,6 +1221,6 @@
       </div>
     </div>
 
-    <script type="module" src="./app.js?v=4.31.0"></script>
+    <script type="module" src="./app.js?v=4.33.0"></script>
   </body>
 </html>

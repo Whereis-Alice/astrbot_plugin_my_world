@@ -350,10 +350,11 @@ class ActionsRunMixin:
         speech_targets = [target]
         if definition.id in {"say", "share"} and not action.send_to:
             speech_targets.extend(outcome.broadcast_targets)
-        if (definition.id in {"say", "share", "poke"} or definition.llm_level in {"tool", "command"}) and not any(
-            self.speech_allowed(sid, outcome.speech_kind) for sid in speech_targets
-        ):
-            outcome.notes.append(f"自主搭话已暂停，跳过发言动作 {definition.id}")
+        speech_kind = "interject" if action.interject and definition.id in {"say", "share"} else outcome.speech_kind
+        can_speak = any(self.speech_allowed(sid, speech_kind) for sid in speech_targets)
+        if (definition.id in {"say", "share", "poke"} or definition.llm_level in {"tool", "command"}) and not can_speak:
+            reason = "生活分享未获全局授权" if outcome.speech_kind in {"", "life_share"} else "自主发言未获授权"
+            outcome.notes.append(f"{reason}，跳过发言动作 {definition.id}")
             if from_plan and state.current_plan is not None:
                 advance(state, status="skipped")
             return False
@@ -562,6 +563,7 @@ class ActionsRunMixin:
                 definition.llm_level == "template"
                 and str(definition.template or "").strip()
                 and self._action_speaks(definition)
+                and can_speak
             ):
                 outcome.add_speech(
                     self.render_template(definition.template, state, node, action),
@@ -652,10 +654,14 @@ class ActionsRunMixin:
                 messages = [message] if message else []
                 if reply_to:
                     outcome.reply_targets[outcome.home()] = reply_to
-        else:
+        elif can_speak or not self._action_speaks(definition):
             messages = await self._instant_output(
                 state, node, definition, action, session_id=outcome.home()
             )
+        else:
+            # Personal activities still happen without permission to narrate
+            # them. Do not spend a generation just to discard its speech.
+            messages = []
         speaker = self._speech_target(state, action, outcome)
         dropped = speaker is None and bool(messages)
         if dropped:

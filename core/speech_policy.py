@@ -50,9 +50,9 @@ def speech_origin(source):
             outcome = bound["outcome"]
             previous = outcome.speech_kind
             if source == "completion":
-                kind = bound["action"].get("speech_kind", previous)
+                kind = bound["action"].get("speech_kind") or previous or "life_share"
             elif source == "sleep":
-                kind = (bound["state"].drowsy_sleep_step or {}).get("speech_kind", "")
+                kind = (bound["state"].drowsy_sleep_step or {}).get("speech_kind") or "life_share"
             elif source == "plan":
                 plan = bound["state"].current_plan or {}
                 outcome.contact_id = plan.get("contact_id") or plan.get("id") or outcome.contact_id
@@ -64,11 +64,12 @@ def speech_origin(source):
                 steps = plan.get("steps") or []
                 index = int(plan.get("current_step") or 0)
                 step = steps[index] if 0 <= index < len(steps) else {}
-                kind = step.get("kind") or ("schedule" if plan.get("source") == "schedule" else "")
+                kind = step.get("kind") or ("schedule" if plan.get("source") == "schedule" else "life_share")
             elif source == "actions":
                 kind = "schedule" if bound.get("from_schedule") else previous
                 if not kind and not bound.get("autonomous", True):
                     kind = "reply"
+                kind = kind or "life_share"
             else:
                 kind = source
             if source == "completion":

@@ -115,6 +115,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         # 专门测"没配工具会被跳过"的用例会自己把它清掉。
         raw = self.store.raw_world()
         raw["proactive_session_whitelist"] = [SESSION, OTHER_SESSION, PRIVATE_SESSION, "aiocqhttp:FriendMessage:2002"]
+        raw["life_share_session_whitelist"] = [SESSION, OTHER_SESSION, PRIVATE_SESSION, "aiocqhttp:FriendMessage:2002"]
         raw.setdefault("events", {}).setdefault("auto", {})["enabled"] = False
         # Calendar and diary generation use the same background model seam.
         # Focused tests opt in so unrelated life-clock tests do not steal their
@@ -11328,7 +11329,10 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         )
         self.stub_landing_choice("2")
         self.clock.set_struct(datetime(2026, 9, 15, 12, 0))
-        ticked = self.schedule_outcome(await self.engine.tick(), "same_landing")
+        outcomes = await self.engine.tick()
+        # Slow local I/O may finish after tick's short foreground wait.
+        await self.engine._schedule_delivery_job
+        ticked = self.schedule_outcome([*outcomes, *self.engine._schedule_model_job.result()], "same_landing")
 
         delivered: list[TickOutcome] = []
         original = self.engine._deliver

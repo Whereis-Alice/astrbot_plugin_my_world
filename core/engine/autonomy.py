@@ -184,10 +184,9 @@ class AutonomyMixin:
     ) -> None:
         """把一份计划挂到状态上并记日志（自主决策与「抵达新地点」共用）。"""
 
-        if outcome.speech_kind in {"reply", "schedule", "event"}:
-            for step in plan.get("steps", []):
-                if isinstance(step, dict) and not step.get("kind"):
-                    step["kind"] = outcome.speech_kind
+        for step in plan.get("steps", []):
+            if isinstance(step, dict) and not step.get("kind"):
+                step["kind"] = outcome.speech_kind or "life_share"
         state.current_plan = plan
         # 留一份「最近一次生成的计划」：做完之后提示词里还要能提到它
         state.last_plan = {

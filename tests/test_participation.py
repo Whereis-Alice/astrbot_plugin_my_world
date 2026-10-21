@@ -34,6 +34,7 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
             store.add_session(sid, session_type=kind, platform="aiocqhttp", cold_start_node="lobby")
         raw = store.raw_world()
         raw["proactive_session_whitelist"] = [GROUP, OTHER, PRIVATE]
+        raw["life_share_session_whitelist"] = [GROUP, OTHER, PRIVATE]
         raw["sleep"]["mode"] = "fixed"
         raw["calendar"]["auto_generate"] = False
         raw["diary"]["automatic"] = False
@@ -569,6 +570,10 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.messenger.sent, [(PRIVATE, ["找到风车的照片了"])])
 
     async def test_prepared_interjection_reconsiders_the_current_scene(self):
+        raw = self.engine.store.raw_world()
+        raw["life_share_session_whitelist"] = []
+        self.engine.store.save_world(raw)
+        self.engine.reload_config()
         await self.chat("下雨，周末不去山上了")
         self.llm.replies = ['{"actions":[]}']
         async with self.engine.session_state(GROUP) as state:

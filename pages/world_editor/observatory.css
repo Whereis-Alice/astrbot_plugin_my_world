@@ -793,6 +793,11 @@ input:focus, select:focus, textarea:focus { box-shadow: 0 0 0 3px var(--accent-s
 .proactive-session input { flex:0 0 17px; width:17px; height:17px; accent-color:var(--accent); }.proactive-session > span { min-width:0; }.proactive-session strong { display:block; font-size:12px; font-weight:500; }.proactive-session small { display:block; font:10px var(--mono); color:var(--muted); overflow-wrap:anywhere; margin-top:5px; }
 .settings .proactive-session { flex-direction:row; justify-content:flex-start; align-items:center; text-align:left; }.settings .proactive-session > span { flex:1; }.proactive-access { scroll-margin-top:110px; }
 .proactive-access-foot { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:15px; }
+.proactive-session-list .proactive-session {align-items:stretch;flex-direction:column;gap:14px;cursor:default;}
+.proactive-session-permissions {display:flex;flex-wrap:wrap;gap:10px 20px;padding-top:10px;border-top:1px solid var(--line);}
+.settings .proactive-session-permissions label {display:flex;flex-direction:row;align-items:center;justify-content:flex-start;gap:8px;margin:0;font-size:11px;color:var(--text-2);cursor:pointer;}
+.proactive-session-permissions input {margin:0;}
+.proactive-session-permissions label:has(input:checked) {color:var(--accent-ink);}
 .proactive-detail { border:1px solid var(--line); border-radius:11px; overflow:hidden; }.proactive-detail > summary { cursor:pointer; padding:14px 16px; font-size:13px; color:var(--text-2); background:var(--surface-highlight); }.proactive-detail > .fields,.proactive-detail > .section-note { margin:16px; }.proactive-advanced-groups { grid-template-columns:minmax(0,1fr)!important; }
 .proactive-controls { padding:16px 18px; border:1px solid var(--line); border-radius:12px; background:linear-gradient(120deg,var(--accent-soft),transparent 85%),var(--surface-highlight); }
 .proactive-controls h4 { margin:0 0 14px; font-size:13px; font-weight:550; color:var(--text); }

@@ -712,7 +712,10 @@ class TickMixin:
         followup_spoke = False
         if want_followup and not self.speech_allowed(outcome.home(), outcome.speech_kind):
             want_followup = False
-            outcome.notes.append("自主搭话已暂停，动作照常完成，不作自主续说")
+            note = ("生活分享未获全局授权，动作照常完成，不作自主续说"
+                    if outcome.speech_kind == "life_share"
+                    else "自主搭话已暂停，动作照常完成，不作自主续说")
+            outcome.notes.append(note)
         if want_followup and self.llm is not None:
             if not detail:
                 # 不是工具动作（做饭、看书…）也要能续说：给她一句"刚刚做了什么"的交代

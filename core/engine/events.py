@@ -123,14 +123,17 @@ class EventsMixin:
 
         if respect_pause and not self.proactive_chat_allowed(state.session_id):
             return "自主搭话已暂停：只安排自己的静默生活，不主动找人、插话或发送问候。日程和事件仍按各自安排执行。"
+        boundary = ("\n生活分享只允许发往额外生活分享白名单；当前会话未授权时，"
+                    "只过自己的生活，不汇报活动、成果、日程或心情。被问到相关事情时正常回答。\n"
+                    if not self.speech_allowed(state.session_id, "life_share") else "")
         hint = self.engagement.hint(state)
         if not hint:
-            return ""
-        return (
+            return boundary
+        return boundary + (
             "# 刚才的情况\n"
             f"{hint}\n"
             "（没人接的时候，下一轮**大概率就别追着说了**——除非这件事真的需要有人回应。"
-            "真想继续说，就说你自己身上发生的事，别对着空气追问。）"
+            "没有新的具体联系缘由就先放下，别对着空气追问或另起生活汇报。）"
         )
 
     def _ensure_abilities(self, state: WorldState) -> dict[str, float]:

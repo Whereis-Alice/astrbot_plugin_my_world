@@ -2314,6 +2314,8 @@ class PersonaConfig(Permissive):
 
 class ChatBrowseConfig(Permissive):
     enabled: bool = False
+    reply_enabled: bool = False
+    """浏览后可判断是否接话；短暂回看近期话题，遵守自主发言总白名单。"""
     phone: bool = False
     computer_nodes: list[str] = Field(default_factory=list, max_length=100)
     sessions: list[str] = Field(default_factory=list, max_length=100)
@@ -2405,6 +2407,8 @@ class WorldConfig(Permissive):
     """全局暂停一切自主发言；生活照常推进，被动回复保留。"""
     proactive_session_whitelist: list[str] = Field(default_factory=list)
     """全局自主发言白名单，按实际目标会话核验；空名单不主动发言。"""
+    life_share_session_whitelist: list[str] = Field(default_factory=list)
+    """主动分享自身生活的额外全局白名单；还需通过自主发言总白名单。"""
     proactive_chat_enabled: bool = True
     """允许自主搭话；默认全局继承，会话可单独关闭。"""
     schedule_speech_enabled: bool = True

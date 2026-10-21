@@ -27,7 +27,7 @@ class ProactiveContactMixin:
         return token
 
     def contact_speech_allowed(self, outcome: TickOutcome, target: str, kind: str) -> bool:
-        if kind == "participation":
+        if kind in {"participation", "browse_reply"}:
             return (not self.native_turn_busy(target)
                     and self._now() < outcome.chat_expires_at.get(target, 0))
         if kind in {"reply", "schedule", "event"}:
@@ -77,7 +77,7 @@ class ProactiveContactMixin:
 
     def _reserve_contact(self, outcome: TickOutcome, target: str, kinds: list[str]) -> tuple[dict | None, str]:
         """No await between checking and reserving; never hold the state lock during send."""
-        if not any(kind not in {"reply", "schedule", "event", "quiet", "participation"} for kind in kinds):
+        if not any(kind not in {"reply", "schedule", "event", "quiet", "participation", "browse_reply"} for kind in kinds):
             return None, ""
         if "interject" in kinds and self._now() >= outcome.chat_expires_at.get(target, float("inf")):
             return None, "刚才的话题已不在现场，这轮不再补插话"

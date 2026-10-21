@@ -15,7 +15,7 @@ SCOPE_BRIDGE = r"""
   const local = {};
   const mapKeys = ['zones', 'zone_edges', 'nodes', 'edges'];
   const actionKeys = ['actions', 'purged_actions', 'idle_life'];
-  const fixed = ['admin_ids', 'proactive_chat_paused', 'proactive_session_whitelist', 'wizard_done', 'schema_version'];
+  const fixed = ['admin_ids', 'proactive_chat_paused', 'proactive_session_whitelist', 'life_share_session_whitelist', 'wizard_done', 'schema_version'];
   const pick = (world, block) => Object.fromEntries(Object.entries(world).filter(([key]) =>
     block === 'map' ? mapKeys.includes(key) : block === 'actions' ? actionKeys.includes(key)
     : ![...mapKeys, ...actionKeys, ...fixed].includes(key)));
@@ -26,6 +26,7 @@ SCOPE_BRIDGE = r"""
       data.sessions.sessions = [
         {session_id: 'test:GroupMessage:100', note: 'Test A', enabled: true},
         {session_id: 'test:GroupMessage:200', note: 'Test B', enabled: true},
+        {session_id: 'test:PrivateMessage:300', note: '私聊主人', enabled: true},
       ];
       data.sessions.groups = [];
       data.global_config = structuredClone({world: data.world, schedules: data.schedules});
@@ -48,6 +49,7 @@ SCOPE_BRIDGE = r"""
         const config = await original.apiGet('config');
         config.world.proactive_chat_paused = !data.enabled;
         if (data.whitelist) config.world.proactive_session_whitelist = data.whitelist;
+        if (data.life_share_whitelist) config.world.life_share_session_whitelist = data.life_share_whitelist;
         await original.apiPost('config/world', {world: config.world});
         return {ok: true};
       }
@@ -67,12 +69,27 @@ class ScopeBrowserTests(unittest.TestCase):
         expect(allow).not_to_be_checked()
         allow.check()
         self.page.get_by_role('button', name='应用全局白名单', exact=True).click()
-        expect(self.page.locator('.proactive-access-foot')).to_contain_text('已生效 · 授权 1 个会话')
+        expect(self.page.locator('.proactive-access-foot')).to_contain_text('已生效 · 主动发言 1 处 · 可分享生活 0 处')
         saved = self.page.evaluate('scopeWrites.at(-1)')
         self.assertEqual(saved['endpoint'], 'config/proactive')
         self.assertEqual(saved['data']['whitelist'], ['test:GroupMessage:100'])
+        self.assertEqual(saved['data']['life_share_whitelist'], [])
+        self.page.get_by_label('允许主动发言：私聊主人', exact=True).check()
+        self.page.get_by_label('允许生活分享：私聊主人', exact=True).check()
+        self.page.get_by_role('button', name='应用全局白名单', exact=True).click()
+        expect(self.page.locator('.proactive-access-foot')).to_contain_text('可分享生活 1 处')
+        saved = self.page.evaluate('scopeWrites.at(-1).data')
+        self.assertEqual(saved['life_share_whitelist'], ['test:PrivateMessage:300'])
+        self.assertEqual(saved['whitelist'], ['test:GroupMessage:100', 'test:PrivateMessage:300'])
+        self.host.screenshot(path=str(self.shots/'life-share-whitelist-desktop.png'))
+        self.host.set_viewport_size({'width':390,'height':844})
+        self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'))
+        self.host.screenshot(path=str(self.shots/'life-share-whitelist-mobile.png'))
+        self.host.set_viewport_size({'width':1440,'height':1000})
         self.page.locator('#config-scope').select_option('test:GroupMessage:200')
         expect(self.page.get_by_role('button', name='应用全局白名单', exact=True)).to_be_disabled()
+        expect(self.page.get_by_label('允许生活分享：私聊主人', exact=True)).to_be_disabled()
+        expect(self.page.get_by_label('允许生活分享：私聊主人', exact=True)).to_be_checked()
         expect(self.page.locator('.proactive-access-note')).to_contain_text('独立配置不能扩大名单')
         self.assertEqual(self.errors, [])
     setUpClass = classmethod(_generation.GenerationBrowserTests.setUpClass.__func__)

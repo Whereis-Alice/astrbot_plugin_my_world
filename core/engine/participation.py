@@ -14,9 +14,15 @@ from .models import TickOutcome
 
 
 class ParticipationMixin:
-    def claim_chat_scene(self, outcome, target: str, rows: list[dict]) -> None:
+    def _participation_window(self, source: str = "message") -> int:
+        # Reading itself lasts 3–8 minutes. A three-minute live window would
+        # expire every message she picked up before she could finish reading.
+        return 900 if source == "browse" else self.world.decider.live_window_seconds
+
+    def claim_chat_scene(self, outcome, target: str, rows: list[dict], *, window: int | None = None) -> None:
         outcome.chat_claims[target] = [str(row["seq"]) for row in rows]
-        outcome.chat_expires_at[target] = max(float(row.get("at") or 0) for row in rows) + self.world.decider.live_window_seconds
+        outcome.chat_expires_at[target] = max(float(row.get("at") or 0) for row in rows) + (
+            self.world.decider.live_window_seconds if window is None else window)
 
     def conversation_scene_hint(self, state, target: str) -> str:
         rows = [row for row in state.recent_chat if self._chat_origin(row, state) == target
@@ -42,21 +48,23 @@ class ParticipationMixin:
                    and self.state_key(str(turn.get("session_id") or "")) == self.state_key(session_id)
                    for turn in getattr(self, "_participation_native_turns", {}).values())
 
-    def live_chat(self, state, session_id: str = "", *, fresh: bool = True) -> list[dict]:
+    def live_chat(self, state, session_id: str = "", *, fresh: bool = True, window: int | None = None) -> list[dict]:
         target = str(session_id or state.session_id)
-        cutoff = self._now() - self.world.decider.live_window_seconds
+        cutoff = self._now() - (self.world.decider.live_window_seconds if window is None else window)
         rows = self.chat_context(state, target) if fresh else state.recent_chat
         return [row for row in rows
                 if self._chat_origin(row, state) == target and not row.get("is_self")
                 and float(row.get("at") or 0) >= cutoff
                 and not self.is_plugin_command(str(row.get("text") or ""))]
 
-    def participation_gate(self, state, target: str) -> str:
+    def participation_gate(self, state, target: str, *, source: str = "message") -> str:
         if not self.is_enabled(target) or not self.proactive_chat_allowed(target):
             return "paused"
-        if not self.world.decider.enabled:
+        if source == "browse" and not self.speech_allowed(target, "browse_reply"):
             return "disabled"
-        if not self.world.decider.message_driven:
+        if source != "browse" and not self.world.decider.enabled:
+            return "disabled"
+        if source != "browse" and not self.world.decider.message_driven:
             return "message_driven_disabled"
         if state.is_sleeping or state.state == STATE_DROWSY or state.energy < .25:
             return "resting"
@@ -75,27 +83,33 @@ class ParticipationMixin:
             return "reply_pending"
         return ""
 
-    def participation_prompt(self, state, target, persona, *, rows=None, request=None):
+    def participation_prompt(self, state, target, persona, *, rows=None, request=None, source="message"):
         """Same builder for production and evaluation; never include another session."""
         if rows is None:
             rows = [row for row in state.recent_chat if self._chat_origin(row, state) == target
-                    and self._now() - float(row.get("at") or 0) <= 600
+                    and self._now() - float(row.get("at") or 0) <= max(600, self._participation_window(source))
                     and not self.is_plugin_command(str(row.get("text") or ""))]
-        from ..context_selection import CONTEXT_GUIDANCE, ContextItem, select_context
+        from ..context_selection import CONTEXT_GUIDANCE, ContextItem, relevance, select_context
         from ..context_sources import life_items
         request = request or self.context_request(state, target, task="participation", rows=rows)
         from hashlib import sha256
         request.life_persona = sha256(persona.encode("utf-8")).hexdigest()[:24]
         rows = self.context_chat(state, request, rows)
-        node = self.node(state.node_id) or self.node(self.default_node_id())
         _, _, style = self.style_for(state, target)
-        action = state.current_action or {}
-        activity = (str(action.get("desc") or action.get("intent") or self.prompts.action_label(action.get("type")))
-                    if action else "自由活动")
-        life = {"place": node.name if node else "", "mood": state.mood,
-                "local_time": self.local_now().isoformat(timespec="minutes"),
-                "activity": activity}
-        materials = life_items(state, request) if self.world.state_dynamics.own_topic_enabled else []
+        life = {"mood": state.mood,
+                "local_time": self.local_now().isoformat(timespec="minutes")}
+        materials = []
+        # Speech uses life evidence only when this conversation actually touches it.
+        # Keep intelligent selection for questions/continuations without offering an
+        # unrelated unfinished project as a new topic every time she joins a chat.
+        if self.world.state_dynamics.own_topic_enabled:
+            materials = [item for item in life_items(state, request)
+                         if relevance(request.query, item.summary + item.detail)]
+            import re
+            if re.search(r"你.{0,6}(?:在(?:哪|做|干)|忙什么|刚才|最近怎么样|今天怎么样|做完)", request.query):
+                node = self.node(state.node_id)
+                action = state.current_action or {}
+                life.update(place=node.name if node else "", activity=str(action.get("desc") or action.get("intent") or "自由活动"))
         for memory in self.context_memories(state, request, rows):
             label = "本会话阅读时的主观感想，非亲历：" if memory.source == "chat_browse" else "相关经历："
             if memory.private_matter:
@@ -108,8 +122,12 @@ class ParticipationMixin:
         background = select_context(request, materials).render()
         profile = self.context_profiles(state, request)
         background = "\n\n".join(part for part in (CONTEXT_GUIDANCE, profile, self.context_emotions(state, request), background) if part)
+        if source == "browse":
+            background += ("\n\n# 刚翻过消息\n你刚安静看过这段对话。看清每条消息距今多久，以及后续是否换了话题、"
+                           "问题是否已解决。回看范围只代表还可以考虑，不代表现在应该回复。"
+                           "自然接得上才说一句；接较早的话时选择引用，话题已结束或没有想说的就放下。")
         result = build_participation_prompt(persona=persona, life=life, rows=rows,
-            now=self._now(), live_window=self.world.decider.live_window_seconds, style=style,
+            now=self._now(), live_window=self._participation_window(source), style=style,
             background=background)
         request.trace["scene"] = {"rows": len(rows), "characters": len(result[1])}
         return result
@@ -127,16 +145,16 @@ class ParticipationMixin:
             return True
         return random.random() < 1 - (1 - p) ** min(len(new), 8)
 
-    async def participation_text(self, state, target) -> tuple[str, str]:
+    async def participation_text(self, state, target, *, source="message") -> tuple[str, str]:
         if self.llm is None:
             return "", ""
         rows = [row for row in state.recent_chat if self._chat_origin(row, state) == target
-                and self._now() - float(row.get("at") or 0) <= 600
+                and self._now() - float(row.get("at") or 0) <= max(600, self._participation_window(source))
                 and not self.is_plugin_command(str(row.get("text") or ""))]
         request = self.context_request(state, target, task="participation", rows=rows)
         await self.prepare_context_memory(request)
         system, prompt, targets = self.participation_prompt(state, target,
-            await self._persona_text(target), request=request, rows=rows)
+            await self._persona_text(target), request=request, rows=rows, source=source)
         self.record_context_selection(request)
         raw = await self._ask_llm(target, system, prompt)
         return parse_participation(raw or "", targets)
@@ -209,13 +227,14 @@ class ParticipationMixin:
     @session_scoped
     @life_work()
     @model_operation("participation", "听完近期群聊，决定是否自然接一句")
-    async def maybe_participate(self, session_id: str, *, sample: bool = False) -> TickOutcome | None:
-        if not self.is_enabled(session_id) or not self.chat_is_group(session_id):
+    async def maybe_participate(self, session_id: str, *, sample: bool = False, source: str = "message") -> TickOutcome | None:
+        if not self.is_enabled(session_id) or (source != "browse" and not self.chat_is_group(session_id)):
             return None
-        outcome = TickOutcome(session_id=session_id, speech_kind="participation", place=session_id)
+        outcome = TickOutcome(session_id=session_id, speech_kind="browse_reply" if source == "browse" else "participation", place=session_id)
         async with self.session_state(session_id) as state:
-            gate = self.participation_gate(state, session_id)
-            rows = self.live_chat(state, session_id)
+            gate = self.participation_gate(state, session_id, source=source)
+            window = self._participation_window(source)
+            rows = self.live_chat(state, session_id, window=window)
             observation = dict(state.participation.get(session_id) or {})
             new = [r for r in rows if int(r.get("seq") or 0) > observation.get("checked_seq", 0)]
             if gate or not new:
@@ -230,9 +249,10 @@ class ParticipationMixin:
                 return outcome
             self.decision_trace(session_id, "participation", "considering", "近期群聊已聚合，判断是否有话想接",
                                 messages=len(rows))
-            self.claim_chat_scene(outcome, session_id, rows)
-            message, reply_to = await self.participation_text(state, session_id)
-            if (not message or self.participation_gate(state, session_id)
+            self.claim_chat_scene(outcome, session_id, rows, window=window)
+            message, reply_to = await (self.participation_text(state, session_id, source=source)
+                                       if source == "browse" else self.participation_text(state, session_id))
+            if (not message or self.participation_gate(state, session_id, source=source)
                     or self._now() >= outcome.chat_expires_at[session_id]):
                 self.decision_trace(session_id, "participation", "listening", "这轮继续旁听")
                 return outcome

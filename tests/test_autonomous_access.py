@@ -16,6 +16,7 @@ class AutonomousAccessTests(unittest.IsolatedAsyncioTestCase):
     def authorize(self, sessions):
         world = self.store.raw_world()
         world["proactive_session_whitelist"] = sessions
+        world["life_share_session_whitelist"] = sessions
         self.store.save_world(world)
         self.engine.reload_config()
 
