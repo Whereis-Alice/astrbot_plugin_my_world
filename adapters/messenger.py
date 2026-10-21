@@ -9,12 +9,12 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from astrbot.api.event import MessageChain
-from astrbot.api.message_components import Image, Plain
+from astrbot.api.message_components import Image, Plain, Reply
 
 from ..core.message_parts import _sendable_images
 from ..core.plugin_compat import group_card_owner
 from ..core.ports import CardResult, PokeResult
-from ..core.speech_policy import segment_allowed
+from ..core.speech_policy import segment_allowed, reply_target
 
 if TYPE_CHECKING:
     from .. import MyWorldPlugin
@@ -92,8 +92,12 @@ class AstrBotMessenger:
             if not segment_allowed(session_id, index):
                 break
             try:
+                chain = [Plain(text=str(text))]
+                quote = reply_target(session_id, index)
+                if quote:
+                    chain.insert(0, Reply(id=quote))
                 result = await self.plugin.context.send_message(
-                    session_id, MessageChain(chain=[Plain(text=str(text))])
+                    session_id, MessageChain(chain=chain)
                 )
                 ok = bool(result) or ok
                 if result:

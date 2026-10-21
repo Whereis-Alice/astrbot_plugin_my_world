@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import time
+import random
 
 from ..config_scope import session_scoped
 from ..model_calls import model_operation
-from ..participation import PARTICIPATION_MANNERS
+from ..participation import build_participation_prompt, parse_participation
 from ..state import STATE_DROWSY
 from .life_inference import life_work
 from .models import TickOutcome
@@ -70,10 +71,49 @@ class ParticipationMixin:
         if any(not item.get("absorbed") and not item.get("picked")
                for item in self._pending_replies.get(self.merge_scope(target), [])):
             return "reply_pending"
-        gate = self.interject_gate(state)
-        if gate:
-            return gate
-        return self.outreach_gate(target)
+        if self.native_turn_busy(target):
+            return "reply_pending"
+        return ""
+
+    def participation_prompt(self, state, target, persona, *, rows=None):
+        """Same builder for production and evaluation; never include another session."""
+        if rows is None:
+            rows = [row for row in state.recent_chat if self._chat_origin(row, state) == target
+                    and self._now() - float(row.get("at") or 0) <= 600
+                    and not self.is_plugin_command(str(row.get("text") or ""))][-16:]
+        node = self.node(state.node_id) or self.node(self.default_node_id())
+        _, _, style = self.style_for(state, target)
+        action = state.current_action or {}
+        life = {"place": node.name if node else "", "mood": state.mood,
+                "energy": round(state.energy, 2), "activity": str(action.get("intent") or "")[:160]}
+        # A few ongoing personal interests ground speech without exposing the
+        # planner, private memories, tools or complete world map.
+        interests = getattr(state, "life_interests", {}) or {}
+        life["recent_activities"] = [str(item.get("label") or key)[:60]
+            for key, item in sorted(interests.items(), key=lambda pair: pair[1].get("last_at", 0))[-3:]]
+        return build_participation_prompt(persona=persona, life=life, rows=rows,
+            now=self._now(), live_window=self.world.decider.live_window_seconds, style=style)
+
+    def participation_sample(self, state, target, new) -> bool:
+        """Spectre-style opportunity sampling per burst, softened by recent speech."""
+        p = {"quiet": .08, "natural": .18, "lively": .35}[self.world.decider.participation_level]
+        recent = [r for r in state.recent_chat if self._chat_origin(r, state) == target
+                  and self._now() - float(r.get("at") or 0) <= 120]
+        own = sum(bool(r.get("is_self")) for r in recent)
+        p /= 1 + own
+        # Explicit continuation gets a full read; messages addressed to other
+        # people still go through the ordinary sampling/read-air decision.
+        if any(r.get("addressing") == "me" for r in new):
+            return True
+        return random.random() < 1 - (1 - p) ** min(len(new), 8)
+
+    async def participation_text(self, state, target) -> tuple[str, str]:
+        if self.llm is None:
+            return "", ""
+        system, prompt, targets = self.participation_prompt(state, target,
+            await self._persona_text(target))
+        raw = await self._ask_llm(target, system, prompt)
+        return parse_participation(raw or "", targets)
 
     def queue_participation(self, session_id: str) -> None:
         """One settling job per life; new messages update its target without spawning workers."""
@@ -120,13 +160,8 @@ class ParticipationMixin:
                                 or not any(int(row.get("seq") or 0) > observation.get("checked_seq", 0)
                                            for row in rows)):
                             return
-                        wait = max(0, observation.get("checked_at", 0)
-                            + self.world.decider.evaluation_cooldown_seconds - self._now())
-                if wait:
-                    await asyncio.sleep(wait)
-                    continue
                 considered = pending[key]
-                task = self.queue_background("participation:" + key, lambda: self.maybe_participate(target))
+                task = self.queue_background("participation:" + key, lambda: self.maybe_participate(target, sample=True))
                 if task is None:
                     return
                 await asyncio.shield(task)
@@ -148,40 +183,36 @@ class ParticipationMixin:
     @session_scoped
     @life_work()
     @model_operation("participation", "听完近期群聊，决定是否自然接一句")
-    async def maybe_participate(self, session_id: str) -> TickOutcome | None:
+    async def maybe_participate(self, session_id: str, *, sample: bool = False) -> TickOutcome | None:
         if not self.is_enabled(session_id) or not self.chat_is_group(session_id):
             return None
-        outcome = TickOutcome(session_id=session_id, speech_kind="interject", place=session_id)
+        outcome = TickOutcome(session_id=session_id, speech_kind="participation", place=session_id)
         async with self.session_state(session_id) as state:
             gate = self.participation_gate(state, session_id)
             rows = self.live_chat(state, session_id)
             observation = dict(state.participation.get(session_id) or {})
             new = [r for r in rows if int(r.get("seq") or 0) > observation.get("checked_seq", 0)]
-            if gate or not new or len(rows) < self.world.decider.min_messages_to_interject:
-                return None
-            if self._now() - observation.get("checked_at", 0) < self.world.decider.evaluation_cooldown_seconds:
+            if gate or not new:
                 return None
             # Listening is a completed decision too. Persist before inference so a
             # discarded/empty response cannot re-evaluate the same burst forever.
             state.participation[session_id] = {"checked_seq": max(int(r.get("seq") or 0) for r in rows),
                                                 "checked_at": self._now(), "decision": "listening"}
+            if sample and not self.participation_sample(state, session_id, new):
+                return outcome
+            if self.llm is None:
+                return outcome
             self.decision_trace(session_id, "participation", "considering", "近期群聊已聚合，判断是否有话想接",
                                 messages=len(rows))
             self.claim_chat_scene(outcome, session_id, rows)
-            node = self.node(state.node_id) or self.node(self.default_node_id())
-            messages = await self._generate_text_actions(state, node,
-                PARTICIPATION_MANNERS + "\n这是你旁听到的一段群聊，没有人要求你必须回复。"
-                "结合你的人设、当前生活和兴趣，选择其中仍在继续的一点自然接话。"
-                "旧历史只用来理解关系；只接下面仍在现场的话题。"
-                + self.conversation_scene_hint(state, session_id)
-                + "只输出一条短消息，或空 actions 表示继续听。", session_id=session_id)
-            if (not messages or self.participation_gate(state, session_id)
+            message, reply_to = await self.participation_text(state, session_id)
+            if (not message or self.participation_gate(state, session_id)
                     or self._now() >= outcome.chat_expires_at[session_id]):
                 self.decision_trace(session_id, "participation", "listening", "这轮继续旁听")
                 return outcome
-            for message in messages[:1]:
-                outcome.add_speech(message)
-            self._count_autonomous(state)
+            outcome.add_speech(message)
+            if reply_to:
+                outcome.reply_targets[session_id] = reply_to
         await self._deliver(outcome)
         return outcome
 

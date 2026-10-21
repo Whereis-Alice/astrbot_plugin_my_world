@@ -1524,6 +1524,8 @@ class DeciderConfig(Permissive):
 
     message_driven: bool = True
     """群聊新消息聚合后，允许结合人设和现场自然接话。"""
+    participation_level: Literal["quiet", "natural", "lively"] = "natural"
+    """聚合消息的观察机会；近期自己说得多时柔性降低，模型仍可决定安静。"""
     live_window_seconds: int = Field(default=180, ge=30, le=1800)
     """真正的群聊现场窗口；与长期上下文保留时长分开。"""
     settle_seconds: float = Field(default=4, ge=1, le=10)
@@ -3396,7 +3398,7 @@ FIELD_LABELS: dict[str, str] = {
     "limits.max_replies_per_hour": "每小时最多回你几次",
     "limits.max_autonomous_per_hour": "每小时最多自己动几次",
     "limits.max_share_per_hour": "每小时最多分享几次",
-    "limits.max_llm_text_per_hour": "每小时最多主动说几次话",
+    "limits.max_llm_text_per_hour": "每小时例行生活文案上限（不含现场接话）",
     "limits.max_llm_plan_per_hour": "每小时最多让模型排几次计划",
     "limits.max_tool_param_per_hour": "每小时最多补几次工具参数",
     "limits.max_messages_per_say": "一次最多说几条",

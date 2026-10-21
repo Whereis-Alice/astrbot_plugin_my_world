@@ -1069,6 +1069,32 @@ class TestMainImport(unittest.TestCase):
         self.assertEqual(contents, [["第一句"], ["第二句"]])
         plugin.db.raw.close()
 
+    def test_selected_reply_only_prefixes_first_segment_and_stays_task_local(self):
+        policy = importlib.import_module(self.module.__package__ + ".core.speech_policy")
+        context = self.module.Context()
+        plugin = self.module.MyWorldPlugin(context, self.module.AstrBotConfig({"enabled": True}))
+        self.addCleanup(plugin.db.raw.close)
+        plugin.typing_delay_for = lambda text: 0
+        received = []
+        async def send(sid, chain):
+            await asyncio.sleep(0)
+            received.append((sid, chain.chain))
+            return True
+        context.send_message = send
+        async def job(sid, mid):
+            with policy.quote_send(sid, mid):
+                await plugin.messenger.send_text(sid, ["第一句", "第二句"])
+            self.assertEqual(policy.reply_target(sid), "")
+        async def run():
+            await asyncio.gather(job("aiocqhttp:GroupMessage:1", "old-1"),
+                                 job("aiocqhttp:GroupMessage:2", "old-2"))
+        asyncio.run(run())
+        for sid in ("aiocqhttp:GroupMessage:1", "aiocqhttp:GroupMessage:2"):
+            chains = [chain for target, chain in received if target == sid]
+            self.assertEqual(chains[0][0], {"type": "reply", "id": "old-" + sid[-1]})
+            self.assertEqual(len(chains[0]), 2)
+            self.assertEqual(len(chains[1]), 1)
+
     def test_adapter_helpers(self):
         self.assertEqual(
             self.module._command_args(_FakeEvent("/mw debug state", None)),

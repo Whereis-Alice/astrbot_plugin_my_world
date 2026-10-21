@@ -873,8 +873,12 @@ class ActionsMixin:
                 continue
             sent = False
             try:
-                from ..speech_policy import guard_send
-                with guard_send(lambda sid, i: self.speech_allowed(sid, kind)):
+                from ..speech_policy import guard_send, quote_send
+                with quote_send(outcome.home(), outcome.reply_targets.get(outcome.home(), "")), guard_send(
+                    lambda sid, i: self.speech_allowed(sid, kind) and (
+                        kind not in {"interject", "participation"}
+                        or (not self.native_turn_busy(sid)
+                            and self._now() < outcome.chat_expires_at.get(sid, float("inf"))))):
                     sent = bool(await self.say_sink(outcome.home(), line))
             except Exception as exc:
                 self._log("debug", f"即时发言失败：{exc}")
@@ -886,6 +890,7 @@ class ActionsMixin:
                 break
             if receipt is None:
                 self.note_visible_speech(outcome.home())
+            outcome.reply_targets.pop(outcome.home(), None)
             outcome.live_messages.append(line)
             outcome.live_kinds.append(kind)
             outcome.live_origins.append(outcome.home())

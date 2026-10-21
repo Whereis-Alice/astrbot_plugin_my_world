@@ -60,6 +60,8 @@ class TickOutcome:
 
     chat_claims: dict[str, list[str]] = field(default_factory=dict)
     """Exact observed chat identities; commit only after accepted speech to that target."""
+    reply_targets: dict[str, str] = field(default_factory=dict)
+    """Validated destination-local platform message IDs, never part of spoken text."""
     chat_expires_at: dict[str, float] = field(default_factory=dict)
     """A queued interjection cannot outlive the conversation it was written for."""
 

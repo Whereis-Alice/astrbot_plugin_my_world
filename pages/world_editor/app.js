@@ -4,7 +4,7 @@ import { createContactWorkbench } from "./contact-workbench.js";
 import { createSocialLearning } from "./social-learning.js";
 import { createRelationshipsPage } from "./relationships.js";
 import { createModelCallsPage } from "./model-calls.js?v=4.29.0";
-import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js?v=4.30.0";
+import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js?v=4.31.0";
 import { memorySearchFields } from "./memory-settings.js";
 import { relationshipPromptEditor } from "./relationship-prompt.js";
 import { mountLifeWorkspace } from "./life-workspace.js";
@@ -1214,23 +1214,6 @@ const KNOBS = [
         "limits.max_llm_plan_per_hour": 16 },
       { "limits.max_autonomous_per_hour": 16, "limits.max_llm_text_per_hour": 45,
         "limits.max_llm_plan_per_hour": 24 },
-    ],
-  },
-  {
-    id: "group_lively",
-    label: "群聊活跃度",
-    hint: "群里在聊的时候她插话的意愿。调高会更爱接话，也更容易被热闹带动。",
-    levels: [
-      { "decider.interject_threshold": 0.75, "decider.interject_cooldown_minutes": 40,
-        "decider.min_messages_to_interject": 4, "limits.max_share_per_hour": 1 },
-      { "decider.interject_threshold": 0.68, "decider.interject_cooldown_minutes": 30,
-        "decider.min_messages_to_interject": 3, "limits.max_share_per_hour": 2 },
-      { "decider.interject_threshold": 0.6, "decider.interject_cooldown_minutes": 20,
-        "decider.min_messages_to_interject": 2, "limits.max_share_per_hour": 4 },
-      { "decider.interject_threshold": 0.5, "decider.interject_cooldown_minutes": 12,
-        "decider.min_messages_to_interject": 2, "limits.max_share_per_hour": 6 },
-      { "decider.interject_threshold": 0.4, "decider.interject_cooldown_minutes": 6,
-        "decider.min_messages_to_interject": 1, "limits.max_share_per_hour": 10 },
     ],
   },
   {
@@ -16878,14 +16861,15 @@ function renderProactiveAccess(fields) {
 }
 
 function consolidateProactiveSettings(form, main) {
-  const titles = ["自主决策", "群聊参与与分寸", "没人理她时怎么办", "说话频率与预算"];
-  const common = new Set(["日程到点也发言", "事件发生时发言", "允许她主动接话（插话）", "新消息到来后自然接话", "睡前让她自己决定要不要说晚安", "睡醒让她自己决定要不要说早安", "想他想得不行就主动找他"]);
-  const advanced = settingsSection("自主发言细节", "默认参数已经包含现场聚合、回复避让、过期话题、联系额度和无人回应退避。只有需要调整时再展开。");
+  const titles = ["自主决策", "群聊参与与分寸", "主动找人的保护", "说话频率与预算"];
+  const common = new Set(["日程到点也发言", "事件发生时发言", "新消息到来后自然接话", "参与程度", "睡前让她自己决定要不要说晚安", "睡醒让她自己决定要不要说早安", "想他想得不行就主动找他"]);
+  const advanced = settingsSection("自主发言细节", "接话只需选择参与程度。这里集中调整主动找人、生活分享和后台模型预算；找人的等待与额度不会挡住现场接话。");
   advanced._fields.classList.add("proactive-advanced-groups");
   for (const title of titles) {
     const source = [...form.children].find(s => s.dataset.sectionTitle === title);
     if (!source) continue;
     for (const field of [...source._fields.children]) if (common.has(fieldLabelOf(field))) main._fields.append(field);
+    if (title === "群聊参与与分寸" || !source._fields.children.length) { source.remove(); continue; }
     const group = el("details", "proactive-detail full");
     group.append(el("summary", "", title));
     const note = source.querySelector(":scope > .section-note"); if (note) group.append(note);
@@ -16905,6 +16889,32 @@ function consolidateProactiveSettings(form, main) {
       }
       group.append(fields); advanced._fields.append(group);
     }
+  }
+  const contact = [...advanced.querySelectorAll("details")].find(d => d.querySelector("summary")?.textContent === "主动找人的保护");
+  if (contact) {
+    const fields = contact.querySelector(".fields");
+    for (const field of [...main._fields.children]) {
+      if (["每天最多主动找人", "每天最多主动找同一个人"].includes(fieldLabelOf(field))) fields.prepend(field);
+    }
+    [
+      ["min_speech_gap_seconds", "主动找人前留白（秒）", 90, 0, 3600, "刚有过发言时，发起新的联系先等一会儿；现场接话不受影响。"],
+      ["person_retry_hours", "未回应联系人等待（小时）", 6, 0, 72, "某人没接话时先放下，群聊和私聊共用；明确回应后解除。"],
+    ].forEach(([key, label, fallback, min, max, hint]) => fields.appendChild(inputField(label,
+      num(ui.config.world.decider[key], fallback), value => (ui.config.world.decider[key] = num(value, fallback)),
+      { type: "number", min, max, hint })));
+  }
+  for (const [title, labels] of [
+    ["现场接话", ["新消息到来后自然接话", "参与程度"]],
+    ["生活的表达", ["日程到点也发言", "事件发生时发言", "睡前让她自己决定要不要说晚安", "睡醒让她自己决定要不要说早安", "想他想得不行就主动找他"]],
+  ]) {
+    const group = el("div", "proactive-controls full");
+    group.append(el("h4", "", title));
+    const fields = el("div", "fields");
+    for (const label of labels) {
+      const field = [...main._fields.children].find(f => fieldLabelOf(f) === label);
+      if (field) fields.append(field);
+    }
+    group.append(fields); main._fields.append(group);
   }
   main.after(advanced);
 }
@@ -16935,8 +16945,8 @@ function renderSettings() {
     value => {world.proactive_chat_enabled = value;},
     {hint: "当前配置范围内允许接话、找人和问候；全局白名单与顶栏总开关始终优先。"}));
   for (const [key, label, fallback, hint] of [
-    ["proactive_daily_max", "每天最多主动联系", 6, "每个生活组共用。一次计划在一个会话中连续说话只算一次；填 0 暂停自主联系。"],
-    ["proactive_person_daily_max", "每天最多联系同一个人", 2, "按实际会话分别计数，所有档位共用。填 0 不主动联系具体的人。"],
+    ["proactive_daily_max", "每天最多主动找人", 6, "仅限制自主发起的联系与分享，现场接话不扣次数。每个生活组共用；填 0 暂停找人。"],
+    ["proactive_person_daily_max", "每天最多主动找同一个人", 2, "按实际会话分别计数，所有档位共用。填 0 不主动联系具体的人。"],
   ]) {
     const field = inputField(label, world.profile?.[key] ?? fallback,
     value => {world.profile ||= {}; world.profile[key] = Math.min(1000, Math.max(0, Math.round(num(value, fallback))));},
@@ -16944,7 +16954,7 @@ function renderSettings() {
     field.querySelector("input").setAttribute("aria-label", label);
     contactSection._fields.appendChild(field);
   }
-  contactSection._fields.appendChild(el("p", "hint-line full", "只在平台成功接收后计数；规划、安静活动、调试回显和发送失败不扣次数。刚聊过或主动联系无人回应时，会继续遵循冷却保护。"));
+  contactSection._fields.appendChild(el("p", "hint-line full", "现场接话由参与程度与模型判断。主动找人才使用联系额度和无人回应保护，只有发送成功才计数。"));
   form.appendChild(contactSection);
   const basicFull = el("div", "full");
   const wizardRow = el("div", "row");
@@ -17985,14 +17995,14 @@ function renderSettings() {
 
   /* --- 无人回应保护 --- */
   const engagement = settingsSection(
-    "没人理她时怎么办",
-    "她主动说话但没人回应时的自我保护，避免一个人自说自话。",
+    "主动找人的保护",
+    "主动找人无人回应时先放下；现场接话不受这里的冷却限制。",
     "默认：连续 3 次没人理就安静 2 小时，冷却结束后计数减半再试。",
   );
   [
     ["unanswered_threshold", "连续几次没人理就安静", "达到这个次数进入冷却"],
     ["silence_window_minutes", "多久算一次「没人理」（分钟）", "发出消息后等这么久还没人说话，就记一次"],
-    ["cooldown_after_unanswered", "冷却时长（分钟）", "冷却期间不主动发言"],
+    ["cooldown_after_unanswered", "冷却时长（分钟）", "冷却期间暂停主动找人，正常回应与现场接话继续"],
     [
       "after_reply_cooldown_minutes",
       "刚回过话后的安静时间（分钟）",
@@ -18024,78 +18034,22 @@ function renderSettings() {
   );
   form.appendChild(engagement);
 
-  /* --- 孤独感与插话 --- */
+  /* --- 现场参与：一个开关，一个程度，模型决定要不要说 --- */
   world.decider = world.decider || {};
-  const interject = settingsSection(
-    "群聊参与与分寸",
-    "先听懂现场，再决定是否接一句。",
-    "新消息聚合后，她会结合人设、兴趣和生活判断是否想接话，也可以保持安静。孤独感只推动例行自主决定；睡眠、忙碌、插话冷却和联系额度继续生效。",
-  );
-  interject._fields.appendChild(
-    inputField(
-      "例行决策的孤独感阈值",
-      num(world.decider.interject_threshold, 0.6),
-      (value) => (world.decider.interject_threshold = num(value, 0.6)),
-      {
-        hint:
-          "例行决策时多孤独才想接话（0~1）；新消息接话由现场与兴趣判断。",
-        type: "number",
-        step: "0.05",
-        min: 0,
-        max: 1,
-      },
-    ),
-  );
-  interject._fields.appendChild(
-    checkboxField(
-      "允许她主动接话（插话）",
-      world.decider.enabled !== false,
-      (value) => (world.decider.enabled = value),
-      {
-        hint:
-          "关掉后她不会主动接别人的话，只会按日程和被 @ 时回应。下面的参数在关闭时不生效。",
-      },
-    ),
-  );
-  interject._fields.appendChild(
-    inputField(
-      "群聊现场窗口（秒）",
-      num(world.decider.live_window_seconds, 180),
-      (value) => (world.decider.live_window_seconds = num(value, 180)),
-      { hint: "只把近期消息当成正在聊的话题；历史上下文依然保留。", type: "number", min: 30, max: 1800 },
-    ),
-  );
-  interject._fields.appendChild(
-    inputField(
-      "至少几条消息才插话",
-      num(world.decider.min_messages_to_interject, 2),
-      (value) => (world.decider.min_messages_to_interject = num(value, 2)),
-      { hint: "窗口内至少有几条别人的消息，她才考虑接话。", type: "number" },
-    ),
-  );
-  interject._fields.appendChild(
-    inputField(
-      "插话最短间隔（分钟）",
-      num(world.decider.interject_cooldown_minutes, 20),
-      (value) => (world.decider.interject_cooldown_minutes = num(value, 20)),
-      { hint: "两次主动插话之间至少隔这么久，防止她变成话痨。", type: "number" },
-    ),
-  );
+  const interject = settingsSection("群聊参与与分寸", "先听懂现场，再决定是否接一句。",
+    "连发会先聚合；近期说得多就少打扰。接话不占主动找人额度，也不再等待固定的插话冷却。睡眠、不可中断的忙碌和正在回复时仍会先让开。");
   interject._fields.appendChild(checkboxField(
-    "新消息到来后自然接话", world.decider.message_driven !== false,
-    (value) => (world.decider.message_driven = value),
-    { hint: "等群友连着说完，再考虑是否有真正想接的一点；关闭后保留例行生活决策。" },
+    "新消息到来后自然接话", world.decider.message_driven !== false && world.decider.enabled !== false,
+    (value) => { world.decider.message_driven = value; world.decider.enabled = value; },
+    { hint: "白名单内的群聊生效。模型可保持安静，也可选中现场的一条消息引用回应。" },
   ));
-  [
-    ["settle_seconds", "等群友说完（秒）", 4, 1, 10, "短暂等待连发；连续热聊最多聚合 12 秒。"],
-    ["evaluation_cooldown_seconds", "两次接话判断间隔（秒）", 60, 15, 600, "保持安静也算一次判断，不会逐条调用模型。"],
-    ["min_speech_gap_seconds", "主动开口前留白（秒）", 90, 0, 3600, "她刚回应、播报日程或说过事件后，其他主动模块先留一点空间。"],
-    ["person_retry_hours", "未回应联系人等待（小时）", 6, 0, 72, "某人没接话时，群聊和私聊共用等待；明确回应她后解除。"],
-  ].forEach(([key, label, fallback, min, max, hint]) => {
-    interject._fields.appendChild(inputField(label, num(world.decider[key], fallback),
-      (value) => (world.decider[key] = num(value, fallback)), { type: "number", min, max, hint }));
-  });
-  // 「带多少条聊天进提示词」在下面的「上下文」卡片里统一配置
+  interject._fields.appendChild(selectField("参与程度", world.decider.participation_level || "natural", [
+    { key: "quiet", label: "安静 · 偶尔接一句" },
+    { key: "natural", label: "自然 · 随话题参与" },
+    { key: "lively", label: "活跃 · 多留意群聊" },
+  ], value => (world.decider.participation_level = value), {
+    hint: "控制观察机会，不强迫开口；说话内容与安慰、兴趣的分寸仍由人设和现场决定。",
+  }));
   form.appendChild(interject);
 
   /* --- 睡眠与打断 --- */
@@ -18297,7 +18251,7 @@ function renderSettings() {
     ["background_daily_calls", "每天后台调用预算", 1000, 0, 10000], ["background_daily_tokens", "每天后台 token 预算", 0, 0, 100000000],
     ["background_concurrency", "同时运行的后台模型请求", 1, 1, 12], ["background_llm_timeout_seconds", "后台模型等待上限（秒）", 120, 1, 1800],
     ["llm_plan_min_interval_seconds", "问计划的间隔（秒）", 900, 0, 86400], ["max_llm_plan_per_hour", "每小时最多计划决策次数", 10, 0, 120],
-    ["max_llm_text_per_hour", "每小时最多生成发言次数", 20, 0, 10000]]) {
+    ["max_llm_text_per_hour", "每小时例行生活文案上限（不含现场接话）", 20, 0, 10000]]) {
     background._fields.appendChild(inputField(label, world.limits[key] ?? fallback, value => { world.limits[key] = num(value, fallback); }, {type: "number", min, max}));
   }
   form.appendChild(background);

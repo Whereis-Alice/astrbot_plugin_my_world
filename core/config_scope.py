@@ -139,6 +139,10 @@ class ScopedConfigMixin:
             return True
         if not self.autonomous_speech_allowed(session_id):
             return False
+        if kind == "participation":
+            with self.config_scope(session_id):
+                return bool(self.proactive_chat_allowed(session_id)
+                            and self.world.decider.enabled and self.world.decider.message_driven)
         if kind == "schedule":
             with self.config_scope(session_id):
                 return bool(self.world.schedule_speech_enabled)

@@ -5,7 +5,7 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from core.config_store import ConfigStore
 from core.db import AsyncDatabase
@@ -14,6 +14,9 @@ from core.json_actions import PlannedAction
 from core.ports import LLMReply
 from core.state import STATE_IDLE, STATE_SLEEPING
 from tests.stub_ports import StubClock, StubLLM, StubMessenger, StubPersona
+from core.participation import parse_participation
+from core.speech_policy import reply_target
+from core.engine.participation import ParticipationMixin
 
 GROUP = "aiocqhttp:GroupMessage:1001"
 OTHER = "aiocqhttp:GroupMessage:2002"
@@ -44,6 +47,7 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
             persona=StubPersona("你喜欢风车和旅行，说话简短。"),
             messenger=self.messenger, clock=self.clock)
         self.addAsyncCleanup(self.engine.close_background)
+        self.engine.participation_sample = lambda *args: True
         async with self.engine.session_state(GROUP) as state:
             state.state = STATE_IDLE
             state.energy = .9
@@ -76,7 +80,9 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(outcome)
         self.assertEqual(self.messenger.sent, [(GROUP, ["那个我也想试试。"])])
         state = await self.engine.load_state(GROUP, cold_start=False)
-        self.assertGreater(state.last_interject_at, 0)
+        self.assertEqual(state.last_interject_at, 0)
+        self.assertFalse(state.awaiting_reply)
+        self.assertEqual(self.engine.contact_status(GROUP)["left"], 6)
         self.assertEqual(state.participation[GROUP]["decision"], "joined")
         self.assertEqual(self.engine.live_chat(state), [])
         self.assertIn("没有人要求你必须回复", self.llm.calls[0]["prompt"])
@@ -264,7 +270,123 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(self.engine._participation_settlers[self.engine.state_key(GROUP)], 5)
         self.assertEqual(calls, 2)
         self.assertEqual(len(self.messenger.sent), 1)
-        self.assertIn("室内看模型", self.llm.calls[-1]["system_prompt"])
+        self.assertIn("室内看模型", self.llm.calls[-1]["prompt"])
+
+    async def test_one_message_can_join_even_when_all_old_contact_limits_are_exhausted(self):
+        self.engine.world.profile.proactive_daily_max = 0
+        self.engine.world.limits.max_autonomous_per_hour = 0
+        self.engine.world.limits.max_llm_text_per_hour = 0
+        async with self.engine.session_state(GROUP) as state:
+            state.last_interject_at = self.clock.now()
+            state.last_reply_at = self.clock.now()
+            state.cooldown_until = self.clock.now() + 7200
+        self.engine.note_visible_speech(GROUP)
+        await self.chat("今天终于把风车修好了")
+        await self.engine.maybe_participate(GROUP)
+        self.assertEqual(len(self.messenger.sent), 1)
+
+    async def test_new_topic_after_two_minutes_can_continue_without_twenty_minute_wait(self):
+        self.llm.replies = [SAY, SAY]
+        await self.burst()
+        await self.engine.maybe_participate(GROUP)
+        self.clock.advance(120)
+        await self.chat("接下来打算在那边野餐")
+        await self.engine.maybe_participate(GROUP)
+        self.assertEqual(len(self.messenger.sent), 2)
+        self.assertEqual(self.engine.contact_status(GROUP)["left"], 6)
+
+    async def test_selected_earlier_message_is_quoted_without_leaking_other_session(self):
+        await self.chat("群里的图纸", message_id="group-old")
+        await self.chat("私密图纸", sid=PRIVATE, message_id="private-id")
+        await self.chat("今天的天气", uid="bob", message_id="group-new")
+        self.llm.replies = ['{"say":"第一张图纸的左翼很有意思。","reply_to":"m1"}']
+        captured = []
+        async def send(target, lines):
+            captured.append(reply_target(target))
+            return True
+        self.messenger.send_text = send
+        outcome = await self.engine.maybe_participate(GROUP)
+        self.assertEqual(captured, ["group-old"])
+        self.assertEqual(outcome.reply_targets, {GROUP: "group-old"})
+        self.assertNotIn("私密图纸", str(self.llm.calls))
+        self.assertEqual(reply_target(GROUP), "")
+
+    async def test_sampling_a_quiet_burst_does_not_retry_it(self):
+        self.engine.participation_sample = lambda *args: False
+        await self.burst()
+        await self.engine.maybe_participate(GROUP, sample=True)
+        await self.engine.maybe_participate(GROUP, sample=True)
+        self.assertEqual(self.llm.calls, [])
+        state = await self.engine.load_state(GROUP, cold_start=False)
+        self.assertGreater(state.participation[GROUP]["checked_seq"], 0)
+
+    async def test_disabling_live_participation_also_blocks_prepared_delivery(self):
+        row = await self.chat()
+        outcome = TickOutcome(GROUP, messages=["接一句"], speech_kind="participation")
+        self.engine.claim_chat_scene(outcome, GROUP, [row])
+        self.engine.world.decider.message_driven = False
+        await self.engine._deliver(outcome)
+        self.assertEqual(self.messenger.sent, [])
+
+    async def test_global_background_budget_still_bounds_lightweight_participation(self):
+        self.engine.world.limits.background_daily_calls = 1
+        self.llm.replies = [SAY, SAY]
+        await self.chat()
+        await self.engine.maybe_participate(GROUP)
+        self.clock.advance(120)
+        await self.chat("新话题")
+        await self.engine.maybe_participate(GROUP)
+        self.assertEqual(len(self.llm.calls), 1)
+        self.assertEqual(len(self.messenger.sent), 1)
+
+    async def test_evaluation_uses_the_lightweight_protocol_without_building_a_life_plan(self):
+        self.llm.replies = ['{"say":"那个风车我也想看看。","reply_to":""}']
+        with patch.object(self.engine.prompts, "build_autonomous_system_prompt",
+                          side_effect=AssertionError("旁听不需要完整规划提示词")):
+            result = await self.engine.run_eval(GROUP,
+                [{"user_text": "大家周末要去看风车吗？"}], variant="participation")
+        row = result["results"][0]
+        self.assertFalse(row["error"])
+        self.assertEqual(row["reply"], ["那个风车我也想看看。"])
+        self.assertIn("你喜欢风车和旅行", self.llm.calls[0]["system_prompt"])
+
+    async def test_observation_opportunities_follow_degree_bursts_and_recent_own_speech(self):
+        state = await self.engine.load_state(GROUP, cold_start=False)
+        sample = ParticipationMixin.participation_sample
+        with patch("core.engine.participation.random.random", return_value=.2):
+            self.assertFalse(sample(self.engine, state, GROUP, [{}]))
+            self.assertTrue(sample(self.engine, state, GROUP, [{}, {}]))
+            self.engine.world.decider.participation_level = "quiet"
+            self.assertFalse(sample(self.engine, state, GROUP, [{}, {}]))
+            self.engine.world.decider.participation_level = "lively"
+            self.assertTrue(sample(self.engine, state, GROUP, [{}]))
+            self.engine.world.decider.participation_level = "natural"
+            state.recent_chat = [{"origin": GROUP, "is_self": True, "at": self.clock.now()}] * 2
+            self.assertFalse(sample(self.engine, state, GROUP, [{}, {}]))
+            self.assertTrue(sample(self.engine, state, GROUP, [{"addressing": "me"}]))
+
+    async def test_debug_echo_does_not_steal_selected_message_quote(self):
+        row = await self.chat(message_id="older")
+        outcome = TickOutcome(GROUP, messages=["接一句"], speech_kind="participation",
+                              debug_messages=["调试说明"], debug_positions=[0])
+        self.engine.claim_chat_scene(outcome, GROUP, [row])
+        outcome.reply_targets[GROUP] = "older"
+        quotes = []
+        async def send(target, lines):
+            quotes.extend(reply_target(target, i) for i in range(len(lines)))
+            return True
+        self.messenger.send_text = send
+        await self.engine._deliver(outcome)
+        self.assertEqual(quotes, ["", "older"])
+
+    def test_compact_parser_never_speaks_empty_or_malformed_structured_decisions(self):
+        for raw in ('{}', '{"say":null}', '{"say":[]}', '{"actions":[]}',
+                    '{"say":"<NO_RESPONSE>"}', '{"actions":true}', '{"actions":5}',
+                    '说明\n{"say":"没闭合', '```json\n{"say":', '<think>secret</think>{"say":""}'):
+            with self.subTest(raw=raw):
+                self.assertEqual(parse_participation(raw, {"m1": "real"}), ("", ""))
+        self.assertEqual(parse_participation('{"say":"好呀","reply_to":"private-id"}',
+            {"m1": "real"}), ("好呀", ""))
 
     async def test_native_agent_turn_blocks_all_autonomous_contact_until_sent(self):
         turn = {"session_id": GROUP, "started_at": self.clock.now()}

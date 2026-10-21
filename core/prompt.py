@@ -24,7 +24,7 @@ from typing import Any
 
 from .memory import RecalledMemory
 from .models import NodeDef, WorldConfig, pronoun_for
-from .participation import PARTICIPATION_MANNERS
+from .participation import PARTICIPATION_MANNERS, EXPRESSION_MANNERS
 from .mood import day_mood_info, desire_text
 from .extensions import JsonField, normalize_json_field
 from .state import (
@@ -467,6 +467,7 @@ class PromptBuilder:
         # 判定按"像不像默认那份"来（老版本写的是「群聊虚拟世界」，改过名的版本是
         # 「群聊她的世界」），免得升级之后把同一段话又说一遍。
         lines: list[str] = []
+        lines.append(EXPRESSION_MANNERS)
         lines.append("基础人设始终决定你的身份、价值观、说话方式与行为边界。生活状态、兴趣和相处经验只能在此基础上温和延伸；"
                      "重复做过的活动不等于喜欢它，不能据此改写人设、口癖、厌恶或关系身份。疲倦、情绪和需要只解释当下处境，不强迫你表现某种性格。")
         if "群聊" in base and "私有空间" in base:

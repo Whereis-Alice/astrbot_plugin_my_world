@@ -8,6 +8,21 @@ from contextlib import contextmanager
 
 SILENT_FOLLOWUP = ContextVar("world_silent_followup", default=False)
 SEND_CHECK = ContextVar("world_send_check", default=None)
+REPLY_TARGET = ContextVar("world_reply_target", default=None)
+
+
+@contextmanager
+def quote_send(session_id: str, message_id: str, index: int = 0):
+    token = REPLY_TARGET.set((session_id, message_id, index))
+    try:
+        yield
+    finally:
+        REPLY_TARGET.reset(token)
+
+
+def reply_target(session_id: str, index: int = 0) -> str:
+    target = REPLY_TARGET.get()
+    return target[1] if target and target[0] == session_id and target[2] == index else ""
 
 
 @contextmanager

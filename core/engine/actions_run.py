@@ -647,8 +647,10 @@ class ActionsRunMixin:
                 messages = []
             else:
                 self.claim_chat_scene(outcome, outcome.home(), rows)
-                messages = await self._instant_output(
-                    state, node, definition, action, session_id=outcome.home())
+                message, reply_to = await self.participation_text(state, outcome.home())
+                messages = [message] if message else []
+                if reply_to:
+                    outcome.reply_targets[outcome.home()] = reply_to
         else:
             messages = await self._instant_output(
                 state, node, definition, action, session_id=outcome.home()
@@ -773,19 +775,8 @@ class ActionsRunMixin:
             if definition.id == "share" and not self._share_allowed(state):
                 return []
             if action.interject:
-                # A planned line may predate a changed topic. Reconsider the live
-                # scene with the existing generation budget rather than echo it.
-                return await self._generate_text_actions(
-                    state,
-                    node,
-                    "群里正在聊上面「最近群里在聊」那些内容。"
-                    "如果你确实有话想接，就自然地接一句（不要逐条复述、不要总结、不要点名批评）；"
-                    "先看清那几句是谁在对谁说：没点名找你的话，就当他们在互相聊，"
-                    "别把别人话里的「你」当成你自己，也别用「主人」这类专属称呼去接；"
-                    "如果说不出什么，就返回空的动作列表，保持安静。"
-                    + self.conversation_scene_hint(state, session_id or state.session_id),
-                    session_id=session_id,
-                )
+                message, _ = await self.participation_text(state, session_id or state.session_id)
+                return [message] if message else []
             if action.messages:
                 return list(action.messages)[: self.world.limits.max_messages_per_say]
         if definition.id == "say":

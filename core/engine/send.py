@@ -327,7 +327,7 @@ class SendMixin:
                     if contact_reserved:
                         # This delivery already holds its allowance. Rechecking the
                         # ledger would mistake our own reservation for another contact.
-                        return kind != "interject" or self._now() < outcome.chat_expires_at.get(sid, float("inf"))
+                        return kind not in {"interject", "participation"} or self._now() < outcome.chat_expires_at.get(sid, float("inf"))
                     return self.contact_speech_allowed(outcome, sid, kind)
                 return (images or kind == "reply" or speakable(lines[i])) and any(
                     self.speech_allowed(sid, kind) and (protected or (
@@ -401,7 +401,7 @@ class SendMixin:
         is_event_speech = bool(kinds & {"event", "schedule"})
         # 排在后面的回话（当时有人跟她说话，她在忙，轮到她时才说）同样不算"主动开口"：
         # 被"主动发言冷却"吞掉的话，对方再也等不到那句回应，而计划上却记成"已经说过了"
-        is_reply_speech = "reply" in kinds
+        is_reply_speech = bool(kinds & {"reply", "participation"})
         # 已经即时发出去的几句挡不回来：这一轮不能再看冷却，否则群里会"说了一句就没下文"，
         # 那句即时发言也不进聊天记录（下一轮她就不知道自己刚说过）
         spoke_live = bool(outcome.live_messages)
@@ -416,7 +416,7 @@ class SendMixin:
         # 计划里有一句话并不意味着她已经说出口。先收平台回执，再写聊天与冷却。
         delivered: dict[str, list[str]] = {}
         delivered_images: dict[str, int] = {}
-        autonomous_kinds = {"reply", "schedule", "event", "quiet"}
+        autonomous_kinds = {"reply", "schedule", "event", "quiet", "participation"}
         autonomous_delivered = False
         autonomous_targets: set[str] = set()
         interject_delivered = False
@@ -450,22 +450,26 @@ class SendMixin:
             target_ordered = list(echoes) + view.ordered_messages()
             target_images = self._group_images(view)
             def autonomous(values):
-                return any(kind not in {"reply", "schedule", "event", "quiet"} for kind in values)
+                return any(kind not in autonomous_kinds for kind in values)
             contact_sent = False
             try:
                 if target_ordered:
                     attempted = True
                     from collections import defaultdict, deque
-                    from ..speech_policy import guard_send
+                    from ..speech_policy import guard_send, quote_send
                     line_kinds = defaultdict(deque)
                     for i, line in enumerate(view.messages):
                         values = view.speech_kinds.get("", [])
                         line_kinds[line].append(values[i] if i < len(values) else view.speech_kind)
                     ordered_kinds = [line_kinds[line].popleft() if line_kinds[line] else "reply"
                                      for line in target_ordered]
-                    with guard_send(lambda sid, i: self.speech_allowed(sid, ordered_kinds[i]) and (
-                        ordered_kinds[i] != "interject"
-                        or self._now() < view.chat_expires_at.get(sid, float("inf")))):
+                    quote_index = next((i for i, kind in enumerate(ordered_kinds)
+                                        if kind in {"interject", "participation"}), 0)
+                    with quote_send(target, view.reply_targets.get(target, ""), quote_index), guard_send(
+                        lambda sid, i: self.speech_allowed(sid, ordered_kinds[i]) and (
+                            ordered_kinds[i] not in {"interject", "participation"}
+                            or (not self.native_turn_busy(sid)
+                                and self._now() < view.chat_expires_at.get(sid, float("inf"))))):
                         accepted = bool(await self.messenger.send_text(target, target_ordered))
                     sent = sent or accepted
                     receipt_reader = getattr(self.messenger, "take_sent_texts", None)

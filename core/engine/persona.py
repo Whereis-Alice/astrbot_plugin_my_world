@@ -213,47 +213,47 @@ class PersonaMixin:
             async with gate:
                 try:
                     _cell, say_limit, style_text = self.style_for(state, session_id)
-                    system_prompt = self.prompts.build_autonomous_system_prompt(
-                        persona_text=persona,
-                        state=state,
-                        node=node,
-                        available_tools=self.available_tools(),
-                        memories=self.memory.recall(
-                            automatic=True,
-                            session_id=session_id,
-                            persona_id="",
-                            node_id=state.node_id,
-                            limit=self.world.limits.max_think_memory,
-                        ),
-                        engagement_hint=self.engagement.hint(state),
-                        max_messages=say_limit,
-                        recent_chat=list(recent_chat),
-                        reasoning=bool(self.world.reasoning_enabled),
-                        style_block=style_text,
-                        session_directory=self.session_directory(state),
-                        current_session=session_id,
-                        session_labels=self.session_labels(state),
-                        profile_text=profile_text,
-                        samples=self.voice_sample_lines(
-                            state, session_id, preview=True
-                        ),
-                        # 测评也要跟实跑完全一致：该有的字段一个都不能少
-                        wants_touch=self.extensions.wants("touch"),
-                        json_fields=self.extensions.json_fields(),
-                        hidden_actions=self.exhausted_actions(state),
-                        **await self.runtime_notes(session_id),
-                    )
-                    user_prompt = self.prompts.build_reply_user_prompt(
-                        user_name=user_name,
-                        text=text,
-                        is_private=True,
-                    )
                     if variant == "participation":
-                        from ..participation import PARTICIPATION_MANNERS
-                        user_prompt = (PARTICIPATION_MANNERS + "\n# 旁听的群聊（没有人要求你必须回复）\n"
-                            + text + '\n只输出 JSON：{"actions":[{"type":"say","messages":["..."]}]}；'
-                            '不适合接话时输出 {"actions":[]}。')
-                    elif variant == "lean":
+                        system_prompt, user_prompt, quote_targets = self.participation_prompt(
+                            state, session_id, persona, rows=[{"name": user_name,
+                                "text": text, "at": self._now()}])
+                    else:
+                        system_prompt = self.prompts.build_autonomous_system_prompt(
+                            persona_text=persona,
+                            state=state,
+                            node=node,
+                            available_tools=self.available_tools(),
+                            memories=self.memory.recall(
+                                automatic=True,
+                                session_id=session_id,
+                                persona_id="",
+                                node_id=state.node_id,
+                                limit=self.world.limits.max_think_memory,
+                            ),
+                            engagement_hint=self.engagement.hint(state),
+                            max_messages=say_limit,
+                            recent_chat=list(recent_chat),
+                            reasoning=bool(self.world.reasoning_enabled),
+                            style_block=style_text,
+                            session_directory=self.session_directory(state),
+                            current_session=session_id,
+                            session_labels=self.session_labels(state),
+                            profile_text=profile_text,
+                            samples=self.voice_sample_lines(
+                                state, session_id, preview=True
+                            ),
+                            # 测评也要跟实跑完全一致：该有的字段一个都不能少
+                            wants_touch=self.extensions.wants("touch"),
+                            json_fields=self.extensions.json_fields(),
+                            hidden_actions=self.exhausted_actions(state),
+                            **await self.runtime_notes(session_id),
+                        )
+                        user_prompt = self.prompts.build_reply_user_prompt(
+                            user_name=user_name,
+                            text=text,
+                            is_private=True,
+                        )
+                    if variant == "lean":
                         system_prompt = lean_prompt(system_prompt)
                     elif variant == "analyst":
                         channel = director_llm or self.judge_llm or self.helper_llm
@@ -369,8 +369,10 @@ class PersonaMixin:
                         elif raw.strip() and extract_json_object(raw) is None and not raw.lstrip().startswith(("{", "```")):
                             row["reply"] = [raw.strip()[:200]]
                     if variant == "participation":
-                        from ..participation import speakable
-                        row["reply"] = [text for text in row["reply"] if speakable(text)]
+                        from ..participation import parse_participation
+                        say, quote = parse_participation(raw, quote_targets)
+                        row["reply"] = [say] if say else []
+                        row["reply_to"] = quote
                     if parsed.reasoning:
                         row["reasoning"] = parsed.reasoning
                     row["actions"] = [action.type for action in parsed.actions]
