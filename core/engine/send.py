@@ -451,7 +451,6 @@ class SendMixin:
             target_images = self._group_images(view)
             def autonomous(values):
                 return any(kind not in {"reply", "schedule", "event", "quiet"} for kind in values)
-            auto_images = bool(target_images) and autonomous(view.image_kinds.get("", []) or [view.speech_kind])
             contact_sent = False
             try:
                 if target_ordered:
@@ -498,6 +497,7 @@ class SendMixin:
                     self._filter_proactive_speech(view, contact_reserved=receipt is not None)
                     target_images = self._group_images(view)
                 if target_images:
+                    auto_images = autonomous(view.image_kinds.get("", []) or [view.speech_kind])
                     accepted = await self._send_group_images(target, target_images)
                     sent = sent or accepted
                     if accepted:

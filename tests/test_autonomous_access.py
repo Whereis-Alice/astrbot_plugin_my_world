@@ -92,6 +92,22 @@ class AutonomousAccessTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.messenger.flat_images)
         self.assertFalse(self.engine._contact_pending)
 
+    async def test_remaining_reply_image_does_not_consume_an_autonomous_contact(self):
+        async def failed_send(*_args):
+            self.authorize([])
+            return False
+
+        self.messenger.send_text = AsyncMock(side_effect=failed_send)
+        outcome = TickOutcome(A)
+        outcome.add_speech("autonomous text")
+        outcome.add_images(["https://example.com/autonomous.png"])
+        outcome.speech_kind = "reply"
+        outcome.add_images(["https://example.com/reply.png"])
+        await self.engine._deliver(outcome)
+        self.assertEqual(self.messenger.flat_images, ["https://example.com/reply.png"])
+        self.assertFalse(self.db.raw.kv_get("proactive_contacts:" + self.engine.state_key(A)))
+        self.assertFalse(self.engine._contact_pending)
+
     async def test_unauthorized_poke_and_tool_do_not_reach_the_platform(self):
         self.authorize([])
         self.messenger.poke = AsyncMock(return_value=True)
