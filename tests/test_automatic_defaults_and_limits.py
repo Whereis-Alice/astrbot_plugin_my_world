@@ -8,11 +8,25 @@ from types import SimpleNamespace
 from core.config_store import ConfigStore
 from core.defaults import default_schedules
 from core.engine.limits import LimitsMixin
-from core.models import Limits, parse_schedules
+from core.models import DeciderConfig, Limits, parse_schedules
 from core.state import WorldState
 
 
 class AutomaticDefaultsTests(unittest.TestCase):
+    def test_natural_silence_defaults_off_for_new_and_existing_worlds(self):
+        self.assertFalse(DeciderConfig().natural_silence)
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(directory)
+            store.ensure_files()
+            self.assertFalse(store.load_world().decider.natural_silence)
+            raw = store.raw_world()
+            raw.setdefault("decider", {}).pop("natural_silence", None)
+            store.save_world(raw)
+            self.assertFalse(store.load_world().decider.natural_silence)
+            raw["decider"]["natural_silence"] = True
+            store.save_world(raw)
+            self.assertTrue(store.load_world().decider.natural_silence)
+
     def test_autonomous_background_budget_defaults_to_one_thousand_calls(self):
         self.assertEqual(Limits().background_daily_calls, 1000)
 

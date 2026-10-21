@@ -71,7 +71,7 @@ export function browseSettings({world, sessions = [], el, body}) {
   const reply = el("section", "browse-reply");
   reply.append(el("h3", "", "看完，也可以接一句"));
   toggle(reply, "reply_enabled", "浏览后允许她判断是否接话");
-  reply.append(el("p", "muted", "默认关闭。开启后仍由她判断，没话想说就安静离开；只接来源会话里仍在进行的话题，可以选择回应哪条消息，不补回过时聊天、不播报自己的生活。发言还需在「设置 → 自主发言」全局白名单中获准，群聊和私聊均可。"));
+  reply.append(el("p", "muted", "默认关闭。开启后按来源会话里仍在进行的话题接一句，可以选择回应哪条消息，不补回过时聊天、不播报自己的生活。是否允许没话想说时放下，统一跟随「设置 → 自主发言 → 自然沉默」（默认关闭）。发言还需在全局主动发言白名单中获准，群聊和私聊均可。"));
   content.append(reply);
   const memory = el("div", "browse-memory");
   toggle(memory, "remember_meaningful", "有持续意义的感受可留下生活记忆");

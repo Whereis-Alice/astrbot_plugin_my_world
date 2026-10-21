@@ -87,6 +87,7 @@ class ChatBrowseMixin:
             "last_result": progress.get("result", ""), "reply_enabled": config.reply_enabled,
             "last_error_at": float(book.get("last_error_at") or 0),
             "reply_allowed": self.speech_allowed(session_id, "browse_reply"),
+            "natural_silence": self.world.decider.natural_silence,
             "shared": len(self.group_sessions(state.session_id)) > 1,
             "note": "间隔是最短冷却，不是定时任务；空闲、有未读消息和可用设备时才浏览。读完可以没有感想，也可以不接话。"}
 

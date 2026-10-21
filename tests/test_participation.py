@@ -86,7 +86,8 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.engine.contact_status(GROUP)["left"], 6)
         self.assertEqual(state.participation[GROUP]["decision"], "joined")
         self.assertEqual(self.engine.live_chat(state), [])
-        self.assertIn("没有人要求你必须回复", self.llm.calls[0]["prompt"])
+        self.assertIn("请生成本轮接话", self.llm.calls[0]["prompt"])
+        self.assertIn("自然沉默：关闭", self.llm.calls[0]["system_prompt"])
         self.assertIn("你喜欢风车", self.llm.calls[0]["system_prompt"])
 
     async def test_empty_actions_listens_without_retrying_the_same_burst(self):
@@ -101,6 +102,34 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.last_interject_at, 0)
         self.assertFalse(state.awaiting_reply)
         self.assertFalse(self.engine.group_is_chatting(state))
+
+    async def test_natural_silence_can_be_enabled_without_changing_scene_boundaries(self):
+        self.engine.world.decider.natural_silence = True
+        self.llm.replies = ['{"say":"","reply_to":""}']
+        await self.burst()
+        await self.engine.maybe_participate(GROUP)
+        call = self.llm.calls[0]
+        self.assertIn("自然沉默：开启", call["system_prompt"])
+        self.assertIn("没话想说时可以继续听", call["system_prompt"])
+        self.assertIn("没有人要求你必须回复", call["prompt"])
+        self.assertIn("不主动介绍自己的日程", call["system_prompt"])
+        self.assertEqual(self.messenger.sent, [])
+
+    async def test_silence_policy_is_identical_in_evaluation_and_live_prompt(self):
+        await self.burst()
+        state = await self.engine.load_state(GROUP)
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                self.engine.world.decider.natural_silence = enabled
+                request = self.engine.context_request(state, GROUP, task="participation", rows=state.recent_chat)
+                system, prompt, _ = self.engine.participation_prompt(state, GROUP, "风车少女", request=request)
+                self.assertIs(request.trace["natural_silence"], enabled)
+                self.assertEqual("没有人要求你必须回复" in prompt, enabled)
+                self.assertEqual("没话想说时可以继续听" in system, enabled)
+                self.llm.replies = ['{"say":"风吹起来一定很好看。","reply_to":""}']
+                await self.engine.run_eval(GROUP, [{"user_text": "周末去看风车吧"}], variant="participation")
+                self.assertIn("自然沉默：" + ("开启" if enabled else "关闭"), self.llm.calls[-1]["system_prompt"])
+        self.assertEqual(self.messenger.sent, [])
 
     async def test_silence_markers_and_fenced_json_never_leak(self):
         for body in ("<NO_RESPONSE>", "<no_reply />", '```json\n{"actions":[]}\n```',

@@ -1525,7 +1525,9 @@ class DeciderConfig(Permissive):
     message_driven: bool = True
     """群聊新消息聚合后，允许结合人设和现场自然接话。"""
     participation_level: Literal["quiet", "natural", "lively"] = "natural"
-    """聚合消息的观察机会；近期自己说得多时柔性降低，模型仍可决定安静。"""
+    """聚合消息的观察机会；近期自己说得多时柔性降低。"""
+    natural_silence: bool = False
+    """接话时允许因没有想说的内容而继续旁听；默认直接生成回应，仍核验现场与权限。"""
     live_window_seconds: int = Field(default=180, ge=30, le=1800)
     """真正的群聊现场窗口；与长期上下文保留时长分开。"""
     settle_seconds: float = Field(default=4, ge=1, le=10)

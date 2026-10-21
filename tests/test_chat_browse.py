@@ -252,9 +252,13 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
         self.engine.rng.random.assert_not_called()
 
     async def test_enabled_reply_can_still_choose_silence_and_scene_is_not_retried(self):
+        raw = self.store.raw_world()
+        raw.setdefault("decider", {})["natural_silence"] = True
+        self.store.save_world(raw)
         action = await self.prepare(reply_enabled=True)
         state = await self.complete(action, decision='{"say":"","reply_to":""}')
         self.assertEqual(len(self.llm.calls), 2)
+        self.assertIn("自然沉默：开启", self.llm.calls[-1]["system_prompt"])
         self.assertEqual(self.messenger.sent, [])
         self.assertFalse(state.thoughts[-1]["browse_replied"])
         self.assertIsNone(await self.engine.maybe_participate(S, source="browse"))
@@ -281,6 +285,9 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(state.awaiting_reply)
         self.assertEqual(self.engine.contact_status(S)["left"], 6)
         self.assertIn("不主动介绍自己的日程", self.llm.calls[1]["system_prompt"])
+        self.assertIn("自然沉默：关闭", self.llm.calls[1]["system_prompt"])
+        self.assertNotIn("没有想说的就放下", self.llm.calls[1]["system_prompt"])
+        self.assertFalse(self.engine.chat_browse_status(state, S)["natural_silence"])
 
     async def test_expired_chat_is_not_replied_to_after_reading(self):
         action = await self.prepare(reply_enabled=True)

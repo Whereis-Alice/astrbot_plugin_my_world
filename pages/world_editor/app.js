@@ -8,7 +8,7 @@ import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js?v=4
 import { memorySearchFields } from "./memory-settings.js";
 import { relationshipPromptEditor } from "./relationship-prompt.js";
 import { mountLifeWorkspace } from "./life-workspace.js";
-import { openBrowseSettings } from "./browse-settings.js?v=4.33.0";
+import { openBrowseSettings } from "./browse-settings.js?v=4.33.2";
 import { personAvatar, personColor, bindPeopleSort } from "./people-ui.js";
 import { openRelationshipRulesEditor } from "./relationship-rules.js";
 import { applyDetailedLevels, DETAILED_LEVELS } from "./relationship-preset.js";
@@ -16225,7 +16225,7 @@ function renderBrowseStatus(visible) {
     [info.shared ? "生活组今日开始" : "今日开始浏览", `${info.started_today || 0} / ${info.daily_max || 0}`, "开始次数，包含中断或未留下感想的浏览"],
     ["本会话最近读完", info.last_read_at ? formatStamp(info.last_read_at) : "暂无完成记录", info.last_result === "quiet" ? "这次读过了，没有特别感想" : info.last_result === "feeling" ? "留下了一点感想" : "旧版未统计完成次数"],
     ["最早可再浏览", info.next_at > Date.now() / 1000 ? formatStamp(info.next_at) : "间隔已满足", `至少间隔 ${info.cooldown_minutes || 120} 分钟，仍需等到空闲`],
-    ["浏览后接话", info.reply_enabled ? (info.reply_allowed ? "由她决定" : "未获发言授权") : "安静阅读", "开启也允许沉默；只接仍在进行的话题"],
+    ["浏览后接话", info.reply_enabled ? (info.reply_allowed ? (info.natural_silence ? "可选择旁听" : "按话题接话") : "未获发言授权") : "安静阅读", "跟随「自主发言 → 自然沉默」；只接仍在进行的话题"],
   ]) {
     const item = el("div", "browse-status-item");
     item.append(el("small", "", label), el("strong", "", value), el("span", "muted", detail)); grid.append(item);
@@ -16935,8 +16935,8 @@ function renderProactiveAccess(fields) {
 
 function consolidateProactiveSettings(form, main) {
   const titles = ["自主决策", "群聊参与与分寸", "主动找人的保护", "说话频率与预算"];
-  const common = new Set(["日程到点也发言", "事件发生时发言", "新消息到来后自然接话", "参与程度", "睡前让她自己决定要不要说晚安", "睡醒让她自己决定要不要说早安", "想他想得不行就主动找他"]);
-  const advanced = settingsSection("自主发言细节", "接话只需选择参与程度。这里集中调整主动找人、生活分享和后台模型预算；找人的等待与额度不会挡住现场接话。");
+  const common = new Set(["日程到点也发言", "事件发生时发言", "新消息到来后自然接话", "参与程度", "自然沉默", "睡前让她自己决定要不要说晚安", "睡醒让她自己决定要不要说早安", "想他想得不行就主动找他"]);
+  const advanced = settingsSection("自主发言细节", "接话的频率与自然沉默在上方统一设置。这里集中调整主动找人、生活分享和后台模型预算；找人的等待与额度不会挡住现场接话。");
   advanced._fields.classList.add("proactive-advanced-groups");
   for (const title of titles) {
     const source = [...form.children].find(s => s.dataset.sectionTitle === title);
@@ -16977,7 +16977,7 @@ function consolidateProactiveSettings(form, main) {
       { type: "number", min, max, hint })));
   }
   for (const [title, labels] of [
-    ["现场接话", ["新消息到来后自然接话", "参与程度"]],
+    ["现场接话", ["新消息到来后自然接话", "参与程度", "自然沉默"]],
     ["生活的表达", ["日程到点也发言", "事件发生时发言", "睡前让她自己决定要不要说晚安", "睡醒让她自己决定要不要说早安", "想他想得不行就主动找他"]],
   ]) {
     const group = el("div", "proactive-controls full");
@@ -16987,6 +16987,7 @@ function consolidateProactiveSettings(form, main) {
       const field = [...main._fields.children].find(f => fieldLabelOf(f) === label);
       if (field) fields.append(field);
     }
+    if (title === "现场接话") fields.append(el("p", "hint-line full", "自然沉默默认关闭；新消息与浏览后接话共用。参与程度只控制留意频率。"));
     group.append(fields); main._fields.append(group);
   }
   main.after(advanced);
@@ -18107,22 +18108,29 @@ function renderSettings() {
   );
   form.appendChild(engagement);
 
-  /* --- 现场参与：一个开关，一个程度，模型决定要不要说 --- */
+  /* --- 现场参与：频率与是否允许自然沉默分别控制 --- */
   world.decider = world.decider || {};
-  const interject = settingsSection("群聊参与与分寸", "先听懂现场，再决定是否接一句。",
+  const interject = settingsSection("群聊参与与分寸", "先听懂现场，再顺着话题接一句。自然沉默默认关闭。",
     "连发会先聚合；近期说得多就少打扰。接话不占主动找人额度，也不再等待固定的插话冷却。睡眠、不可中断的忙碌和正在回复时仍会先让开。");
   interject._fields.appendChild(checkboxField(
     "新消息到来后自然接话", world.decider.message_driven !== false && world.decider.enabled !== false,
     (value) => { world.decider.message_driven = value; world.decider.enabled = value; },
-    { hint: "白名单内的群聊生效。模型可保持安静，也可选中现场的一条消息引用回应。" },
+    { hint: "白名单内的群聊生效。可选中现场的一条消息引用回应；是否允许没话想说时旁听，由「自然沉默」控制。" },
   ));
   interject._fields.appendChild(selectField("参与程度", world.decider.participation_level || "natural", [
     { key: "quiet", label: "安静 · 偶尔接一句" },
     { key: "natural", label: "自然 · 随话题参与" },
     { key: "lively", label: "活跃 · 多留意群聊" },
   ], value => (world.decider.participation_level = value), {
-    hint: "控制观察机会，不强迫开口；说话内容与安慰、兴趣的分寸仍由人设和现场决定。",
+    hint: "只控制留意群聊的频率，近期说得多时少留意一些。进入接话请求后，按「自然沉默」决定是否允许主观放下。",
   }));
+  const naturalSilence = checkboxField(
+    "自然沉默", world.decider.natural_silence === true,
+    value => (world.decider.natural_silence = value),
+    { hint: "默认关闭：进入接话请求后直接生成回应，不因没话想说而旁听。开启：允许她选择不说。新消息接话与浏览后接话共用；睡眠、授权、过期话题和生成失败仍会停止发送。" },
+  );
+  naturalSilence.querySelector("input").setAttribute("aria-label", "自然沉默");
+  interject._fields.appendChild(naturalSilence);
   form.appendChild(interject);
 
   /* --- 睡眠与打断 --- */
