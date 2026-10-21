@@ -417,6 +417,7 @@ class EventEngineTest(unittest.IsolatedAsyncioTestCase):
         )
         raw = self.store.raw_world()
         # 事件闸门用固定睡眠日程；自主作息不会自动执行这些日程。
+        raw["proactive_session_whitelist"] = [SESSION]
         raw["sleep"]["mode"] = "fixed"
         raw["events"] = {
             "enabled": True,

@@ -90,6 +90,9 @@ class ActionsRunMixin:
                     silent=not echo,
                 )
                 return None
+        if outcome is not None and not self.speech_allowed(self._image_home(outcome, action), outcome.speech_kind):
+            outcome.notes.append("自主发言未获授权，跳过工具调用")
+            return None
         call = await self._call_tool(definition.id, params, state, tool_name=name)
         if not call.ok and _looks_like_argument_error(call.error):
             # 工具作者把参数写成"可选"、实现里却必须要：拿报错再补一次，只重试一次
@@ -102,6 +105,8 @@ class ActionsRunMixin:
                 error_hint=str(call.error or ""),
             )
             if retried:
+                if outcome is not None and not self.speech_allowed(self._image_home(outcome, action), outcome.speech_kind):
+                    return None
                 retry_params = {**params, **retried}
                 await self._log_event(
                     state,
@@ -340,8 +345,12 @@ class ActionsRunMixin:
                 return False
             if autonomous and await self._defer_rhythm_for_event(state, outcome):
                 return False
-        if (definition.id in {"say", "share", "poke"} or definition.llm_level in {"tool", "command"}) and not self.speech_allowed(
-            self._speech_target(state, action, outcome) or outcome.home(), outcome.speech_kind,
+        target = self._speech_target(state, action, outcome) or outcome.home()
+        speech_targets = [target]
+        if definition.id in {"say", "share"} and not action.send_to:
+            speech_targets.extend(outcome.broadcast_targets)
+        if (definition.id in {"say", "share", "poke"} or definition.llm_level in {"tool", "command"}) and not any(
+            self.speech_allowed(sid, outcome.speech_kind) for sid in speech_targets
         ):
             outcome.notes.append(f"自主搭话已暂停，跳过发言动作 {definition.id}")
             if from_plan and state.current_plan is not None:
@@ -892,6 +901,9 @@ class ActionsRunMixin:
         """戳一戳：调平台接口戳对方一下；平台不支持就退化成一句动作文案。"""
 
         target = str(action.target or "").strip()
+        if not self.speech_allowed(outcome.home(), outcome.speech_kind):
+            outcome.notes.append("自主发言未获授权，跳过戳一戳")
+            return
         if not target:
             # 没给目标：挑一个最近说过话的人，谁在就戳谁
             recent = state.recent_active_users(limit=1)
@@ -913,7 +925,9 @@ class ActionsRunMixin:
                 return
             try:
                 # 在"她现在说话的地方"戳：私聊里说话就戳私聊，别戳到群里去
-                result = await poker(outcome.home(), target)
+                from ..speech_policy import guard_send
+                with guard_send(lambda sid, i: self.speech_allowed(sid, outcome.speech_kind)):
+                    result = await poker(outcome.home(), target)
                 ok = bool(getattr(result, "ok", result))
                 reason = str(getattr(result, "reason", "") or "")
                 route = str(getattr(result, "route", "") or "")

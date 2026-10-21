@@ -3,9 +3,26 @@
 import functools
 import inspect
 from contextvars import ContextVar
+from contextlib import contextmanager
 
 
 SILENT_FOLLOWUP = ContextVar("world_silent_followup", default=False)
+SEND_CHECK = ContextVar("world_send_check", default=None)
+
+
+@contextmanager
+def guard_send(check):
+    """Recheck authorization after typing waits, without changing port signatures."""
+    token = SEND_CHECK.set(check)
+    try:
+        yield
+    finally:
+        SEND_CHECK.reset(token)
+
+
+def segment_allowed(session_id: str, index: int = 0) -> bool:
+    check = SEND_CHECK.get()
+    return check is None or bool(check(session_id, index))
 
 
 def speech_origin(source):

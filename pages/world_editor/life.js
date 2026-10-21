@@ -182,6 +182,11 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
         diary.append(el("strong", "", day.diary.title || "无题"),
           el("p", "", String(day.diary.content || "").slice(0, 220)),
           el("small", "muted", day.diary.mood || "生活回顾"));
+        if (String(day.diary.content || "").length > 220) {
+          const more = el("details", "life-week-diary-more");
+          more.append(el("summary", "", "继续读这一天 ↓"), el("p", "", String(day.diary.content).slice(220)));
+          diary.append(more);
+        }
       } else diary.append(el("p", "life-week-empty-line", "还没有日记。有足够生活记录后会自动补写。"));
       card.append(diary);
       weekGrid.append(card);

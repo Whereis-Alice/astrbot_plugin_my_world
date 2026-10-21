@@ -72,11 +72,25 @@ class ObservatoryBrowserTests(unittest.TestCase):
         self.assertEqual(self.errors, [])
 
     def test_running_details_are_keyboard_accessible_and_follow_current_snapshot(self):
+        self.host.set_viewport_size({"width":1600,"height":1060})
         summary = self.page.locator(".world-details > summary")
         expect(self.page.locator("#status-time")).to_be_hidden()
         summary.focus()
         summary.press("Enter")
         expect(self.page.locator("#status-time")).to_contain_text("20:36")
+        self.assertEqual(self.page.locator('.world-details .status-card').evaluate(
+            'e => getComputedStyle(e).gridTemplateColumns.split(" ").length'), 3)
+        self.assertTrue(self.page.locator('#hero-kpis .kpi').nth(1).locator('.kpi-note').inner_text())
+        self.assertTrue(self.page.locator('#hero-kpis .kpi').nth(2).locator('.kpi-note').inner_text())
+        expect(self.page.locator('#status-diagnostics')).not_to_be_visible()
+        self.assertTrue(self.page.evaluate('''() => {
+          const hero=document.querySelector('.hero-card').getBoundingClientRect();
+          const body=document.querySelector('.wellbeing-card').getBoundingClientRect();
+          const focus=document.querySelector('#life-focus').getBoundingClientRect();
+          const history=document.querySelector('.history-card').getBoundingClientRect();
+          return Math.abs(hero.y-body.y)<1 && Math.abs(hero.bottom-body.bottom)<1
+            && Math.abs(focus.y-history.y)<1;
+        }'''))
         self.page.evaluate("""() => {
           numericState.nickname_live = '新名片'; numericState.node_name = '露台';
           numericState.night = {...numericState.night, sleeping: true};

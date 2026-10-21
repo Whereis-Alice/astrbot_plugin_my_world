@@ -2400,7 +2400,9 @@ class WorldConfig(Permissive):
         return data
 
     proactive_chat_paused: bool = False
-    """全局暂停自主搭话；所有会话都生效，日程、事件和被动回复保留。"""
+    """全局暂停一切自主发言；生活照常推进，被动回复保留。"""
+    proactive_session_whitelist: list[str] = Field(default_factory=list)
+    """全局自主发言白名单，按实际目标会话核验；空名单不主动发言。"""
     proactive_chat_enabled: bool = True
     """允许自主搭话；默认全局继承，会话可单独关闭。"""
     schedule_speech_enabled: bool = True

@@ -853,6 +853,8 @@ class ActionsMixin:
         ``say`` 排在慢动作后面（本来就是"做完再说"）时不受影响。
         """
 
+        if outcome.broadcast_targets:
+            return  # Deliver each authorized destination together at the final boundary.
         self._filter_proactive_speech(outcome)
         if self.say_sink is None or not outcome.messages:
             return
@@ -871,7 +873,9 @@ class ActionsMixin:
                 continue
             sent = False
             try:
-                sent = bool(await self.say_sink(outcome.home(), line))
+                from ..speech_policy import guard_send
+                with guard_send(lambda sid, i: self.speech_allowed(sid, kind)):
+                    sent = bool(await self.say_sink(outcome.home(), line))
             except Exception as exc:
                 self._log("debug", f"即时发言失败：{exc}")
                 sent = False

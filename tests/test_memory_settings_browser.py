@@ -73,11 +73,11 @@ class MemorySettingsBrowserTests(unittest.TestCase):
             level.scroll_into_view_if_needed()
             self.assertTrue(level.evaluate('n=>n.scrollWidth<=n.clientWidth+1'))
             self.host.screenshot(path=str(self.shots/f'relationship-settings-{width}.png'))
-        self.page.get_by_role('button', name='聊天与表达', exact=True).click()
+        self.page.locator('#settings-tabs').get_by_role('button', name='自主发言', exact=True).click()
         expect(self.page.get_by_label('每天最多主动联系', exact=True)).to_be_visible()
         expect(self.page.get_by_label('每天最多联系同一个人', exact=True)).to_be_visible()
         self.assertEqual(self.page.get_by_label('每天最多主动联系', exact=True).count(), 1)
-        self.page.locator('[data-section-title="主动联系"]').scroll_into_view_if_needed()
+        self.page.locator('[data-section-title="主动发言"]').scroll_into_view_if_needed()
         self.host.screenshot(path=str(self.shots/'proactive-contact-settings.png'))
         self.assertEqual(self.errors, [])
 

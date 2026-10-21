@@ -4,7 +4,7 @@ import { createContactWorkbench } from "./contact-workbench.js";
 import { createSocialLearning } from "./social-learning.js";
 import { createRelationshipsPage } from "./relationships.js";
 import { createModelCallsPage } from "./model-calls.js?v=4.29.0";
-import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js";
+import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js?v=4.30.0";
 import { memorySearchFields } from "./memory-settings.js";
 import { relationshipPromptEditor } from "./relationship-prompt.js";
 import { mountLifeWorkspace } from "./life-workspace.js";
@@ -3374,6 +3374,7 @@ const ACTION_CONFIG_KEYS = new Set(["actions", "purged_actions", "idle_life"]);
 const GLOBAL_CONFIG_KEYS = new Set([
   "admin_ids",
   "proactive_chat_paused",
+  "proactive_session_whitelist",
   "wizard_done",
   "schema_version",
   "default_actions_disabled",
@@ -3381,7 +3382,7 @@ const GLOBAL_CONFIG_KEYS = new Set([
 
 function configFingerprint() {
   return JSON.stringify([ui.config.world, ui.config.schedules, ui.config.sessions, [...ui.scopeBlocks].sort()],
-    (key, value) => key === "proactive_chat_paused" ? undefined : value);
+    (key, value) => ["proactive_chat_paused", "proactive_session_whitelist"].includes(key) ? undefined : value);
 }
 
 function currentConfigBlock() {
@@ -3423,7 +3424,10 @@ function renderConfigScope() {
   select.value = ui.scope;
   const paused = ui.config.world.proactive_chat_paused === true;
   $("proactive-enabled").checked = !paused;
-  $("proactive-state").textContent = paused ? "已暂停" : "已开启";
+  const accessCount = (ui.config.world.proactive_session_whitelist || []).length;
+  $("proactive-state").textContent = paused ? "已暂停" : accessCount ? `已开启 · ${accessCount} 个会话` : "待设白名单";
+  const master = document.querySelector(".proactive-master");
+  if (master) master.textContent = paused ? "全局已暂停 · 点击开启" : "全局已开启 · 点击暂停";
   const block = currentConfigBlock();
   const local = Boolean(ui.scope);
   $("scope-edit-label").classList.toggle("hidden", !local || !block);
@@ -3497,7 +3501,7 @@ function bindConfigScopes() {
       await apiPost("config/proactive", { enabled });
       ui.config.world.proactive_chat_paused = !enabled;
       if (ui.config.global_config) ui.config.global_config.world.proactive_chat_paused = !enabled;
-      toast(enabled ? "全局自主搭话已开启" : "所有会话的自主搭话已暂停，日程与事件照常");
+      toast(enabled ? "全局自主发言已开启，仅白名单会话可发言" : "全部自主发言已暂停，生活照常推进");
     } catch (error) { toast(error.message || "切换失败"); }
     finally { event.target.disabled = false; renderConfigScope(); }
   });
@@ -5153,7 +5157,7 @@ function actionLabel(id) {
 function setStatusEmpty(text) {
   $("status-head").innerHTML = "";
   renderHero(null, "");
-  ["status-time", "status-progress", "status-runtime"].forEach((id) => {
+  ["status-time", "status-progress", "status-runtime", "status-diagnostics"].forEach((id) => {
     const box = $(id);
     if (!box) return;
     box.innerHTML = "";
@@ -5221,9 +5225,39 @@ function renderChatContext(data) {
   if (!box) return;
   box.replaceChildren();
   const head = el("div", "chat-context-head");
-  head.appendChild(el("span", "chat-context-count", `短期窗口 ${Number(data?.chat_history_count || 0)} 条（本会话）`));
-  head.appendChild(el("span", "muted", "供当前对话与画像提取使用，超出窗口自动移出"));
+  const count = Number(data?.chat_history_count || 0);
+  head.appendChild(el("span", "chat-context-count", `本会话 · 记住 ${count} 条消息`));
+  const participation = data.participation || {};
+  head.appendChild(el("span", "conversation-state", participation.decision === "joined" ? "接上了话题" : "安静听着"));
   box.appendChild(head);
+  box.appendChild(el("p", "conversation-note", String(data.chat_note || "").trim() || (count ? "近期的话还留在上下文里，暂时没有整理成话题备忘。" : "这里还很安静。有人说起感兴趣的事，她会先听，再决定要不要接一句。")));
+  const stats = el("div", "conversation-stats");
+  for (const [label, value] of [["还没回应", data.chat_unreplied_count], ["已经回应", data.chat_replied_count]]) {
+    const item = el("div"); item.append(el("strong", "", String(Number(value || 0))), el("span", "", label)); stats.append(item);
+  }
+  box.append(stats);
+}
+
+function renderConsolePlan(plan) {
+  const box = $("status-plan"); box.replaceChildren(); box.classList.remove("pre-empty");
+  const steps = plan?.steps || [];
+  if (!steps.length) {
+    box.append(el("span", "plan-state", "留一点自由时间"), el("p", "plan-reason", "她还没安排下一步。生活会继续，下一次决定也可以只是好好休息。"));
+    return;
+  }
+  box.append(el("span", "plan-state", PLAN_SOURCES[plan.source] || "正在安排"));
+  if (plan.reason) box.append(el("p", "plan-reason", plan.reason));
+  const list = el("ol", "console-plan-steps");
+  const current = Number(plan.current_step || 0);
+  steps.forEach((step, i) => {
+    const row = el("li", i < current ? "is-done" : i === current ? "is-current" : "");
+    row.append(el("span", "plan-step-index", i < current ? "✓" : String(i + 1).padStart(2, "0")));
+    const text = el("div"); text.append(el("strong", "", actionLabel(step.action) || "生活安排"));
+    if (step.target_node) text.append(el("small", "", nodeLabel(step.target_node)));
+    if (step.messages?.length) text.append(el("p", "", step.messages.join(" / ")));
+    row.append(text); list.append(row);
+  });
+  box.append(list);
 }
 
 /**
@@ -5267,10 +5301,17 @@ function renderHero(data, stateLabel) {
   // 人物面板下方四张指标卡：一眼看全"在哪、在做什么、心情、下一个节点"
   if (!kpiBox) return;
   const next = data.next_schedule || null;
+  const tickSeconds = Math.max(1, Number(data.tick_seconds || 60));
+  const done = Number(action.elapsed_ticks || 0), total = Number(action.duration_ticks || 0);
+  const actionNote = total > 0
+    ? `已进行 ${durationText(Math.round(done * tickSeconds / 60))} · 约 ${durationText(Math.round(Math.max(0, total - done) * tickSeconds / 60))}后完成`
+    : String(data.activity_reason || "").trim() || (data.night?.sleeping ? "正在休息，醒来后继续生活" : "按自己的节奏，度过这一刻");
+  const moodNote = data.day_mood?.label ? `今天的调子 · ${data.day_mood.label}`
+    : data.values?.valence != null ? `心情底色 ${Math.round(Number(data.values.valence) * 100)} / 100` : "心情随经历慢慢变化";
   [
-    { label: "地点", value: where || "（未知）", tone: "accent" },
-    { label: "正在做", value: doing || "没在做什么", tone: "accent" },
-    { label: "心情", value: data.mood || "（未记录）", tone: "violet" },
+    { label: "地点", value: where || "（未知）", note: data.travel?.length ? `从这里，可去 ${data.travel.length} 个地方` : "此刻生活停留的地方", tone: "accent" },
+    { label: "正在做", value: doing || "自由休息", note: actionNote, progress: total > 0 ? Math.min(1, done / total) : null, tone: "accent" },
+    { label: "心情", value: data.mood || "（未记录）", note: moodNote, tone: "violet" },
     {
       label: "下一条日程",
       value: next ? `${next.time} ${next.actions || ""}`.trim() : "没有启用的日程",
@@ -5282,6 +5323,10 @@ function renderHero(data, stateLabel) {
     tile.appendChild(el("span", "kpi-label", item.label));
     tile.appendChild(el("span", "kpi-value", item.value));
     if (item.note) tile.appendChild(el("span", "kpi-note", item.note));
+    if (item.progress != null) {
+      const track = el("span", "kpi-progress"), fill = el("i"); fill.style.width = `${item.progress * 100}%`;
+      track.append(fill); track.setAttribute("aria-hidden", "true"); tile.append(track);
+    }
     // 卡片里放不下时折两行；再长就让鼠标悬停看全文（同时给 title 兜底）
     const full = [item.value, item.note].filter(Boolean).join(" · ");
     if (Array.from(full).length > 14) {
@@ -5337,8 +5382,6 @@ function renderStatusSections(data, stateLabel) {
           Number(style.say_limit || 0) ? ` · 最多 ${style.say_limit} 条` : ""
         }${data.storm ? " · 正在气头上" : ""}`
       : "",
-    `tick：${data.world_time}`,
-    `名片：${data.nickname || "（未设置）"}`,
   ]
     .filter(Boolean)
     .forEach((text) => head.appendChild(el("span", "chip", text)));
@@ -5353,9 +5396,7 @@ function renderStatusSections(data, stateLabel) {
   statusLine(
     timeBox,
     "世界时间",
-    `第 ${data.world_time} 个 tick（1 tick ≈ ${tickSeconds} 秒）· 已推进 ${
-      data.world_elapsed_text || "0 分钟"
-    }`,
+    `已度过 ${data.world_elapsed_text || "0 分钟"}`,
   );
   const next = data.next_schedule;
   if (next) {
@@ -5574,8 +5615,7 @@ function renderStatusSections(data, stateLabel) {
       if (item.waiting) {
         return `${item.name}（刚聊过，${item.ready_in_minutes} 分钟后才会开始想）`;
       }
-      const flag = item.will_reach_out ? "，可以考虑联系" : "";
-      return `${item.name} ${Number(item.value || 0).toFixed(2)}${flag}`;
+      return `${item.name}${item.will_reach_out ? " · 想找个机会聊聊" : " · 惦记着"}`;
     });
     const quota = miss.push_cap
       ? `生活组主动联系剩余 ${Number(miss.push_left || 0)}/${miss.push_cap} 次`
@@ -5583,12 +5623,11 @@ function renderStatusSections(data, stateLabel) {
     statusLine(
       runtimeBox,
       "想找的人",
-      (parts.length ? parts.join(" · ") : "（暂时没惦记谁）")
-        + `｜想念阈值 ${Number(miss.threshold || 0).toFixed(2)}，是否联系由她决定`
-        + (quota ? `｜${quota}` : "")
-        + (miss.enabled === false ? "｜（主动找人已关闭）" : ""),
+      (parts.length ? parts.join("；") : "暂时没惦记谁，先过自己的生活")
+        + (miss.enabled === false ? " · 主动找人已关闭" : ""),
       "",
     );
+    statusLine(runtimeBox, "联系额度", `${quota} · 想念阈值 ${Number(miss.threshold || 0).toFixed(2)}`);
   }
   const topics = data.open_topics || [];
   if (topics.length) {
@@ -5633,6 +5672,18 @@ function renderStatusSections(data, stateLabel) {
     `${channel.llm_provider ? channel.llm_provider : "跟随当前会话供应商"} · ${llmText}`,
     llmTone,
   );
+  const diagnostics = $("status-diagnostics"); diagnostics.replaceChildren();
+  statusLine(diagnostics, "世界时钟", `第 ${data.world_time} 拍 · 每拍约 ${tickSeconds} 秒`);
+  for (const row of [...runtimeBox.children]) {
+    const key = row.querySelector(".status-key")?.textContent || "";
+    if (["决策意愿", "插话（本小时）", "暂不可用", "本小时额度", "聊天的情绪额度", "联系额度", "发送通道", "模型通道"].includes(key)) diagnostics.append(row);
+  }
+  // The overview already carries these counts and the full conversation note.
+  for (const row of [...runtimeBox.children]) {
+    if (["未回应", "刚聊过"].includes(row.querySelector(".status-key")?.textContent)) row.remove();
+  }
+  const allowed = (ui.config.world.proactive_session_whitelist || []).includes(data.session_id);
+  statusLine(runtimeBox, "自主发言", ui.config.world.proactive_chat_paused ? "全局已暂停 · 生活继续" : allowed ? "白名单已授权 · 按情境决定是否开口" : "未加入全局白名单 · 只回应正常对话");
 }
 
 /* ---------------- 数值曲线：她最近过得怎么样 ---------------- */
@@ -5913,7 +5964,7 @@ function renderAbilityRadar(box, abilities) {
       hint: item.hint || "",
     };
   });
-  if (!items.some((item) => item.value > 0)) {
+  if (!RADAR_KEYS.some(key => abilities?.[key] && Number.isFinite(Number(abilities[key].value)))) {
     box.innerHTML = "";
     box.appendChild(el("p", "muted", "还没有能力值数据。"));
     return;
@@ -6017,11 +6068,13 @@ function renderAbilityRadar(box, abilities) {
   box.innerHTML = "";
   box.appendChild(svg);
   const legend = el("div", "radar-legend");
-  items.forEach((item) => {
-    const row = el("div", "radar-legend-row");
+  items.forEach((item, index) => {
+    const row = el("div", `radar-legend-row ability-${index}`);
+    row.appendChild(el("span", "ability-index", `0${index + 1}`));
     row.appendChild(el("span", "radar-legend-name", item.label));
     row.appendChild(el("span", "radar-legend-value", item.value.toFixed(2)));
     row.appendChild(el("span", "radar-legend-hint muted", item.hint || ""));
+    const track = el("div", "ability-track"), fill = el("i"); fill.style.width = `${Math.min(1, Math.max(0, item.value)) * 100}%`; track.append(fill); row.append(track);
     legend.appendChild(row);
   });
   box.appendChild(legend);
@@ -6103,7 +6156,7 @@ function renderCurrentEvent(box, badgeBox, data) {
       el(
         "p",
         "muted event-empty",
-        "现在没遇上什么事。上面「给她安排一件事」可以直接投递一件，她会当场遇上。",
+        "今天暂时没有正在经历的事。可以顺其自然，也可以在「投递与事件设置」里给她安排一件小事。",
       ),
     );
     return;
@@ -6860,7 +6913,7 @@ function renderEventModal(force = false) {
   if (hint) {
     hint.textContent = threads.length
       ? "点一条展开看每一幕：她选了什么、判定如何、结果怎样。没完结的可以在这里手动推进或直接完结。"
-      : "还没有经历过什么事。上面「给她安排一件事」可以主动投递一件。";
+      : "还没有留下经历。日常会慢慢积累，也可以从「投递与事件设置」开始一件小事。";
   }
   threads.forEach((thread) => {
     const meta = eventStatusMeta(thread);
@@ -7215,7 +7268,7 @@ async function refreshStatus() {
     $("state-interrupt").disabled = !currentAction.type;
     $("state-wake").disabled = !sleeping;
 
-    setStatusPre("status-plan", formatPlan(data.current_plan), "（她还没安排接下来要做什么）");
+    renderConsolePlan(data.current_plan);
     // 「内心活动」整块搬到「内心活动」页了：那里有位置把"回了谁、回了哪条"一起排开，
     // 控制台这边只留一个入口，不再挤一长条文字。
 
@@ -16511,7 +16564,7 @@ const SETTINGS_TABS = [
     key: "basic",
     label: "基础",
     hint: "她是谁、生活在什么样的世界、谁是管理员",
-    sections: ["基础", "persona", "persona_brief", "她的初始状态", "群名片同步"],
+    sections: ["基础", "persona", "persona_brief", "她的初始状态", "群名片同步", "手感（滑块）"],
   },
   {
     key: "state",
@@ -16520,16 +16573,16 @@ const SETTINGS_TABS = [
     sections: ["生活事项", "后台预算", "状态变化速度", "她的本事（能力值）", "睡眠与打断", "作息与夜晚"],
   },
   {
+    key: "proactive",
+    label: "自主发言",
+    hint: "全局授权、参与方式与打扰保护",
+    sections: ["主动发言", "自主发言细节"],
+  },
+  {
     key: "talk",
     label: "聊天与表达",
     hint: "多久开口、说什么、怎么分句",
     sections: [
-      "主动联系",
-      "手感（滑块）",
-      "自主决策",
-      "群聊参与与分寸",
-      "没人理她时怎么办",
-      "说话频率与预算",
       "说话节奏",
       "上下文",
       "图片转述",
@@ -16666,7 +16719,13 @@ function searchSettings(keyword) {
         (section) => String(section.dataset.sectionTitle || "") === hit.title,
       );
       if (target && target.scrollIntoView) {
-        target.scrollIntoView({ block: "center", behavior: "smooth" });
+        const field = [...target.querySelectorAll(".field")].find(node => node.textContent.toLowerCase().includes(word));
+        if (field) {
+          for (let parent = field.parentElement; parent && parent !== target; parent = parent.parentElement) {
+            if (parent.tagName === "DETAILS") parent.open = true;
+          }
+        }
+        (field || target).scrollIntoView({ block: "center", behavior: "smooth" });
       }
       box.classList.add("hidden");
     });
@@ -16774,6 +16833,82 @@ function collapseAdvancedFields(form) {
   });
 }
 
+function renderProactiveAccess(fields) {
+  const world = ui.config.world;
+  const box = el("div", "proactive-access full");
+  box.append(el("div", "panel-eyebrow", "GLOBAL PERMISSION / 全局授权"));
+  const heading = el("div", "proactive-access-head");
+  heading.append(el("h4", "", "可以主动说话的地方"));
+  const master = el("button", "ghost small proactive-master", world.proactive_chat_paused ? "全局已暂停 · 点击开启" : "全局已开启 · 点击暂停");
+  master.type = "button";
+  master.onclick = () => { const input = $("proactive-enabled"); input.checked = !input.checked; input.dispatchEvent(new Event("change")); };
+  heading.append(master); box.append(heading);
+  const status = el("p", "proactive-access-note", ui.scope ? "这是全局授权，独立配置不能扩大名单。请在「全局默认」范围修改并应用。" : "只勾选你允许她主动参与的群和私聊；同一生活组的其他会话不会自动获准。名单为空时，她安静生活，仍能正常回复。");
+  box.append(status);
+  const list = el("div", "proactive-session-list"), selected = new Set(world.proactive_session_whitelist || []);
+  const sessions = [...ui.sessions];
+  for (const sid of selected) if (!sessions.some(s => s.session_id === sid)) sessions.push({session_id:sid, note:"已移除的会话 · 请取消授权"});
+  for (const session of sessions) {
+    const row = el("label", "proactive-session"), input = document.createElement("input");
+    input.type = "checkbox"; input.checked = selected.has(session.session_id); input.disabled = Boolean(ui.scope);
+    input.setAttribute("aria-label", `允许主动发言：${session.note || session.group_name || session.session_id}`);
+    input.onchange = () => { if (input.checked) selected.add(session.session_id); else selected.delete(session.session_id); };
+    const text = el("span"); text.append(el("strong", "", session.note || session.group_name || sessionShortName(session.session_id)), el("small", "", session.session_id));
+    row.append(input, text); list.append(row);
+  }
+  if (!sessions.length) list.append(el("p", "muted", "还没有登记会话，先去「会话」页添加。"));
+  box.append(list);
+  const foot = el("div", "proactive-access-foot"), apply = el("button", "primary small", "应用全局白名单");
+  apply.type = "button"; apply.disabled = Boolean(ui.scope);
+  const result = el("span", "muted", `已授权 ${selected.size} 个会话`); result.setAttribute("role", "status");
+  apply.onclick = async () => {
+    apply.disabled = true;
+    try {
+      await apiPost("config/proactive", {enabled: !ui.config.world.proactive_chat_paused, whitelist:[...selected]});
+      world.proactive_session_whitelist = [...selected];
+      if (ui.config.global_config) ui.config.global_config.world.proactive_session_whitelist = [...selected];
+      result.textContent = `已生效 · 授权 ${selected.size} 个会话`;
+      renderConfigScope(); toast("全局白名单已生效，待发送内容也会重新核验");
+    } catch (error) { result.textContent = error.message || "保存失败"; toast(result.textContent); }
+    finally { apply.disabled = false; }
+  };
+  // These controls save through their own endpoint, not the scoped settings form.
+  box.addEventListener("change", e => e.stopPropagation()); box.addEventListener("input", e => e.stopPropagation());
+  foot.append(apply, result); box.append(foot); fields.append(box);
+}
+
+function consolidateProactiveSettings(form, main) {
+  const titles = ["自主决策", "群聊参与与分寸", "没人理她时怎么办", "说话频率与预算"];
+  const common = new Set(["日程到点也发言", "事件发生时发言", "允许她主动接话（插话）", "新消息到来后自然接话", "睡前让她自己决定要不要说晚安", "睡醒让她自己决定要不要说早安", "想他想得不行就主动找他"]);
+  const advanced = settingsSection("自主发言细节", "默认参数已经包含现场聚合、回复避让、过期话题、联系额度和无人回应退避。只有需要调整时再展开。");
+  advanced._fields.classList.add("proactive-advanced-groups");
+  for (const title of titles) {
+    const source = [...form.children].find(s => s.dataset.sectionTitle === title);
+    if (!source) continue;
+    for (const field of [...source._fields.children]) if (common.has(fieldLabelOf(field))) main._fields.append(field);
+    const group = el("details", "proactive-detail full");
+    group.append(el("summary", "", title));
+    const note = source.querySelector(":scope > .section-note"); if (note) group.append(note);
+    group.append(source._fields); advanced._fields.append(group); source.remove();
+  }
+  for (const title of ["睡眠与打断", "用户画像"]) {
+    const source = [...form.children].find(s => s.dataset.sectionTitle === title);
+    if (!source) continue;
+    for (const field of [...source._fields.children]) if (common.has(fieldLabelOf(field))) main._fields.append(field);
+    if (title === "用户画像") {
+      const group = el("details", "proactive-detail full"); group.append(el("summary", "", "想念与主动了解"));
+      const fields = el("div", "fields");
+      let move = false;
+      for (const field of [...source._fields.children]) {
+        if (field.classList.contains("sub-title")) move = ["想念", "主动问"].includes(field.textContent.trim());
+        if (move) fields.append(field);
+      }
+      group.append(fields); advanced._fields.append(group);
+    }
+  }
+  main.after(advanced);
+}
+
 function renderSettings() {
   const world = ui.config.world;
   world.default_state = world.default_state || {};
@@ -16794,10 +16929,11 @@ function renderSettings() {
     ui.scope ? "这些规则只用于当前会话或共享生活组。" : "这些是默认规则，所有未单独配置的会话都会继承。",
     "新手只需要改「全局提示词」，其它保持默认即可。",
   );
-  const contactSection = settingsSection("主动联系", "上限用于防止打扰；她是否联系仍由人设、状态和情境决定。日程、事件和正常回复使用各自的开关。");
+  const contactSection = settingsSection("主动发言", "先授权，再决定怎样参与。接话、找人、问候、日程、事件及其图片和戳一戳，都必须经过全局总开关与白名单。正常回复和安静生活照常。");
+  renderProactiveAccess(contactSection._fields);
   contactSection._fields.appendChild(checkboxField("允许自主搭话", world.proactive_chat_enabled !== false,
     value => {world.proactive_chat_enabled = value;},
-    {hint: "控制当前配置范围；顶栏全局开关暂停时，全部会话均暂停自主搭话。"}));
+    {hint: "当前配置范围内允许接话、找人和问候；全局白名单与顶栏总开关始终优先。"}));
   for (const [key, label, fallback, hint] of [
     ["proactive_daily_max", "每天最多主动联系", 6, "每个生活组共用。一次计划在一个会话中连续说话只算一次；填 0 暂停自主联系。"],
     ["proactive_person_daily_max", "每天最多联系同一个人", 2, "按实际会话分别计数，所有档位共用。填 0 不主动联系具体的人。"],
@@ -17828,14 +17964,13 @@ function renderSettings() {
         "每小时最多自主行动几次在下面的「说话频率与预算」里。",
     ),
   );
-  // 顶栏那个「自主搭话」暂停之后，日程到点和事件发生仍然会说话（那是设计好的）。
-  // 想连这两个也一起静音，就在这儿关；三个开关合起来才是"完全不主动开口"。
+  // Source switches refine permission; none can bypass the global whitelist.
   decideCard._fields.appendChild(
     checkboxField(
       "日程到点也发言",
       world.schedule_speech_enabled !== false,
       (value) => (world.schedule_speech_enabled = value),
-      { hint: "关掉后日程照常执行动作，但不会把话发出去；想彻底安静就把它和下面那个都关掉。" },
+      { hint: "仅在全局白名单授权后生效。关掉后日程照常执行动作，但不会向外发言。" },
     ),
   );
   decideCard._fields.appendChild(
@@ -17843,7 +17978,7 @@ function renderSettings() {
       "事件发生时发言",
       world.event_speech_enabled !== false,
       (value) => (world.event_speech_enabled = value),
-      { hint: "关掉后事件照常推进与记录，只是她不会为这件事开口。" },
+      { hint: "仅在全局白名单授权后生效。关掉后事件照常推进与记录，只是她不会为这件事开口。" },
     ),
   );
   form.appendChild(decideCard);
@@ -19833,6 +19968,8 @@ function renderSettings() {
   applyButton.addEventListener("click", () => {
     try {
       const parsed = JSON.parse(rawArea.value);
+      parsed.proactive_chat_paused = ui.config.world.proactive_chat_paused === true;
+      parsed.proactive_session_whitelist = [...(ui.config.world.proactive_session_whitelist || [])];
       ui.config.world = parsed;
       renderEverything();
       toast("已应用到编辑器，记得点右上角「保存」");
@@ -19844,6 +19981,7 @@ function renderSettings() {
   advanced.appendChild(applyButton);
   form.appendChild(advanced);
 
+  consolidateProactiveSettings(form, contactSection);
   // 低频但一个都不能少的字段收进「高级设置」，页面第一眼只剩要改的东西
   collapseAdvancedFields(form);
   // 分类标签：只影响显示，不影响存下来的数据结构

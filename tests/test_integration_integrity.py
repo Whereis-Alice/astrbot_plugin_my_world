@@ -12,6 +12,46 @@ from tests.test_dialogue_inject import Event
 
 
 class IntegrationIntegrityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_poke_fallback_stops_when_authorization_is_revoked(self):
+        policy = importlib.import_module(self.module.__name__ + ".core.speech_policy")
+        allowed = True
+        async def revoke_and_fail(*_args):
+            nonlocal allowed
+            allowed = False
+            raise RuntimeError("platform disconnected")
+        bot = SimpleNamespace(call_action=AsyncMock(return_value=True))
+        self.plugin._last_events[self.session] = SimpleNamespace(bot=bot)
+        self.plugin.context.send_message = AsyncMock(side_effect=revoke_and_fail)
+        with policy.guard_send(lambda _sid, _index: allowed):
+            result = await self.plugin.messenger.poke(self.session, "42")
+        self.assertFalse(result.ok)
+        bot.call_action.assert_not_awaited()
+
+    async def test_revoke_during_typing_stops_remaining_segments_and_images(self):
+        engine = self.plugin.engine
+        world = self.plugin.store.raw_world()
+        world["proactive_session_whitelist"] = [self.session]
+        self.plugin.store.save_world(world)
+        engine.reload_config()
+        self.plugin.typing_delay_for = lambda _text: .001
+        async def accept_and_revoke(*args):
+            world["proactive_session_whitelist"] = []
+            self.plugin.store.save_world(world)
+            engine.reload_config()
+            return True
+        self.plugin.context.send_message = AsyncMock(side_effect=accept_and_revoke)
+        outcome_type = importlib.import_module(self.module.__name__ + ".core.engine.models").TickOutcome
+        outcome = outcome_type(self.session, speech_kind="schedule")
+        outcome.add_speech("already sent")
+        outcome.add_speech("revoked segment")
+        outcome.add_images(["https://example.com/test.png"])
+        await engine._deliver(outcome)
+        self.assertEqual(self.plugin.context.send_message.await_count, 1)
+        state = await engine.load_state(self.session, cold_start=False)
+        texts = [row.get("text") for row in state.recent_chat]
+        self.assertIn("already sent", texts)
+        self.assertNotIn("revoked segment", texts)
+        self.assertFalse(self.plugin.messenger.blocked(self.session))
     async def asyncSetUp(self):
         await scope_api.ScopeApiTests.asyncSetUp(self)
         self.adapter_module = importlib.import_module(self.module.__name__ + ".adapters.llm")

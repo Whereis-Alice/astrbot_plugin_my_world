@@ -15,7 +15,7 @@ SCOPE_BRIDGE = r"""
   const local = {};
   const mapKeys = ['zones', 'zone_edges', 'nodes', 'edges'];
   const actionKeys = ['actions', 'purged_actions', 'idle_life'];
-  const fixed = ['admin_ids', 'proactive_chat_paused', 'wizard_done', 'schema_version'];
+  const fixed = ['admin_ids', 'proactive_chat_paused', 'proactive_session_whitelist', 'wizard_done', 'schema_version'];
   const pick = (world, block) => Object.fromEntries(Object.entries(world).filter(([key]) =>
     block === 'map' ? mapKeys.includes(key) : block === 'actions' ? actionKeys.includes(key)
     : ![...mapKeys, ...actionKeys, ...fixed].includes(key)));
@@ -47,6 +47,7 @@ SCOPE_BRIDGE = r"""
       if (endpoint === 'config/proactive') {
         const config = await original.apiGet('config');
         config.world.proactive_chat_paused = !data.enabled;
+        if (data.whitelist) config.world.proactive_session_whitelist = data.whitelist;
         await original.apiPost('config/world', {world: config.world});
         return {ok: true};
       }
@@ -59,6 +60,21 @@ SCOPE_BRIDGE = r"""
 
 @unittest.skipIf(sync_playwright is None, "Install playwright to run browser tests")
 class ScopeBrowserTests(unittest.TestCase):
+    def test_global_whitelist_has_one_immediate_entry_and_cannot_be_scoped(self):
+        self.page.locator('button[data-tab="settings"]').click()
+        self.page.locator('#settings-tabs').get_by_text('自主发言', exact=True).click()
+        allow = self.page.get_by_label('允许主动发言：Test A', exact=True)
+        expect(allow).not_to_be_checked()
+        allow.check()
+        self.page.get_by_role('button', name='应用全局白名单', exact=True).click()
+        expect(self.page.locator('.proactive-access-foot')).to_contain_text('已生效 · 授权 1 个会话')
+        saved = self.page.evaluate('scopeWrites.at(-1)')
+        self.assertEqual(saved['endpoint'], 'config/proactive')
+        self.assertEqual(saved['data']['whitelist'], ['test:GroupMessage:100'])
+        self.page.locator('#config-scope').select_option('test:GroupMessage:200')
+        expect(self.page.get_by_role('button', name='应用全局白名单', exact=True)).to_be_disabled()
+        expect(self.page.locator('.proactive-access-note')).to_contain_text('独立配置不能扩大名单')
+        self.assertEqual(self.errors, [])
     setUpClass = classmethod(_generation.GenerationBrowserTests.setUpClass.__func__)
     tearDownClass = classmethod(_generation.GenerationBrowserTests.tearDownClass.__func__)
 

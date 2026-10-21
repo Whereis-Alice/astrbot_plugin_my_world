@@ -30,6 +30,7 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         for sid, kind in ((GROUP, "group"), (OTHER, "group"), (PRIVATE, "private")):
             store.add_session(sid, session_type=kind, platform="aiocqhttp", cold_start_node="lobby")
         raw = store.raw_world()
+        raw["proactive_session_whitelist"] = [GROUP, OTHER, PRIVATE]
         raw["sleep"]["mode"] = "fixed"
         raw["calendar"]["auto_generate"] = False
         raw["diary"]["automatic"] = False

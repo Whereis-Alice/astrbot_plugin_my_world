@@ -119,7 +119,7 @@ class WebApiMixin(LifeApiMixin):
             return self.context.register_web_api(path, scoped_handler, methods, description)
         p = plugin_id
         register(f"/{p}/config/scope", self.api_put_scope, ["POST"], "保存会话独立配置")
-        register(f"/{p}/config/proactive", self.api_proactive_control, ["POST"], "全局自主搭话开关")
+        register(f"/{p}/config/proactive", self.api_proactive_control, ["POST"], "全局自主发言开关与白名单")
         register(f"/{p}/auth/status", self.api_auth_status, ["GET"], "编辑器鉴权状态")
         register(f"/{p}/auth/login", self.api_auth_login, ["POST"], "编辑器登录")
         register(f"/{p}/auth/logout", self.api_auth_logout, ["POST"], "退出登录")
@@ -2316,10 +2316,19 @@ class WebApiMixin(LifeApiMixin):
         if not isinstance(payload.get("enabled"), bool):
             return error_response("enabled 必须是布尔值")
         world = self.store.raw_world()
+        if "whitelist" in payload:
+            whitelist = payload["whitelist"]
+            if not isinstance(whitelist, list) or any(not isinstance(sid, str) or not sid.strip() for sid in whitelist):
+                return error_response("whitelist 必须是会话 ID 列表")
+            known = {row.session_id for row in self.store.load_sessions().sessions}
+            if any(sid not in known for sid in whitelist):
+                return error_response("白名单只能选择已登记的会话")
+            world["proactive_session_whitelist"] = list(dict.fromkeys(whitelist))
         world["proactive_chat_paused"] = not payload["enabled"]
-        self.store.save_world(world, reason="切换全局自主搭话")
+        self.store.save_world(world, reason="更新全局自主发言授权")
         self.engine.reload_config()
-        return json_response({"ok": True, "enabled": payload["enabled"]})
+        return json_response({"ok": True, "enabled": payload["enabled"],
+                              "whitelist": world.get("proactive_session_whitelist", [])})
 
     def _provider_slots(self) -> dict[str, str]:
         """六个模型槽位现在指向哪个 Provider（只给 id，不含 key）。
@@ -2360,7 +2369,9 @@ class WebApiMixin(LifeApiMixin):
             return error_response("world 必须是对象")
         world = self._without_extension_actions(world)
         # The immediate master switch is changed only through config/proactive.
-        world = {**world, "proactive_chat_paused": bool(self.store.raw_world().get("proactive_chat_paused", False))}
+        saved = self.store.raw_world()
+        world = {**world, "proactive_chat_paused": bool(saved.get("proactive_chat_paused", False)),
+                 "proactive_session_whitelist": saved.get("proactive_session_whitelist", [])}
         try:
             warnings = self.store.save_world(world)
         except ValidationError as exc:

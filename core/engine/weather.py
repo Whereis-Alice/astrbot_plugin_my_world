@@ -264,6 +264,9 @@ class WeatherMixin:
             return WeatherRecord(), "读不到她在那个会话里的状态，先让她在群里说一句话"
         if channel == "command":
             # 查天气配成「指令型」时就走指令通道
+            # An external command may send directly through its borrowed event.
+            if not self.speech_allowed(session_id):
+                return WeatherRecord(), "这个会话未获自主发言授权，暂不触发可能发消息的天气指令"
             command = str(getattr(definition, "trigger_command", "") or "").strip()
             if not command:
                 return WeatherRecord(), "「查天气」是指令型，但没填要触发的指令名"
@@ -272,6 +275,8 @@ class WeatherMixin:
             city = str(getattr(self.world.weather, "city", "") or "").strip()
             intent = f"查一下{city}现在的天气" if city else "现在外面的天气"
             line = await self._compose_command(state, definition, command, intent)
+            if not self.speech_allowed(session_id):
+                return WeatherRecord(), "自主发言授权已撤销，未触发天气指令"
             call = await self.commands.trigger(session_id, line)
             if not call.ok:
                 await self._log_event(

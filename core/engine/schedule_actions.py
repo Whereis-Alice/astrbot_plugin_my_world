@@ -87,6 +87,9 @@ class ScheduleActionsMixin:
             # 指令在"她现在说话的地方"触发：私聊里让她拍照，指令就带着私聊的上下文跑
             # 落点当场定下来，图和正文都用它——不然私聊里起的动作会把图发到群里
             landing = self._image_home(outcome, action)
+            if not self.speech_allowed(landing, outcome.speech_kind):
+                outcome.notes.append("自主发言未获授权，跳过指令调用")
+                return
             call = await self.commands.trigger(landing, line)
             images = list(getattr(call, "image_urls", None) or [])
             # 指令生成出来的图（多张也算）贴着正文一起发，别只交回给她自己看

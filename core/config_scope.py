@@ -15,6 +15,7 @@ GLOBAL_KEYS = frozenset(
     {
         "admin_ids",
         "proactive_chat_paused",
+        "proactive_session_whitelist",
         "wizard_done",
         "schema_version",
         "default_actions_disabled",
@@ -111,8 +112,16 @@ class ScopedConfigMixin:
             self._scope_runtimes[session_id] = self._make_runtime(world, schedules)
         return self._scope_runtimes[session_id]
 
+    def autonomous_speech_allowed(self, session_id: str) -> bool:
+        """Only the global configuration can authorize an exact destination."""
+        world = self._base_runtime["world"]
+        if world.proactive_chat_paused or str(session_id or "") not in world.proactive_session_whitelist:
+            return False
+        with self.config_scope(session_id):
+            return self.is_enabled(session_id)
+
     def proactive_chat_allowed(self, session_id: str) -> bool:
-        if bool(self._base_runtime["world"].proactive_chat_paused):
+        if not self.autonomous_speech_allowed(session_id):
             return False
         with self.config_scope(session_id):
             return bool(self.world.proactive_chat_enabled)
@@ -120,21 +129,22 @@ class ScopedConfigMixin:
     def speech_allowed(self, session_id: str, kind: str = "") -> bool:
         """这一条消息现在允许发出去吗。
 
-        ``reply`` 永远放行（别人叫她，她当然能回）；``schedule`` / ``event``
-        各有自己的开关（默认开，因为那是她生活的一部分）；其余（自主搭话、
-        接话、早晚问候这些）看顶栏那个「自主搭话」总闸。
+        正常回复保留。所有自主来源先核验全局总闸及实际目标白名单，
+        再核验当前配置范围内的来源开关；共享生活不会共享发言授权。
         """
 
         if kind == "quiet":
             return False
         if kind == "reply":
             return True
+        if not self.autonomous_speech_allowed(session_id):
+            return False
         if kind == "schedule":
-            return bool(
-                getattr(self._base_runtime["world"], "schedule_speech_enabled", True)
-            )
+            with self.config_scope(session_id):
+                return bool(self.world.schedule_speech_enabled)
         if kind == "event":
-            return bool(getattr(self._base_runtime["world"], "event_speech_enabled", True))
+            with self.config_scope(session_id):
+                return bool(self.world.event_speech_enabled)
         return self.proactive_chat_allowed(session_id)
 
     def scoped_schedules(self):

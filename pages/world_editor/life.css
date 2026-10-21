@@ -260,3 +260,31 @@
 .thoughts-health p {max-width:90ch;line-height:1.8;margin:10px 0 0;}
 .thoughts-health[data-ok=false] summary {color:var(--warning,#d8ad69);}
 @media(max-width:700px) {.memory-search-settings,.memory-policy-basics,.life-budget-settings {grid-template-columns:minmax(0,1fr);}.life-stage-note {padding:13px;}}
+
+/* A week is a reading surface, with room for a day's actual stories. */
+#tab-life[data-life-view="week"] .life-opening { display:none; }
+.life-week-grid { grid-template-columns:repeat(4,minmax(0,1fr)); gap:16px; }
+.life-week-day { min-height:420px; padding:20px 18px; border-radius:17px; background:radial-gradient(ellipse at 100% 0,var(--accent-soft),transparent 48%),linear-gradient(155deg,var(--surface-highlight),transparent 65%),var(--panel); }
+.life-week-day-head { padding-bottom:16px; }.life-week-day-head strong { font-size:27px; letter-spacing:-.03em; }.life-week-day-head small { font-size:12px; margin-top:6px; }
+.life-week-section { padding-top:17px; }.life-week-section + .life-week-section { margin-top:16px; }.life-week-section h4 { font-size:11px; letter-spacing:.06em; margin-bottom:11px; }.life-week-section-head small { font-size:10px; }
+.life-week-list { gap:9px; }.life-week-agenda { gap:5px 10px; padding:11px; border:1px solid var(--line); }.life-week-agenda time { font-size:13px; }.life-week-agenda span { font-size:12px; line-height:1.8; }.life-week-agenda small { font-size:10px; }.life-week-agenda.is-past { opacity:.8; }
+.life-week-event { padding:12px; gap:6px; }.life-week-event strong { font-size:13px; line-height:1.7; }.life-week-event small { font-size:10px; }.life-week-event p { font-size:12px; line-height:1.85; }
+.life-week-diary strong { font-size:14px; line-height:1.8; }.life-week-diary p { font-size:12px; line-height:1.95; white-space:pre-wrap; }.life-week-diary > small { font-size:11px; }.life-week-empty-line { font-size:12px; line-height:1.85; }.life-week-diary-more { margin-top:12px; }.life-week-diary-more > summary { color:var(--accent-ink); cursor:pointer; font-size:11px; }
+.life-week-range small,.life-week-note { font-size:12px; }
+.life-experiences .event-panel { grid-template-columns:minmax(0,1fr); gap:26px; }
+.life-experiences .ability-pane { padding:24px 0 0; border:0; border-top:1px solid var(--line-strong); background:radial-gradient(ellipse at 10% 80%,var(--accent-soft),transparent 55%); }
+.ability-title { margin:8px 0 5px; font-size:20px; font-weight:550; letter-spacing:.02em; }.ability-caption { margin:0 0 20px; font-size:12px; color:var(--muted); line-height:1.8; }
+.life-experiences .radar-wrap { display:grid; grid-template-columns:minmax(220px,.6fr) minmax(0,1.4fr); gap:28px; align-items:center; }
+.life-experiences .radar { width:100%; max-width:300px; height:auto; justify-self:center; filter:drop-shadow(0 0 16px var(--accent-soft)); }
+.life-experiences .radar-legend { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; width:100%; }
+.life-experiences .radar-legend-row { --ability-color:var(--accent); position:relative; display:grid; grid-template-columns:1fr auto; gap:8px 12px; padding:18px; border:1px solid color-mix(in srgb,var(--ability-color) 25%,transparent); border-radius:13px; background:linear-gradient(125deg,color-mix(in srgb,var(--ability-color) 12%,transparent),transparent 85%),var(--surface-highlight); }
+.life-experiences .ability-1 { --ability-color:var(--ok); }.life-experiences .ability-2 { --ability-color:var(--secondary); }.life-experiences .ability-3 { --ability-color:var(--warn-text); }
+.ability-index { grid-column:1/-1; font:10px var(--mono); color:var(--muted); letter-spacing:.1em; }.life-experiences .radar-legend-name { font-size:14px; color:var(--text); }.life-experiences .radar-legend-value { font:23px var(--mono); color:var(--text); }.life-experiences .radar-legend-hint { grid-column:1/-1; font-size:12px; line-height:1.8; }
+.ability-track { grid-column:1/-1; height:3px; background:var(--line-strong); border-radius:4px; margin-top:5px; overflow:hidden; }.ability-track i { height:100%; display:block; border-radius:4px; background:var(--ability-color); box-shadow:0 0 8px color-mix(in srgb,var(--ability-color) 45%,transparent); }
+.life-experiences .event-recent-head { margin-top:26px; padding-top:20px; border-top:1px solid var(--line-strong); }
+@media(min-width:2100px) { .life-week-grid { grid-template-columns:repeat(7,minmax(0,1fr)); } }
+@media(max-width:1250px) { .life-week-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } }
+@media(max-width:1000px) { .life-experiences .radar-wrap { grid-template-columns:220px minmax(0,1fr); gap:16px; }.life-experiences .radar-legend-row { padding:13px; } }
+@media(max-width:900px) { .life-week-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media(max-width:700px) { .life-experiences .radar-wrap { grid-template-columns:minmax(0,1fr); gap:12px; }.life-experiences .radar { max-width:250px; }.life-experiences .radar-legend { gap:9px; }.life-experiences .radar-legend-value { font-size:20px; } }
+@media(max-width:600px) { .life-week-grid { grid-template-columns:minmax(0,1fr); }.life-week-day { min-height:0; padding:20px; }.life-experiences .radar-legend { grid-template-columns:minmax(0,1fr); } }

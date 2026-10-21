@@ -10,9 +10,9 @@
     <link rel="stylesheet" href="./workbench.css?v=4.29.0" />
     <link rel="stylesheet" href="./people.css?v=4.29.0" />
     <link rel="stylesheet" href="./model-calls.css?v=4.29.0" />
-    <link rel="stylesheet" href="./life.css?v=4.29.0" />
+    <link rel="stylesheet" href="./life.css?v=4.30.0" />
     <link rel="stylesheet" href="./social-learning.css?v=4.29.0" />
-    <link rel="stylesheet" href="./observatory.css?v=4.29.3" />
+    <link rel="stylesheet" href="./observatory.css?v=4.30.0" />
     <!-- 主题在解析样式前就定下来，避免刷新时先闪一下浅色 -->
     <script>
       (function () {
@@ -98,10 +98,10 @@
             <label
               class="proactive-control"
               for="proactive-enabled"
-              title="关掉「自主搭话」只停她主动开口；日程与事件照常发言"
+              title="全局自主发言：仅白名单会话可接收；关闭后日程与事件也安静推进，正常回复保留"
             >
               <input id="proactive-enabled" type="checkbox" role="switch" />
-              <span>自主搭话</span><strong id="proactive-state"></strong>
+              <span>自主发言</span><strong id="proactive-state"></strong>
             </label>
           </div>
           <div class="topbar-right">
@@ -124,7 +124,7 @@
               <span id="scope-note" class="muted" role="status"></span>
             </div>
             <p class="scope-hint muted">
-              关掉「自主搭话」只停她主动开口，日程与事件照常发言；被 @ 或收到消息后的回复也不受影响。
+              「自主发言」统一控制接话、找人、问候、日程与事件发言，只有全局白名单会话可以开启。关闭后生活继续；被 @ 或正常收到消息后的回复保留。
             </p>
           </div>
         </header>
@@ -172,7 +172,6 @@
           </div>
 
           <div class="dash">
-            <div class="dash-col">
               <div class="card hero-card">
                 <div class="world-window">
                   <div class="world-illustration" aria-hidden="true"></div>
@@ -188,19 +187,9 @@
                 <div class="hero-card-foot"><span>不止对话，也有生活</span><button id="hero-goto-events" class="ghost small" title="去事件页看她遇上什么事">走进她的生活 ↗</button></div>
                 <div id="status-banner" class="banner hidden" data-keep-text></div>
                 <div id="status-empty" class="hidden"></div>
-                <details class="world-details"><summary>世界的运行细节<span>时钟 · 动作 · 互动</span></summary>
-                  <div id="status-head" class="status-head" data-keep-text></div>
-                  <div class="status-card" data-keep-text>
-                    <section class="status-block"><h3>时间与日程</h3><div id="status-time" class="status-lines"></div></section>
-                    <section class="status-block"><h3>正在进行</h3><div id="status-progress" class="status-lines"></div></section>
-                    <section class="status-block"><h3>互动与运行</h3><div id="status-runtime" class="status-lines"></div></section>
-                  </div>
-                </details>
                 <div id="status-warn"></div>
               </div>
               <div id="life-focus" class="life-focus"></div>
-            </div>
-            <div class="dash-col">
               <div class="card wellbeing-card">
                 <div class="panel-eyebrow">BODY & MIND <span>01</span></div>
                 <h2 class="values-head"><span>身心的刻度</span><button id="values-edit" class="ghost small">编辑数值</button></h2>
@@ -215,11 +204,17 @@
                 <p class="muted" id="history-metrics">还没有足够的数据</p>
                 <div class="empty-state hidden" id="history-empty"><div class="empty-icon">⌁</div><div class="empty-text">生活留下的起伏，会慢慢汇成这里的曲线。</div></div>
               </div>
-            </div>
-          </div>
-          <div class="console-bottom">
-            <div class="card plan-card"><div class="panel-eyebrow">WHAT COMES NEXT <span>03</span></div><h2>接下来的打算</h2><pre id="status-plan" class="pre" data-keep-text></pre></div>
+            <div class="card plan-card"><div class="panel-eyebrow">WHAT COMES NEXT <span>03</span></div><h2>接下来的打算</h2><div id="status-plan" class="console-plan" data-keep-text></div></div>
             <div class="card conversation-card"><div class="panel-eyebrow">RECENT CONVERSATION <span>04</span></div><h2>话语的余温</h2><div id="status-context" class="chat-context" data-keep-text></div></div>
+            <details class="card world-details"><summary><span class="world-details-title">世界怎样运转<span>此刻的节奏，以及它背后的细节</span></span><span>展开观测</span></summary>
+              <div id="status-head" class="status-head" data-keep-text></div>
+              <div class="status-card" data-keep-text>
+                <section class="status-block"><span class="panel-eyebrow">01 / RHYTHM</span><h3>时间与节奏</h3><div id="status-time" class="status-lines"></div></section>
+                <section class="status-block"><span class="panel-eyebrow">02 / IN PROGRESS</span><h3>正在进行</h3><div id="status-progress" class="status-lines"></div></section>
+                <section class="status-block"><span class="panel-eyebrow">03 / CONVERSATION</span><h3>聊天与联系</h3><div id="status-runtime" class="status-lines"></div></section>
+              </div>
+              <details class="runtime-diagnostics"><summary>运行诊断与额度<span>排查问题时再看</span></summary><div id="status-diagnostics" class="status-lines" data-keep-text></div></details>
+            </details>
           </div>
           <footer class="observatory-footer"><span>小世界 <i>·</i> 她的日常，自有回响</span><span>LIFE, IN ITS OWN TIME.</span></footer>
         </section>
@@ -256,8 +251,9 @@
               <div class="event-pane current">
                 <div id="event-current" class="event-current" data-keep-text></div>
               </div>
-              <div class="event-pane">
-                <div class="pane-label">她的本事</div>
+              <div class="event-pane ability-pane">
+                <div class="panel-eyebrow">GROWING THROUGH LIFE</div>
+                <h3 class="ability-title">生活留下的本事</h3><p class="ability-caption">每一次尝试，都在慢慢塑造她。</p>
                 <div id="status-abilities" class="radar-wrap"></div>
               </div>
             </div>
@@ -1218,6 +1214,6 @@
       </div>
     </div>
 
-    <script type="module" src="./app.js?v=4.29.0"></script>
+    <script type="module" src="./app.js?v=4.30.0"></script>
   </body>
 </html>

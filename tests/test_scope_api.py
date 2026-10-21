@@ -12,6 +12,20 @@ from core.profile_weaver_store import AuditActor
 
 
 class ScopeApiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_whitelist_is_explicit_global_and_survives_stale_world_saves(self):
+        self.assertFalse(self.plugin.engine.speech_allowed(self.session, "event"))
+        stale = self.plugin.store.raw_world()
+        result = await self.call("config/proactive", method="POST", enabled=True, whitelist=[self.session])
+        self.assertEqual(result["status_code"], 200, result)
+        self.assertTrue(self.plugin.engine.speech_allowed(self.session, "event"))
+        await self.call("config/world", method="POST", world=stale)
+        self.assertEqual(self.plugin.engine.world.proactive_session_whitelist, [self.session])
+        for bad in ("all", [42], ["unregistered"], [""]):
+            result = await self.call("config/proactive", method="POST", enabled=True, whitelist=bad)
+            self.assertEqual(result["status_code"], 400)
+        result = await self.call("config/proactive", method="POST", config_scope=self.session, enabled=True, whitelist=[])
+        self.assertEqual(result["status_code"], 200)
+        self.assertFalse(self.plugin.engine.speech_allowed(self.session, "schedule"))
     async def asyncSetUp(self):
         self.module = load_plugin_module()
         directory = tempfile.TemporaryDirectory()

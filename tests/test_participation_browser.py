@@ -13,9 +13,11 @@ class ParticipationBrowserTests(unittest.TestCase):
 
     def test_conversation_settings_explain_listening_and_unanswered_contact(self):
         self.page.locator('button[data-tab="settings"]').click()
-        self.page.locator('#settings-tabs').get_by_text('聊天与表达', exact=True).click()
+        self.page.locator('#settings-tabs').get_by_text('自主发言', exact=True).click()
+        expect(self.page.get_by_text('可以主动说话的地方', exact=True)).to_be_visible()
         expect(self.page.get_by_text('群聊参与与分寸', exact=True)).to_be_visible()
         expect(self.page.get_by_text('新消息到来后自然接话', exact=True)).to_be_visible()
+        self.page.get_by_text('群聊参与与分寸', exact=True).click()
         expect(self.page.get_by_text('未回应联系人等待（小时）', exact=True)).to_be_visible()
         self.page.get_by_text('群聊参与与分寸', exact=True).scroll_into_view_if_needed()
         self.host.screenshot(path=str(self.shots / 'participation-settings.png'))

@@ -1029,6 +1029,9 @@ class SnapshotMixin:
         # 回显发到"这件事发生的那个会话"：她在私聊里被搭话、调了工具，
         # 那几行回显就该出现在私聊，而不是她存档所在的那个群
         echo_target = where or str(state.session_id)
+        if line and not self.speech_allowed(echo_target, outcome.speech_kind if outcome is not None else ""):
+            line = ""
+            consumed = True  # Keep diagnostics in the event log, never queue a blocked echo.
         if line:
             rendered = f"{ECHO_EVENT_TYPES.get(event_type, '•')} {line}"
             if self._echo_debounced(echo_target, event_type, payload):

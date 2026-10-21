@@ -114,6 +114,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         # 测试里显式配一个，等同于"真实用户已经配好"的状态；
         # 专门测"没配工具会被跳过"的用例会自己把它清掉。
         raw = self.store.raw_world()
+        raw["proactive_session_whitelist"] = [SESSION, OTHER_SESSION, PRIVATE_SESSION, "aiocqhttp:FriendMessage:2002"]
         raw.setdefault("events", {}).setdefault("auto", {})["enabled"] = False
         # Calendar and diary generation use the same background model seam.
         # Focused tests opt in so unrelated life-clock tests do not steal their
@@ -10101,6 +10102,19 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(lines, ["/天气 武汉"])
         record = await self.engine.weather_record()
         self.assertEqual(record.text, "武汉｜26℃｜多云｜湿度68%")
+
+    async def test_weather_command_cannot_bypass_the_global_speech_whitelist(self):
+        from unittest.mock import AsyncMock
+
+        self.set_weather_command("天气")
+        raw = self.store.raw_world()
+        raw["proactive_session_whitelist"] = []
+        self.store.save_world(raw)
+        self.engine.reload_config()
+        self.engine.commands = AsyncMock()
+        note = await self.engine.maybe_refresh_weather(force=True, session_id=SESSION)
+        self.assertIn("未获自主发言授权", note)
+        self.engine.commands.trigger.assert_not_awaited()
 
     async def test_command_weather_failure_is_explained_honestly(self):
         """指令型没跑成时要说清是指令的事，别再让人去配工具。"""

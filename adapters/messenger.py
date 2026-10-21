@@ -14,6 +14,7 @@ from astrbot.api.message_components import Image, Plain
 from ..core.message_parts import _sendable_images
 from ..core.plugin_compat import group_card_owner
 from ..core.ports import CardResult, PokeResult
+from ..core.speech_policy import segment_allowed
 
 if TYPE_CHECKING:
     from .. import MyWorldPlugin
@@ -88,6 +89,8 @@ class AstrBotMessenger:
         ok = False
         failed = False
         for index, text in enumerate(texts):
+            if not segment_allowed(session_id, index):
+                break
             try:
                 result = await self.plugin.context.send_message(
                     session_id, MessageChain(chain=[Plain(text=str(text))])
@@ -126,6 +129,8 @@ class AstrBotMessenger:
             return False
         if self.blocked(session_id):
             return False  # 刚失败过：连同图片一起放弃这一批
+        if not segment_allowed(session_id):
+            return False
         chain = [Image(file=ref) for ref in refs]
         try:
             result = await self.plugin.context.send_message(
@@ -225,6 +230,8 @@ class AstrBotMessenger:
             return PokeResult(False, "没有指定要戳谁")
         if self.blocked(session_id):
             return PokeResult(False, "上一次发送失败，正在冷却")
+        if not segment_allowed(session_id):
+            return PokeResult(False, "自主发言授权已撤销")
         group_id = ""
         parts = str(session_id).split(":")
         if len(parts) >= 3 and "group" in parts[1].lower():
@@ -256,6 +263,8 @@ class AstrBotMessenger:
                 else ("friend_poke", "send_poke")
             )
             for name in names:
+                if not segment_allowed(session_id):
+                    return PokeResult(False, "自主发言授权已撤销")
                 try:
                     await bot.call_action(name, **payload)
                     return PokeResult(True, route=name)

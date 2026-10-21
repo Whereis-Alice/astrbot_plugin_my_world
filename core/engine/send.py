@@ -310,7 +310,7 @@ class SendMixin:
             self._log("warning", f"发送结果图片失败：{exc}")
             return False
 
-    def _filter_proactive_speech(self, outcome: TickOutcome, *, block_contact=False) -> None:
+    def _filter_proactive_speech(self, outcome: TickOutcome, *, block_contact=False, include_broadcast=False, contact_reserved=False) -> None:
         """Filter before recording speech, including already queued autonomous lines."""
         removed = 0
 
@@ -322,8 +322,17 @@ class SendMixin:
                 target = key or outcome.home()
                 protected = kind in {"reply", "event", "schedule"}
                 from ..participation import speakable
-                return (images or kind == "reply" or speakable(lines[i])) and self.speech_allowed(target, kind) and (protected or (
-                    not block_contact and self.contact_speech_allowed(outcome, target, kind)))
+                targets = [target, *outcome.broadcast_targets] if not key and include_broadcast else [target]
+                def contact_allowed(sid):
+                    if contact_reserved:
+                        # This delivery already holds its allowance. Rechecking the
+                        # ledger would mistake our own reservation for another contact.
+                        return kind != "interject" or self._now() < outcome.chat_expires_at.get(sid, float("inf"))
+                    return self.contact_speech_allowed(outcome, sid, kind)
+                return (images or kind == "reply" or speakable(lines[i])) and any(
+                    self.speech_allowed(sid, kind) and (protected or (
+                        not block_contact and contact_allowed(sid)))
+                    for sid in targets)
             mask = [allowed(i) for i in range(len(lines))]
             if key == "" and not images:
                 outcome.debug_positions = [sum(mask[:int(pos)]) for pos in outcome.debug_positions]
@@ -336,13 +345,13 @@ class SendMixin:
         outcome.routed = {sid: keep(lines, sid, outcome.speech_kinds) for sid, lines in outcome.routed.items()}
         outcome.routed_images = {sid: keep(lines, sid, outcome.image_kinds, images=True) for sid, lines in outcome.routed_images.items()}
         if removed:
-            outcome.notes.append(f"自主搭话已暂停或联系额度不足，未发送 {removed} 条内容")
+            outcome.notes.append(f"自主发言未获授权、已过期或联系额度不足，未发送 {removed} 条内容")
 
     @session_scoped
     async def _deliver(self, outcome: TickOutcome) -> None:
         if self.messenger is None:
             return
-        self._filter_proactive_speech(outcome)
+        self._filter_proactive_speech(outcome, include_broadcast=True)
         # 已经即时发出去的算"她说过话"（进日志、进聊天上下文、算主动发言冷却），
         # 但不再发一遍。
         said = [m for m in outcome.said_messages() if m and str(m).strip()]
@@ -425,6 +434,10 @@ class SendMixin:
         async def send_target(target, view, echoes=()):
             nonlocal sent, attempted, autonomous_delivered, interject_delivered
             self._filter_proactive_speech(view)
+            if not self.speech_allowed(target, view.speech_kind):
+                echoes = ()
+                view.debug_messages = []
+                view.debug_positions = []
             kinds = []
             if view.messages:
                 kinds.extend(view.speech_kinds.get("", []) or [view.speech_kind])
@@ -443,7 +456,18 @@ class SendMixin:
             try:
                 if target_ordered:
                     attempted = True
-                    accepted = bool(await self.messenger.send_text(target, target_ordered))
+                    from collections import defaultdict, deque
+                    from ..speech_policy import guard_send
+                    line_kinds = defaultdict(deque)
+                    for i, line in enumerate(view.messages):
+                        values = view.speech_kinds.get("", [])
+                        line_kinds[line].append(values[i] if i < len(values) else view.speech_kind)
+                    ordered_kinds = [line_kinds[line].popleft() if line_kinds[line] else "reply"
+                                     for line in target_ordered]
+                    with guard_send(lambda sid, i: self.speech_allowed(sid, ordered_kinds[i]) and (
+                        ordered_kinds[i] != "interject"
+                        or self._now() < view.chat_expires_at.get(sid, float("inf")))):
+                        accepted = bool(await self.messenger.send_text(target, target_ordered))
                     sent = sent or accepted
                     receipt_reader = getattr(self.messenger, "take_sent_texts", None)
                     received = receipt_reader(target) if callable(receipt_reader) else (target_ordered if accepted else [])
@@ -470,6 +494,10 @@ class SendMixin:
                         outcome.notes.append(f"发到 {target} 失败：平台没有接收")
                         self._log("warning", f"发到 {target} 失败：平台没有接收")
                 if target_images:
+                    # A text send may have awaited the platform or typing delay.
+                    self._filter_proactive_speech(view, contact_reserved=receipt is not None)
+                    target_images = self._group_images(view)
+                if target_images:
                     accepted = await self._send_group_images(target, target_images)
                     sent = sent or accepted
                     if accepted:
@@ -489,14 +517,14 @@ class SendMixin:
         for target in broadcast_targets:
             view = replace(outcome, session_id=target, speech_home=target,
                 messages=list(outcome.messages), images=list(outcome.images),
-                routed={}, routed_images={}, notes=[],
+                routed={}, routed_images={}, notes=[], broadcast_targets=[],
                 speech_kinds={"": list(outcome.speech_kinds.get("", []))},
                 image_kinds={"": list(outcome.image_kinds.get("", []))})
             await send_target(target, view, pending)
         for target in dict.fromkeys([*routed, *routed_images]):
             view = replace(outcome, session_id=target, speech_home=target,
                 messages=list(routed.get(target, [])), images=list(routed_images.get(target, [])),
-                routed={}, routed_images={}, notes=[], debug_messages=[], debug_positions=[],
+                routed={}, routed_images={}, notes=[], broadcast_targets=[], debug_messages=[], debug_positions=[],
                 speech_kinds={"": list(outcome.speech_kinds.get(target, []))},
                 image_kinds={"": list(outcome.image_kinds.get(target, []))})
             await send_target(target, view)

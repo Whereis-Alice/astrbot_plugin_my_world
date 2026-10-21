@@ -27,6 +27,9 @@ class ConfigScopeTests(unittest.IsolatedAsyncioTestCase):
         self.store.ensure_files()
         self.store.add_session(A)
         self.store.add_session(B)
+        world = self.store.raw_world()
+        world["proactive_session_whitelist"] = [A, B]
+        self.store.save_world(world)
         self.db = AsyncDatabase(self.store.db_path)
         self.addAsyncCleanup(self.db.close)
         self.messenger = StubMessenger()
@@ -166,7 +169,6 @@ class ConfigScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.raw_schedules(), before)
 
     async def test_due_schedules_use_each_sessions_library(self):
-        self.pause()
         self.store.save_schedules({"schedules": []})
         self.engine.reload_config()
         now = self.engine.local_now()
@@ -211,7 +213,7 @@ class ConfigScopeTests(unittest.IsolatedAsyncioTestCase):
         await self.engine._deliver(outcome)
         self.assertEqual(self.messenger.flat_messages, [])
 
-    async def test_pause_drops_autonomous_output_before_history_but_keeps_other_origins(self):
+    async def test_pause_drops_all_autonomous_origins_but_keeps_replies(self):
         self.pause()
         for kind in ("", "reply", "event", "schedule"):
             outcome = TickOutcome(A, speech_kind=kind)
@@ -222,7 +224,9 @@ class ConfigScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("autonomous", self.messenger.flat_messages)
         self.assertNotIn("routed-", self.messenger.flat_messages)
         self.assertNotIn("image-", self.messenger.flat_images)
-        for kind in ("reply", "event", "schedule"):
+        for kind in ("event", "schedule"):
+            self.assertNotIn(kind, self.messenger.flat_messages)
+        for kind in ("reply",):
             self.assertIn(kind, self.messenger.flat_messages)
             self.assertIn(f"routed-{kind}", self.messenger.flat_messages)
         state = await self.engine.load_state(A, cold_start=False)
@@ -231,16 +235,16 @@ class ConfigScopeTests(unittest.IsolatedAsyncioTestCase):
     async def test_mixed_tick_and_immediate_speech_keep_origin(self):
         self.pause()
         outcome = TickOutcome(A)
-        outcome.add_speech("event", kind="event")
+        outcome.add_speech("reply", kind="reply")
         outcome.add_speech("autonomous")
         self.engine.say_sink = AsyncMock(return_value=True)
         await self.engine._flush_say(outcome)
-        self.engine.say_sink.assert_awaited_once_with(A, "event")
+        self.engine.say_sink.assert_awaited_once_with(A, "reply")
         await self.engine._deliver(outcome)
         self.assertEqual(self.messenger.flat_messages, [])
-        self.assertEqual(outcome.live_messages, ["event"])
+        self.assertEqual(outcome.live_messages, ["reply"])
 
-    async def test_paused_action_still_completes_and_scheduled_continuation_speaks(self):
+    async def test_paused_action_still_completes_but_scheduled_continuation_is_silent(self):
         self.pause()
         world = self.store.raw_world()
         world["actions"].append({
@@ -260,7 +264,7 @@ class ConfigScopeTests(unittest.IsolatedAsyncioTestCase):
             self.assertGreater(state.energy, 0.2)
             await self.engine._tick_plan(state, self.engine.node(state.node_id), outcome, depth=0)
         await self.engine._deliver(outcome)
-        self.assertIn("done", self.messenger.flat_messages)
+        self.assertNotIn("done", self.messenger.flat_messages)
 
     async def test_session_pause_also_blocks_routed_autonomous_speech(self):
         self.override(B, proactive_chat_enabled=False)
@@ -281,7 +285,6 @@ class ConfigScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.messenger.sent, [(A, ["autonomous", "event"]), (B, ["event"])])
 
     async def test_generated_schedule_followup_plan_keeps_its_origin(self):
-        self.pause()
         async with self.engine.session_state(A) as state:
             plan = create_plan(steps=[{"action": "say", "messages": ["scheduled greeting"]}],
                                world_time=state.world_time, valid_for=1800, reason="schedule followup", source="llm")
