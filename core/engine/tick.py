@@ -591,8 +591,6 @@ class TickMixin:
             # 睡醒给她一次机会说早安（发不发、发给谁由她自己定，一天一次）
             state.current_action = None
             state.state = STATE_IDLE
-            if not action.get("offline_wake"):
-                await self._maybe_say_goodmorning(state, node, outcome)
         elif definition is not None and definition.id == "nap":
             self._finish_sleep_rhythm(state, action, interrupted=False)
 
@@ -636,6 +634,12 @@ class TickMixin:
             },
             outcome=outcome,
         )
+
+        # The greeting releases the life lock during inference. Commit the
+        # completed action and its plan step first: a discarded greeting or an
+        # unload must never leave an idle character with sleep still pending.
+        if action_id == "sleep" and definition is not None and not action.get("offline_wake"):
+            await self._maybe_say_goodmorning(state, node, outcome)
 
         trigger = definition.on_complete.trigger if definition else "none"
         detail = str(action.get("tool_result", "") or "")

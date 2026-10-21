@@ -881,6 +881,103 @@ class SleepRhythmTests(unittest.IsolatedAsyncioTestCase):
         await self.assess()
         self.assertEqual(len(self.llm.calls),1)
 
+    async def prepare_wake_greeting(self):
+        self.engine.world.sleep.goodmorning = True
+        self.engine.world.decider.enabled = False
+        self.engine.schedules.schedules = []
+        await self.set_state(node_id="bedroom")
+        self.llm.replies = ['{"decision":"sleep","hours":7,"reason":"休息"}']
+        await self.assess()
+        self.clock.advance(7 * 3600)
+        async with self.engine.session_state(fixture.SESSION) as state:
+            state.current_action["elapsed_ticks"] = 419
+            state.life_updated_at = self.clock.now()
+
+    async def test_discarded_wake_greeting_cannot_replay_completed_sleep(self):
+        from core.ports import LLMReply
+        await self.prepare_wake_greeting()
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def greeting(**kwargs):
+            entered.set()
+            await release.wait()
+            return LLMReply(ok=True, text='{"plan":[{"action":"say","messages":["早"]}]}')
+
+        self.llm.generate = greeting
+        task = asyncio.create_task(self.engine._tick_session(fixture.SESSION))
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            interim = await self.get_state()
+            # A concurrent overview refresh invalidated the real server's greeting.
+            await self.set_state(life_decision={"kind":"idle", "reason":"醒后自由活动", "at":self.clock.now()})
+        finally:
+            release.set()
+            await asyncio.wait_for(task, 2)
+        self.assertIsNone(interim.current_action)
+        self.assertIsNone(interim.current_plan, "sleep must be completed before inference releases its lock")
+        self.clock.advance(60)
+        await self.engine._tick_session(fixture.SESSION)
+        state = await self.get_state()
+        self.assertEqual(state.state, "idle")
+        self.assertIsNone(state.current_action)
+        self.assertIsNone(state.current_plan)
+        self.assertEqual(len(state.sleep_history), 1)
+        self.assertEqual(state.sleep_history[0]["hours"], 7)
+        rows = await self.db.call("query_events", session_id=fixture.SESSION, limit=50)
+        self.assertEqual(sum(row["event_type"] == "action_done" and
+            row["detail"].get("type") == "sleep" for row in rows), 1)
+
+    async def test_shutdown_during_wake_greeting_keeps_sleep_completed(self):
+        await self.prepare_wake_greeting()
+        entered = asyncio.Event()
+
+        async def greeting(**kwargs):
+            entered.set()
+            await asyncio.Event().wait()
+
+        self.llm.generate = greeting
+        task = asyncio.create_task(self.engine._tick_session(fixture.SESSION))
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        state = await self.get_state()
+        self.assertTrue(task.cancelled())
+        self.assertIsNone(state.current_plan)
+        self.assertIsNone(state.current_action)
+        self.assertEqual(state.state, "idle")
+        self.assertEqual(len(state.sleep_history), 1)
+        # Reloads use the persisted state, so they must not resurrect the old rest.
+        self.engine.reload_config()
+        self.clock.advance(60)
+        await self.engine._tick_session(fixture.SESSION)
+        self.assertNotEqual((await self.get_state()).state, "sleeping")
+
+    async def test_wake_greeting_sees_completed_sleep_and_keeps_the_next_step(self):
+        from core.ports import LLMReply
+        await self.prepare_wake_greeting()
+        self.engine.world.action_map()["read"].scope = "global"
+        async with self.engine.session_state(fixture.SESSION) as state:
+            state.current_plan["steps"].append({"action":"read", "duration":900, "status":"pending"})
+            plan_id = state.current_plan["id"]
+        observed = []
+
+        async def greeting(**kwargs):
+            observed.append(await self.get_state())
+            return LLMReply(ok=True, text='{"plan":[{"action":"say","messages":["醒了，接着看书"]}]}')
+
+        self.llm.generate = greeting
+        outcome = await self.engine._tick_session(fixture.SESSION)
+        self.assertIn("醒了，接着看书", outcome.messages)
+        self.assertEqual(observed[0].current_plan["current_step"], 1)
+        self.assertEqual(observed[0].current_plan["steps"][0]["status"], "done")
+        state = await self.get_state()
+        self.assertEqual(state.current_action["type"], "read")
+        self.assertEqual(state.current_action["plan_id"], plan_id)
+        self.assertEqual(state.current_action["plan_index"], 1)
+        self.assertEqual(len(state.sleep_history), 1)
+
     async def test_fixed_mode_restores_existing_automatic_sleep_schedule(self):
         raw = self.store.raw_world()
         raw["sleep"]["mode"] = "fixed"
