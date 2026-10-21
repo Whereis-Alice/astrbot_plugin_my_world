@@ -1,10 +1,10 @@
 /* 小世界 · Living observatory. One material system, six distinct atmospheres. */
 :root {
-  --bg: #0c101b; --bg-inset: #101625; --bg-soft: #121a2b;
-  --panel: #171f31; --panel-2: #202a40;
-  --text: #edf2ff; --text-2: #b9c5dd; --muted: #95a6c3;
+  --bg: #0d101b; --bg-inset: #111625; --bg-soft: #101522;
+  --panel: #181e30; --panel-2: #20283d;
+  --text: #eef0fc; --text-2: #b3bdd4; --muted: #909db8;
   --line: #c6d8ff15; --line-strong: #c6d8ff2b; --surface-highlight: #ffffff09;
-  --accent: #b7acff; --accent-ink: #c8c0ff; --accent-soft: #b7acff12; --accent-ring: #b7acff40;
+  --accent: #a99bff; --accent-ink: #c3baff; --accent-soft: #a99bff16; --accent-ring: #a99bff45;
   --secondary: #80dfca; --scene-a: #7771d8; --scene-b: #368f92; --chart-2: #80dfca;
   --topbar: #101625c2; --scrim: #04081099;
   --ok: #7bdcc0; --ok-soft: #7bdcc014; --warn: #edc48b; --warn-text: #edc48b; --warn-soft: #edc48b14;
@@ -78,8 +78,8 @@
 }
 body {
   background: radial-gradient(ellipse at 65% -25%, #7771d828, transparent 65%), radial-gradient(ellipse at 100% 100%, #368f9210, transparent 60%), var(--bg);
-  background-attachment: fixed; font-family: "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif;
-  font-size: 13px; letter-spacing: .015em; -webkit-font-smoothing: antialiased;
+  background-attachment: fixed; font-family: "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px; letter-spacing: .005em; -webkit-font-smoothing: antialiased;
 }
 body::before { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: -1; opacity: .22; background-image: radial-gradient(var(--scene-line) .6px, transparent .8px); background-size: 36px 36px; mask-image: linear-gradient(transparent, #000); }
 :root[data-palette="aurora"] body { background: radial-gradient(ellipse at 100% 0, #21856d30, transparent 50%), linear-gradient(150deg, transparent 30%, #427b9c0c 55%, transparent 65%), var(--bg); }
@@ -557,32 +557,32 @@ input:focus, select:focus, textarea:focus { box-shadow: 0 0 0 3px var(--accent-s
 .scene-path { stroke: var(--house-wall); opacity: .5; }.house-wall { fill: var(--house-wall); }.house-side { fill: var(--house-side); }.house-roof { fill: var(--house-roof); }.house-door { fill: var(--landmark); }.house-window { fill: var(--window-light); filter: drop-shadow(0 0 5px color-mix(in srgb, var(--window-light) 60%, transparent)); }
 .scene-trees { color: var(--landmark); }.scene-bamboo, .scene-petals, .scene-ribbons, .scene-clouds, .scene-sun-rings { display: none; }
 .is-sleeping .house-window { opacity: .25; filter: none; }.is-sleeping .world-illustration { filter: brightness(.8); }
-/* Keep the original clear, same-hue glass; fit its type and spacing to a 2 × 2 grid. */
-#tab-status .hero-kpis { --kpi-blue: #4c8dff; --kpi-violet: #7c5cff; --kpi-amber: #f2c98a; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; padding: 14px 18px; margin: 0; background: transparent; border: 0; }
+/* 4.27's actual glass and type colors, with the observatory's 2 × 2 reading order. */
+#tab-status .hero-kpis { --kpi-blue: #4c8dff; --kpi-violet: #7c5cff; --kpi-amber: #f2c98a; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; padding: 14px 18px; margin: 0; background: var(--panel); border: 0; }
 :root[data-palette="aurora"] #tab-status .hero-kpis { --kpi-blue: #34b7ad; --kpi-violet: #6a98f5; --kpi-amber: #dfbf7b; }
 :root[data-palette="rose"] #tab-status .hero-kpis { --kpi-blue: #d6829a; --kpi-violet: #b387d8; --kpi-amber: #e1ad77; }
 :root[data-palette="sand"] #tab-status .hero-kpis { --kpi-blue: #bc8c4b; --kpi-violet: #b77d62; --kpi-amber: #b09643; }
 :root[data-palette="jade"] #tab-status .hero-kpis { --kpi-blue: #539e75; --kpi-violet: #5d9e94; --kpi-amber: #b18a58; }
 #tab-status .kpi {
-  --kpi-tone: var(--kpi-blue); box-sizing: border-box; min-width: 0; min-height: 84px;
+  --kpi-tone: var(--kpi-blue); --kpi-label-ink: var(--accent-ink); --kpi-tint: 16%; --kpi-edge: 28%; box-sizing: border-box; min-width: 0; min-height: 84px;
   padding: 12px 14px; gap: 5px; overflow: hidden; border-radius: 15px;
-  border: 1px solid color-mix(in srgb, var(--kpi-tone) 28%, transparent);
-  background: linear-gradient(180deg, color-mix(in srgb, var(--kpi-tone) 22%, transparent), color-mix(in srgb, var(--kpi-tone) 3%, transparent));
+  border: 1px solid color-mix(in srgb, var(--kpi-tone) var(--kpi-edge), transparent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--kpi-tone) var(--kpi-tint), transparent), color-mix(in srgb, var(--kpi-tone) 3%, transparent));
   backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 3%, transparent);
   transition: border-color .2s var(--ease), box-shadow .2s var(--ease);
 }
-#tab-status .kpi-violet { --kpi-tone: var(--kpi-violet); }
-#tab-status .kpi-gold { --kpi-tone: var(--kpi-amber); }
+#tab-status .kpi-violet { --kpi-tone: var(--kpi-violet); --kpi-label-ink: #b9a6ff; }
+#tab-status .kpi-gold { --kpi-tone: var(--kpi-amber); --kpi-label-ink: var(--gold); --kpi-tint: 14%; --kpi-edge: 30%; }
 #tab-status .kpi::before, #tab-status .kpi::after { display: none; }
 #tab-status .kpi:hover {
   transform: none; border-color: color-mix(in srgb, var(--kpi-tone) 48%, transparent);
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 4%, transparent), 0 4px 18px -14px color-mix(in srgb, var(--kpi-tone) 45%, transparent);
 }
-#tab-status .kpi-label { font-size: 12px; font-weight: 500; line-height: 1.4; color: color-mix(in srgb, var(--kpi-tone) 35%, var(--text)); letter-spacing: .04em; }
+#tab-status .kpi-label { font-size: 12px; font-weight: 400; line-height: 1.4; color: var(--kpi-label-ink); letter-spacing: .1em; }
 :root[data-theme="light"] #tab-status .kpi-label { color: color-mix(in srgb, var(--kpi-tone) 28%, var(--text)); }
 #tab-status .kpi-value { color: var(--text); font-size: clamp(16px,1.1vw,17px); font-weight: 650; line-height: 1.45; -webkit-line-clamp: 2; text-shadow: none; }
-#tab-status .kpi-note { font-size: 12px; line-height: 1.4; color: var(--text-2); font-variant-numeric: tabular-nums; }
+#tab-status .kpi-note { font-size: 12px; line-height: 1.4; color: var(--muted); font-variant-numeric: tabular-nums; }
 .hero-card-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 22px; border-top: 1px solid var(--line); background: var(--surface-highlight); }
 .hero-card-foot > span { color: var(--muted); font-size: 9px; letter-spacing: .06em; }
 .hero-card-foot > button { color: var(--accent-ink); border: 0; background: transparent; font-size: 10px; padding: 3px 0; min-height: 28px; }
