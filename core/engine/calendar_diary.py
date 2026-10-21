@@ -193,12 +193,17 @@ class CalendarDiaryMixin:
         channel = getattr(self, "creator_llm", None)
         if channel is None:
             return None
+        from ..context_selection import evidence_context, request_for
+        request = request_for(task="diary" if purpose == "diary" else "generation",
+            session=session_id, now=self._now(), query=str(payload.get("day") or payload.get("year") or ""))
+        material = evidence_context(request, json.dumps(payload, ensure_ascii=False), key=purpose)
+        self.record_context_selection(request)
         with model_context(purpose, f"为 {session_id} 生成生活日历与日记", session_id):
             reply = await self._background_generate(
                 channel,
                 session_id=session_id,
                 system_prompt=system_prompt,
-                prompt=json.dumps(payload, ensure_ascii=False),
+                prompt=material.render(),
                 temperature=0.55,
                 max_tokens=2200,
             )
@@ -512,12 +517,26 @@ class CalendarDiaryMixin:
             calendar = await self.calendar_for_year(
                 session_id, parsed_day.year if parsed_day else None
             )
+        # Repeated adjacent activity logs are occurrences, not separate life
+        # developments.  Only fold neighbours: A → B → A can be a real
+        # correction followed by a later change, and a global de-duplication
+        # would move that last A before B in the diary evidence.
+        diary_events: list[dict] = []
+        previous_key = ""
+        for item in safe_events:
+            key = json.dumps(item, ensure_ascii=False, sort_keys=True)
+            if diary_events and key == previous_key:
+                prior = diary_events[-1]
+                prior["occurrences"] = int(prior.get("occurrences", 1)) + 1
+            else:
+                diary_events.append(dict(item))
+            previous_key = key
         return {
             "day": day,
             "schedules": schedules,
-            "events": safe_events[-160:],
-            "thoughts": thoughts[-24:],
-            "matters": matters[-40:],
+            "events": diary_events,
+            "thoughts": thoughts,
+            "matters": matters,
             "calendar": calendar_events_for_day(calendar, day)[:24],
         }
 

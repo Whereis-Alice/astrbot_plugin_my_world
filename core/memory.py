@@ -476,6 +476,72 @@ class MemoryEngine:
                     return result
         return result
 
+    def recall_context(self, request, *, node_id: str = "", records: list[dict] | None = None,
+                       limit: int | None = None) -> list[RecalledMemory]:
+        """Retrieve by task/topic/person; current location is an affinity, not a wall.
+
+        Explicit ``recall(node_id=...)`` keeps its strict spatial semantics. This
+        path is read-only: selecting a memory is different from mentioning it.
+        """
+        from .context_selection import ContextItem, relevance, search_terms, select_context
+        config = self.world.memory
+        if config.automatic_recall == "manual" or config.recall_max_chars <= 0:
+            return []
+        mode = self.world.memory_scope_mode
+        sessions = self.sessions(request.session)
+        # Text predicates run before LIMIT, so an older match survives a busy month.
+        terms = search_terms(request.query)
+        candidates = self._query(request.session, request.persona, mode,
+                                 session_ids=sessions, text_terms=terms[:128]) if terms else []
+        candidates += self._query(request.session, request.persona, mode, session_ids=sessions)
+        if node_id:
+            candidates += [row for row in self.db.query_memories(
+                source_session=request.session, session_ids=sessions, scope=SCOPE_NODE,
+                node_id=node_id, limit=100)
+                if not request.persona or not row.get("persona_id") or row.get("persona_id") == request.persona]
+        candidates = _dedupe(candidates)
+        semantic: dict[int, float] = {}
+        if config.semantic_enabled:
+            queries = [request.query, *self.participant_queries(records or [], request.session).values()]
+            for query in queries:
+                for mid, score in self.semantic.cached(request.session, request.persona, query, automatic=True).items():
+                    if score >= config.semantic_min_similarity:
+                        semantic[mid] = max(score, semantic.get(mid, 0))
+        by_key, materials = {}, []
+        for row in candidates:
+            people = tuple(str(uid) for uid in (*row.get("related_users", []), *row.get("participants", [])))
+            related = bool(set(people) & set(request.people))
+            if row.get("source") == "life_matter" and people:
+                if request.task in {"plan", "sleep", "diary"} or not related:
+                    continue
+            content = self._search_text(row)
+            person_query = "\n".join(request.people_queries.get(uid, "") for uid in people if uid in request.people)
+            topic = relevance(person_query or request.query, content)
+            age = max(0, request.now - float(row.get("created_at") or 0))
+            # Only one fresh personal experience can fill the continuity gap;
+            # unrelated people's memories must not enter a directed conversation.
+            if not topic and not semantic.get(row["id"]) and not related and (people or age > 86400):
+                continue
+            base = self._score(row, focus_user=request.people[0] if request.people else "",
+                               node_id=node_id, now=request.now)
+            recalled = self._to_recalled(base + topic * 3 + semantic.get(row["id"], 0) * 3, row)
+            key = f"memory:{recalled.id}"
+            by_key[key] = recalled
+            # Keep date and source labels even in the shorter view.
+            from datetime import datetime
+            stamp = datetime.fromtimestamp(recalled.created_at).strftime("%Y-%m-%d") if recalled.created_at else "日期未记"
+            detail = recalled.render(stamp=stamp)
+            if people:
+                detail = "涉及用户ID：" + "、".join(dict.fromkeys(people)) + "\n" + detail
+            materials.append(ContextItem(key, "memory" if related or topic else "experience", detail,
+                at=recalled.created_at, people=people,
+                session=recalled.session_id if recalled.source_scoped else "",
+                priority=semantic.get(recalled.id, 0) * 3 + (0.2 if row.get("pinned") else 0),
+                source=recalled.source))
+        selected = select_context(request, materials, budget=min(config.recall_max_chars, request.budget // 2),
+                                  channel="memories", max_items=limit)
+        return [by_key[item.key] for item, _ in selected.rows]
+
     def _query(
         self,
         session_id: str,

@@ -137,6 +137,7 @@ from .participation import ParticipationMixin
 from .snapshot import SnapshotMixin
 from .turn import TurnMixin
 from .social import SocialMixin
+from .context import ContextMixin
 
 # --- 兼容再导出：这些名字以前挂在 core.engine 上，测试与第三方仍按旧路径引用 ---
 from ..state import STATE_NAPPING as STATE_NAPPING
@@ -219,6 +220,7 @@ __all__ = [
 
 
 class MyWorldEngine(
+    ContextMixin,
     ConfigMixin,
     SessionsMixin,
     StateStoreMixin,

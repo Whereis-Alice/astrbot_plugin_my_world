@@ -5,6 +5,7 @@ from __future__ import annotations
 from ..model_calls import model_operation
 
 import math
+from types import SimpleNamespace
 from typing import Any
 from ..json_actions import (
     PlannedAction,
@@ -788,6 +789,7 @@ class ActionsRunMixin:
                 session_id=session_id,
                 # 这一句是她自己想说的：好奇心高的时候可以顺着问一句还不知道的事
                 autonomy=True,
+                focus_user=action.target,
             )
         if definition.id == "share":
             return await self._generate_text_actions(
@@ -795,6 +797,7 @@ class ActionsRunMixin:
                 node,
                 "你想和大家分享一件此刻的小事。用 1~2 条简短自然的消息说出来。",
                 session_id=session_id,
+                focus_user=action.target,
             )
         if definition.llm_level == "template":
             text = self.render_template(definition.template, state, node, action)
@@ -809,6 +812,7 @@ class ActionsRunMixin:
                 node,
                 self._single_action_instruction(state, definition, action),
                 session_id=session_id,
+                focus_user=action.target,
             )
             if generated:
                 return generated
@@ -1149,6 +1153,7 @@ class ActionsRunMixin:
         *,
         session_id: str = "",
         autonomy: bool = False,
+        focus_user: str = "",
     ) -> list[str]:
         """用 LLM 生成要说的话（say / share 没有现成文案时）。
 
@@ -1171,28 +1176,34 @@ class ActionsRunMixin:
         persona_text = await self._persona_text(state.session_id)
         _cell, say_limit, style_text = self.style_for(state, state.session_id)
         current = str(session_id or state.session_id or "")
+        request = self.context_request(state, current, task="expression", text=instruction, focus=focus_user)
+        await self.prepare_context_memory(request)
         system_prompt = self.prompts.build_autonomous_system_prompt(
             persona_text=persona_text,
             state=state,
             node=node,
             available_tools=self.available_tools(),
             engagement_hint=self.engagement.hint(state),
+            memories=self.context_memories(state, request),
             max_messages=say_limit,
             # 这一轮是要说给 current（定向会话）听的：窗口也必须按它取，
             # 否则目标会话的话可能只落进"别处听到的"，本会话的上下文反而是代表会话的。
-            recent_chat=self.chat_window(state, current),
+            recent_chat=self.context_chat(state, request),
             reasoning=bool(self.world.reasoning_enabled),
             style_block=style_text,
-            profile_text=self.profile_block(state),
+            profile_text=self.context_profiles(state, request),
+            context_request=request,
             extra_notes=[
-                note for note in [self.extra_reminders(state, autonomy=autonomy)] if note
+                note for note in [self.extra_reminders(state, autonomy=autonomy,
+                    ctx=SimpleNamespace(session_id=current, user_id=request.people[0] if request.people else ""),
+                    include_life=False)] if note
             ],
             session_directory=self.session_directory(state),
             current_session=current,
             session_labels=self.session_labels(state),
             hidden_actions=self.exhausted_actions(state),
             samples=self.voice_sample_lines(state, state.session_id),
-            **await self.runtime_notes(state.session_id),
+            **await self.runtime_notes(current),
         )
         # Sending is gated by the caller; scheduled text generation must remain available.
         note = self.autonomous_prompt_note(state, respect_pause=False)
@@ -1204,6 +1215,7 @@ class ActionsRunMixin:
             + '\n只输出 JSON：{"actions":[{"type":"say","messages":["..."]}]}'
         )
         reply = await self._ask_llm(state.session_id, system_prompt, prompt)
+        self.record_context_selection(request)
         self._count_llm_text(state)
         if not reply:
             return []

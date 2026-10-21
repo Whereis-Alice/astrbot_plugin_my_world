@@ -860,7 +860,11 @@ class PromptBuilder:
         session_labels: dict[str, str] | None = None,
         chat_images: dict[str, str] | None = None,
         profile_text: str = "",
+        context_request=None,
     ) -> str:
+        if context_request is not None:
+            from .context_sources import runtime_context
+            return runtime_context(self, state, node, context_request, locals())
         now = self._now()
         # 这次是在哪个会话里说话：水位线、来源标签都按它算
         session_key = str(current_session or state.session_id or "")
@@ -2513,6 +2517,7 @@ class PromptBuilder:
         samples: list[dict[str, Any]] | None = None,
         wants_touch: bool = False,
         json_fields: Any = (),
+        context_request=None,
     ) -> str:
         """接管模式：完整五层，含 JSON 输出约束。
 
@@ -2528,6 +2533,9 @@ class PromptBuilder:
         一起写在第 3 层里；没人声明时这一层同样逐字不变。
         """
 
+        if context_request is not None:
+            from hashlib import sha256
+            context_request.life_persona = sha256(persona_text.encode("utf-8")).hexdigest()[:24]
         layers = []
         persona = self.persona_layer(persona_text)
         if persona:
@@ -2572,6 +2580,7 @@ class PromptBuilder:
                 session_labels=session_labels,
                 chat_images=chat_images,
                 profile_text=profile_text,
+                context_request=context_request,
             )
         )
         layers.append(
@@ -2666,6 +2675,7 @@ class PromptBuilder:
         chat_images: dict[str, str] | None = None,
         profile_text: str = "",
         samples: list[dict[str, Any]] | None = None,
+        context_request=None,
     ) -> tuple[str, str]:
         """注入模式：返回 ``(system_prompt, runtime_part)``。
 
@@ -2674,6 +2684,9 @@ class PromptBuilder:
         以「用户消息附加块」的形式交给宿主，尽量少破坏别家插件的前缀缓存。
         """
 
+        if context_request is not None:
+            from hashlib import sha256
+            context_request.life_persona = sha256(persona_text.encode("utf-8")).hexdigest()[:24]
         layers: list[str] = []
         persona = self.persona_layer(persona_text)
         if persona:
@@ -2707,8 +2720,12 @@ class PromptBuilder:
             session_labels=session_labels,
             chat_images=chat_images,
             profile_text=profile_text,
+            context_request=context_request,
         )
         runtime = f"{runtime}\n\n{self.dialogue_reminder_layer()}"
+        if context_request is not None:
+            sample_text = self.samples_layer(samples, pronoun=pronoun_for(getattr(self.world, "gender", "female")))
+            return system_prompt, runtime + ("\n\n" + sample_text if sample_text else "")
         from .chat_browse import feeling_context
         now = self._now()
         sid = current_session or state.session_id
@@ -4931,6 +4948,14 @@ class PromptBuilder:
         if prev_analysis:
             # 让它看见自己上一轮说了什么，才能真的"不重复"
             blocks.append("# 你上一轮的分析（这轮别复述）\n" + str(prev_analysis).strip()[:400])
+        # Repeat the contract beside the evidence even when retrieval is empty:
+        # there are then no memory IDs the analyst is allowed to cite.
+        blocks.append(
+            "# 作答范围\n"
+            + "意图只准从这些固定选项里挑："
+            + " / ".join(self.INTENT_CHOICES)
+            + "。记忆只准按编号引用；没有列出的记忆就写 无。"
+        )
         blocks.append("现在按那六行格式回答，只回答这六行。")
         return system, "\n\n".join(blocks)
 

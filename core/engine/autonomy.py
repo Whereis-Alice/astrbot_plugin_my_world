@@ -318,6 +318,7 @@ class AutonomyMixin:
         hint: str = "",
         with_extension: bool = True,
         quiet: bool = False,
+        focus_user: str = "",
     ) -> dict[str, Any] | None:
         if self.llm is None:
             return None
@@ -335,34 +336,36 @@ class AutonomyMixin:
                 or a.on_complete.trigger not in {"none", "llm_followup"})
         if self.world.sleep.mode == "autonomous":
             blocked_actions.add("sleep")
+        context_target = self.profile_session(state, focus_user) if focus_user else state.session_id
+        request = self.context_request(state, context_target, task="plan", text=hint,
+            rows=[] if quiet else None, focus=focus_user)
+        await self.prepare_context_memory(request)
         system_prompt = self.prompts.build_autonomous_system_prompt(
             persona_text=persona_text,
             state=state,
             node=node,
             available_tools=[] if quiet else self.available_tools(),
-            memories=self.memory.recall(
-                automatic=True,
-                session_id=state.session_id, persona_id="", node_id=state.node_id, limit=4
-            ),
+            memories=self.context_memories(state, request),
+            context_request=request,
             engagement_hint=self.engagement.hint(state),
             max_messages=say_limit,
             # 计划轮**没有**明确目标会话（她还没决定说给谁）：故意不传 session_id，
             # 按代表会话取一份窗口、别处的当背景——这就是"全组视图"的语义。
             # 别照抄这条到定向入口上（那些地方必须传目标会话，见 chat_window 的说明）。
-            recent_chat=[] if quiet else self.chat_window(state),
+            recent_chat=[] if quiet else self.context_chat(state, request),
             mode="plan",
             reasoning=bool(self.world.reasoning_enabled),
             style_block=style_text,
             hidden_actions=blocked_actions,
             session_directory=self.session_directory(state),
-            current_session=state.session_id,
+            current_session=request.session,
             session_labels=self.session_labels(state),
-            profile_text="" if quiet else self.profile_block(state),
+            profile_text="" if quiet else self.context_profiles(state, request),
             # 这是"她自己决定下一步做什么"的那一轮：好奇心可以推动她去问人
             extra_notes=[
-                note for note in [self.extra_reminders(state, autonomy=True)] if note
+                note for note in [self.extra_reminders(state, autonomy=True, include_life=False)] if note
             ],
-            **await self.runtime_notes(state.session_id),
+            **await self.runtime_notes(request.session),
         )
         # 装了扩展（注册了提示词层的那种）就把它的那一层也带上：
         # 她自己决定这一轮做什么的时候，得看得见扩展那几个数值。
@@ -395,6 +398,7 @@ class AutonomyMixin:
             + "只输出 JSON。"
         )
         reply = await self._ask_llm(state.session_id, system_prompt, prompt)
+        self.record_context_selection(request)
         outcome.llm_calls += 1
         self._count_llm_plan(state)
         if reply is None:

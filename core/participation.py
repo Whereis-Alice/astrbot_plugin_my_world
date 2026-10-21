@@ -42,18 +42,20 @@ PARTICIPATION_MANNERS += EXPRESSION_MANNERS
 
 def build_participation_prompt(*, persona: str, life: dict, rows: list[dict],
                                now: float, live_window: int = 180,
-                               style: str = "") -> tuple[str, str, dict[str, str]]:
+                               style: str = "", background: str = "") -> tuple[str, str, dict[str, str]]:
     """A single decision with a bounded scene, no life planner/action schema.
 
     Callers supply only the destination's rows. IDs are local capabilities: the
     model cannot introduce a platform ID or select a message in another session.
     """
     scene, targets = [], {}
-    for index, row in enumerate(rows[-16:], 1):
+    for index, row in enumerate(rows, 1):
         tag = f"m{index}"
         age = max(0, int(now - float(row.get("at") or 0)))
         item = {"ref": tag, "who": "我" if row.get("is_self") else str(row.get("name") or row.get("user_id") or "群友"),
                 "text": str(row.get("text") or "")[:500], "age_seconds": age}
+        if row.get("user_id"):
+            item["user_id"] = str(row["user_id"])
         for key in ("at_targets", "reply_to", "addressing"):
             if row.get(key):
                 item[key] = row[key]
@@ -63,6 +65,7 @@ def build_participation_prompt(*, persona: str, life: dict, rows: list[dict],
             item["can_reply"] = True
         scene.append(item)
     system = (persona + "\n\n# 此刻的你\n" + json.dumps(life, ensure_ascii=False)
+              + ("\n\n" + background if background else "")
               + "\n" + (style[:600] + "\n" if style else "")
               + PARTICIPATION_MANNERS
               + '\n# 本轮输出\n只做群友，不安排动作。只输出 JSON：'

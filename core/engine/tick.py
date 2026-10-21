@@ -957,24 +957,22 @@ class TickMixin:
         blocked_actions = self._hidden_actions(state)
         # 续说落在哪个会话里：它同时决定"取哪一份聊天窗口"和"当前会话是谁"
         home = outcome.home()
+        request = self.context_request(state, home, task="reply" if outcome.speech_kind == "reply" else "expression",
+            text=hint + "\n" + tool_result, focus=next(iter(outcome.contact_people), ""))
+        await self.prepare_context_memory(request)
         system_prompt = self.prompts.build_autonomous_system_prompt(
             persona_text=persona_text,
             state=state,
             node=node,
             available_tools=self.available_tools(),
-            memories=self.memory.recall(
-                automatic=True,
-                session_id=state.session_id,
-                persona_id="",
-                node_id=state.node_id,
-                limit=3,
-            ),
+            memories=self.context_memories(state, request),
+            context_request=request,
             engagement_hint=self.engagement.hint(state),
             max_messages=say_limit,
             # 取窗口的会话必须**和 current_session 是同一个**：不然这里按代表会话
             # 的额度取（目标会话的话被挤进"别处听到的"），她续说时聊的根本不是
             # 自己刚在说话的那个地方，已回应过的历史也补不齐。
-            recent_chat=self.chat_window(state, home),
+            recent_chat=self.context_chat(state, request),
             reasoning=bool(self.world.reasoning_enabled),
             style_block=style_text,
             hidden_actions=blocked_actions,
@@ -982,10 +980,10 @@ class TickMixin:
             # 她此刻是在哪个会话里说话：这里/别处的划分、水位线都按它算
             current_session=home,
             session_labels=self.session_labels(state),
-            profile_text=self.profile_block(state),
-            extra_notes=[note for note in [self.extra_reminders(state)] if note],
+            profile_text=self.context_profiles(state, request),
+            extra_notes=[self.context_emotions(state, request)],
             json_fields=self.extensions.json_fields(),
-            **await self.runtime_notes(state.session_id),
+            **await self.runtime_notes(home),
         )
         prompt = self.prompts.build_reply_followup_prompt(
             hint,
@@ -1007,6 +1005,7 @@ class TickMixin:
             prompt,
             image_urls=list(image_urls or []) or None,
         )
+        self.record_context_selection(request)
         outcome.llm_calls += 1
         if reply is None:
             return False

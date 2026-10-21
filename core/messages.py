@@ -314,7 +314,11 @@ def _reply_target(event: Any) -> dict:
             ).split()
         )
         if uid or name:
-            return {"id": uid, "name": name or uid}
+            result = {"id": uid, "name": name or uid}
+            message_id = str(getattr(component, "id", "") or "").strip()
+            if message_id:
+                result["message_id"] = message_id
+            return result
     return {}
 
 

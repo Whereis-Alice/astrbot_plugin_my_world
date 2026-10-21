@@ -364,6 +364,29 @@ class CalendarDiaryEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("不要记录这句聊天", serialized)
         self.assertNotIn("998877", serialized)
 
+    async def test_diary_folds_only_adjacent_duplicate_events(self):
+        day = self.engine.local_now().date().isoformat()
+        start, _ = self.engine._journal_day_bounds(day)
+        _, persona_key = await self.engine._journal_persona(SESSION)
+        descriptions = ["风车停了", "风车停了", "风车修好了", "风车停了"]
+        rows = [
+            (SESSION, persona_key, 0, "action_done",
+             json.dumps({"desc": desc}, ensure_ascii=False), start.timestamp() + index)
+            for index, desc in enumerate(descriptions)
+        ]
+        with self.db.raw._lock:
+            self.db.raw._conn.executemany(
+                "INSERT INTO event_log(session_id,persona_id,world_time,event_type,"
+                "detail,created_at) VALUES(?,?,?,?,?,?)", rows,
+            )
+            self.db.raw._conn.commit()
+        sources = await self.engine._diary_sources(SESSION, day, persona_key)
+        self.assertEqual(
+            ["desc: 风车停了", "desc: 风车修好了", "desc: 风车停了"],
+            [item["detail"] for item in sources["events"]],
+        )
+        self.assertEqual([2, 1, 1], [item.get("occurrences", 1) for item in sources["events"]])
+
     async def test_busy_days_keep_the_newest_event_window(self):
         day = self.engine.local_now().date().isoformat()
         start, _ = self.engine._journal_day_bounds(day)

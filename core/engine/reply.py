@@ -653,7 +653,7 @@ class ReplyMixin:
                 # user prompt 时写），别放在这儿：这些 notes 渲染在提示词最末尾，
                 # 离那一批隔了几十行，"这几句"就没有指代对象了。
                 extra_notes = extra_notes or None
-                missing = self.extra_reminders(state, ctx=ctx)
+                missing = self.extra_reminders(state, ctx=ctx, include_life=False)
                 if missing:
                     extra_notes = [*(extra_notes or []), missing]
                 remember_note = self.remember_hint(" ".join(texts), ctx=ctx)
@@ -671,13 +671,12 @@ class ReplyMixin:
                 vocabulary = self.vocabulary_block(ctx.session_id, recall_records)
                 if vocabulary:
                     extra_notes = [*(extra_notes or []), vocabulary]
-                memories = self.memory.recall_participants(
-                    records=recall_records,
-                    session_id=ctx.session_id,
-                    persona_id=ctx.persona_id,
-                    node_id=state.node_id,
-                    limit=self.world.limits.max_think_memory,
-                )
+                request = self.context_request(state, ctx.session_id, task="reply", text="\n".join(texts),
+                    focus=ctx.user_id, persona=ctx.persona_id)
+                memories = self.context_memories(state, request, recall_records)
+                background_chat = self.context_chat(state, request,
+                    self.chat_context_for_reply(state, ctx, exclude_entries=self.reply_batch_entries(batch)))
+                profile_context = self.context_profiles(state, request)
                 persona_text = await self._persona_text(state.session_id)
                 # 有人正在跟她说话：话太密时只提醒别刷屏，不把她按成哑巴
                 _cell, say_limit, style_text = self.style_for(
@@ -698,11 +697,7 @@ class ReplyMixin:
                             node=node,
                             memories=memories,
                             engagement_hint=self.engagement.hint(state),
-                            recent_chat=self.chat_context_for_reply(
-                                state,
-                                ctx,
-                                exclude_entries=self.reply_batch_entries(batch),
-                            ),
+                            recent_chat=background_chat,
                             # 别家插件写进请求的上下文由宿主原样带着走（见 main.py
                             # 注入时保留 system_prompt 与 extra_user_content_parts），
                             # 这里再抄一份只会让同一段设定出现两遍。
@@ -713,7 +708,8 @@ class ReplyMixin:
                             current_session=ctx.session_id,
                             session_labels=self.session_labels(state),
                             chat_images=dict(ctx.image_marks or {}),
-                            profile_text=self.profile_block(state, ctx),
+                            profile_text=profile_context,
+                            context_request=request,
                             samples=samples,
                             **runtime_notes,
                         )
@@ -735,11 +731,7 @@ class ReplyMixin:
                         available_tools=self.available_tools(),
                         memories=memories,
                         engagement_hint=self.engagement.hint(state),
-                        recent_chat=self.chat_context_for_reply(
-                            state,
-                            ctx,
-                            exclude_entries=self.reply_batch_entries(batch),
-                        ),
+                        recent_chat=background_chat,
                         other_context=ctx.other_context,
                         extra_notes=extra_notes,
                         max_messages=say_limit,
@@ -750,7 +742,8 @@ class ReplyMixin:
                         current_session=ctx.session_id,
                         session_labels=self.session_labels(state),
                         chat_images=dict(ctx.image_marks or {}),
-                        profile_text=self.profile_block(state, ctx),
+                        profile_text=profile_context,
+                        context_request=request,
                         samples=samples,
                         wants_touch=self.extensions.wants("touch"),
                         json_fields=self.extensions.json_fields(),
@@ -766,6 +759,7 @@ class ReplyMixin:
                         image_marks=dict(ctx.image_marks or {}),
                     )
                 node_id = state.node_id
+                self.record_context_selection(request)
                 # 留一份"实际发出去的完整请求"：调试页看的就是它（见 preview_last_reply_request）
                 self._remember_prompt_snapshot(
                     session_id=ctx.session_id,
@@ -774,6 +768,7 @@ class ReplyMixin:
                     contexts=history,
                     batch=batch,
                     chat_rows=list(state.recent_chat),
+                    context_selection=request.trace,
                 )
                 if inject_only:
                     # 注入模式到此为止：剩下的交给宿主的原生工具循环与发送管线。

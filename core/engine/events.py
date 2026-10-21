@@ -653,11 +653,14 @@ class EventsMixin:
             tone = tone or str(thread.get("tone") or "")
             if genre is None and thread.get("genre"):
                 genre = {"name": thread["genre"]}
+        request = self.context_request(state, state.session_id, task="event", rows=[],
+            text="\n".join((seed, thread_digest(thread, complete=True) if thread else "", tone)))
+        await self.prepare_context_memory(request)
         system, prompt = self.prompts.build_event_package_prompt(
             persona_brief=await self.event_persona_brief(state.session_id),
             scene_line=self.prompts.scene_compact(node),
             state_line=self._state_persona_line(state, node),
-            thread_digest=thread_digest(thread) if thread else "",
+            thread_digest="",
             recent_titles=list(state.event_recent_titles or []),
             red_lines=list(getattr(config, "red_lines", []) or []),
             seed=seed,
@@ -666,17 +669,10 @@ class EventsMixin:
             genre_scale=str(getattr(config, "genre_scale", "") or ""),
             tone_note=(": ".join(TONES[tone]) if tone in TONES else ""),
             extra_prompt=config.auto.extra_prompt if tone else "",
-            recent_memories=[
-                str(getattr(item, "content", "") or "")
-                for item in self.memory.recall(
-                    automatic=True,
-                    session_id=state.session_id,
-                    persona_id="",
-                    node_id=state.node_id,
-                    limit=4,
-                )
-            ],
+            recent_memories=[],
         )
+        prompt += "\n" + await self.task_background(state, task="event", query=request.query,
+            required=("# 当前事件的前因与已发生进展\n" + thread_digest(thread, complete=True)) if thread else "", request=request)
         try:
             reply = await self._ask_creator(state.session_id, system, prompt)
         except Exception as exc:
@@ -973,6 +969,8 @@ class EventsMixin:
                 session_directory=self.session_directory(state),
             )
             prompt += self.conversation_scene_hint(state, outcome.home())
+            prompt += "\n" + await self.task_background(state, task="event", query=package.title + "\n" + package.hook,
+                required="# 当前事件的前因与已发生进展\n" + thread_digest(thread, complete=True))
             prompt += ("\n要说的话要符合人设和此刻场合。求助只问清楚这一件具体的事，"
                        "不要点名催促、重复征集或逐条播报；没必要分享时 say 各项可以留空数组。")
             reply = await self._ask_llm(state.session_id, system, prompt)
@@ -1145,6 +1143,7 @@ class EventsMixin:
             )
         except Exception:
             return fallback
+        prompt += "\n" + await self.task_background(state, task="expression", query=package.title + "\n" + package.hook)
         reply = await self._ask_helper(state.session_id, system, prompt)
         if not reply:
             return fallback
@@ -1661,9 +1660,9 @@ class EventsMixin:
         )
         raw = None
         if bool(getattr(config, "enabled", True)):
-            from ..life_matters import context_block
             prompt += "\n# 原有人设（始终优先）\n" + (await self._persona_text(state.session_id))[:6000]
-            prompt += "\n" + context_block(state, session_id=state.session_id, now=self._now())
+            prompt += "\n" + await self.task_background(state, task="event", query=package.title + "\n" + package.hook,
+                required=("# 结算依据：当前事件的前因与已发生进展\n" + thread_digest(thread, complete=True)) if thread else "", evidence=True)
             system += ('\n可选字段 life_matter：仅当这次经历确实让她想在以后持续做一件符合人设的小事时，'
                        '提供 {"text":"想做什么","reason":"这次经历为什么引出它","matter_id":"已有事项ID或空"}。'
                        '关联已有事项时只填有效ID及reason；没有必要就省略。'

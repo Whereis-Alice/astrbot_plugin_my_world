@@ -75,24 +75,44 @@ class ParticipationMixin:
             return "reply_pending"
         return ""
 
-    def participation_prompt(self, state, target, persona, *, rows=None):
+    def participation_prompt(self, state, target, persona, *, rows=None, request=None):
         """Same builder for production and evaluation; never include another session."""
         if rows is None:
             rows = [row for row in state.recent_chat if self._chat_origin(row, state) == target
                     and self._now() - float(row.get("at") or 0) <= 600
-                    and not self.is_plugin_command(str(row.get("text") or ""))][-16:]
+                    and not self.is_plugin_command(str(row.get("text") or ""))]
+        from ..context_selection import CONTEXT_GUIDANCE, ContextItem, select_context
+        from ..context_sources import life_items
+        request = request or self.context_request(state, target, task="participation", rows=rows)
+        from hashlib import sha256
+        request.life_persona = sha256(persona.encode("utf-8")).hexdigest()[:24]
+        rows = self.context_chat(state, request, rows)
         node = self.node(state.node_id) or self.node(self.default_node_id())
         _, _, style = self.style_for(state, target)
         action = state.current_action or {}
+        activity = (str(action.get("desc") or action.get("intent") or self.prompts.action_label(action.get("type")))
+                    if action else "自由活动")
         life = {"place": node.name if node else "", "mood": state.mood,
-                "energy": round(state.energy, 2), "activity": str(action.get("intent") or "")[:160]}
-        # A few ongoing personal interests ground speech without exposing the
-        # planner, private memories, tools or complete world map.
-        interests = getattr(state, "life_interests", {}) or {}
-        life["recent_activities"] = [str(item.get("label") or key)[:60]
-            for key, item in sorted(interests.items(), key=lambda pair: pair[1].get("last_at", 0))[-3:]]
-        return build_participation_prompt(persona=persona, life=life, rows=rows,
-            now=self._now(), live_window=self.world.decider.live_window_seconds, style=style)
+                "local_time": self.local_now().isoformat(timespec="minutes"),
+                "activity": activity}
+        materials = life_items(state, request) if self.world.state_dynamics.own_topic_enabled else []
+        for memory in self.context_memories(state, request, rows):
+            label = "本会话阅读时的主观感想，非亲历：" if memory.source == "chat_browse" else "相关经历："
+            if memory.private_matter:
+                label = "本会话约定的生活进展（准备与模拟不等于现实兑现）："
+            materials.append(ContextItem(f"memory:{memory.id}", "memory",
+                label + ("涉及用户ID：" + "、".join(memory.participants or memory.related_users) + "\n" if memory.participants or memory.related_users else "")
+                + memory.render(stamp=self.prompts._memory_stamp(memory.created_at, self.local_now())),
+                at=memory.created_at, people=tuple(memory.participants or memory.related_users),
+                session=memory.session_id if memory.source_scoped else ""))
+        background = select_context(request, materials).render()
+        profile = self.context_profiles(state, request)
+        background = "\n\n".join(part for part in (CONTEXT_GUIDANCE, profile, self.context_emotions(state, request), background) if part)
+        result = build_participation_prompt(persona=persona, life=life, rows=rows,
+            now=self._now(), live_window=self.world.decider.live_window_seconds, style=style,
+            background=background)
+        request.trace["scene"] = {"rows": len(rows), "characters": len(result[1])}
+        return result
 
     def participation_sample(self, state, target, new) -> bool:
         """Spectre-style opportunity sampling per burst, softened by recent speech."""
@@ -110,8 +130,14 @@ class ParticipationMixin:
     async def participation_text(self, state, target) -> tuple[str, str]:
         if self.llm is None:
             return "", ""
+        rows = [row for row in state.recent_chat if self._chat_origin(row, state) == target
+                and self._now() - float(row.get("at") or 0) <= 600
+                and not self.is_plugin_command(str(row.get("text") or ""))]
+        request = self.context_request(state, target, task="participation", rows=rows)
+        await self.prepare_context_memory(request)
         system, prompt, targets = self.participation_prompt(state, target,
-            await self._persona_text(target))
+            await self._persona_text(target), request=request, rows=rows)
+        self.record_context_selection(request)
         raw = await self._ask_llm(target, system, prompt)
         return parse_participation(raw or "", targets)
 

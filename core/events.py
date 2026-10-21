@@ -975,14 +975,15 @@ def thread_step_lines(thread: dict[str, Any], limit: int = 8) -> list[str]:
     return lines
 
 
-def thread_digest(thread: dict[str, Any]) -> str:
+def thread_digest(thread: dict[str, Any], *, complete: bool = False) -> str:
     """喂给打杂模型的那段"这件事的来龙去脉"。"""
 
     if not isinstance(thread, dict):
         return ""
     root = thread.get("root") or {}
     lines = [f"初始：{root.get('title') or thread.get('title') or ''}（{root.get('hook') or ''}）"]
-    for index, line in enumerate(thread_step_lines(thread), start=1):
+    count = len(thread.get("steps") or [])
+    for index, line in enumerate(thread_step_lines(thread, limit=count if complete else 8), start=1 if complete else max(1, count - 7)):
         lines.append(f"第 {index} 步：{line}")
     if thread.get("status") == "closed":
         lines.append("（这条线索已经结束）")

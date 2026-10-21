@@ -157,7 +157,7 @@ class PersonaMixin:
         variant: str = "full",
         director_llm: Any = None,
     ) -> dict[str, Any]:
-        """把剧本逐轮喂给"带着完整提示词的她"，**并发**收集她的真实回复。
+        """使用正式任务上下文选择构建剧本请求，**并发**收集真实回复。
 
         和真机对话的区别只有一个：**不写任何状态**——水位线、记忆、心情、动作都不动，
         所以可以反复跑、跑给它十遍也不会污染她的世界。它测的正是"这套提示词 + 这个模型"
@@ -213,32 +213,32 @@ class PersonaMixin:
             async with gate:
                 try:
                     _cell, say_limit, style_text = self.style_for(state, session_id)
+                    eval_rows = [*recent_chat, {"name": user_name, "user_id": str(item.get("user_id") or who_id or ""),
+                        "origin": session_id, "text": text, "at": self._now()}]
+                    request = self.context_request(state, session_id,
+                        task="participation" if variant == "participation" else "reply",
+                        rows=eval_rows, text=text, focus=str(item.get("user_id") or who_id or ""))
+                    # Read-only retrieval: evaluations must not count recalls, log or mutate state.
                     if variant == "participation":
                         system_prompt, user_prompt, quote_targets = self.participation_prompt(
-                            state, session_id, persona, rows=[{"name": user_name,
-                                "text": text, "at": self._now()}])
+                            state, session_id, persona, rows=eval_rows, request=request)
                     else:
                         system_prompt = self.prompts.build_autonomous_system_prompt(
                             persona_text=persona,
                             state=state,
                             node=node,
                             available_tools=self.available_tools(),
-                            memories=self.memory.recall(
-                                automatic=True,
-                                session_id=session_id,
-                                persona_id="",
-                                node_id=state.node_id,
-                                limit=self.world.limits.max_think_memory,
-                            ),
+                            memories=self.context_memories(state, request, eval_rows),
+                            context_request=request,
                             engagement_hint=self.engagement.hint(state),
                             max_messages=say_limit,
-                            recent_chat=list(recent_chat),
+                            recent_chat=self.context_chat(state, request, recent_chat),
                             reasoning=bool(self.world.reasoning_enabled),
                             style_block=style_text,
                             session_directory=self.session_directory(state),
                             current_session=session_id,
                             session_labels=self.session_labels(state),
-                            profile_text=profile_text,
+                            profile_text=self.context_profiles(state, request),
                             samples=self.voice_sample_lines(
                                 state, session_id, preview=True
                             ),
@@ -253,6 +253,8 @@ class PersonaMixin:
                             text=text,
                             is_private=True,
                         )
+                    row["context_selection"] = request.trace
+                    row["request_chars"] = len(system_prompt) + len(user_prompt)
                     if variant == "lean":
                         system_prompt = lean_prompt(system_prompt)
                     elif variant == "analyst":
@@ -266,13 +268,7 @@ class PersonaMixin:
                                 user_name=user_name,
                                 recent_chat=recent_chat,
                                 profile_text=profile_text,
-                                memories=self.memory.recall(
-                                    automatic=True,
-                                    session_id=session_id,
-                                    persona_id="",
-                                    node_id=state.node_id,
-                                    limit=self.world.limits.max_think_memory,
-                                ),
+                                memories=self.context_memories(state, request, eval_rows),
                                 other_context=str(
                                     getattr(state, "last_other_context", "") or ""
                                 ),

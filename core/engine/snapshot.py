@@ -584,6 +584,10 @@ class SnapshotMixin:
             + ("\n".join(str(item) for item in contexts) if contexts else "（这一轮没有带宿主历史）")
         )
         parts.append(f"# ===== 3. 最后一条用户消息 =====\n{snapshot.get('user_prompt') or ''}")
+        if snapshot.get("context_selection"):
+            import json
+            parts.append("# ===== 4. 本轮上下文取材依据 =====\n" + json.dumps(
+                snapshot["context_selection"], ensure_ascii=False, indent=2))
         return "\n".join(parts)
 
     def _remember_prompt_snapshot(
@@ -595,6 +599,7 @@ class SnapshotMixin:
         contexts: Any,
         batch: list[dict[str, Any]],
         chat_rows: list[dict[str, Any]],
+        context_selection: dict | None = None,
     ) -> None:
         """留一份"这一轮真正发出去的完整请求"（内存里只留最近几条）。"""
 
@@ -610,6 +615,7 @@ class SnapshotMixin:
                     "contexts": list(contexts or []),
                     "batch_keys": [str(item.get("event_key") or "") for item in entries],
                     "batch_texts": [str(item.get("text") or "") for item in entries],
+                    "context_selection": dict(context_selection or {}),
                 },
             )
             del self._prompt_snapshots[PROMPT_SNAPSHOT_KEEP:]
@@ -648,22 +654,18 @@ class SnapshotMixin:
         state = await self.load_state(session_id, cold_start=False)
         node = self.node(state.node_id)
         _cell, say_limit, style_text = self.style_for(state, session_id)
+        request = self.context_request(state, session_id, task="plan", persona=persona_id)
         text = self.prompts.build_autonomous_system_prompt(
             persona_text=await self._persona_text(session_id),
             state=state,
             node=node,
             available_tools=self.available_tools(),
-            memories=self.memory.recall(
-                automatic=True,
-                session_id=session_id,
-                persona_id=persona_id,
-                node_id=state.node_id,
-                limit=self.world.limits.max_think_memory,
-            ),
+            memories=self.context_memories(state, request),
+            context_request=request,
             engagement_hint=self.engagement.hint(state),
             max_messages=say_limit,
             # 预览和实跑必须同源：窗口也用 session_id 这个目标会话取
-            recent_chat=self.chat_window(state, session_id),
+            recent_chat=self.context_chat(state, request),
             reasoning=bool(self.world.reasoning_enabled),
             style_block=style_text,
             # 预览要和实跑一致：自主提示词里也要有"你能说话的地方"
@@ -672,7 +674,7 @@ class SnapshotMixin:
             session_labels=self.session_labels(state),
             # 配额用完的动作，实跑时不会出现在提示词里，预览也不该出现
             hidden_actions=self.exhausted_actions(state),
-            profile_text=self.profile_block(state),
+            profile_text=self.context_profiles(state, request),
             # 声音样例也要一致：预览里看不到，用户就没法确认挑中的那几句到底进没进
             samples=self.voice_sample_lines(state, session_id, preview=True),
             # 预览要跟实跑一致：有扩展声明要"他碰了她哪儿"时，这里也得带上那个字段
@@ -680,7 +682,7 @@ class SnapshotMixin:
             json_fields=self.extensions.json_fields(),
             # 预览要跟实跑一致：实跑会带上「好奇心」那一段，这里也要带
             extra_notes=[
-                note for note in [self.extra_reminders(state, autonomy=True)] if note
+                note for note in [self.extra_reminders(state, autonomy=True, include_life=False)] if note
             ],
             **await self.runtime_notes(session_id),
         )

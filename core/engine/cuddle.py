@@ -299,7 +299,7 @@ class CuddleMixin:
             + self.autonomous_prompt_note(state)
             + "\n按你自己的节奏安排这一轮要做什么，输出计划 JSON。"
         )
-        plan = await self._ask_llm_for_plan(state, node, outcome, force=True, hint=hint)
+        plan = await self._ask_llm_for_plan(state, node, outcome, force=True, hint=hint, focus_user=uid)
         if plan is None:
             outcome.notes.append(f"想找 {name}，但这一轮没想出要说什么")
             # 想不出来就先把这个人的想念压一半，别每轮都来问一次
@@ -378,7 +378,7 @@ class CuddleMixin:
         )
 
     def extra_reminders(
-        self, state: WorldState, *, autonomy: bool = False, ctx: Any = None
+        self, state: WorldState, *, autonomy: bool = False, ctx: Any = None, include_life: bool = True
     ) -> str:
         """给提示词的几段提醒：有点想谁 + 刚想起的事（后者读过一次就不再重复提）。
 
@@ -389,12 +389,16 @@ class CuddleMixin:
         不回话的场合（``ctx`` 为空）就按"她自己心里的事"带上名字。
         """
 
-        parts = [self.miss_block(state)]
-        parts.append(self._greet_hint(state))
-        parts.append(self._outdoor_hint(state))
+        # Adaptive directed turns stay with the present people. Social planning
+        # may consider whom to contact; an ordinary reply needn't hear that motive.
+        parts = [self.miss_block(state)] if autonomy or include_life else []
+        if autonomy or include_life:
+            parts.append(self._greet_hint(state))
+            parts.append(self._outdoor_hint(state))
         parts.append(self._heart_knot_block(state, ctx, autonomy=autonomy))
         parts.append(self._grudge_block(state, ctx, autonomy=autonomy))
-        parts.append(self._own_topic_block(state, ctx, autonomy=autonomy))
+        if include_life:
+            parts.append(self._own_topic_block(state, ctx, autonomy=autonomy))
         if autonomy:
             parts.append(self._ask_about_block(state))
         pending = str(getattr(state, "pending_review", "") or "").strip()

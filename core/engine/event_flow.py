@@ -474,6 +474,7 @@ class EventFlowMixin:
             )
         except Exception:
             return ""
+        prompt += "\n" + await self.task_background(state, task="expression", query=title + "\n" + hook + "\n" + asked)
         try:
             reply = await channel.generate(
                 session_id=state.session_id,

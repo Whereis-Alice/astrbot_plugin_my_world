@@ -322,6 +322,10 @@ class Consolidator:
             if self.world is not world or context_current is not None and not await context_current():
                 result.skipped.append("角色或世界已改变，剩余整理结果不保存")
                 break
+            from .context_selection import evidence_context, request_for
+            request = request_for(task="review", session=session_id, now=stamp)
+            selected = evidence_context(request, prompt, key=kind)
+            prompt = selected.render()
             try:
                 reply = await llm(system, prompt)
                 payload = extract_json_object(reply or "")
@@ -333,7 +337,8 @@ class Consolidator:
                 result.skipped.append("角色或世界已改变，本次整理结果不保存")
                 break
             result.raw = (result.raw + f"[{kind}] " + str(reply or ""))[:2000]
-            previews.append({"stage": kind, "system": system, "user": prompt})
+            previews.append({"stage": kind, "system": system, "user": prompt,
+                             "context_selection": request.trace})
             if not isinstance(payload, dict):
                 result.retry_needed = True
                 result.note = "整理模型没有给出可用的 JSON"

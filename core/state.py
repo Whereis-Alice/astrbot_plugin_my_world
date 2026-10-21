@@ -1446,6 +1446,8 @@ class WorldState:
                 "id": str(reply_to.get("id") or ""),
                 "name": str(reply_to.get("name") or ""),
             }
+            if reply_to.get("message_id"):
+                item["reply_to"]["message_id"] = str(reply_to["message_id"])
         if str(addressing or "") in ("me", "others"):
             item["addressing"] = str(addressing)
         refs = _chat_image_refs(images)

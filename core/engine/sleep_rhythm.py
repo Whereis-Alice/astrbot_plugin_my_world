@@ -153,21 +153,19 @@ class SleepRhythmMixin:
                     schedules.append({"id": item.id, "time": str(item.time),
                         "actions": [step.type for step in item.action_chain]})
             current = state.current_action or {}
-            own_topics = list(getattr(state, "own_topics", []) or [])[-3:]
             context = {
                 "当地时间": self.local_now().isoformat(timespec="minutes"),
                 "清醒小时": round(awake, 2), "精力": round(state.energy, 3),
                 "困意": round(state.sleep_pressure, 3), "心情": state.mood,
                 "正在做": str(current.get("desc") or current.get("type") or "自由活动"),
-                "最近睡眠": state.sleep_history[-4:], "当天的事": own_topics,
+                "最近睡眠": state.sleep_history[-4:],
                 "日程": schedules[:12], "上次决定": str(rhythm.get("reason") or ""),
-                "最近经历": state.recent_events[-6:],
-                "经历摘要": state.event_digest[-4:],
             }
+            background = await self.task_background(state, task="sleep", query="作息 疲劳 未完事项 次日安排 休息")
             persona = await self._persona_text(state.session_id)
             prompt = (
                 f"人设：\n{persona}\n作息偏好：{config.rhythm_prompt[:1200]}\n"
-                + json.dumps(context, ensure_ascii=False, default=str)
+                + json.dumps(context, ensure_ascii=False, default=str) + "\n" + background
                 + f"\n决定现在入睡还是继续活动。不是必须到固定钟点才睡；"
                 f"根据真实疲劳、睡眠不足、当日事情与人设作决定，不为了每天不同随便掷时间。"
                 f"小睡不足不能当完整的一晚；普通群聊热闹不代表必须一直陪聊。"
