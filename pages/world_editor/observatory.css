@@ -557,14 +557,34 @@ input:focus, select:focus, textarea:focus { box-shadow: 0 0 0 3px var(--accent-s
 .scene-path { stroke: var(--house-wall); opacity: .5; }.house-wall { fill: var(--house-wall); }.house-side { fill: var(--house-side); }.house-roof { fill: var(--house-roof); }.house-door { fill: var(--landmark); }.house-window { fill: var(--window-light); filter: drop-shadow(0 0 5px color-mix(in srgb, var(--window-light) 60%, transparent)); }
 .scene-trees { color: var(--landmark); }.scene-bamboo, .scene-petals, .scene-ribbons, .scene-clouds, .scene-sun-rings { display: none; }
 .is-sleeping .house-window { opacity: .25; filter: none; }.is-sleeping .world-illustration { filter: brightness(.8); }
-#tab-status .hero-kpis { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0; padding: 8px 22px; margin: 0; background: transparent; border: 0; }
-#tab-status .kpi { min-height: 77px; padding: 14px 10px 14px 0; background: none; border: 0; border-radius: 0; box-shadow: none; gap: 8px; overflow: visible; }
-#tab-status .kpi::before, #tab-status .kpi::after { display: none; }
-#tab-status .kpi:nth-child(even) { padding-left: 20px; border-left: 1px solid var(--line); }
-#tab-status .kpi:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
-#tab-status .kpi-label { font-size: 9px; font-weight: 400; color: var(--muted); letter-spacing: .08em; }
-#tab-status .kpi-value { color: var(--text); font-size: 13px; font-weight: 500; line-height: 1.6; -webkit-line-clamp: 2; }
-#tab-status .kpi-note { font-size: 9px; color: var(--accent-ink); }
+/* A steady 2 × 2 reading order, with tinted glass and a quiet illuminated edge. */
+#tab-status .hero-kpis { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; padding: 16px 18px; margin: 0; background: transparent; border: 0; }
+#tab-status .kpi {
+  --kpi-tone: var(--accent); box-sizing: border-box; min-width: 0; min-height: 106px;
+  padding: 15px 16px; gap: 8px; overflow: hidden; isolation: isolate; border-radius: 15px;
+  border: 1px solid color-mix(in srgb, var(--kpi-tone) 30%, var(--line));
+  background: radial-gradient(ellipse at 8% 0%, color-mix(in srgb, var(--kpi-tone) 18%, transparent), transparent 85%),
+    linear-gradient(145deg, color-mix(in srgb, var(--panel-2) 70%, transparent), color-mix(in srgb, var(--panel) 48%, transparent));
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  box-shadow: inset 0 1px 0 var(--surface-highlight), inset 0 -1px 0 color-mix(in srgb, var(--kpi-tone) 10%, transparent), 0 5px 18px -16px var(--kpi-tone);
+  transition: border-color .2s var(--ease), box-shadow .2s var(--ease);
+}
+#tab-status .kpi:nth-child(1) { --kpi-tone: color-mix(in srgb, var(--scene-orbit) 55%, var(--scene-a)); }
+#tab-status .kpi:nth-child(2) { --kpi-tone: var(--secondary); }
+#tab-status .kpi-gold { --kpi-tone: var(--warn); }
+#tab-status .kpi::before {
+  content: ""; display: block; position: absolute; inset: 0 16px auto; height: 1px; pointer-events: none;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--kpi-tone) 65%, transparent), transparent);
+}
+#tab-status .kpi::after { display: none; }
+#tab-status .kpi:hover {
+  transform: none; border-color: color-mix(in srgb, var(--kpi-tone) 52%, var(--line));
+  box-shadow: inset 0 1px 0 var(--surface-highlight), inset 0 -1px 0 color-mix(in srgb, var(--kpi-tone) 15%, transparent), 0 5px 22px -14px color-mix(in srgb, var(--kpi-tone) 55%, transparent);
+}
+#tab-status .kpi-label { font-size: 10px; font-weight: 500; color: color-mix(in srgb, var(--kpi-tone) 58%, var(--text)); letter-spacing: .08em; }
+:root[data-theme="light"] #tab-status .kpi-label { color: color-mix(in srgb, var(--kpi-tone) 28%, var(--text)); }
+#tab-status .kpi-value { color: var(--text); font-size: 14px; font-weight: 600; line-height: 1.6; -webkit-line-clamp: 2; text-shadow: 0 0 18px color-mix(in srgb, var(--kpi-tone) 12%, transparent); }
+#tab-status .kpi-note { font-size: 10px; line-height: 1.5; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .hero-card-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 22px; border-top: 1px solid var(--line); background: var(--surface-highlight); }
 .hero-card-foot > span { color: var(--muted); font-size: 9px; letter-spacing: .06em; }
 .hero-card-foot > button { color: var(--accent-ink); border: 0; background: transparent; font-size: 10px; padding: 3px 0; min-height: 28px; }
@@ -697,7 +717,7 @@ input:focus, select:focus, textarea:focus { box-shadow: 0 0 0 3px var(--accent-s
   #tab-status .dash { grid-template-columns: minmax(0,1fr); gap: 14px; } #tab-status .dash-col { gap: 14px; }
   #tab-status .hero-card { border-radius: 18px; }.world-window { min-height: 260px; }.world-window-head { padding: 17px 18px; }.world-window-caption { padding: 105px 18px 19px; }.world-illustration { width: 100%; top: -9px; right: -17%; }.hero-sub { font-size: 9px; max-width: 300px; }
   .scene-label { font-size: 9px; }.scene-clock { font-size: 8px; margin-bottom: 12px; }.hero-name { font-size: 21px; }
-  #tab-status .hero-kpis { padding: 5px 18px; } #tab-status .kpi { min-height: 75px; padding-block: 13px; }.hero-card-foot { padding-inline: 18px; }.hero-card-foot > span { font-size: 8px; }
+  #tab-status .hero-kpis { padding: 12px; gap: 8px; } #tab-status .kpi { min-height: 108px; padding: 12px; border-radius: 12px; gap: 7px; } #tab-status .kpi-value { font-size: 13px; } #tab-status .kpi-note { font-size: 9px; }.hero-card-foot { padding-inline: 18px; }.hero-card-foot > span { font-size: 8px; }
   .world-details { padding-inline: 18px; } .world-details > summary > span { font-size: 8px; }
   .life-focus { padding: 20px; }.life-focus h3 { font-size: 20px; }.life-focus-next { grid-template-columns: 1fr; gap: 6px; }
   #tab-status .wellbeing-card, #tab-status .history-card, .card { padding: 20px; border-radius: 17px; }.panel-eyebrow { font-size: 8px; }
