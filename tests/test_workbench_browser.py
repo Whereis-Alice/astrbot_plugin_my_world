@@ -166,6 +166,39 @@ class WorkbenchBrowserTests(unittest.TestCase):
         expect(self.page.get_by_text('自主作息偏好',exact=True)).to_be_visible()
         self.assertEqual(self.errors, [])
 
+    def test_sleep_details_keep_current_state_when_refresh_precedes_toggle_event(self):
+        snapshot = self.install_console()
+        snapshot['sleep'].update(mode='autonomous', rhythm={
+            'decision': 'continue', 'reason': '看完这一章再睡'})
+        self.page.evaluate("""data => {
+          numericState=data; document.getElementById('status-session').dispatchEvent(new Event('change'));
+        }""", snapshot)
+        expect(self.page.locator('.sleep-rhythm-details')).to_contain_text('自主作息')
+        for opened in (True, False, True, False):
+            with self.subTest(opened=opened):
+                self.page.evaluate("""opened => {
+                  window.previousSleepDetails=document.querySelector('.sleep-rhythm-details');
+                  previousSleepDetails.open=opened;
+                  document.getElementById('status-session').dispatchEvent(new Event('change'));
+                }""", opened)
+                self.page.wait_for_function("""() => {
+                  const current=document.querySelector('.sleep-rhythm-details');
+                  return current && current !== previousSleepDetails;
+                }""")
+                self.assertEqual(self.page.locator('.sleep-rhythm-details').evaluate('e => e.open'), opened)
+                self.page.evaluate("""opened => {
+                  previousSleepDetails.open=!opened;
+                  previousSleepDetails.dispatchEvent(new Event('toggle'));
+                  window.previousSleepDetails=document.querySelector('.sleep-rhythm-details');
+                  document.getElementById('status-session').dispatchEvent(new Event('change'));
+                }""", opened)
+                self.page.wait_for_function("""() => {
+                  const current=document.querySelector('.sleep-rhythm-details');
+                  return current && current !== previousSleepDetails;
+                }""")
+                self.assertEqual(self.page.locator('.sleep-rhythm-details').evaluate('e => e.open'), opened)
+        self.assertEqual(self.errors, [])
+
     def test_many_exits_and_long_activities_do_not_cover_neighboring_places(self):
         self.install_dense_map()
         for width,height in [(1440,900),(390,844)]:

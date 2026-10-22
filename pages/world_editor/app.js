@@ -4952,6 +4952,9 @@ function sleepRowVisible(data) {
 function renderValueRows(values, data) {
   const box = $("status-values");
   if (!box) return;
+  // Native toggle events are queued; polling may redraw before they run.
+  const previousSleepDetails = box.querySelector(".sleep-rhythm-details");
+  if (previousSleepDetails) ui.sleepRhythmOpen = previousSleepDetails.open;
   box.innerHTML = "";
   ATTRS.forEach((attr) => {
     const value = num(ui.valuesEdit && attr.key in ui.valueDraft ? ui.valueDraft[attr.key] : values[attr.key], 0.5);
@@ -5008,7 +5011,9 @@ function renderValueRows(values, data) {
     const rhythm = data.sleep.rhythm || {};
     const details = el("details", "row-item sleep-rhythm-details");
     details.open = Boolean(ui.sleepRhythmOpen);
-    details.addEventListener("toggle", () => {ui.sleepRhythmOpen=details.open;});
+    details.addEventListener("toggle", () => {
+      if (details.isConnected) ui.sleepRhythmOpen = details.open;
+    });
     details.appendChild(el("summary", "", "自主作息 · " +
       ({sleep: "准备休息", sleeping: "睡眠中", awake: "已醒来", continue: "继续活动"}[rhythm.decision] || "等待评估")));
     if (rhythm.reason) details.appendChild(el("p", "muted", rhythm.reason));
