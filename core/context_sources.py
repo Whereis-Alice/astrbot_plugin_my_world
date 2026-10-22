@@ -46,7 +46,8 @@ def life_items(state: Any, request: ContextRequest) -> list[ContextItem]:
         steps = [step for step in item.get("steps", []) if step.get("goal", title) == title]
         bookmark = current_bookmark(item)
         if item.get("needs_review") and status not in CLOSED:
-            done = "；".join(str(step.get("text") or "") for step in steps if step.get("status") == "done")
+            done = "；".join(str(step.get("text") or "") for step in steps
+                            if step.get("status") == "done" and not step.get("stage_noted"))
             review_label = "待复核的活动" if ready else "保留的待复核活动（目前未执行）"
             summary += (f"\n{review_label}：{done or '尚无'}。这里只确认做过活动，尚无该阶段的内容结论；"
                         "步骤结束只登记投入，不能推断其中某一项资料已比对或某个子问题已解决；"

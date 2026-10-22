@@ -49,7 +49,10 @@ class SimulationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.llm.calls), 1)
         await self.tick_work(1)
         self.clock.advance(3600)
-        self.llm.replies = ['{"outcome":"completed","reason":"完成世界内的分类脚本模拟"}']
+        state = await self.engine.load_state(SESSION, cold_start=False)
+        self.llm.replies = [json.dumps({"outcome": "completed", "reason": "完成世界内的分类脚本模拟",
+            "stage": {"summary": "完成世界内模拟的分类草稿", "content": "按标题保存收藏条目；这里只留下世界内草稿，没有运行或验证现实脚本。",
+                      "basis_step_ids": [step["id"] for step in matters.find(state, mid)["steps"]]}})]
         await self.engine.advance_life_matters(SESSION)
         state = await self.engine.load_state(SESSION, cold_start=False)
         item = matters.find(state, mid)

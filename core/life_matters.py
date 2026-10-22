@@ -168,21 +168,26 @@ def record_stage(item: dict, payload: Any, *, now: float) -> dict | None:
     if not isinstance(payload, dict):
         return None
     summary, content = payload.get("summary"), payload.get("content")
+    next_focus = payload.get("next_focus") or ""
     ids = payload.get("basis_step_ids")
     if not isinstance(summary, str) or not summary.strip() or not isinstance(content, str) or not content.strip():
         return None
+    if (len(summary.strip()) > 240 or len(content.strip()) > 1200
+            or not isinstance(next_focus, str) or len(next_focus.strip()) > 240):
+        return None  # Do not truncate away a qualification or unresolved question.
     if not isinstance(ids, list) or not ids or len(ids) > 6 or any(not isinstance(x, str) for x in ids):
         return None
     known = {s["id"]: s for s in item.get("steps", []) if s.get("status") == "done"
              and not s.get("stage_noted")
              and s.get("goal", item.get("text")) == item.get("text")
+             and isinstance(s.get("result"), dict)
              and s.get("result", {}).get("ok") and s.get("result", {}).get("kind") in {"life_simulation", "in_world_action"}
-             and float(s.get("result", {}).get("minutes") or 0) > 0}
+             and _minutes(s["result"].get("minutes")) > 0}
     used = {sid for row in item.get("stage_notes", []) for sid in row.get("basis_step_ids", [])}
     if not set(ids) <= known.keys() or set(ids) & used:
         return None
-    stage = {"at": now, "goal": item.get("text", ""), "summary": summary.strip()[:240], "content": content.strip()[:1200],
-             "next_focus": str(payload.get("next_focus") or "").strip()[:240],
+    stage = {"at": now, "goal": item.get("text", ""), "summary": summary.strip(), "content": content.strip(),
+             "next_focus": next_focus.strip(),
              "basis_step_ids": list(dict.fromkeys(ids)), "scope": "simulation"}
     item["stage_notes"] = [*item.get("stage_notes", []), stage][-8:]
     for sid in stage["basis_step_ids"]:

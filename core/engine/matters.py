@@ -334,6 +334,10 @@ class MattersMixin:
             snapshot = copy.deepcopy(item)
             snapshot["stage_notes"] = matters.current_stage_notes(item)[-3:]
             snapshot["steps"] = [s for s in item.get("steps", []) if s.get("status") == "done"][-12:] + [s for s in item.get("steps", []) if s.get("status") != "done"][:6]
+            if review:
+                snapshot["steps"] = [s for s in item.get("steps", []) if s.get("status") == "done"
+                                     and not s.get("stage_noted")
+                                     and s.get("goal", item["text"]) == item["text"]][:6]
             snapshot["history"] = snapshot.get("history", [])[-12:]
             interrupted = [event for event in item.get("history", []) if event.get("kind") == "paused_step"
                            and now - float(event.get("at") or 0) <= 7 * 86400]
@@ -432,8 +436,10 @@ class MattersMixin:
                 "reason可概括她在世界内完成了什么，但不得声称操作了现实服务器、通过真实测试或产生可下载文件。"
                 "普通阅读只能证明阅读；模拟步骤完成后可以确认相应的世界内目标。"
                 "stage只对应已完成且有投入收据的新步骤，不能重复旧stage_notes引用过的步骤。"
+                "若有计时结束的步骤，stage须接续尚未记入阶段的步骤，每次最多引用6步；不能只写reason就跳过复核。"
                 "content要留下下一阶段真正能用的内容，例如短小草稿、设计取舍或具体未解问题，"
                 "不是再说一遍已经进行了活动。不捏造真实书籍原文、检索结论或现实验证。"
+                "summary最多240字，content最多1200字，next_focus最多240字；保持内容及未确认限定完整。"
                 "已有bookmark中的未解点不能因计时结束自动消失；仍无依据就保留未确认。"
                 "summary必须与content的限定一致，正文仍在核对时，标题写核对进展或仍待核实，不能写已确认。"
                 "原有人设和能力优先，不从这次活动创造新身份、喜好或高超技能。"
@@ -451,9 +457,14 @@ class MattersMixin:
             outcome = result.get("outcome")
             if outcome not in {"completed", "continue", "blocked"}:
                 return  # Failed/malformed review is not a new life result.
+            pending = {row["step_id"] for row in matters.pending_review_bookmarks(item)}
+            stage_payload = result.get("stage")
+            if pending and not stage_payload:
+                self.decision_trace(session_id, "life_stage", "rejected", "阶段笔记缺少接续内容，保留最后思路等待复核", matter_id=item["id"])
+                return
             stage = matters.record_stage(item, result.get("stage"), now=self._now())
-            if result.get("stage") and not stage:
-                self.decision_trace(session_id, "life_stage", "rejected", "阶段笔记未引用有效的新完成步骤，保留原进度等待复核", matter_id=item["id"])
+            if stage_payload is not None and not stage:
+                self.decision_trace(session_id, "life_stage", "rejected", "阶段笔记的格式、长度或步骤来源无效，保留原进度等待复核", matter_id=item["id"])
                 return
             if stage:
                 matters.history(item, "stage_note", stage["summary"], self._now(), basis_step_ids=stage["basis_step_ids"])
@@ -465,6 +476,12 @@ class MattersMixin:
                     memory_type="scene", source="life_matter", context=json.dumps({**stage,
                         "matter_id": item["id"], "persona_key": item.get("persona_key", "")}, ensure_ascii=False),
                     participants=[item["who"]] if item.get("who") else [])
+            if stage and matters.pending_review_bookmarks(item):
+                # Older saves can contain more than one batch without notes.
+                # Keep useful content, but never retire the remaining questions.
+                matters.history(item, "partial_review", "已保存部分阶段笔记，其余步骤仍待复核", self._now())
+                matters.sync(state)
+                return
             if outcome == "completed" and item["kind"] != "promise":
                 receipts = [s.get("result", {}) for s in item["steps"] if s.get("status") == "done"]
                 item.update(status="completed", progress=100, needs_review=False, next_step="", completed_at=self._now(),

@@ -209,10 +209,29 @@ class LifeDepthTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(matters.record_stage(item, stage, now=1))
         item["steps"][0].update(status="done", result={"ok": True, "kind": "life_simulation", "minutes": 5})
         self.assertIsNone(matters.record_stage(item, {**stage, "basis_step_ids": ["made-up"]}, now=1))
-        note = matters.record_stage(item, {**stage, "content": "细节" * 5000}, now=1)
-        self.assertEqual(len(note["content"]), 1200)
+        before = copy.deepcopy(item)
+        for key, limit in (("summary", 240), ("content", 1200), ("next_focus", 240)):
+            with self.subTest(field=key):
+                self.assertIsNone(matters.record_stage(item, {**stage, key: "线" * limit + "尚未核实"}, now=1))
+                self.assertEqual(item, before)
+        content = "线" * (1200 - len("尚未核实")) + "尚未核实"
+        note = matters.record_stage(item, {**stage, "content": content}, now=1)
+        self.assertEqual(note["content"], content)
 
     def test_direct_embedding_settings_keep_their_source(self):
         old = MemoryConfig(semantic_endpoint="https://example.invalid/v1", semantic_model="bge")
         self.assertEqual(old.semantic_source, "custom")
         self.assertEqual(MemoryConfig().semantic_source, "provider")
+
+    def test_invalid_receipt_effort_cannot_become_stage_content(self):
+        item = matters.make("核对日期", now=1, session=S)
+        item["steps"] = [{"id": "dates", "status": "done", "goal": item["text"]}]
+        payload = {"summary": "日期核对", "content": "仍无依据确认日期关系", "basis_step_ids": ["dates"]}
+        for receipt in ("broken", None, [], {"ok": True, "kind": "life_simulation", "minutes": "broken"},
+                        {"ok": True, "kind": "life_simulation", "minutes": float("inf")},
+                        {"ok": True, "kind": "life_simulation", "minutes": -1}):
+            with self.subTest(receipt=receipt):
+                item["steps"][0]["result"] = receipt
+                before = copy.deepcopy(item)
+                self.assertIsNone(matters.record_stage(item, payload, now=2))
+                self.assertEqual(item, before)

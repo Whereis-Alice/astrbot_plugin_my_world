@@ -95,7 +95,9 @@ class MattersAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         item = matters.find(state, project_id)
         self.assertTrue(item["needs_review"])
         self.clock.advance(3600)
-        self.llm.replies = ['{"outcome":"completed","reason":"六部分均已实际阅读"}']
+        self.llm.replies = [json.dumps({"outcome": "completed", "reason": "六部分均已实际阅读",
+            "stage": {"summary": "这一周读完了六部分", "content": "六部分阅读已结束，未另外记录人物或日期结论。",
+                      "basis_step_ids": [step["id"] for step in item["steps"]]}})]
         await self.engine.advance_life_matters(SESSION)
         state = await self.state()
         item = matters.find(state, project_id)

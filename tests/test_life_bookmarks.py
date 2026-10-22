@@ -93,6 +93,127 @@ class LifeBookmarkTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(matters.current_bookmark(item)["worked_minutes"], 3)
         self.assertEqual(item, before)
 
+    async def review_fixture(self):
+        state = await self.engine.load_state(S, cold_start=False)
+        state.life_matters = []
+        await self.engine.save_state(state)
+        state, item = await self.prepare()
+        step = item["steps"][0]
+        step.update(status="done", worked_minutes=35, bookmark={"goal": item["text"],
+            "note": "黎明不是完整日期，尚不能确认两封信同一天", "open_question": "邮戳指哪一天"},
+            result={"ok": True, "kind": "in_world_action", "minutes": 35})
+        item.update(needs_review=True, progress=99)
+        await self.engine.save_state(state)
+        return item
+
+    async def review(self, item, payload):
+        self.llm.replies = [json.dumps(payload)]
+        await self.engine._review_matter_stage(S, copy.deepcopy(item), world=self.engine.world,
+            state_key=self.engine.state_key(S), persona=await self.engine._persona_text(S))
+        return matters.find(await self.engine.load_state(S, cold_start=False), item["id"])
+
+    async def test_review_cannot_drop_last_question_without_replacement_content(self):
+        for outcome in ("continue", "blocked", "completed"):
+            for stage in (None, {}, ""):
+                with self.subTest(outcome=outcome, stage=stage):
+                    item = await self.review_fixture()
+                    before = copy.deepcopy(item)
+                    payload = {"outcome": outcome, "reason": "这一阶段先告一段落"}
+                    if stage is not None:
+                        payload["stage"] = stage
+                    updated = await self.review(item, payload)
+                    self.assertEqual(updated, before)
+                    self.assertIn("邮戳指哪一天", matters.context_block(
+                        await self.engine.load_state(S, cold_start=False), session_id=S))
+                    self.assertEqual(self.messenger.sent, [])
+
+    async def test_partial_stage_cannot_discard_another_unreviewed_bookmark(self):
+        item = await self.review_fixture()
+        state = await self.engine.load_state(S, cold_start=False)
+        item = matters.find(state, item["id"])
+        item["steps"].append({**copy.deepcopy(item["steps"][0]), "id": "second", "text": "检查署名",
+            "bookmark": {"goal": item["text"], "note": "第二封信署名尚未看清", "open_question": "谁写的第二封信"}})
+        await self.engine.save_state(state)
+        updated = await self.review(item, {"outcome": "completed", "stage": {
+            "summary": "日期仍待核对", "content": "黎明不是完整日期，尚不能确认同一天。",
+            "basis_step_ids": ["chapter"]}})
+        self.assertEqual(updated["status"], "active")
+        self.assertTrue(updated["needs_review"])
+        self.assertTrue(updated["steps"][0]["stage_noted"])
+        self.assertFalse(updated["steps"][1].get("stage_noted"))
+        self.assertEqual(matters.pending_review_bookmarks(updated)[0]["open_question"], "谁写的第二封信")
+        from core.context_sources import life_items
+        from core.context_selection import ContextRequest
+        state = await self.engine.load_state(S, cold_start=False)
+        text = life_items(state, ContextRequest(task="reply", session=S, now=self.clock.now(), query="信"))[0].summary
+        self.assertIn("待复核的活动：检查署名", text)
+        self.assertNotIn("待复核的活动：对照第二章", text)
+        self.assertIn("谁写的第二封信", text)
+        self.engine.reload_config()
+        state = await self.engine.load_state(S, cold_start=False)
+        updated = await self.review(matters.find(state, item["id"]), {"outcome": "continue", "stage": {
+            "summary": "署名还有疑问", "content": "第二封信署名尚未看清，不能确定作者。",
+            "next_focus": "从署名继续", "basis_step_ids": ["second"]}})
+        self.assertFalse(updated["needs_review"])
+        self.assertTrue(updated["needs_replan"])
+        self.assertEqual(len(updated["stage_notes"]), 2)
+
+    async def test_complete_stage_hands_off_question_and_can_continue_after_reload(self):
+        item = await self.review_fixture()
+        content = "黎明不是完整日期，尚不能确认两封信同一天；邮戳指哪一天仍待核对。"
+        updated = await self.review(item, {"outcome": "continue", "stage": {
+            "summary": "整理日期疑问", "content": content, "next_focus": "从邮戳继续核对",
+            "basis_step_ids": ["chapter"]}})
+        self.assertFalse(updated["needs_review"])
+        self.assertTrue(updated["needs_replan"])
+        self.assertEqual(updated["stage_notes"][-1]["content"], content)
+        self.engine.reload_config()
+        state = await self.engine.load_state(S, cold_start=False)
+        self.assertIn(content, matters.context_block(state, session_id=S))
+        self.assertEqual(matters.pending_review_bookmarks(matters.find(state, item["id"])), [])
+
+    async def test_legacy_unreviewed_batches_remain_visible_until_every_step_is_noted(self):
+        from unittest.mock import AsyncMock
+        item = await self.review_fixture()
+        state = await self.engine.load_state(S, cold_start=False)
+        item = matters.find(state, item["id"])
+        item["steps"] = [{**copy.deepcopy(item["steps"][0]), "id": f"chapter_{index}"} for index in range(14)]
+        await self.engine.save_state(state)
+        batches = []
+
+        async def review_batch(_session, _system, prompt):
+            snapshot = json.loads(prompt)["matter"]
+            ids = [step["id"] for step in snapshot["steps"]]
+            batches.append(ids)
+            return json.dumps({"outcome": "completed", "stage": {"summary": "保存这一批未解线索",
+                "content": "黎明不是完整日期，邮戳所指日期仍未确认。", "basis_step_ids": ids}})
+
+        self.engine._ask_judge = AsyncMock(side_effect=review_batch)
+        for index in range(3):
+            await self.engine.advance_life_matters(S)
+            state = await self.engine.load_state(S, cold_start=False)
+            item = matters.find(state, item["id"])
+            self.assertEqual(item["worked_minutes"], 0)
+            self.assertEqual(item["plan_attempts"], index + 1)
+            if index < 2:
+                self.assertTrue(item["needs_review"])
+                self.assertNotEqual(item["status"], "completed")
+            self.engine.reload_config()
+            self.clock.advance(3600)
+        self.assertEqual([len(batch) for batch in batches], [6, 6, 2])
+        self.assertEqual(len(set(sid for batch in batches for sid in batch)), 14)
+        self.assertEqual(item["status"], "completed")
+        self.assertTrue(all(step["stage_noted"] for step in item["steps"]))
+        self.assertEqual(self.messenger.sent, [])
+
+    async def test_overlong_stage_cannot_save_only_a_claim_and_drop_its_qualification(self):
+        item = await self.review_fixture()
+        before = copy.deepcopy(item)
+        updated = await self.review(item, {"outcome": "completed", "stage": {
+            "summary": "日期核对进展", "content": "日期资料。" * 240 + "仍无依据确认两封信同一天。",
+            "basis_step_ids": ["chapter"]}})
+        self.assertEqual(updated, before)
+
     async def test_repeated_bookmark_notes_do_not_displace_history_or_change_revision(self):
         _state, item = await self.prepare()
         item["steps"][0]["worked_minutes"] = 3
