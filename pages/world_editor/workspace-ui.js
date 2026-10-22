@@ -1,5 +1,14 @@
 import { mountWorldScene } from "./world-scene.js?v=4.29.0";
 
+export function updateWorkspaceContext() {
+  const trigger = document.querySelector(".topbar-context > summary");
+  const session = document.querySelector(".field-session");
+  if (!trigger || !session) return;
+  const hasSession = getComputedStyle(session).display !== "none";
+  trigger.textContent = hasSession ? "会话与范围" : "世界设置";
+  trigger.setAttribute("aria-label", hasSession ? "会话与世界设置" : "世界设置");
+}
+
 /** Compact reading chrome, with secondary operations available on demand. */
 export function initialiseWorkspace() {
   mountWorldScene();
@@ -60,6 +69,7 @@ export function initialiseWorkspace() {
   };
   compact.addEventListener("change", placeContext);
   placeContext();
+  updateWorkspaceContext();
   for (const root of document.querySelectorAll("main > .tab")) {
     const head = root.querySelector(":scope > .page-head");
     if (!head) continue;

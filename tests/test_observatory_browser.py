@@ -121,11 +121,11 @@ class ObservatoryBrowserTests(unittest.TestCase):
           select.dispatchEvent(new Event('change'));
         }""")
         self.page.wait_for_function('pendingStatusLogs.length === 2')
-        self.page.evaluate("pendingStatusLogs[1].resolve({events:[{world_time:2,event_type:'action',text:'第二个角色的日志'}]})")
-        expect(self.page.locator('#status-logs')).to_contain_text('第二个角色的日志')
+        self.page.evaluate("pendingStatusLogs[1].resolve({events:[{world_time:2,event_type:'skip',text:'第二个角色的警告'}]})")
+        expect(self.page.locator('#status-warn')).to_contain_text('第二个角色的警告')
         self.page.evaluate("pendingStatusLogs[0].resolve({events:[{world_time:1,event_type:'skip',text:'前一个角色的警告'}]})")
         self.page.evaluate('() => new Promise(resolve => requestAnimationFrame(resolve))')
-        expect(self.page.locator('#status-logs')).to_contain_text('第二个角色的日志')
+        expect(self.page.locator('#status-warn')).to_contain_text('第二个角色的警告')
         expect(self.page.locator('#status-warn')).not_to_contain_text('前一个角色')
         self.assertEqual(self.errors, [])
 

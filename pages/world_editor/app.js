@@ -13,7 +13,7 @@ import { personAvatar, personColor, bindPeopleSort } from "./people-ui.js";
 import { openRelationshipRulesEditor } from "./relationship-rules.js";
 import { applyDetailedLevels, DETAILED_LEVELS } from "./relationship-preset.js";
 import { initialiseAppearance, openAppearancePicker } from "./appearance.js?v=4.29.0";
-import { initialiseWorkspace } from "./workspace-ui.js?v=4.29.0";
+import { initialiseWorkspace, updateWorkspaceContext } from "./workspace-ui.js?v=4.34.9";
 
 /**
  * 小世界前端。
@@ -3418,14 +3418,17 @@ function renderConfigScope() {
   $("scope-edit").checked = ui.scopeBlocks.has(block);
   const name = CONFIG_BLOCKS[block];
   const active = document.querySelector("#tabs button.active")?.dataset.tab;
-  $("scope-note").textContent = !local
+  const recordNote = ["thoughts", "memories", "logs", "debug"].includes(active)
+    ? "页面记录以页内“会话”选择为准。" : active === "ticks" ? "运行记录展示所有会话的世界时钟。" : "";
+  $("scope-note").textContent = recordNote + (!local
     ? "全局默认应用于所有继承该配置的群和私聊。"
     : block ? (ui.scopeBlocks.has(block)
       ? `${name}已单独配置，保存后生效；取消勾选并保存可恢复继承全局。`
       : `${name}正在继承全局（只读）；勾选后可单独修改此配置块。`)
     : ["sessions", "presets"].includes(active)
       ? "会话管理与预设属于全局配置，请切换到全局默认后编辑。"
-      : "此页操作对象由顶部“会话”选择；编辑范围用于地图、动作库、日程与设置。";
+      : recordNote ? "编辑范围用于地图、动作库、日程与设置。"
+      : "此页操作对象由顶部“会话”选择；编辑范围用于地图、动作库、日程与设置。");
   Object.keys(CONFIG_BLOCKS).forEach((key) => {
     const section = $(`tab-${key}`);
     section.inert = local && !ui.scopeBlocks.has(key);
@@ -3861,6 +3864,7 @@ function showTab(name, button) {
   if (title && target) title.textContent = target.textContent.trim();
   const app = $("app");
   if (app) app.classList.toggle("map-focus", name === "map");
+  updateWorkspaceContext();
   syncTopbarHeight();
   if (name === "status") refreshStatus();
   if (name === "events") loadEvents();
@@ -4489,6 +4493,7 @@ function bindButtons() {
   $("session-add").addEventListener("click", addSession);
   $("group-add").addEventListener("click", addGroup);
   $("memory-search").addEventListener("click", loadMemories);
+  $("memory-session").addEventListener("change", loadMemories);
   $("memory-add").addEventListener("click", addMemory);
   $("memory-select-all").addEventListener("click", () =>
     toggleSelectAll("memory-list", "memorySelection"),
@@ -4535,6 +4540,7 @@ function bindButtons() {
   $("preset-new-default").addEventListener("click", newDefaultPreset);
   $("preset-refresh").addEventListener("click", loadPresets);
   $("debug-auto").addEventListener("click", () => loadPrompt("autonomous"));
+  $("debug-session").addEventListener("change", resetDebugPreview);
   $("debug-backup").addEventListener("click", async () => {
     try {
       const result = await apiPost("backup", {});
@@ -7273,10 +7279,6 @@ async function refreshStatus() {
     const logs = await apiGet("logs", { session: sessionId, limit: 60 });
     if ($("status-session").value !== sessionId || ui.statusRequest !== requestId) return;
     const events = logs.events || [];
-    $("status-logs").textContent = (logs.events || [])
-      .map((item) => `[t=${item.world_time}] ${item.text || item.event_type}`)
-      .join("\n");
-
     // 她"什么都没做"的时候，最常见的原因是某一步被跳过了（缺工具 / 地点不对）。
     // 把最近一条跳过直接摆在状态卡上，省得用户去翻日志。
     const skipIndex = events.findIndex((item) => item.event_type === "skip");
@@ -14556,11 +14558,17 @@ async function clearAll(kind) {
 async function loadLogs() {
   const session = $("log-session").value;
   const list = $("log-list");
+  const requestId = ui.logRequest = (ui.logRequest || 0) + 1;
+  const current = () => requestId === ui.logRequest && $("log-session").value === session;
+  ui.logSelection = new Set();
+  list.replaceChildren();
+  if (ui.logSession !== session) resetLogDetail();
+  ui.logSession = session;
   if (!session) {
     list.textContent = "还没有白名单会话。";
     return;
   }
-  ui.logSelection = new Set();
+  list.appendChild(el("p", "muted", "读取中…"));
   try {
     const data = await apiGet("logs", {
       session,
@@ -14568,6 +14576,7 @@ async function loadLogs() {
       q: $("log-keyword").value.trim(),
       limit: $("log-limit").value,
     });
+    if (!current()) return;
     fillLogTypes(data.types || []);
     list.innerHTML = "";
     (data.events || []).forEach((event) => {
@@ -14581,20 +14590,30 @@ async function loadLogs() {
       item.appendChild(el("div", "log-icon", meta.icon));
       item.appendChild(el("div", "log-text", event.text || meta.label));
       item.addEventListener("click", () => showLogDetail(item, event));
+      item.classList.toggle("selected", event.id === ui.logDetailId);
       item.classList.add("selectable");
       item.insertBefore(rowCheckbox(item, event.id, "logSelection"), item.firstChild);
       list.appendChild(item);
     });
+    if (!(data.events || []).some(event => event.id === ui.logDetailId)) resetLogDetail();
     if (!(data.events || []).length) {
       list.appendChild(el("p", "muted", "没有符合条件的记录。"));
     }
   } catch (error) {
+    if (!current()) return;
+    resetLogDetail();
     list.innerHTML = "";
     list.appendChild(el("p", "muted", error.message || "读取日志失败"));
   }
 }
 
+function resetLogDetail() {
+  ui.logDetailId = null;
+  $("log-detail").replaceChildren(el("p", "muted", "点左边任意一条，这里会用人话讲清发生了什么。"));
+}
+
 function showLogDetail(item, event) {
+  ui.logDetailId = event.id;
   document
     .querySelectorAll("#log-list .log-item")
     .forEach((node) => node.classList.remove("selected"));
@@ -16370,22 +16389,31 @@ function applySidebarRail() {
 
 async function loadMemories() {
   const list = $("memory-list");
+  const statsBox = $("memory-stats");
+  const session = $("memory-session").value;
+  const requestId = ui.memoryRequest = (ui.memoryRequest || 0) + 1;
+  const current = () => requestId === ui.memoryRequest && $("memory-session").value === session;
+  const params = {
+    session,
+    node_id: $("memory-node").value,
+    type: $("memory-type").value,
+    scope: $("memory-scope").value,
+    q: $("memory-keyword").value,
+  };
   list.innerHTML = "<p class='muted'>加载中…</p>";
+  statsBox.replaceChildren();
   ui.memorySelection = new Set();
+  if (!session) {
+    list.textContent = "还没有白名单会话。";
+    return;
+  }
   try {
-    const session = $("memory-session").value;
-    const params = {
-      session,
-      node_id: $("memory-node").value,
-      type: $("memory-type").value,
-      scope: $("memory-scope").value,
-      q: $("memory-keyword").value,
-    };
-    const [data, stats] = await Promise.all([
+    const [data, stats, consolidation] = await Promise.all([
       apiGet("memories", params),
       apiGet("memories/stats", { session }),
+      apiGet("logs", { session, type: "consolidate", limit: 3 }).catch(() => null),
     ]);
-    const statsBox = $("memory-stats");
+    if (!current()) return;
     statsBox.innerHTML = "";
     // 没选会话 / 后端没给全时也别显示 undefined：数字缺了就补 0，权重缺了显示 —
     const byType = stats.by_type || {};
@@ -16402,10 +16430,8 @@ async function loadMemories() {
     ].forEach((text) => statsBox.appendChild(el("span", "", text)));
 
     // 上次整理到底干了什么：不写这一行，"记忆没变化"永远只能靠猜
-    try {
-      const session = $("memory-session") ? $("memory-session").value : "";
-      const logs = await apiGet("logs", { session, type: "consolidate", limit: 3 });
-      const rows = logs.events || [];
+    if (consolidation) {
+      const rows = consolidation.events || [];
       if (rows.length) {
         const last = rows[0];
         statsBox.appendChild(
@@ -16414,7 +16440,7 @@ async function loadMemories() {
       } else {
         statsBox.appendChild(el("span", "", "上次整理：还没有跑过（她睡下 20 分钟后会整理一次）"));
       }
-    } catch (error) {
+    } else {
       statsBox.appendChild(el("span", "", "上次整理：读不到"));
     }
 
@@ -16465,7 +16491,7 @@ async function loadMemories() {
       list.appendChild(item);
     });
     if (!(data.memories || []).length) {
-      const keyword = ($("memory-keyword") || {}).value || "";
+      const keyword = params.q || "";
       const clear = el("button", "ghost small", "清掉关键词");
       clear.type = "button";
       clear.addEventListener("click", () => {
@@ -16483,6 +16509,7 @@ async function loadMemories() {
       );
     }
   } catch (error) {
+    if (!current()) return;
     list.innerHTML = "";
     list.appendChild(el("p", "muted", error.message || "加载失败"));
   }
@@ -21029,16 +21056,29 @@ async function openMemoryDetail(memory) {
   });
 }
 
+function resetDebugPreview() {
+  ui.debugRequest = (ui.debugRequest || 0) + 1;
+  ui.debugHasOutput = false;
+  ui.debugPrompt = "";
+  $("debug-summary").textContent = "";
+  showDebugPlaceholder();
+  applyDebugExpandState();
+}
+
 async function loadPrompt(mode) {
   const session = $("debug-session").value;
+  const requestId = ui.debugRequest = (ui.debugRequest || 0) + 1;
+  const current = () => requestId === ui.debugRequest && $("debug-session").value === session;
   if (!session) {
     toast("先选择会话");
     return;
   }
   try {
     const data = await apiGet("prompt", { session, mode });
+    if (!current()) return;
     renderDebugOutput(data, mode);
   } catch (error) {
+    if (!current()) return;
     toast(error.message || "读取失败");
   }
 }
