@@ -2532,7 +2532,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
                 state, "答应给他看照片", user_id="9", user_name="小刚"
             )
             prompt = self.engine.extra_reminders(state, ctx=ctx, persona_key=persona_key)
-            self.assertIn("你一直在推进的生活事项", prompt)
+            self.assertIn("状态：active", prompt)
             self.assertIn("答应给他看照片", prompt)
             # 未确认当前人设或切换人设时，不能带入旧人设的私事。
             self.assertNotIn("答应给他看照片", self.engine.extra_reminders(state, ctx=ctx))
@@ -2545,6 +2545,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.engine.mark_own_topic_done(state, user_id="9", matter_id=state.life_matters[0]["id"],
                 evidence="平台确认照片已发出", confirmed=True), 1)
             self.assertEqual(state.own_topics, [])
+            self.assertNotIn("答应给他看照片", self.engine.extra_reminders(state, ctx=ctx, persona_key=persona_key))
             self.assertEqual(self.engine.mark_own_topic_done(state, user_id="9"), 0)
 
     async def test_personal_project_is_kept_after_a_few_days(self):
