@@ -169,5 +169,15 @@ export function createModelCallsPage({ root, apiGet, el, openDecisions }) {
       if (root.classList.contains("active") && !document.hidden && !list.querySelector("details[open]") && list.getAttribute("aria-busy") !== "true") reload();
     }, 15000);
   });
-  return { reload };
+  function openRelated(session, id) {
+    clearTimeout(searchTimer);
+    page = 1;
+    for (const key of ["calls-purpose", "calls-provider", "calls-status"]) $(key).value = "";
+    const select = $("calls-session");
+    if (session && ![...select.options].some(option => option.value === session)) select.add(new Option(session, session));
+    select.value = session || "";
+    $("calls-period").value = "720";
+    $("calls-search").value = id;
+  }
+  return { reload, openRelated };
 }

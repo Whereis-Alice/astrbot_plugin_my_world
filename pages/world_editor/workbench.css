@@ -16,6 +16,7 @@
 .topbar .field-contacts-session { display: none; }
 .topbar .field-contacts-session select { width: clamp(120px, 25vw, 360px); max-width: 360px; text-overflow: ellipsis; }
 .content:has(#tab-contacts.active) .field-contacts-session { display: flex; }
+.content:has(#tab-contacts.active[data-view="overview"]) .field-contacts-session { display: none; }
 .content:has(#tab-contacts.active) .field-session { display: none; }
 /* These pages have their own picker or operate on all sessions. Also applies
    after controls move into the phone's world-settings menu. */

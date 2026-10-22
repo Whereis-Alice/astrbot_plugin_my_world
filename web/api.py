@@ -1867,7 +1867,7 @@ class WebApiMixin(LifeApiMixin):
         guard = self._guard(payload)
         if guard is not None:
             return guard
-        session_id = str(
+        session_id = self._scope(
             payload.get("session") or request.query.get("session", "") or ""
         )
         if not session_id:

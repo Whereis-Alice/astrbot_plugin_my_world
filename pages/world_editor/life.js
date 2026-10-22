@@ -9,8 +9,19 @@ const STATE = item => ({evidence: "等待约定兑现", transient: "稍后再想
 export function createLifePage({root, apiGet, apiPost, el, getSession, toast, openCalls, openMemories, openSettings, openBrowseSettings, workspace, onData}) {
   const $ = id => root.querySelector(`#${id}`);
   let data = {}, filter = "active", sort = "recent", request = 0, selected = null, opener = null;
-  let drawerSession = "", drawerRevision = 0;
-  let weekData = {}, weekRequest = 0;
+  let drawerSession = "", drawerScope = "", drawerRevision = 0;
+  let weekData = {}, weekRequest = 0, weekSession = "", weekLoading = false;
+  const weekPending = new Set();
+  function updateWeekControls() {
+    const ready = !weekLoading && weekSession === getSession() && Boolean(weekData.week_start);
+    for (const id of ["life-week-prev", "life-week-next"]) $(id).disabled = !ready;
+    const calendar = $("life-week-generate-calendar"), diary = $("life-week-generate-diary");
+    calendar.disabled = !ready || weekPending.has("calendar");
+    diary.disabled = !ready || !weekData.today || weekPending.has("diary");
+    const year = Number(String(weekData.week_start || "").slice(0, 4));
+    calendar.textContent = weekPending.has("calendar") ? "正在生成…" : `生成${year ? ` ${year} 年` : "本年"}日历`;
+    diary.textContent = weekPending.has("diary") ? "正在补写…" : "补写前一天日记";
+  }
   const grid = $("life-grid"), drawer = $("life-drawer"), body = $("life-detail");
   function button(label, callback, cls = "ghost small") {
     const node = el("button", cls, label); node.type = "button"; node.addEventListener("click", callback); return node;
@@ -194,6 +205,11 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
   }
   async function loadWeek(startDay = "") {
     const revision = ++weekRequest, session = getSession();
+    weekSession = session; weekLoading = Boolean(session); weekData = {};
+    updateWeekControls();
+    $("life-week-title").textContent = "这一周";
+    $("life-week-caption").textContent = "正在读取这个会话的安排";
+    $("life-week-note").textContent = "";
     const weekGrid = $("life-week-grid");
     if (weekGrid) weekGrid.replaceChildren(el("div", "life-week-empty", "正在整理这一周…"));
     if (!session) { renderWeek({}); return; }
@@ -202,10 +218,14 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
       if (revision !== weekRequest || session !== getSession()) return;
       renderWeek(response);
     } catch (error) {
-      if (revision !== weekRequest) return;
+      if (revision !== weekRequest || session !== getSession()) return;
       renderWeek({});
       const note = $("life-week-note");
       if (note) note.textContent = `读取失败：${error.message}`;
+    } finally {
+      if (revision === weekRequest && session === getSession()) {
+        weekLoading = false; updateWeekControls();
+      }
     }
   }
   async function mutate(operation, values = {}) {
@@ -226,7 +246,7 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
     finally { controls.forEach(node => { node.disabled = false; }); }
   }
   function open(item, source) {
-    drawerSession = data.session; drawerRevision++;
+    drawerSession = data.session; drawerScope = getSession(); drawerRevision++;
     selected = item; opener = source; body.replaceChildren(); $("life-drawer-title").textContent = item.text;
     body.append(line("为什么想做", item.motivation), line("接下来", item.next_step), bar(item));
     if (item.obstacle) body.append(line("阻碍", item.obstacle));
@@ -274,7 +294,7 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
       actions.append(button(item.status === "paused" ? "继续这件事" : "暂时放下", () => mutate(item.status === "paused" ? "resume" : "pause")),
         button("晚一点继续", () => defer(item)), button("安排时间…", () => appointment(item)), button("编辑", () => form(item)), button("确认结果…", () => outcome(item)));
     }
-    actions.append(button("相关模型调用 ↗", () => { drawer.close(); openCalls(item.id); }), button("相关记忆 ↗", () => { drawer.close(); openMemories(item.text); }));
+    actions.append(button("相关模型调用 ↗", () => { drawer.close(); openCalls(item.id, drawerSession); }), button("相关记忆 ↗", () => { drawer.close(); openMemories(item.text, drawerScope); }));
     body.append(actions, el("small", "muted life-id", item.id));
     if (!drawer.open) drawer.showModal();
   }
@@ -360,37 +380,43 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
   $("life-week-next").addEventListener("click", () => {
     loadWeek(shiftDay(weekData.week_start || mondayOf(), 7));
   });
-  $("life-week-generate-calendar").addEventListener("click", async event => {
+  $("life-week-generate-calendar").addEventListener("click", async () => {
     const session = getSession();
     if (!session) { toast("先选择一个会话"); return; }
-    const button = event.currentTarget, old = button.textContent;
-    const year = Number(String(weekData.week_start || mondayOf()).slice(0, 4));
-    button.disabled = true; button.textContent = "正在生成…";
+    if (weekLoading || weekSession !== session || !weekData.week_start || weekPending.has("calendar")) return;
+    const revision = weekRequest, start = weekData.week_start;
+    const current = () => session === getSession() && revision === weekRequest;
+    const year = Number(start.slice(0, 4));
+    weekPending.add("calendar"); updateWeekControls();
     try {
       const response = await apiPost("calendar/generate", {session, year, force: true});
+      if (!current()) return;
       if (!response.ok) throw new Error(response.error || response.message || "日历生成失败");
       toast(`${year} 年日历已生成`);
-      await loadWeek(weekData.week_start || mondayOf());
+      await loadWeek(start);
     } catch (error) {
-      toast(error.message || String(error));
+      if (current()) toast(error.message || String(error));
     } finally {
-      button.disabled = false; button.textContent = old;
+      weekPending.delete("calendar"); updateWeekControls();
     }
   });
-  $("life-week-generate-diary").addEventListener("click", async event => {
+  $("life-week-generate-diary").addEventListener("click", async () => {
     const session = getSession();
     if (!session) { toast("先选择一个会话"); return; }
-    const day = shiftDay(worldToday(), -1), button = event.currentTarget, old = button.textContent;
-    button.disabled = true; button.textContent = "正在补写…";
+    if (weekLoading || weekSession !== session || !weekData.today || weekPending.has("diary")) return;
+    const revision = weekRequest, start = weekData.week_start, day = shiftDay(weekData.today, -1);
+    const current = () => session === getSession() && revision === weekRequest;
+    weekPending.add("diary"); updateWeekControls();
     try {
       const response = await apiPost("diary/generate", {session, day});
+      if (!current()) return;
       if (!response.ok) throw new Error(response.error || response.message || "日记生成失败");
       toast(`${day} 的日记已补写`);
-      await loadWeek(weekData.week_start || mondayOf());
+      await loadWeek(start);
     } catch (error) {
-      toast(error.message || String(error));
+      if (current()) toast(error.message || String(error));
     } finally {
-      button.disabled = false; button.textContent = old;
+      weekPending.delete("diary"); updateWeekControls();
     }
   });
   $("life-filter").addEventListener("change", event => { filter = event.target.value; render(); });

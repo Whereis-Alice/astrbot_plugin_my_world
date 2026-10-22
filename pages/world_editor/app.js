@@ -3,8 +3,8 @@ import { relationshipBoundaryEditor } from "./relationship-boundary.js";
 import { createContactWorkbench } from "./contact-workbench.js";
 import { createSocialLearning } from "./social-learning.js";
 import { createRelationshipsPage } from "./relationships.js";
-import { createModelCallsPage } from "./model-calls.js?v=4.29.0";
-import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js?v=4.34.0";
+import { createModelCallsPage } from "./model-calls.js?v=4.35.0";
+import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js?v=4.35.0";
 import { memorySearchFields } from "./memory-settings.js";
 import { relationshipPromptEditor } from "./relationship-prompt.js";
 import { mountLifeWorkspace } from "./life-workspace.js";
@@ -14818,6 +14818,7 @@ async function loadContactsOverview() {
     const stats = data.stats || {};
     box.innerHTML = "";
     const overview = el("div", "contacts-overview");
+    overview.appendChild(el("p", "muted", "全部会话的画像统计，包含共享画像与各会话的独立记录。"));
     const metrics = el("div", "contacts-metric-grid");
     const metric = (label, value, hint = "") => {
       const item = el("div", "contacts-metric");
@@ -14869,17 +14870,24 @@ async function loadContactsOverview() {
 async function loadContactsAudit() {
   const box = $("contacts-audit-list");
   if (!box) return;
+  const requestId = ui.contactsAuditRequest = (ui.contactsAuditRequest || 0) + 1;
+  const session = $("contacts-session")?.value || "";
+  const q = $("contacts-audit-search")?.value.trim() || "";
+  const action = $("contacts-audit-action")?.value || "";
+  const scope = ui.scope;
+  const current = () => requestId === ui.contactsAuditRequest && ui.contactsView === "audit" &&
+    $("contacts-session")?.value === session && ui.scope === scope &&
+    ($("contacts-audit-search")?.value.trim() || "") === q && ($("contacts-audit-action")?.value || "") === action;
+  ui.contactsAudit = [];
   box.innerHTML = "";
   box.appendChild(el("p", "muted", "读取审计记录…"));
   try {
     if (!ui.contactsMeta || !Object.keys(ui.contactsMeta).length) await loadContactsMeta();
-    const session = $("contacts-session") ? $("contacts-session").value : "";
+    if (!current()) return;
     const data = await apiGet("profile/weaver/audit", {
-      session,
-      q: $("contacts-audit-search") ? $("contacts-audit-search").value.trim() : "",
-      action: $("contacts-audit-action") ? $("contacts-audit-action").value : "",
-      limit: 200,
+      session, q, action, limit: 200,
     });
+    if (!current()) return;
     ui.contactsAudit = data.items || [];
     box.innerHTML = "";
     if (!ui.contactsAudit.length) {
@@ -14910,6 +14918,7 @@ async function loadContactsAudit() {
       box.appendChild(row);
     });
   } catch (error) {
+    if (!current()) return;
     box.innerHTML = "";
     box.appendChild(emptyState("🧾", error.message || "读取审计失败"));
   }
@@ -17034,6 +17043,7 @@ function consolidateProactiveSettings(form, main) {
 
 function renderSettings() {
   const world = ui.config.world;
+  const renderScope = ui.scope;
   world.default_state = world.default_state || {};
   world.state_dynamics = world.state_dynamics || {};
   world.limits = world.limits || {};
@@ -17190,11 +17200,16 @@ function renderSettings() {
   personaImport.type = "button";
   personaImport.title = "把 AstrBot 给这个会话选的人格抄进上面的框里，之后它就跟着预设走";
   personaImport.addEventListener("click", async () => {
+    const session = $("status-session")?.value || "";
+    if (!session) { toast("先在顶栏选择一个会话"); return; }
+    const area = personaText.querySelector("textarea"), previous = area.value;
+    const mode = world.persona.mode;
+    const current = () => personaImport.isConnected && ui.config.world === world && ui.scope === renderScope &&
+      $("status-session")?.value === session && area.value === previous && world.persona.mode === mode;
+    const restore = busyButton(personaImport, "读取中…");
     try {
-      // 借白名单里第一条会话去问 AstrBot 现在用哪份人格（人格一般是全局的，
-      // 但 AstrBot 是"按会话 / 配置文件"解析的，所以随便挑一条能读到的）
-      const session = String((ui.sessions[0] || {}).session_id || "");
       const data = await apiGet("persona-source", { session });
+      if (!current()) return;
       const text = String(data.text || "");
       if (!text.trim()) {
         toast("AstrBot 这个会话没读到人格，先在 AstrBot 里给这个会话选一份");
@@ -17206,7 +17221,9 @@ function renderSettings() {
       renderSettings();
       toast(`已导入 ${data.chars || text.length} 字，记得保存`);
     } catch (error) {
-      toast(error.message || "读取失败");
+      if (current()) toast(error.message || "读取失败");
+    } finally {
+      restore();
     }
   });
   personaText.appendChild(personaImport);
@@ -19776,42 +19793,77 @@ function renderSettings() {
   briefArea.placeholder = "还没有生成，点下面的按钮从主人设生成一段";
   briefFull.appendChild(fieldHead("简易人设"));
   briefFull.appendChild(briefArea);
+  let briefRequest = 0, briefEdit = 0, briefLoading = false, briefPending = false;
+  const briefSession = () => $("status-session")?.value || "";
+  const briefCurrent = (request, session) => request === briefRequest && briefArea.isConnected &&
+    ui.config.world === world && ui.scope === renderScope && briefSession() === session;
+  function updateBriefButtons() {
+    briefGenerate.disabled = !briefSession() || briefPending;
+    briefSave.disabled = !briefSession() || briefPending || briefLoading;
+  }
+  briefArea.addEventListener("input", () => {
+    briefEdit++;
+    briefNote.textContent = "已编辑，点「保存到这个人格」后立即生效。";
+  });
+  function renderBriefState(state, edit) {
+    if (edit !== briefEdit) return;
+    const brief = String(state.brief || ""), latest = String(state.latest?.brief || "");
+    briefArea.value = brief || latest;
+    if (brief) {
+      const source = state.source === "generated" ? "由主人设生成" : "手动保存";
+      const when = state.at ? ` · ${agoText(Date.now() / 1000 - Number(state.at))}` : "";
+      briefNote.textContent = `${source}${when}（按 ${Number(state.persona_chars || 0)} 字的人设）`;
+    } else if (latest) {
+      const when = state.latest.at ? `（${agoText(Date.now() / 1000 - Number(state.latest.at))}）` : "";
+      briefNote.textContent = `当前会话读出的人设和这份不一致${when}，先显示上次那份；点「从主人设生成」会按现在的人设重写。`;
+    } else {
+      briefNote.textContent = "还没有生成过：打杂模型会退回到主人设前 200 字。";
+    }
+  }
   const briefRow = el("div", "row");
   const briefGenerate = el("button", "small primary", "从主人设生成");
   briefGenerate.type = "button";
   briefGenerate.addEventListener("click", async () => {
-    const sessionId = $("status-session") ? $("status-session").value : "";
+    const sessionId = briefSession();
     if (!sessionId) {
-      toast("先在「实时状态」里选一个会话");
+      toast("先在顶栏选择一个会话");
       return;
     }
-    briefGenerate.disabled = true;
+    const request = ++briefRequest, edit = briefEdit;
+    briefPending = true; briefLoading = false; updateBriefButtons();
     briefGenerate.textContent = "生成中…";
     try {
       const data = await apiPost("persona-brief", { session: sessionId, generate: true });
+      if (!briefCurrent(request, sessionId)) return;
       const state = (data && data.persona_brief) || {};
-      briefArea.value = state.brief || "";
-      toast("生成好了，记得点右上角保存");
+      renderBriefState(state, edit);
+      toast("简易人设已生成并已保存，立即生效");
     } catch (error) {
-      toast(`生成失败：${error.message || error}`);
+      if (briefCurrent(request, sessionId)) toast(`生成失败：${error.message || error}`);
     } finally {
-      briefGenerate.disabled = false;
+      briefPending = false; updateBriefButtons();
       briefGenerate.textContent = "从主人设生成";
     }
   });
   const briefSave = el("button", "small ghost", "保存到这个人格");
   briefSave.type = "button";
   briefSave.addEventListener("click", async () => {
-    const sessionId = $("status-session") ? $("status-session").value : "";
+    const sessionId = briefSession();
     if (!sessionId) {
-      toast("先在「实时状态」里选一个会话");
+      toast("先在顶栏选择一个会话");
       return;
     }
+    const request = ++briefRequest, edit = briefEdit;
+    briefPending = true; updateBriefButtons();
     try {
-      await apiPost("persona-brief", { session: sessionId, brief: briefArea.value });
+      const data = await apiPost("persona-brief", { session: sessionId, brief: briefArea.value });
+      if (!briefCurrent(request, sessionId)) return;
+      renderBriefState(data.persona_brief || {}, edit);
       toast("已保存（立即生效）");
     } catch (error) {
-      toast(`保存失败：${error.message || error}`);
+      if (briefCurrent(request, sessionId)) toast(`保存失败：${error.message || error}`);
+    } finally {
+      briefPending = false; updateBriefButtons();
     }
   });
   briefRow.appendChild(briefGenerate);
@@ -19824,42 +19876,28 @@ function renderSettings() {
   );
   // 打开页面就把这一份读出来：以前只在点过"生成"之后才填，重开页面看着像是被重置了
   async function loadPersonaBrief({ overwrite = false } = {}) {
-    const sessionId = $("status-session") ? $("status-session").value : "";
+    const request = ++briefRequest, sessionId = briefSession();
+    if (overwrite) briefArea.value = "";
+    const edit = briefEdit;
+    briefLoading = Boolean(sessionId); updateBriefButtons();
+    briefNote.textContent = "正在读取…";
     if (!sessionId) {
-      briefNote.textContent = "先在「实时状态」里选一个会话。";
+      briefArea.value = "";
+      briefNote.textContent = "先在顶栏选择一个会话。";
       return;
     }
     try {
       const data = await apiGet("persona-brief", { session: sessionId });
+      if (!briefCurrent(request, sessionId)) return;
       const state = (data && data.persona_brief) || {};
-      const brief = String(state.brief || "");
-      if (!brief) {
-        const latest = (state.latest && state.latest.brief) || "";
-        const latestAt = Number((state.latest && state.latest.at) || 0);
-        if (latest) {
-          if (overwrite || !briefArea.value.trim()) briefArea.value = latest;
-          const when = latestAt ? `（${agoText(Date.now() / 1000 - latestAt)}）` : "";
-          briefNote.textContent =
-            `当前会话读出的人设和这份不一致${when}，先显示上次那份；` +
-            "点「从主人设生成」会按现在的人设重写。";
-        } else {
-          briefNote.textContent =
-            "还没有生成过：打杂模型会退回到主人设前 200 字。";
-        }
-        return;
-      }
-      if (overwrite || !briefArea.value.trim()) briefArea.value = brief;
-      const source = state.source === "generated" ? "由主人设生成" : "手动保存";
-      const at = Number(state.at || 0);
-      const when = at ? ` · ${agoText(Date.now() / 1000 - at)}` : "";
-      briefNote.textContent =
-        `${source}${when}（按 ${Number(state.persona_chars || 0)} 字的人设）`;
+      renderBriefState(state, edit);
     } catch (error) {
-      briefNote.textContent = `读取失败：${error.message || error}`;
+      if (briefCurrent(request, sessionId) && edit === briefEdit) briefNote.textContent = `读取失败：${error.message || error}`;
+    } finally {
+      if (briefCurrent(request, sessionId)) { briefLoading = false; updateBriefButtons(); }
     }
   }
   ui.loadPersonaBrief = loadPersonaBrief;
-  loadPersonaBrief();
   briefSection._fields.appendChild(briefFull);
   // 「她这个人」相关的设置都收在人设那一节下面：简易人设紧跟主人设
   if (personaSection && personaSection.parentElement === form) {
@@ -19867,6 +19905,7 @@ function renderSettings() {
   } else {
     form.appendChild(briefSection);
   }
+  loadPersonaBrief();
 
   /* --- 天气 --- */
   world.weather = world.weather || {};
@@ -20657,6 +20696,7 @@ function wizardSessionStep(body) {
 
 function wizardPersonaStep(body) {
   const world = ui.config.world;
+  const scope = ui.scope;
   world.persona = world.persona || { mode: "astrbot", text: "" };
   body.appendChild(
     inputField("她的名字（Bot 名称）", world.bot_name || "", (value) => {
@@ -20696,10 +20736,15 @@ function wizardPersonaStep(body) {
   const importButton = el("button", "small ghost", "从 AstrBot 导入当前人设");
   importButton.type = "button";
   importButton.addEventListener("click", async () => {
-    const session = String((ui.sessions[0] || {}).session_id || "");
+    const session = $("status-session")?.value || "";
+    if (!session) { toast("先选择一个会话，再导入这份人设"); return; }
+    const previous = area.value, mode = world.persona.mode;
+    const current = () => importButton.isConnected && ui.config.world === world && ui.scope === scope &&
+      $("status-session")?.value === session && area.value === previous && world.persona.mode === mode;
     const restore = busyButton(importButton, "读取中…");
     try {
       const data = await apiGet("persona-source", { session });
+      if (!current()) return;
       const text = String(data.text || "");
       if (!text.trim()) {
         toast("AstrBot 这个会话没读到人格，先去 AstrBot 里给它选一份");
@@ -20711,7 +20756,7 @@ function wizardPersonaStep(body) {
       markDirty();
       toast(`导入了 ${data.chars || text.length} 字`);
     } catch (error) {
-      toast(error.message || "读取失败");
+      if (current()) toast(error.message || "读取失败");
     } finally {
       restore();
     }
@@ -20772,6 +20817,7 @@ function wizardMemoryStep(body) {
 
 function wizardGenerateStep(body) {
   const world = ui.config.world;
+  const scope = ui.scope;
   body.appendChild(
     el(
       "p",
@@ -20785,6 +20831,10 @@ function wizardGenerateStep(body) {
   briefArea.placeholder = "还没有生成，点下面的按钮从主人设生成一段";
   briefArea.value =
     ($("persona-brief-text") && $("persona-brief-text").value) || "";
+  let edit = 0;
+  briefArea.addEventListener("input", () => { edit++; });
+  const current = (session, version) => briefArea.isConnected && ui.config.world === world &&
+    ui.scope === scope && $("status-session")?.value === session && edit === version;
   const briefWrap = el("div", "field");
   briefWrap.appendChild(fieldHead("简易人设（给打杂模型）"));
   briefWrap.appendChild(briefArea);
@@ -20792,12 +20842,14 @@ function wizardGenerateStep(body) {
   const briefButton = el("button", "small primary", "从主人设生成");
   briefButton.type = "button";
   briefButton.addEventListener("click", async () => {
-    const session = String((ui.sessions[0] || {}).session_id || "");
+    const session = $("status-session")?.value || "";
     if (!session) {
       toast("先去第一步加一个会话，她才知道用哪份人设");
       return;
     }
+    const version = edit, mirror = $("persona-brief-text"), previous = mirror?.value;
     const restore = busyButton(briefButton, "生成中…");
+    briefSave.disabled = true;
     try {
       // 带上编辑器里这份角色卡（可能是刚在向导上一步写的、还没保存）：
       // 不带的话后端读的是配置里那份旧的，生成的摘要跟眼前的人设对不上
@@ -20806,30 +20858,36 @@ function wizardGenerateStep(body) {
         generate: true,
         persona: (world.persona && world.persona.text) || "",
       });
+      if (!current(session, version)) return;
       const state = (data && data.persona_brief) || {};
-      briefArea.value = state.brief || "";
-      const mirror = $("persona-brief-text");
-      if (mirror) mirror.value = briefArea.value;
+      briefArea.value = state.brief || state.latest?.brief || "";
+      if (mirror?.isConnected && mirror.value === previous) mirror.value = briefArea.value;
       toast("生成好了（保存到这个人格）");
     } catch (error) {
-      toast(`生成失败：${error.message || error}`);
+      if (current(session, version)) toast(`生成失败：${error.message || error}`);
     } finally {
       restore();
+      briefSave.disabled = false;
     }
   });
   const briefSave = el("button", "small ghost", "保存到这个人格");
   briefSave.type = "button";
   briefSave.title = "按人格缓存：换人格之后要重新生成一次";
   briefSave.addEventListener("click", async () => {
-    const session = String((ui.sessions[0] || {}).session_id || "");
+    const session = $("status-session")?.value || "";
     if (!session) return;
+    const version = edit, mirror = $("persona-brief-text"), previous = mirror?.value;
+    const restore = busyButton(briefSave, "保存中…");
+    briefButton.disabled = true;
     try {
       await apiPost("persona-brief", { session, brief: briefArea.value });
-      const mirror = $("persona-brief-text");
-      if (mirror) mirror.value = briefArea.value;
+      if (!current(session, version)) return;
+      if (mirror?.isConnected && mirror.value === previous) mirror.value = briefArea.value;
       toast("已保存");
     } catch (error) {
-      toast(error.message || "保存失败");
+      if (current(session, version)) toast(error.message || "保存失败");
+    } finally {
+      restore(); briefButton.disabled = false;
     }
   });
   briefRow.appendChild(briefButton);
@@ -21280,8 +21338,13 @@ const lifePage = createLifePage({root: $("tab-life"), apiGet, apiPost, el, toast
     openLifeSettings({world, el, openCustomDialog, markDirty, isCurrent: () => ui.config.world === world && ui.scope === scope});
   },
   openBrowseSettings: openCurrentBrowseSettings,
-  openCalls: id => { showTab("model-calls"); const input = $("calls-search"); if (input) { input.value = id; input.dispatchEvent(new Event("input")); } },
-  openMemories: text => { showTab("memories"); const input = $("memory-keyword"); if (input) { input.value = text; $("memory-search").click(); } },
+  openCalls: (id, session) => { modelCallsPage.openRelated(session, id); showTab("model-calls"); },
+  openMemories: (text, session) => {
+    $("memory-session").value = session;
+    for (const id of ["memory-node", "memory-type", "memory-scope"]) $(id).value = "";
+    $("memory-keyword").value = text;
+    showTab("memories");
+  },
 });
 $("status-session").addEventListener("change", () => {
   if (!$("tab-life").classList.contains("active")) return;
