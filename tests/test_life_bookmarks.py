@@ -1,4 +1,5 @@
 """Seven synthetic days exercise real work accounting, restart and stage review."""
+import asyncio
 import copy
 import json
 import unittest
@@ -102,7 +103,7 @@ class LifeBookmarkTests(unittest.IsolatedAsyncioTestCase):
         step.update(status="done", worked_minutes=35, bookmark={"goal": item["text"],
             "note": "黎明不是完整日期，尚不能确认两封信同一天", "open_question": "邮戳指哪一天"},
             result={"ok": True, "kind": "in_world_action", "minutes": 35})
-        item.update(needs_review=True, progress=99)
+        item.update(needs_review=True, progress=99, last_attempt_at=self.clock.now())
         await self.engine.save_state(state)
         return item
 
@@ -189,6 +190,7 @@ class LifeBookmarkTests(unittest.IsolatedAsyncioTestCase):
                 "content": "黎明不是完整日期，邮戳所指日期仍未确认。", "basis_step_ids": ids}})
 
         self.engine._ask_judge = AsyncMock(side_effect=review_batch)
+        self.clock.advance(3600)
         for index in range(3):
             await self.engine.advance_life_matters(S)
             state = await self.engine.load_state(S, cold_start=False)
@@ -213,6 +215,114 @@ class LifeBookmarkTests(unittest.IsolatedAsyncioTestCase):
             "summary": "日期核对进展", "content": "日期资料。" * 240 + "仍无依据确认两封信同一天。",
             "basis_step_ids": ["chapter"]}})
         self.assertEqual(updated, before)
+
+    async def test_overlong_bookmark_does_not_replace_a_qualified_note_or_clear_question(self):
+        _state, item = await self.prepare()
+        step = item["steps"][0]
+        step.update(worked_minutes=5, bookmark={"goal": item["text"],
+            "note": "只找到黎明，邮戳尚未核实", "open_question": "邮戳是哪一天", "next_focus": "从邮戳继续"})
+        basis = {**matters.current_bookmark(item), "revision": item["revision"]}
+        for key, limit in (("note", 600), ("open_question", 240), ("next_focus", 240)):
+            with self.subTest(field=key):
+                payload = {"matter_id": item["id"], "step_id": step["id"],
+                           "open_question": "", key: "线" * limit + "尚未确认"}
+                before = copy.deepcopy(item)
+                self.assertFalse(matters.record_bookmark_note(item, payload, basis, now=self.clock.now()))
+                self.assertEqual(item, before)
+        note = "线" * (600 - len("尚未确认")) + "尚未确认"
+        self.assertTrue(matters.record_bookmark_note(item, {"matter_id": item["id"], "step_id": step["id"],
+            "note": note}, basis, now=self.clock.now()))
+        self.assertEqual(matters.current_bookmark(item)["note"], note)
+        self.assertEqual(matters.current_bookmark(item)["open_question"], "邮戳是哪一天")
+
+    async def test_reading_legacy_bookmark_keeps_the_entire_tail_qualification(self):
+        state, item = await self.prepare()
+        step = item["steps"][0]
+        question, focus = "日期线索" * 80 + "尚未核实同一天", "比较位置" * 90 + "取得依据再确认"
+        step.update(worked_minutes=5, bookmark={"goal": item["text"],
+            "note": "当前思路", "open_question": question, "next_focus": focus})
+        before = copy.deepcopy(item)
+        bookmark = matters.current_bookmark(item)
+        self.assertEqual(bookmark["open_question"], question)
+        self.assertEqual(bookmark["next_focus"], focus)
+        from core.context_sources import life_items
+        from core.context_selection import ContextRequest, select_context
+        request = ContextRequest(task="reply", session=S, now=self.clock.now(), query=item["text"])
+        material = life_items(state, request)
+        for budget in (300, 1000, 2500):
+            text = select_context(request, material, budget=budget).render()
+            if "当前思路" in text:
+                self.assertIn(question, text)
+                self.assertIn(focus, text)
+        self.assertEqual(item, before)
+
+    async def test_slow_rejected_review_waits_a_full_interval_after_return(self):
+        from unittest.mock import AsyncMock
+        for payload in ({}, {"outcome": "continue"}, {"outcome": "continue", "stage": {
+                "summary": "核对日期", "content": "日期资料" * 400, "basis_step_ids": ["chapter"]}}):
+            with self.subTest(payload=payload):
+                item = await self.review_fixture()
+                self.clock.advance(3600)
+
+                async def slow_review(*args, **kwargs):
+                    self.clock.advance(3700)
+                    return json.dumps(payload)
+
+                self.engine._ask_judge = AsyncMock(side_effect=slow_review)
+                await self.engine.advance_life_matters(S)
+                await self.engine.advance_life_matters(S)
+                self.engine._ask_judge.assert_awaited_once()
+                state = await self.engine.load_state(S, cold_start=False)
+                current = matters.find(state, item["id"])
+                self.assertTrue(current["needs_review"])
+                self.assertEqual(current["steps"][0]["bookmark"], item["steps"][0]["bookmark"])
+                self.assertEqual(current["plan_attempts"], 1)
+                self.assertEqual(current["history"], item["history"])
+                self.assertEqual(current["worked_minutes"], item["worked_minutes"])
+                self.engine.reload_config()
+                await self.engine.advance_life_matters(S)
+                self.engine._ask_judge.assert_awaited_once()
+                self.clock.advance(3600)
+                await self.engine.advance_life_matters(S)
+                self.assertEqual(self.engine._ask_judge.await_count, 2)
+
+    async def test_stale_rejected_review_cannot_update_retry_marker_after_context_changes(self):
+        from unittest.mock import AsyncMock
+        for change in ("pause", "edit", "reload", "persona", "day"):
+            with self.subTest(change=change):
+                item = await self.review_fixture()
+                entered, release = asyncio.Event(), asyncio.Event()
+
+                async def slow_review(*args, **kwargs):
+                    entered.set()
+                    await release.wait()
+                    return "{}"
+
+                self.engine._ask_judge = AsyncMock(side_effect=slow_review)
+                task = asyncio.create_task(self.engine._review_matter_stage(S, copy.deepcopy(item),
+                    world=self.engine.world, state_key=self.engine.state_key(S),
+                    persona=await self.engine._persona_text(S)))
+                try:
+                    await asyncio.wait_for(entered.wait(), 2)
+                    if change in {"pause", "edit"}:
+                        async with self.engine.session_state(S) as state:
+                            self.engine.manage_life_matter(state, item["id"], change,
+                                **({"text": "只核对邮戳"} if change == "edit" else {}))
+                    elif change == "reload":
+                        self.engine.reload_config()
+                    elif change == "persona":
+                        self.persona.text = "你是严谨克制的学者。"
+                    else:
+                        self.clock.advance(86400)
+                    before = copy.deepcopy(matters.find(
+                        await self.engine.load_state(S, cold_start=False), item["id"]))
+                    self.clock.advance(60)
+                finally:
+                    release.set()
+                    await asyncio.wait_for(task, 2)
+                after = matters.find(await self.engine.load_state(S, cold_start=False), item["id"])
+                self.assertEqual(after, before)
+                self.assertEqual(self.messenger.sent, [])
 
     async def test_repeated_bookmark_notes_do_not_displace_history_or_change_revision(self):
         _state, item = await self.prepare()
@@ -351,6 +461,27 @@ class LifeBookmarkTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(matters.current_bookmark(item)["note"], "两封信的日期还需要对照")
             self.assertEqual(item["steps"][0]["worked_minutes"], 5)
             self.assertEqual(item["progress"], 0)
+        self.assertEqual(len(self.llm.calls), 1)
+        self.assertEqual(self.messenger.sent, [])
+
+    async def test_overlong_rhythm_note_keeps_bookmark_without_losing_sleep_decision(self):
+        self.engine.world.sleep.mode = "autonomous"
+        async with self.engine.session_state(S) as state:
+            state.state, state.energy, state.sleep_pressure = "idle", .3, .9
+            state.sleep_rhythm = {"awake_since": self.clock.now() - 17 * 3600}
+            item = self.engine.add_life_matter(state, "核对风车的故事")
+            item["steps"] = [{"id": "dates", "text": "阅读第二章", "minutes": 20,
+                "worked_minutes": 5, "status": "pending", "bookmark": {"goal": item["text"],
+                "note": "黎明不是完整日期，尚未核实同一天", "open_question": "邮戳是哪天"}}]
+            before = copy.deepcopy(item)
+            self.llm.replies = [json.dumps({"decision": "continue", "reason": "再核对一处就休息",
+                "life_bookmark": {"matter_id": item["id"], "step_id": "dates", "note": "线索" * 310 + "尚未核实",
+                                  "open_question": ""}})]
+            await self.engine._tick_sleep_rhythm(state, TickOutcome(S))
+            self.assertEqual(item, before)
+            self.assertEqual(state.sleep_rhythm["source"], "llm")
+            self.assertEqual(state.sleep_rhythm["decision"], "continue")
+            self.assertIsNone(state.current_action)
         self.assertEqual(len(self.llm.calls), 1)
         self.assertEqual(self.messenger.sent, [])
 

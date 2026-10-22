@@ -173,6 +173,32 @@ class LifeRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await self.engine.seed_life_matter(SESSION)
         self.engine._ask_judge.assert_awaited_once()
 
+    async def test_new_idea_reads_concrete_qualified_stage_with_current_state(self):
+        async with self.engine.session_state(SESSION) as state:
+            state.world_time, state.state, state.energy = 600, "idle", .9
+            for status in ("paused", "waiting", "completed"):
+                item = self.engine.add_life_matter(state, "核对日期" + status)
+                item.update(status=status, result="日期对照已结束", stage_notes=[{
+                    "summary": "完成日期对照", "content": "只找到黎明，邮戳尚未核实同一天。",
+                    "next_focus": "从邮戳继续核对", "at": self.clock.now()}])
+            other = self.engine.add_life_matter(state, "其他人设", persona_key="other")
+            other.update(status="paused", stage_notes=[{"content": "其他人设的阶段"}])
+            private = self.engine.add_life_matter(state, "私下约定", who="42", kind="promise")
+            private.update(status="waiting", stage_notes=[{"content": "私下阶段"}])
+        self.engine._ask_judge = AsyncMock(return_value='{"text":""}')
+        await self.engine.seed_life_matter(SESSION)
+        rows = json.loads(self.engine._ask_judge.call_args.args[2])["recent_matters"]
+        self.assertEqual(len(rows), 3)
+        for row in rows:
+            self.assertIn("邮戳尚未核实同一天", row["stage_record"])
+            if row["status"] == "completed":
+                self.assertNotIn("从邮戳继续核对", row["stage_record"])
+            else:
+                self.assertIn("从邮戳继续核对", row["stage_record"])
+                self.assertIn("目前未执行", row["stage_record"])
+        self.assertNotIn("其他人设的阶段", json.dumps(rows, ensure_ascii=False))
+        self.assertNotIn("私下阶段", json.dumps(rows, ensure_ascii=False))
+
     async def test_many_finished_projects_do_not_hide_paused_or_waiting_goals_from_new_ideas(self):
         async with self.engine.session_state(SESSION) as state:
             state.world_time, state.state, state.energy = 600, "idle", .9
@@ -187,6 +213,24 @@ class LifeRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row["status"] for row in rows[:2]], ["paused", "waiting"])
         self.assertEqual(len(rows), 14)
         self.assertEqual(rows[-1]["text"], "已经完成的故事14")
+
+    async def test_seed_keeps_latest_paused_and_waiting_bookmark_qualifications(self):
+        async with self.engine.session_state(SESSION) as state:
+            state.world_time, state.state, state.energy = 600, "idle", .9
+            for status, done in (("paused", False), ("waiting", True)):
+                item = self.engine.add_life_matter(state, "折一架纸飞机" + status)
+                item.update(status=status, needs_review=done, steps=[{
+                    "id": status, "goal": item["text"], "text": "比较机翼折法", "minutes": 20,
+                    "worked_minutes": 5, "status": "done" if done else "pending",
+                    "bookmark": {"goal": item["text"], "note": "机翼压痕尚未确认对飞行的影响",
+                                 "next_focus": "先找平整桌面", "open_question": "哪种折法更稳"}}])
+        self.engine._ask_judge = AsyncMock(return_value='{"text":""}')
+        await self.engine.seed_life_matter(SESSION)
+        rows = json.loads(self.engine._ask_judge.call_args.args[2])["recent_matters"]
+        self.assertEqual(rows[0]["bookmark"]["note"], "机翼压痕尚未确认对飞行的影响")
+        self.assertEqual(rows[0]["bookmark"]["next_focus"], "先找平整桌面")
+        self.assertEqual(rows[1]["unreviewed_bookmarks"][0]["open_question"], "哪种折法更稳")
+        self.assertEqual(rows[1]["status"], "waiting")
 
     async def test_malformed_project_numbers_do_not_crash_and_backoff_after_slow_reply(self):
         async with self.engine.session_state(SESSION) as state:

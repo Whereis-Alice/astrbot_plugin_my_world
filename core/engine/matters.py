@@ -75,13 +75,24 @@ class MattersMixin:
                   and (not m.get("persona_key") or m["persona_key"] == persona_key)
                   and (m["status"] not in matters.CLOSED
                        or self._now() - float(m.get("updated_at") or m.get("at") or 0) <= 30 * 86400)]
-        previous = [{"text": m["text"], "status": m["status"], "motivation": m.get("motivation", ""),
-                     "next_step": m.get("next_step", ""), "result": m.get("result", ""),
-                     "obstacle": m.get("obstacle", "")} for m in recent if m["status"] not in matters.CLOSED]
         closed = sorted((m for m in recent if m["status"] in matters.CLOSED),
                         key=lambda m: float(m.get("updated_at") or m.get("at") or 0))[-12:]
-        previous += [{"text": m["text"], "status": m["status"], "result": m.get("result", "")}
-                     for m in closed]
+        previous = []
+        for item in [*(m for m in recent if m["status"] not in matters.CLOSED), *closed]:
+            row = {"text": item["text"], "status": item["status"], "result": item.get("result", "")}
+            if item["status"] not in matters.CLOSED:
+                row.update(motivation=item.get("motivation", ""), next_step=item.get("next_step", ""),
+                           obstacle=item.get("obstacle", ""))
+            stages = matters.current_stage_notes(item)
+            if stages:
+                row["stage_record"] = matters.stage_record_text(stages[-1], status=item["status"])
+            bookmark = matters.current_bookmark(item)
+            if bookmark:
+                row["bookmark"] = bookmark
+            pending = matters.pending_review_bookmarks(item)
+            if pending:
+                row["unreviewed_bookmarks"] = pending
+            previous.append(row)
         with model_context("life_matter", "有空闲，为自己的生活想一件可持续的小事", session_id):
             raw = await self._ask_judge(session_id,
                 '结合人设和已有能力，想一件愿意持续几天的独处小事。只输出JSON：{"text":"", "motivation":""}。'
@@ -89,6 +100,8 @@ class MattersMixin:
                 '先看recent_matters：已完成的事情不从头重建，暂停或等待的事情仍由原事项接续。'
                 '把旧目标换种说法、细化下一步、比较做法或记录效果，都属于原事项，不能另起一个新项目。'
                 '新念头须有不同的具体方向，可以由已有经历延伸；没有新方向就留空，不必每天建立项目。'
+                'stage_record保留具体所得和未确认限定，以正文理解结果，不能从活动标题推断新的发现。'
+                'bookmark和unreviewed_bookmarks是尚未完成或待复核的思路，不是确认结果；按事项状态理解接续位置。'
                 '编程、创作等兴趣可在世界内模拟，不要求配置电脑，不声称操作了现实文件或外部服务。不要声称已经做成。',
                 json.dumps({"persona": persona, "available": candidates,
                             "interests": interests, "recent_matters": previous}, ensure_ascii=False))
@@ -453,6 +466,9 @@ class MattersMixin:
             if (not item or item["revision"] != snapshot["revision"] or item["status"] in matters.CLOSED | {"paused"}
                     or not await self._matter_context_current(session_id, world, state_key, persona, day=day)):
                 return
+            # The wait for a slow review does not consume the retry interval.
+            # Only guarded results update this scheduling marker, not life history.
+            item["last_attempt_at"] = self._now()
             reason = str(result.get("reason") or "尚未取得可核对的目标结果")[:300]
             outcome = result.get("outcome")
             if outcome not in {"completed", "continue", "blocked"}:

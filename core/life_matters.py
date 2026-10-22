@@ -83,9 +83,9 @@ def _step_bookmark(item: dict, step: dict) -> dict:
     return {**saved, "matter_id": item["id"], "step_id": step["id"], "goal": item["text"],
             "step": step.get("text", ""), "worked_minutes": worked,
             "remaining_minutes": max(0, _minutes(step.get("minutes")) - worked),
-            "focus": str(step.get("focus") or step.get("text") or "")[:300],
-            "open_question": str(saved.get("open_question", step.get("open_question")) or "")[:240],
-            "next_focus": str(saved.get("next_focus") or step.get("focus") or step.get("text") or "")[:300]}
+            "focus": str(step.get("focus") or step.get("text") or ""),
+            "open_question": str(saved.get("open_question", step.get("open_question")) or ""),
+            "next_focus": str(saved.get("next_focus") or step.get("focus") or step.get("text") or "")}
 
 
 def pending_review_bookmarks(item: dict) -> list[dict]:
@@ -126,6 +126,9 @@ def record_bookmark_note(item: dict, payload: Any, basis: dict, *, now: float) -
             or _minutes(basis.get("worked_minutes")) <= 0
             or current["worked_minutes"] < _minutes(basis.get("worked_minutes"))):
         return False
+    if any(isinstance(payload.get(key), str) and len(payload[key].strip()) > limit
+           for key, limit in (("note", 600), ("next_focus", 240), ("open_question", 240))):
+        return False  # Reject together: a long note may qualify a cleared question.
     # Repeating a planned instruction is not a new observation. Preserve the
     # existing thought if a rhythm call merely copies the step description.
     changes = {}
@@ -133,11 +136,11 @@ def record_bookmark_note(item: dict, payload: Any, basis: dict, *, now: float) -
                     if step.get("id") == current["step_id"] for key in ("text", "focus")}
     if (isinstance(note, str) and note.strip()
             and _thought_key(note) not in instructions | {_thought_key(item["text"])}):
-        changes["note"] = note.strip()[:600]
+        changes["note"] = note.strip()
     for key in ("next_focus", "open_question"):
         value = payload.get(key)
         if isinstance(value, str):
-            changes[key] = value.strip()[:240]
+            changes[key] = value.strip()
     if all(current.get(key, "") == value for key, value in changes.items()):
         return False
     step = next(s for s in item["steps"] if s["id"] == current["step_id"])
