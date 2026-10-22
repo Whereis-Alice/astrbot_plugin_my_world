@@ -118,6 +118,58 @@ class ContactsEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(before, len(self.engine.profiles.list_people(SESSION)))
         self.assertFalse(getattr(event, "_profileweaver_llm_tool_used", False))
 
+    async def test_reply_injection_contains_fields_notes_and_active_experiences(self):
+        self.field("爱好", "喜欢胶片摄影")
+        self.field("备注", "交流时偏好文字")
+        self.field("职业", "异群秘密职业", session="other:GroupMessage:9")
+        for kind, text, status in (
+            ("经历", "上周一起修好了木质风车", "active"),
+            ("近况", "这周开始在书店工作", "active"),
+            ("近况", "尚未核实的移居计划", "candidate"),
+            ("近况", "已经过期的出差安排", "past"),
+        ):
+            self.engine.profiles.note_fact(SESSION, "42", kind=kind, text=text, status=status)
+        ctx = engine_tests.MessageContext(session_id=SESSION, user_id="42", user_name="阿岚",
+                                          text="还记得我们修风车吗？这周书店工作也顺利")
+        await self.engine.handle_incoming(ctx)
+        plan = await self.engine.handle_reply(ctx, inject_only=True)
+        prompt = plan.system_prompt + plan.runtime_part
+        for text in ("喜欢胶片摄影", "交流时偏好文字", "上周一起修好了木质风车", "这周开始在书店工作"):
+            self.assertIn(text, prompt)
+        for text in ("异群秘密职业", "尚未核实的移居计划", "已经过期的出差安排"):
+            self.assertNotIn(text, prompt)
+        self.assertEqual(self.messenger.sent, [])
+
+    async def test_relevant_experience_is_not_lost_to_the_per_kind_display_limit(self):
+        # An older, directly relevant experience must beat six newer unrelated ones.
+        self.engine.profiles.note_fact(SESSION, "42", kind="近况", text="周六去山顶修风车")
+        for index in range(7):
+            self.engine.profiles.note_fact(SESSION, "42", kind="近况", text=f"编号{index}的盆栽已经换土")
+        state = await self.get_state()
+        request = self.engine.context_request(state, SESSION, task="reply", rows=[],
+                                              focus="42", text="周六去山顶修风车还顺利吗")
+        block = self.engine.context_profiles(state, request)
+        self.assertIn("周六去山顶修风车", block)
+
+    async def test_current_speakers_saved_digest_reaches_reply_context(self):
+        self.engine.profiles.set_digest(SESSION, "42", "喜欢修旧物的书店店员")
+        state = await self.get_state()
+        request = self.engine.context_request(state, SESSION, task="reply", rows=[], focus="42", text="晚上好")
+        self.assertIn("喜欢修旧物的书店店员", self.engine.context_profiles(state, request))
+
+    async def test_other_participants_use_digests_instead_of_all_personal_details(self):
+        self.engine.profiles.touch(SESSION, "51", "小林")
+        self.engine.profiles.set_digest(SESSION, "51", "爱好园艺的邻居")
+        self.field("职业", "另一人的完整职业字段", user_id="51", subject="小林")
+        self.engine.profiles.note_fact(SESSION, "51", kind="近况", text="另一人的详细近况")
+        state = await self.get_state()
+        state.recent_chat = [{"origin": SESSION, "user_id": "51", "text": "晚上好", "at": self.clock.now()}]
+        request = self.engine.context_request(state, SESSION, task="reply", focus="42", text="晚上好")
+        block = self.engine.context_profiles(state, request)
+        self.assertIn("爱好园艺的邻居", block)
+        self.assertNotIn("另一人的完整职业字段", block)
+        self.assertNotIn("另一人的详细近况", block)
+
     async def test_merged_fields_and_notes_keep_their_original_edit_target(self):
         self.field("职业", "学生", session=None)
         self.field("备注", "共享备注", session=None)

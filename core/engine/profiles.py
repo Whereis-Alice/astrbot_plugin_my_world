@@ -168,7 +168,7 @@ class ProfilesMixin:
         return rows
 
     def profile_block(self, state: WorldState, ctx: MessageContext | None = None, *, context_request=None) -> str:
-        """「你在跟谁说话」那一段：当前说话人全文 + 其他人各一行。"""
+        """当前说话人的画像与本轮相关事实；其他人使用简述。"""
 
         if not self.profiles.enabled():
             return ""
@@ -186,8 +186,10 @@ class ProfilesMixin:
                 priority=.4 if item.get("kind") in {"basic", "基本信息", "promise", "约定"} else 0)
                 for i, item in enumerate(facts)],
                 budget=max(360, 1400 // max(1, len(context_request.people))), channel=f"profile:{user_id}")
-            indices = {int(item.key.rsplit(":", 1)[-1]) for item, _ in selected.rows}
-            person = {**person, "facts": [item for i, item in enumerate(facts) if i in indices]}
+            # Keep selection order: the renderer caps each kind, so restoring DB
+            # recency order here would discard an older but more relevant fact.
+            person = {**person, "facts": [facts[int(item.key.rsplit(":", 1)[-1])]
+                                          for item, _ in selected.rows]}
         others = [] if context_request is not None else self.other_people(state, session_id, exclude_user_id=user_id)
         # Integrated reads remove only copies of fields still present in the
         # structured profile. Older imported experiences without a field survive.

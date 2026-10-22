@@ -2284,11 +2284,11 @@ class PromptBuilder:
         date_text: str = "",
         skip_weaver_facts: bool = False,
     ) -> str:
-        """「你在跟谁说话」：当前说话人的画像全文 + 其他人的缩略版一行。
+        """「你在跟谁说话」：当前说话人的画像资料 + 其他人的缩略版一行。
 
         ``person`` 是 :class:`core.profile.PersonView`（没有画像时传 ``None``）；
         ``others`` 是 ``[{name, label, digest}]``。信息给全，但**只给会参与这一轮的人**：
-        当前说话人全文，聊天记录里其他人各一行（默认最多 5 个）。
+        当前说话人的事实可由上游按话题选取，其他人各一行（默认最多 5 个）。
         """
 
         blocks: list[str] = []
@@ -2392,9 +2392,9 @@ class PromptBuilder:
                 lines.append(
                     "- 当前包含负面关系身份；具体态度和回应方式遵循原有人设及当下情境。"
                 )
-            digest = str(_field(person, "digest", "") or "")
-            if digest and not lines:
-                lines.append(f"- 你记得他：{digest}")
+            digest = str(_field(person, "digest", "") or "").strip()
+            if digest:
+                lines.append(f"- 你记得他的概况：{digest}（如与当前逐条资料或近期变化不一致，以后者为准）")
             lines.append(
                 "- 这些是你早就知道的事：不用问、不用复述，合适的时候自然带出来。"
             )

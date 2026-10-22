@@ -3845,6 +3845,7 @@ function setScopePanelOpen(open) {
 }
 
 function showTab(name, button) {
+  ui.memoryDetailRevision = (ui.memoryDetailRevision || 0) + 1;
   const openLifeSchedules = name === "schedules";
   const lifeDestination = {events: "experiences", schedules: "today"}[name];
   if (lifeDestination) {
@@ -16397,6 +16398,7 @@ function applySidebarRail() {
 }
 
 async function loadMemories() {
+  ui.memoryDetailRevision = (ui.memoryDetailRevision || 0) + 1;
   const list = $("memory-list");
   const statsBox = $("memory-stats");
   const session = $("memory-session").value;
@@ -16557,6 +16559,7 @@ const MEMORY_SCOPE_CHOICES = [
 
 /** 记忆编辑 / 新增弹窗。memory 为 null 表示新增。 */
 function openMemoryDialog(memory, preset = {}) {
+  ui.memoryDetailRevision = (ui.memoryDetailRevision || 0) + 1;
   const base = memory || preset;
   const editing = Boolean(memory);
   openFormDialog({
@@ -16743,6 +16746,20 @@ function renderSettingsTabs() {
     });
     box.appendChild(button);
   });
+}
+
+function personaBriefDraft(world) {
+  return { persona: world.persona?.text || "", persona_mode: world.persona?.mode || "astrbot" };
+}
+
+function personaBriefDraftCurrent(world, draft) {
+  const current = personaBriefDraft(world);
+  return current.persona === draft.persona && current.persona_mode === draft.persona_mode;
+}
+
+function personaBriefSavedMessage(data, generated = false) {
+  const prefix = generated ? "简易人设已生成并已保存" : "简易人设已保存";
+  return `${prefix}，${data.matches_current_persona === false ? "保存主人设后生效" : "立即生效"}`;
 }
 
 /** 按当前选中的标签显示/隐藏小节（分类只影响显示，world JSON 一点不动）。 */
@@ -17196,6 +17213,11 @@ function renderSettings() {
   );
   // 角色卡是这一页最该先看的东西：让它独占一行，别跟别的字段挤在网格里
   personaText.classList.add("full");
+  // Async summary responses must see edits while the caret is still here,
+  // before the shared textarea helper's blur/change handler runs.
+  personaText.querySelector("textarea").addEventListener("input", (event) => {
+    world.persona.text = event.target.value;
+  });
   const personaImport = el("button", "small ghost", "从 AstrBot 导入当前人设");
   personaImport.type = "button";
   personaImport.title = "把 AstrBot 给这个会话选的人格抄进上面的框里，之后它就跟着预设走";
@@ -19786,7 +19808,7 @@ function renderSettings() {
     "按人格缓存：换人格或改主人设之后要重新生成一次（键跟着人设内容变）。没生成过就退回主人设前 200 字。",
     "persona_brief",
   );
-  const briefFull = el("div", "full");
+  const briefFull = el("div", "full field");
   const briefArea = document.createElement("textarea");
   briefArea.rows = 4;
   briefArea.id = "persona-brief-text";
@@ -19795,17 +19817,18 @@ function renderSettings() {
   briefFull.appendChild(briefArea);
   let briefRequest = 0, briefEdit = 0, briefLoading = false, briefPending = false;
   const briefSession = () => $("status-session")?.value || "";
-  const briefCurrent = (request, session) => request === briefRequest && briefArea.isConnected &&
-    ui.config.world === world && ui.scope === renderScope && briefSession() === session;
+  const briefCurrent = (request, session, draft = null) => request === briefRequest && briefArea.isConnected &&
+    ui.config.world === world && ui.scope === renderScope && briefSession() === session &&
+    (!draft || personaBriefDraftCurrent(world, draft));
   function updateBriefButtons() {
     briefGenerate.disabled = !briefSession() || briefPending;
     briefSave.disabled = !briefSession() || briefPending || briefLoading;
   }
   briefArea.addEventListener("input", () => {
     briefEdit++;
-    briefNote.textContent = "已编辑，点「保存到这个人格」后立即生效。";
+    briefNote.textContent = "已编辑，点「保存到这个人格」保存；摘要随对应主人设生效。";
   });
-  function renderBriefState(state, edit) {
+  function renderBriefState(state, edit, matches = true) {
     if (edit !== briefEdit) return;
     const brief = String(state.brief || ""), latest = String(state.latest?.brief || "");
     briefArea.value = brief || latest;
@@ -19813,6 +19836,7 @@ function renderSettings() {
       const source = state.source === "generated" ? "由主人设生成" : "手动保存";
       const when = state.at ? ` · ${agoText(Date.now() / 1000 - Number(state.at))}` : "";
       briefNote.textContent = `${source}${when}（按 ${Number(state.persona_chars || 0)} 字的人设）`;
+      if (!matches) briefNote.textContent += " · 已保存到人设草稿，保存主人设后生效。";
     } else if (latest) {
       const when = state.latest.at ? `（${agoText(Date.now() / 1000 - Number(state.latest.at))}）` : "";
       briefNote.textContent = `当前会话读出的人设和这份不一致${when}，先显示上次那份；点「从主人设生成」会按现在的人设重写。`;
@@ -19829,17 +19853,17 @@ function renderSettings() {
       toast("先在顶栏选择一个会话");
       return;
     }
-    const request = ++briefRequest, edit = briefEdit;
+    const request = ++briefRequest, edit = briefEdit, draft = personaBriefDraft(world);
     briefPending = true; briefLoading = false; updateBriefButtons();
     briefGenerate.textContent = "生成中…";
     try {
-      const data = await apiPost("persona-brief", { session: sessionId, generate: true });
-      if (!briefCurrent(request, sessionId)) return;
+      const data = await apiPost("persona-brief", { session: sessionId, generate: true, ...draft });
+      if (!briefCurrent(request, sessionId, draft)) return;
       const state = (data && data.persona_brief) || {};
-      renderBriefState(state, edit);
-      toast("简易人设已生成并已保存，立即生效");
+      renderBriefState(state, edit, data.matches_current_persona !== false);
+      toast(personaBriefSavedMessage(data, true));
     } catch (error) {
-      if (briefCurrent(request, sessionId)) toast(`生成失败：${error.message || error}`);
+      if (briefCurrent(request, sessionId, draft)) toast(`生成失败：${error.message || error}`);
     } finally {
       briefPending = false; updateBriefButtons();
       briefGenerate.textContent = "从主人设生成";
@@ -19853,15 +19877,15 @@ function renderSettings() {
       toast("先在顶栏选择一个会话");
       return;
     }
-    const request = ++briefRequest, edit = briefEdit;
+    const request = ++briefRequest, edit = briefEdit, draft = personaBriefDraft(world);
     briefPending = true; updateBriefButtons();
     try {
-      const data = await apiPost("persona-brief", { session: sessionId, brief: briefArea.value });
-      if (!briefCurrent(request, sessionId)) return;
-      renderBriefState(data.persona_brief || {}, edit);
-      toast("已保存（立即生效）");
+      const data = await apiPost("persona-brief", { session: sessionId, brief: briefArea.value, ...draft });
+      if (!briefCurrent(request, sessionId, draft)) return;
+      renderBriefState(data.persona_brief || {}, edit, data.matches_current_persona !== false);
+      toast(personaBriefSavedMessage(data));
     } catch (error) {
-      if (briefCurrent(request, sessionId)) toast(`保存失败：${error.message || error}`);
+      if (briefCurrent(request, sessionId, draft)) toast(`保存失败：${error.message || error}`);
     } finally {
       briefPending = false; updateBriefButtons();
     }
@@ -19878,7 +19902,7 @@ function renderSettings() {
   async function loadPersonaBrief({ overwrite = false } = {}) {
     const request = ++briefRequest, sessionId = briefSession();
     if (overwrite) briefArea.value = "";
-    const edit = briefEdit;
+    const edit = briefEdit, draft = personaBriefDraft(world);
     briefLoading = Boolean(sessionId); updateBriefButtons();
     briefNote.textContent = "正在读取…";
     if (!sessionId) {
@@ -19888,13 +19912,16 @@ function renderSettings() {
     }
     try {
       const data = await apiGet("persona-brief", { session: sessionId });
-      if (!briefCurrent(request, sessionId)) return;
+      if (!briefCurrent(request, sessionId, draft)) return;
       const state = (data && data.persona_brief) || {};
       renderBriefState(state, edit);
     } catch (error) {
-      if (briefCurrent(request, sessionId) && edit === briefEdit) briefNote.textContent = `读取失败：${error.message || error}`;
+      if (briefCurrent(request, sessionId, draft) && edit === briefEdit) briefNote.textContent = `读取失败：${error.message || error}`;
     } finally {
       if (briefCurrent(request, sessionId)) { briefLoading = false; updateBriefButtons(); }
+      if (briefCurrent(request, sessionId) && !personaBriefDraftCurrent(world, draft) && edit === briefEdit) {
+        briefNote.textContent = "主人设已变化，请按当前主人设重新生成摘要。";
+      }
     }
   }
   ui.loadPersonaBrief = loadPersonaBrief;
@@ -20833,8 +20860,9 @@ function wizardGenerateStep(body) {
     ($("persona-brief-text") && $("persona-brief-text").value) || "";
   let edit = 0;
   briefArea.addEventListener("input", () => { edit++; });
-  const current = (session, version) => briefArea.isConnected && ui.config.world === world &&
-    ui.scope === scope && $("status-session")?.value === session && edit === version;
+  const current = (session, version, draft) => briefArea.isConnected && ui.config.world === world &&
+    ui.scope === scope && $("status-session")?.value === session && edit === version &&
+    personaBriefDraftCurrent(world, draft);
   const briefWrap = el("div", "field");
   briefWrap.appendChild(fieldHead("简易人设（给打杂模型）"));
   briefWrap.appendChild(briefArea);
@@ -20847,7 +20875,7 @@ function wizardGenerateStep(body) {
       toast("先去第一步加一个会话，她才知道用哪份人设");
       return;
     }
-    const version = edit, mirror = $("persona-brief-text"), previous = mirror?.value;
+    const version = edit, mirror = $("persona-brief-text"), previous = mirror?.value, draft = personaBriefDraft(world);
     const restore = busyButton(briefButton, "生成中…");
     briefSave.disabled = true;
     try {
@@ -20856,15 +20884,15 @@ function wizardGenerateStep(body) {
       const data = await apiPost("persona-brief", {
         session,
         generate: true,
-        persona: (world.persona && world.persona.text) || "",
+        ...draft,
       });
-      if (!current(session, version)) return;
+      if (!current(session, version, draft)) return;
       const state = (data && data.persona_brief) || {};
       briefArea.value = state.brief || state.latest?.brief || "";
       if (mirror?.isConnected && mirror.value === previous) mirror.value = briefArea.value;
-      toast("生成好了（保存到这个人格）");
+      toast(personaBriefSavedMessage(data, true));
     } catch (error) {
-      if (current(session, version)) toast(`生成失败：${error.message || error}`);
+      if (current(session, version, draft)) toast(`生成失败：${error.message || error}`);
     } finally {
       restore();
       briefSave.disabled = false;
@@ -20876,16 +20904,16 @@ function wizardGenerateStep(body) {
   briefSave.addEventListener("click", async () => {
     const session = $("status-session")?.value || "";
     if (!session) return;
-    const version = edit, mirror = $("persona-brief-text"), previous = mirror?.value;
+    const version = edit, mirror = $("persona-brief-text"), previous = mirror?.value, draft = personaBriefDraft(world);
     const restore = busyButton(briefSave, "保存中…");
     briefButton.disabled = true;
     try {
-      await apiPost("persona-brief", { session, brief: briefArea.value });
-      if (!current(session, version)) return;
+      const data = await apiPost("persona-brief", { session, brief: briefArea.value, ...draft });
+      if (!current(session, version, draft)) return;
       if (mirror?.isConnected && mirror.value === previous) mirror.value = briefArea.value;
-      toast("已保存");
+      toast(personaBriefSavedMessage(data));
     } catch (error) {
-      if (current(session, version)) toast(error.message || "保存失败");
+      if (current(session, version, draft)) toast(error.message || "保存失败");
     } finally {
       restore(); briefButton.disabled = false;
     }
@@ -21058,9 +21086,12 @@ function openWizard() {
  */
 async function openMemoryDetail(memory) {
   const revision = ui.memoryDetailRevision = (ui.memoryDetailRevision || 0) + 1;
+  const session = $("memory-session").value;
+  const dialog = dialogState;
   let evidence = {};
-  try { evidence = await apiGet("memories/evidence", {id: memory.id, session: memory.session_id || $("memory-session").value}); } catch (_) { /* Legacy memories keep their existing context. */ }
-  if (ui.memoryDetailRevision !== revision || !$("tab-memories").classList.contains("active")) return;
+  try { evidence = await apiGet("memories/evidence", {id: memory.id, session: memory.session_id || session}); } catch (_) { /* Legacy memories keep their existing context. */ }
+  if (ui.memoryDetailRevision !== revision || $("memory-session").value !== session ||
+      dialogState !== dialog || !$("tab-memories").classList.contains("active")) return;
   const rows = [
     ["整理状态", memory.tier === "gist" ? "已整理成要点" : "原文（还没整理）"],
     ["内容", String(memory.content || "")],

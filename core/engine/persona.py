@@ -39,10 +39,12 @@ class PersonaMixin:
     不然编辑器里那一段直接变空，看着就像"重装插件被重置了"。
     """
 
-    async def persona_brief_state(self, session_id: str) -> dict[str, Any]:
-        """当前人格的简易人设：内容 + 是不是生成出来的 + 主人设长度。"""
+    async def persona_brief_state(
+        self, session_id: str, *, persona_text: str | None = None
+    ) -> dict[str, Any]:
+        """读取指定人设的摘要；未指定时读取当前正式人设。"""
 
-        persona = await self._persona_text(session_id)
+        persona = await self._persona_text(session_id) if persona_text is None else str(persona_text)
         key = self._persona_brief_key(persona)
         payload = None
         try:
@@ -82,7 +84,7 @@ class PersonaMixin:
         brief: str,
         *,
         source: str = "manual",
-        persona_text: str = "",
+        persona_text: str | None = None,
     ) -> str:
         """存下这份简易人设。
 
@@ -90,7 +92,7 @@ class PersonaMixin:
         等用户把草稿保存成正式人设，指纹就对得上，不会一保存就变"建议重新生成"。
         """
 
-        persona = str(persona_text or "").strip() or await self._persona_text(session_id)
+        persona = await self._persona_text(session_id) if persona_text is None else str(persona_text).strip()
         key = self._persona_brief_key(persona)
         text = " ".join(str(brief or "").split())[:800]
         record = {"brief": text, "source": source, "at": self._now()}
@@ -106,14 +108,14 @@ class PersonaMixin:
         return text
 
     @model_operation("persona", "管理员请求生成人设简报")
-    async def generate_persona_brief(self, session_id: str, *, persona_text: str = "") -> str:
+    async def generate_persona_brief(self, session_id: str, *, persona_text: str | None = None) -> str:
         """用生成器模型把主人设压成一段摘要。
 
         ``persona_text``：编辑器里刚改过、还没保存的角色卡。传了就用它——
         向导里刚写完人设就点"生成"，读配置只会拿到旧人设，生成的摘要跟眼前这份对不上。
         """
 
-        persona = str(persona_text or "").strip() or await self._persona_text(session_id)
+        persona = await self._persona_text(session_id) if persona_text is None else str(persona_text).strip()
         if not persona.strip():
             return ""
         limit = int(getattr(self.world.events, "persona_brief_chars", 250) or 250)

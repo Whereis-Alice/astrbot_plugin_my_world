@@ -1873,11 +1873,28 @@ class WebApiMixin(LifeApiMixin):
         if not session_id:
             return error_response("缺少 session 参数")
         if request.method == "POST" or str(request.query.get("_method", "")).upper() == "POST":
+            # Resolve once so generation, manual saves and the returned cache refer
+            # to the same draft, even if the live persona changes while awaiting.
+            persona_text = str(payload.get("persona") or "").strip()
+            mode = payload.get("persona_mode")
+            if mode is not None:
+                if mode not in ("plugin", "append", "astrbot"):
+                    return error_response("不支持的人设模式")
+                if mode != "plugin" or not persona_text:
+                    port = getattr(self, "persona_port", None)
+                    if port is None or not hasattr(port, "astrbot_persona_text"):
+                        return error_response("人设通道还没就绪")
+                    base = await port.astrbot_persona_text(session_id)
+                    persona_text = (f"{base}\n\n{persona_text}".strip()
+                                    if mode == "append" and persona_text else base)
+            elif not persona_text:
+                # Old clients omit the draft and continue using the live persona.
+                persona_text = await self.engine._persona_text(session_id)
             if payload.get("generate"):
                 # 编辑器刚改过、还没保存的角色卡优先：向导里写完人设就点生成时，
                 # 读配置只会拿到旧那份。
                 brief = await self.engine.generate_persona_brief(
-                    session_id, persona_text=str(payload.get("persona") or "")
+                    session_id, persona_text=persona_text
                 )
                 if not brief:
                     return error_response(
@@ -1885,10 +1902,12 @@ class WebApiMixin(LifeApiMixin):
                     )
             else:
                 await self.engine.save_persona_brief(
-                    session_id, str(payload.get("brief") or "")
+                    session_id, str(payload.get("brief") or ""), persona_text=persona_text
                 )
-            state = await self.engine.persona_brief_state(session_id)
-            return json_response({"ok": True, "persona_brief": state})
+            state = await self.engine.persona_brief_state(session_id, persona_text=persona_text)
+            current = await self.engine._persona_text(session_id)
+            matches = state["key"] == self.engine._persona_brief_key(current)
+            return json_response({"ok": True, "persona_brief": state, "matches_current_persona": matches})
         return json_response({"persona_brief": await self.engine.persona_brief_state(session_id)})
 
     def _voice_sample_payload(self) -> dict[str, Any]:
