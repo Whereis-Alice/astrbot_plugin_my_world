@@ -1,5 +1,6 @@
 """Runtime acceptance: fair work, reloads, sleep accounting and event isolation."""
 import asyncio
+import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -140,6 +141,67 @@ class LifeRuntimeTests(unittest.IsolatedAsyncioTestCase):
         for _ in range(2):
             await self.engine.seed_life_matter(SESSION)
             self.clock.advance(3600)
+        self.engine._ask_judge.assert_awaited_once()
+
+    async def test_new_idea_keeps_recent_personal_history_and_does_not_restart_finished_goal(self):
+        from hashlib import sha256
+        persona = await self.engine._persona_text(SESSION)
+        key = sha256(persona.encode()).hexdigest()[:24]
+        async with self.engine.session_state(SESSION) as state:
+            state.world_time, state.state, state.energy = 600, "idle", .9
+            self.engine.add_life_matter(state, "慢慢读完一本书", persona_key=key)["status"] = "completed"
+            self.engine.add_life_matter(state, "给朋友寄信", who="42")["status"] = "blocked"
+            self.engine.add_life_matter(state, "另一个角色的事情", persona_key="other")["status"] = "completed"
+        self.engine._ask_judge = AsyncMock(return_value='{"text":"慢慢读完一本书！"}')
+        await self.engine.seed_life_matter(SESSION)
+        source = json.loads(self.engine._ask_judge.call_args.args[2])
+        self.assertEqual([row["text"] for row in source["recent_matters"]], ["慢慢读完一本书"])
+        self.assertEqual(source["recent_matters"][0]["status"], "completed")
+        saved = await self.engine.load_state(SESSION, cold_start=False)
+        self.assertEqual(len(saved.life_matters), 3)
+        await self.engine.seed_life_matter(SESSION)
+        self.engine._ask_judge.assert_awaited_once()
+
+    async def test_slow_failed_seed_waits_after_returning(self):
+        async with self.engine.session_state(SESSION) as state:
+            state.world_time, state.state, state.energy = 600, "idle", .9
+        async def slow_failure(*args, **kwargs):
+            self.clock.advance(3600)
+            return None
+        self.engine._ask_judge = AsyncMock(side_effect=slow_failure)
+        await self.engine.seed_life_matter(SESSION)
+        await self.engine.seed_life_matter(SESSION)
+        self.engine._ask_judge.assert_awaited_once()
+
+    async def test_many_finished_projects_do_not_hide_paused_or_waiting_goals_from_new_ideas(self):
+        async with self.engine.session_state(SESSION) as state:
+            state.world_time, state.state, state.energy = 600, "idle", .9
+            self.engine.add_life_matter(state, "折一架能飞稳的纸飞机")["status"] = "paused"
+            self.engine.add_life_matter(state, "等颜料干了再继续画")["status"] = "waiting"
+            for index in range(15):
+                self.clock.advance(60)
+                self.engine.add_life_matter(state, f"已经完成的故事{index}")["status"] = "completed"
+        self.engine._ask_judge = AsyncMock(return_value='{"text":""}')
+        await self.engine.seed_life_matter(SESSION)
+        rows = json.loads(self.engine._ask_judge.call_args.args[2])["recent_matters"]
+        self.assertEqual([row["status"] for row in rows[:2]], ["paused", "waiting"])
+        self.assertEqual(len(rows), 14)
+        self.assertEqual(rows[-1]["text"], "已经完成的故事14")
+
+    async def test_malformed_project_numbers_do_not_crash_and_backoff_after_slow_reply(self):
+        async with self.engine.session_state(SESSION) as state:
+            state.state, state.energy = "idle", .9
+            item = self.engine.add_life_matter(state, "整理读书笔记")
+            mid = item["id"]
+        async def bad_plan(*args, **kwargs):
+            self.clock.advance(1800)
+            return '{"steps":[{"text":"继续读","action":"read","node":"study","minutes":1e999}]}'
+        self.engine._ask_judge = AsyncMock(side_effect=bad_plan)
+        await self.engine.advance_life_matters(SESSION)
+        saved = await self.engine.load_state(SESSION, cold_start=False)
+        item = next(row for row in saved.life_matters if row["id"] == mid)
+        self.assertGreater(item["resume_at"], self.clock.now())
+        await self.engine.advance_life_matters(SESSION)
         self.engine._ask_judge.assert_awaited_once()
 
     async def test_waking_an_awake_person_never_cancels_her_work(self):

@@ -23,6 +23,12 @@ ENGINE_MODULE_MAX_LINES = 2200
 
 
 class EntryPointTest(unittest.TestCase):
+    def test_registered_version_matches_the_plugin_metadata(self) -> None:
+        from core.constants import PLUGIN_VERSION
+        metadata = (ROOT / "metadata.yaml").read_text(encoding="utf-8")
+        version = next(line.split(":", 1)[1].strip() for line in metadata.splitlines() if line.startswith("version:"))
+        self.assertEqual(PLUGIN_VERSION, version)
+
     def test_main_stays_an_entrypoint(self) -> None:
         lines = (ROOT / "main.py").read_text(encoding="utf-8").splitlines()
         self.assertLess(

@@ -66,6 +66,7 @@ from .core.constants import (
 from .core.config_scope import session_scoped
 from .core.config_store import ConfigStore
 from .core.db import AsyncDatabase
+from .core.data_migration import copy_database_snapshot
 from .core.engine import (
     PENDING_IMAGE_KEEP,
     REPLY_INTERRUPTED,
@@ -178,13 +179,13 @@ def migrate_from_original(data_dir: str, plugin_dir: str, logger: Any) -> list[s
     """第一次启动时，把原插件的数据整份搬过来（只搬一次、绝不覆盖已有数据）。
 
     两个插件的目录结构完全一样（``world.json`` / ``schedules.json`` /
-    ``sessions.json`` / ``state.db`` + 历史快照），所以"直接复制"就是正确做法。
+    ``sessions.json`` / ``state.db`` + 历史快照），普通文件复制、数据库在线备份。
     适合从原插件换过来的人：地图、动作、日程、记忆、日志一条不丢。
 
     几个边界：
     - 本插件已经有数据（``world.json`` 或 ``state.db``）→ 什么都不做；
     - 原插件的数据目录不存在 / 也是空的 → 什么都不做；
-    - SQLite 的 ``-wal`` / ``-shm`` 不复制（那是运行时的临时文件，复制过去反而更危险）；
+    - SQLite 使用在线备份读入已提交的 WAL 内容；``-wal`` / ``-shm`` 不单独复制；
     - 想关掉：插件配置里关掉「自动接管原插件的数据」，或者设
       ``MY_WORLD_MIGRATE_FROM=none``。
 
@@ -214,7 +215,7 @@ def migrate_from_original(data_dir: str, plugin_dir: str, logger: Any) -> list[s
         return []
     target.mkdir(parents=True, exist_ok=True)
     copied: list[str] = []
-    for item in sorted(source.iterdir()):
+    for item in sorted(source.iterdir(), key=lambda item: (item.name != "state.db", item.name)):
         if not item.is_file() or item.name.startswith("."):
             continue
         if item.suffix in (".db-wal", ".db-shm") or item.name.endswith(("-wal", "-shm")):
@@ -223,9 +224,15 @@ def migrate_from_original(data_dir: str, plugin_dir: str, logger: Any) -> list[s
         if destination.exists():
             continue
         try:
-            shutil.copy2(item, destination)
+            if item.suffix == ".db":
+                if not copy_database_snapshot(item, destination):
+                    continue
+            else:
+                shutil.copy2(item, destination)
         except Exception as exc:  # noqa: BLE001 - 迁移失败不能拖垮启动
             logger.warning(f"[my_world] 迁移 {item.name} 失败：{exc}")
+            if item.name == "state.db":
+                return []  # Leave other files untouched so the next startup can retry.
             continue
         copied.append(item.name)
     if copied:

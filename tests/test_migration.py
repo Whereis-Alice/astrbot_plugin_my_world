@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 import importlib.util
+import contextlib
 import json
 import logging
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -51,7 +53,10 @@ class MigrationTests(unittest.TestCase):
         (self.source / "world.json").write_text(
             json.dumps({"actions": [{"id": "say"}]}, ensure_ascii=False), encoding="utf-8"
         )
-        (self.source / "state.db").write_bytes(b"sqlite")
+        with contextlib.closing(sqlite3.connect(self.source / "state.db")) as database:
+            database.execute("CREATE TABLE snapshot (value TEXT)")
+            database.execute("INSERT INTO snapshot VALUES ('old memory')")
+            database.commit()
         (self.source / "state.db-wal").write_bytes(b"wal")  # 这份不该被搬
         os.environ.pop("MY_WORLD_MIGRATE_FROM", None)
         # 自动发现那条路靠 AstrBot 的宿主路径，测试里直接把它指到临时目录
@@ -74,12 +79,46 @@ class MigrationTests(unittest.TestCase):
         self.assertNotIn("state.db-wal", copied)
         self.assertTrue((self.target / "world.json").exists())
 
+    def test_online_backup_includes_committed_wal_and_leaves_the_source_open(self):
+        (self.source / "state.db-wal").unlink()
+        with contextlib.closing(sqlite3.connect(self.source / "state.db")) as database:
+            database.execute("PRAGMA journal_mode=WAL")
+            database.execute("PRAGMA wal_autocheckpoint=0")
+            database.execute("INSERT INTO snapshot VALUES ('latest memory in WAL')")
+            database.commit()
+            self.assertGreater((self.source / "state.db-wal").stat().st_size, 0)
+            self.assertIn("state.db", self._migrate())
+            with contextlib.closing(sqlite3.connect(self.target / "state.db")) as migrated:
+                self.assertEqual(migrated.execute("PRAGMA quick_check").fetchone()[0], "ok")
+                self.assertEqual(migrated.execute("SELECT value FROM snapshot").fetchall(),
+                                 [('old memory',), ('latest memory in WAL',)])
+            self.assertEqual(database.execute("SELECT count(*) FROM snapshot").fetchone()[0], 2)
+            self.assertTrue((self.source / "state.db-wal").exists())
+            self.assertFalse((self.target / "state.db-wal").exists())
+
+    def test_invalid_database_is_not_installed_as_a_successful_migration(self):
+        (self.source / "state.db").write_bytes(b"not a sqlite database")
+        self.assertNotIn("state.db", self._migrate())
+        self.assertFalse((self.target / "state.db").exists())
+        self.assertFalse((self.target / "world.json").exists(), "a partial world would prevent the next migration attempt")
+        self.assertEqual(list(self.target.glob('.mw-migrate-*')), [])
+
     def test_does_not_overwrite_existing_data(self):
         self.target.mkdir(parents=True)
         (self.target / "world.json").write_text("{}", encoding="utf-8")
         copied = self._migrate()
         self.assertEqual(copied, [])
         self.assertEqual((self.target / "world.json").read_text(encoding="utf-8"), "{}")
+
+    def test_locked_source_has_bounded_backup_and_leaves_no_partial_database(self):
+        (self.source / "state.db-wal").unlink()
+        self.target.mkdir()
+        with contextlib.closing(sqlite3.connect(self.source / "state.db")) as database:
+            database.execute("BEGIN EXCLUSIVE")
+            with self.assertRaises(TimeoutError):
+                MODULE.copy_database_snapshot(self.source / "state.db", self.target / "state.db", timeout=.05)
+        self.assertFalse((self.target / "state.db").exists())
+        self.assertEqual(list(self.target.glob('.mw-migrate-*')), [])
 
     def test_can_be_disabled_with_env(self):
         os.environ["MY_WORLD_MIGRATE_FROM"] = "none"

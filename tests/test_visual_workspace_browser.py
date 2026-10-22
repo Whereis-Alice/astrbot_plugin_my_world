@@ -128,10 +128,13 @@ class VisualWorkspaceTests(unittest.TestCase):
           window.pickerReads = [];
           const read = AstrBotPluginPage.apiGet;
           AstrBotPluginPage.apiGet = (url, params) => {
-            if (url === 'state') pickerReads.push(params.session);
+            if (url === 'state' && params.session === document.getElementById('status-session').value
+                && pickerSelectionChanged) pickerReads.push(params.session);
             return read(url, params);
           };
           const select = document.getElementById('status-session');
+          window.pickerSelectionChanged = false;
+          select.addEventListener('change', () => { pickerSelectionChanged = true; }, {capture:true});
           select.options[1].textContent = '朋友的小群 · 一起讨论星空与旅行的很长很长的群名称 · 2002';
           for (let index = 0; index < 24; index++) select.add(new Option(`群聊 · ${3000+index}`, `test:GroupMessage:${3000+index}`));
         }''')

@@ -102,3 +102,88 @@ class ObservatoryBrowserTests(unittest.TestCase):
         expect(self.page.locator("#status-time")).to_be_visible()
         self.assertEqual(self.page.evaluate("numericWrites"), [])
         self.assertEqual(self.errors, [])
+
+    def test_late_logs_cannot_replace_the_new_sessions_diagnostics(self):
+        self.page.evaluate("""() => {
+          window.pendingStatusLogs = [];
+          const read = AstrBotPluginPage.apiGet;
+          AstrBotPluginPage.apiGet = (endpoint, params) => endpoint === 'logs'
+            ? new Promise(resolve => pendingStatusLogs.push({resolve, session: params.session}))
+            : read(endpoint, params);
+        }""")
+        self.page.locator('#status-refresh').click()
+        self.page.wait_for_function('pendingStatusLogs.length === 1')
+        self.page.evaluate("""() => {
+          const select = document.getElementById('status-session');
+          select.add(new Option('另一个角色', 'test:GroupMessage:second'));
+          select.value = 'test:GroupMessage:second';
+          numericState.nickname_live = '第二个角色';
+          select.dispatchEvent(new Event('change'));
+        }""")
+        self.page.wait_for_function('pendingStatusLogs.length === 2')
+        self.page.evaluate("pendingStatusLogs[1].resolve({events:[{world_time:2,event_type:'action',text:'第二个角色的日志'}]})")
+        expect(self.page.locator('#status-logs')).to_contain_text('第二个角色的日志')
+        self.page.evaluate("pendingStatusLogs[0].resolve({events:[{world_time:1,event_type:'skip',text:'前一个角色的警告'}]})")
+        self.page.evaluate('() => new Promise(resolve => requestAnimationFrame(resolve))')
+        expect(self.page.locator('#status-logs')).to_contain_text('第二个角色的日志')
+        expect(self.page.locator('#status-warn')).not_to_contain_text('前一个角色')
+        self.assertEqual(self.errors, [])
+
+    def test_switching_history_window_during_slow_load_shows_latest_selection(self):
+        self.page.evaluate("""() => {
+          window.pendingHistories = [];
+          const read = AstrBotPluginPage.apiGet;
+          AstrBotPluginPage.apiGet = (endpoint, params) => endpoint === 'state/history'
+            ? new Promise(resolve => pendingHistories.push({resolve, hours: params.hours, session:params.session}))
+            : read(endpoint, params);
+        }""")
+        self.page.locator('#history-windows button').filter(has_text='6 小时').click()
+        self.page.wait_for_function('pendingHistories.length === 1')
+        self.page.locator('#history-windows button').filter(has_text='3 天').click()
+        self.page.wait_for_function('pendingHistories.length === 2')
+        self.page.evaluate("pendingHistories[1].resolve({points:[{at:100,affect:.2,valence:.7},{at:200,affect:.4,valence:.8}]})")
+        expect(self.page.locator('#history-canvas')).to_have_attribute('aria-label', '心情趋势，共 2 个记录。最近心潮 0.40，效价 0.80。')
+        self.page.evaluate("pendingHistories[0].resolve({points:[{at:100,affect:.1,valence:.1},{at:200,affect:.1,valence:.1}]})")
+        self.page.evaluate('() => new Promise(resolve => requestAnimationFrame(resolve))')
+        expect(self.page.locator('#history-canvas')).to_have_attribute('aria-label', '心情趋势，共 2 个记录。最近心潮 0.40，效价 0.80。')
+        self.assertEqual(self.errors, [])
+
+    def test_refresh_does_not_overwrite_the_name_being_edited(self):
+        self.page.locator('.nickname-menu > summary').click()
+        nickname = self.page.locator('#status-nickname')
+        nickname.fill('正在输入的新名片')
+        self.page.evaluate("document.getElementById('status-refresh').click()")
+        expect(nickname).to_have_value('正在输入的新名片')
+        expect(self.page.locator('#hero-name')).to_have_text('澪')
+        self.assertEqual(self.page.evaluate('numericWrites'), [])
+        self.assertEqual(self.errors, [])
+
+    def test_clearing_and_reselecting_session_does_not_leave_history_stuck(self):
+        self.page.evaluate("""() => {
+          window.pendingHistories = [];
+          const read = AstrBotPluginPage.apiGet;
+          AstrBotPluginPage.apiGet = (endpoint, params) => endpoint === 'state/history'
+            ? new Promise(resolve => pendingHistories.push({resolve, session: params.session}))
+            : read(endpoint, params);
+        }""")
+        self.page.locator('#history-windows button').filter(has_text='6 小时').click()
+        self.page.wait_for_function('pendingHistories.length === 1')
+        self.page.evaluate("""() => {
+          const select = document.getElementById('status-session');
+          window.previousHistorySession = select.value;
+          select.value = '';
+          select.dispatchEvent(new Event('change'));
+        }""")
+        expect(self.page.locator('#history-canvas')).to_be_hidden()
+        self.page.evaluate("""() => {
+          const select = document.getElementById('status-session');
+          select.value = previousHistorySession;
+          select.dispatchEvent(new Event('change'));
+        }""")
+        self.page.wait_for_function('pendingHistories.length === 2')
+        self.page.evaluate("pendingHistories[1].resolve({points:[{at:100,affect:.2,valence:.7},{at:200,affect:.4,valence:.8}]})")
+        expect(self.page.locator('#history-canvas')).to_have_attribute('aria-label', '心情趋势，共 2 个记录。最近心潮 0.40，效价 0.80。')
+        self.page.evaluate("pendingHistories[0].resolve({points:[]})")
+        self.page.evaluate('() => new Promise(resolve => requestAnimationFrame(resolve))')
+        expect(self.page.locator('#history-canvas')).to_be_visible()
+        self.assertEqual(self.errors, [])

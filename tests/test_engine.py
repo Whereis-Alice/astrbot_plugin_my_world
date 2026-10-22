@@ -11617,6 +11617,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.llm.replies = ['{"actions":[{"type":"say","messages":["早～"]}]}']
         self.clock.set_struct(datetime(2026, 9, 15, 12, 0))
         await self.engine.tick()
+        # Slow hosts return the tick before the independent schedule collector.
+        await self.engine._schedule_delivery_job
         self.assertIn("早～", self.messenger.flat_messages)
 
     async def test_inner_action_still_stays_quiet(self):

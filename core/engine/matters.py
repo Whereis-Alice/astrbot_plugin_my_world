@@ -67,15 +67,36 @@ class MattersMixin:
             self.db.raw.kv_set(key, {"at": self._now(), "attempts": attempts,
                 "retry_at": self._now() + max(15, self.world.limits.life_matter_interval_minutes) * 60})
         persona = await self._persona_text(session_id)
+        from hashlib import sha256
+        persona_key = sha256(persona.encode("utf-8")).hexdigest()[:24]
+        # A new day is not a blank life. Keep only her personal projects;
+        # conversation promises and another persona's history stay private.
+        recent = [m for m in state.life_matters if not m.get("who") and m.get("kind") != "promise"
+                  and (not m.get("persona_key") or m["persona_key"] == persona_key)
+                  and (m["status"] not in matters.CLOSED
+                       or self._now() - float(m.get("updated_at") or m.get("at") or 0) <= 30 * 86400)]
+        previous = [{"text": m["text"], "status": m["status"], "motivation": m.get("motivation", ""),
+                     "next_step": m.get("next_step", ""), "result": m.get("result", ""),
+                     "obstacle": m.get("obstacle", "")} for m in recent if m["status"] not in matters.CLOSED]
+        closed = sorted((m for m in recent if m["status"] in matters.CLOSED),
+                        key=lambda m: float(m.get("updated_at") or m.get("at") or 0))[-12:]
+        previous += [{"text": m["text"], "status": m["status"], "result": m.get("result", "")}
+                     for m in closed]
         with model_context("life_matter", "有空闲，为自己的生活想一件可持续的小事", session_id):
             raw = await self._ask_judge(session_id,
                 '结合人设和已有能力，想一件愿意持续几天的独处小事。只输出JSON：{"text":"", "motivation":""}。'
                 '没有想法可以留空。只在角色世界内模拟生活，不建立新身世、恋爱关系或重大物品。'
+                '先看recent_matters：已完成的事情不从头重建，暂停或等待的事情仍由原事项接续。'
+                '把旧目标换种说法、细化下一步、比较做法或记录效果，都属于原事项，不能另起一个新项目。'
+                '新念头须有不同的具体方向，可以由已有经历延伸；没有新方向就留空，不必每天建立项目。'
                 '编程、创作等兴趣可在世界内模拟，不要求配置电脑，不声称操作了现实文件或外部服务。不要声称已经做成。',
                 json.dumps({"persona": persona, "available": candidates,
-                            "interests": interests}, ensure_ascii=False))
+                            "interests": interests, "recent_matters": previous}, ensure_ascii=False))
         payload = extract_json_object(raw or "") or {}
         if "text" not in payload or not isinstance(payload["text"], str):
+            # Backoff begins when the request returns, even after a slow failure.
+            self.db.raw.kv_set(key, {"at": self._now(), "attempts": attempts,
+                "retry_at": self._now() + max(15, world.limits.life_matter_interval_minutes) * 60})
             return  # Unavailable/malformed is different from a valid "no new idea".
         if self.world is not world or self.state_key(session_id) != state_key or not self.is_enabled(session_id):
             return
@@ -90,8 +111,19 @@ class MattersMixin:
                     or any(m["status"] in {"active", "working"} for m in state.life_matters)):
                 return
             self.db.raw.kv_set(key, {"at": self._now(), "attempts": attempts, "done": True})
+            text = " ".join(payload["text"].split())[:160]
+            # Exact repeats are a valid "no new idea", not a second project.
+            # Avoid semantic fuzzy merging: similar goals can have different meanings.
+            def normalize(value: str) -> str:
+                return "".join(c for c in str(value).casefold() if c.isalnum())
+            if any(normalize(m["text"]) == normalize(text) for m in state.life_matters
+                   if not m.get("who") and m.get("kind") != "promise"
+                   and (not m.get("persona_key") or m["persona_key"] == persona_key)
+                   and (m["status"] not in matters.CLOSED
+                        or self._now() - float(m.get("updated_at") or m.get("at") or 0) <= 30 * 86400)):
+                return
             _, persona_key = await self._journal_persona(session_id)
-            self.add_life_matter(state, str(payload.get("text") or ""), session=session_id,
+            self.add_life_matter(state, text, session=session_id,
                                  motivation=str(payload.get("motivation") or ""),
                                  persona_key=persona_key)
 
@@ -353,7 +385,7 @@ class MattersMixin:
                 try:
                     minutes = min(60, max(5, int(step.get("minutes") or 20)))
                     day_offset = min(30, max(0, int(step.get("day_offset", index))))
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, OverflowError):
                     continue
                 definition = self.world.action_map().get(step["action"])
                 if definition and definition.duration_mode == "llm":
@@ -374,7 +406,9 @@ class MattersMixin:
                 if self._matter_can_work(state):
                     await self._start_matter_step(state, item)
             else:
-                item.update(status="waiting", blocker="transient", resume_at=now + 900,
+                failed_at = self._now()
+                item.update(status="waiting", blocker="transient", resume_at=failed_at + 900,
+                            last_attempt_at=failed_at,
                             obstacle=str(payload.get("blocked") or "暂时没有得到合适的安排，稍后再想")[:300])
                 matters.history(item, "blocked", item["obstacle"], now)
             matters.sync(state)

@@ -5697,24 +5697,30 @@ function renderHistoryWindows() {
 async function renderHistory() {
   const sessionId = $("status-session").value;
   const canvas = $("history-canvas");
-  if (!canvas || ui.historyBusy) return;
+  if (!canvas) return;
+  const hours = ui.historyHours;
+  const key = `${sessionId}:${hours}`;
+  if (ui.historyPending?.key === key) return;
+  const requestId = ui.historyRequest = (ui.historyRequest || 0) + 1;
   const emptyBox = $("history-empty");
   if (!sessionId) {
+    ui.historyPending = null;
     // 没选会话：别留一个空画布占半屏，直接给一块说明
     canvas.classList.add("hidden");
     $("history-metrics").textContent = "";
     if (emptyBox) emptyBox.classList.remove("hidden");
     return;
   }
-  ui.historyBusy = true;
+  ui.historyPending = {key, requestId};
   let data = null;
   try {
-    data = await apiGet("state/history", { session: sessionId, hours: ui.historyHours });
+    data = await apiGet("state/history", { session: sessionId, hours });
   } catch (error) {
     data = null;
   } finally {
-    ui.historyBusy = false;
+    if (ui.historyPending?.requestId === requestId) ui.historyPending = null;
   }
+  if ($("status-session").value !== sessionId || ui.historyHours !== hours || ui.historyRequest !== requestId) return;
   const points = (data && data.points) || [];
   ui.historyPoints = points;
   const hasChart = points.length >= 2;
@@ -7196,6 +7202,7 @@ async function refreshStatus() {
   const sessionId = $("status-session").value;
   if (!sessionId) {
     setStatusEmpty("还没有添加任何会话白名单。");
+    renderHistory();
     return;
   }
   try {
@@ -7229,7 +7236,7 @@ async function refreshStatus() {
       $(id).disabled = Boolean(nicknameOwner);
     });
     const nicknameBox = $("status-nickname");
-    if (nicknameBox) {
+    if (nicknameBox && document.activeElement !== nicknameBox) {
       // 有平台上的真实名片就显示它（dynamic_card_plus 改过也跟得上），
       // 读不到就退回插件记录的那份。
       nicknameBox.value = data.nickname_live || data.nickname || "";
@@ -7259,6 +7266,7 @@ async function refreshStatus() {
     renderChatContext(data);
 
     const logs = await apiGet("logs", { session: sessionId, limit: 60 });
+    if ($("status-session").value !== sessionId || ui.statusRequest !== requestId) return;
     const events = logs.events || [];
     $("status-logs").textContent = (logs.events || [])
       .map((item) => `[t=${item.world_time}] ${item.text || item.event_type}`)
@@ -7276,7 +7284,7 @@ async function refreshStatus() {
       }
     }
   } catch (error) {
-    toast(error.message || "读取状态失败");
+    if ($("status-session").value === sessionId && ui.statusRequest === requestId) toast(error.message || "读取状态失败");
   }
 }
 
