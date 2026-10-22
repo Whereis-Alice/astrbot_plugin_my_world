@@ -42,6 +42,10 @@ class LifeJournalBrowserTests(unittest.TestCase):
         self.page.add_style_tag(content="*,*::before,*::after{animation-duration:0s!important;transition-duration:0s!important}")
         self.page.evaluate("""() => {
           const read = AstrBotPluginPage.apiGet;
+          // Memory records belong to a selected session; the base fixture has none.
+          const session = document.getElementById('memory-session');
+          session.add(new Option('合成日记会话', 'test:GroupMessage:journal'));
+          session.value = 'test:GroupMessage:journal';
           const rows = [
             {id:1, content:'在书房修好了风车模型，试转时叶片终于平稳了。', type:'scene', node_id:'study', created_at:1792411200, weight:.7, tier:'raw', source:'runtime'},
             {id:2, content:'这次只读完了第一章，还想找时间接着看。', type:'inner', node_id:'study', created_at:1792411300, weight:.5, tier:'raw', source:'runtime'},
