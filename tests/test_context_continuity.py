@@ -105,6 +105,69 @@ class LinkedContextTests(unittest.TestCase):
         self.assertNotIn("尚未完成的步骤",text)
         self.assertNotIn("中途书签（步骤尚未做完）",text)
 
+    def test_active_goal_is_current_work_only_when_its_action_is_running(self):
+        self.matter.update(status="active", result="", next_step="比较邮戳",
+            steps=[{"id": "dates", "text": "比较邮戳", "status": "pending", "minutes": 20,
+                    "worked_minutes": 5, "bookmark": {"note": "日期尚未核实"}}])
+        for status in ("active", "working"):
+            for action in ({}, {"type": "read", "matter_id": "another"},
+                           {"type": "walk_to", "matter_id": self.matter["id"]},
+                           {"type": "read", "matter_id": self.matter["id"]}):
+                with self.subTest(status=status, action=action):
+                    self.matter["status"] = status
+                    self.state.current_action = action or None
+                    before = copy.deepcopy(self.state.to_payload())
+                    text = life_items(self.state, self.request())[0].summary
+                    expected = ("正在前往步骤地点，步骤尚未开始" if action.get("type") == "walk_to"
+                        else "正在执行该事项的步骤" if action.get("matter_id") == self.matter["id"]
+                        else "事项未结束，但此刻未执行该事项的步骤")
+                    self.assertIn(expected, text)
+                    self.assertNotIn("一直在推进", text)
+                    self.assertIn("日期尚未核实", text)
+                    self.assertEqual(self.state.to_payload(), before)
+
+    def test_uncertain_result_guidance_does_not_claim_an_inflight_investigation(self):
+        from core.context_selection import CONTEXT_GUIDANCE
+        self.assertNotIn("未确认就直说还在确认", CONTEXT_GUIDANCE)
+        self.assertIn("尚未确认", CONTEXT_GUIDANCE)
+
+    def test_on_hold_closed_or_sleeping_status_dominates_a_leftover_action_link(self):
+        self.state.current_action = {"type": "read", "matter_id": self.matter["id"]}
+        for status in ("paused", "waiting", "blocked", "completed", "abandoned", "expired"):
+            with self.subTest(status=status):
+                self.matter["status"] = status
+                before = copy.deepcopy(self.state.to_payload())
+                text = life_items(self.state, self.request())[0].summary
+                self.assertIn("此刻未执行该事项的步骤", text)
+                self.assertNotIn("正在执行该事项的步骤", text)
+                self.assertEqual(self.state.to_payload(), before)
+        self.matter.update(status="working", stage_notes=[{"summary": "核对日期",
+            "content": "邮戳日期尚未确认", "at": 900}])
+        for state in ("sleeping", "napping"):
+            with self.subTest(state=state):
+                self.state.state = state
+                for text in (life_items(self.state, self.request())[0].summary,
+                    matters.activity_basis(self.state, now=1000, persona_key="alice"),
+                    matters.context_block(self.state, session_id=S, now=1000, persona_key="alice")):
+                    self.assertIn("此刻未执行该事项的步骤", text)
+                    self.assertNotIn("正在执行该事项的步骤", text)
+                    self.assertIn("邮戳日期尚未确认", text)
+
+    def test_latest_execution_state_stays_after_saved_thought_in_both_atomic_views(self):
+        self.matter.update(status="paused", result="", steps=[{"id": "dates", "text": "比较邮戳",
+            "minutes": 20, "worked_minutes": 5, "status": "pending", "bookmark": {
+                "note": "上次只读到黎明，邮戳是哪天尚未核实", "open_question": "日期是否同一天"}}])
+        material = life_items(self.state, self.request())
+        for budget in (1, 90, 300, 600, 1200):
+            with self.subTest(budget=budget):
+                text = select_context(self.request(), material, budget=budget).render()
+                if "上次只读到黎明" in text:
+                    self.assertGreater(text.index("最新执行状态"), text.index("日期是否同一天"))
+                    self.assertIn("已暂停，此刻未执行该事项的步骤", text)
+                    self.assertIn("邮戳是哪天尚未核实", text)
+        for view in (material[0].summary, material[0].detail):
+            self.assertGreater(view.index("最新执行状态"), view.index("日期是否同一天"))
+
     def test_autonomous_stage_basis_carries_finished_state_without_old_future_work(self):
         self.matter.update(next_step="再次整理",stage_notes=[{
             "summary":"整理人物去向", "content":"章节笔记已收尾。", "next_focus":"继续整理人物去向", "at":900}])

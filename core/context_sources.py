@@ -10,7 +10,7 @@ from .context_selection import (CONTEXT_GUIDANCE, ContextItem, ContextRequest,
 
 def life_items(state: Any, request: ContextRequest) -> list[ContextItem]:
     from .life_matters import (CLOSED, ON_HOLD, current_bookmark, current_stage_notes, pending_review_bookmarks,
-                              progress_label, stable_interests, stage_record_text, visible)
+                              execution_state, progress_label, stable_interests, stage_record_text, visible)
     from .chat_browse import thought_visible
     result = []
     for index, item in enumerate(getattr(state, "life_matters", []) or []):
@@ -25,11 +25,11 @@ def life_items(state: Any, request: ContextRequest) -> list[ContextItem]:
             continue
         status = str(item.get("status") or "active")
         title = str(item.get("text") or "")
-        goal_state = {"completed": "已确认完成", "abandoned": "已放下", "paused": "暂停",
+        goal_state = {"completed": "已确认完成", "abandoned": "已放下", "paused": "暂停，目前未执行",
                       "waiting": "等待中，目前未执行", "blocked": "受阻，目前未执行",
                       "expired": "已过期"}.get(status, "尚未完成")
         ready = status not in CLOSED | ON_HOLD
-        heading = ("一直在推进的生活事项" if ready else "已经结束的生活事项" if status in CLOSED
+        heading = ("尚未结束的生活事项" if ready else "已经结束的生活事项" if status in CLOSED
                    else "等待接续的生活事项" if status in {"waiting", "blocked"} else "暂时放下的生活事项")
         summary = (f"# {'本会话的约定' if who else heading}\n"
                    f"[{item.get('id') or index}] 目标（{goal_state}）：{title}；状态：{status}；"
@@ -79,13 +79,14 @@ def life_items(state: Any, request: ContextRequest) -> list[ContextItem]:
             topic.extend(str(stage.get(key) or "") for key in ("summary", "content", "next_focus"))
         if bookmark:
             label = "中途书签（步骤尚未做完）" if ready else "保留的书签（目前未执行）"
-            summary += (f"\n{label}：{bookmark['step']}；继续位置：{bookmark['next_focus']}。"
+            summary += (f"\n{label}：{bookmark['step']}；上次留下的接续位置：{bookmark['next_focus']}。"
                         "尚未确认这一步的结果，投入和思路都不代表已完成或已核实。")
             if bookmark.get("note"):
-                summary += f"\n世界内中途思路：{bookmark['note']}"
+                summary += f"\n此前记录的世界内中途思路：{bookmark['note']}"
             if bookmark.get("open_question"):
                 summary += f"\n未解问题：{bookmark['open_question']}"
             topic.extend(str(bookmark.get(key) or "") for key in ("note", "next_focus", "open_question"))
+        summary += f"\n最新执行状态（上述记录之后的此刻）：{execution_state(state, item)}。"
         detail = summary + (f"\n原先的动机：{item['motivation']}" if item.get("motivation") else "")
         if bookmark:
             detail += (f"\n计时依据（不是成果）：已投入{bookmark['worked_minutes']:g}分钟；"

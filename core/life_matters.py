@@ -15,6 +15,22 @@ ON_HOLD = frozenset({"paused", "waiting", "blocked"})
 RETIRED_COMPUTER_KEYS = frozenset({"executions", "artifacts", "execution_review_required", "capability_key", "failure_count"})
 
 
+def execution_state(state: Any, item: dict) -> str:
+    """Project lifecycle and saved effort do not prove a step is running now."""
+    status = item.get("status")
+    if status in CLOSED:
+        return "此事项已结束，此刻未执行该事项的步骤"
+    if status in ON_HOLD:
+        return {"paused": "已暂停", "waiting": "等待中", "blocked": "目前受阻"}[status] + "，此刻未执行该事项的步骤"
+    action = getattr(state, "current_action", None) or {}
+    if (not action.get("type") or not item.get("id") or action.get("matter_id") != item["id"]
+            or getattr(state, "state", "") in {"sleeping", "napping"}):
+        return "事项未结束，但此刻未执行该事项的步骤"
+    if action["type"] == "walk_to":
+        return "正在前往步骤地点，步骤尚未开始"
+    return "正在执行该事项的步骤"
+
+
 def activity_basis(state, *, now: float, persona_key: str = "") -> str:
     """Only shared personal activity is motivation for autonomous life."""
     rows = []
@@ -28,6 +44,7 @@ def activity_basis(state, *, now: float, persona_key: str = "") -> str:
         for stage in current_stage_notes(item)[-1:]:
             if 0 <= now - float(stage.get("at") or 0) <= 3 * 86400:
                 rows.append(f"- 世界内阶段：{item['text']}；当前事项状态：{item.get('status') or 'active'}；"
+                            f"此刻执行状态：{execution_state(state, item)}；"
                             f"{stage_record_text(stage, status=item.get('status') or 'active')}")
     # A limit may omit a record, never cut off its qualifications or question.
     selected, used = [], 0
@@ -393,7 +410,7 @@ def context_block(state, *, session_id: str, user_id: str = "", now: float = 0,
             continue
         next_label = "保留的接续位置（目前未执行）" if item.get("status") in ON_HOLD else "下一步"
         rows.append(f"- [{item['id']}] {item['text']}；动机：{item.get('motivation') or '原先想做的事'}；"
-                    f"状态：{item['status']}；{progress_label(item)}；"
+                    f"状态：{item['status']}；此刻执行状态：{execution_state(state, item)}；{progress_label(item)}；"
                     f"{next_label}：{item.get('next_step') or '尚待安排'}；阻碍：{item.get('obstacle') or '无'}")
         for stage in current_stage_notes(item)[-1:]:
             rows[-1] += (f"\n  世界内阶段所得（模拟内容）："
