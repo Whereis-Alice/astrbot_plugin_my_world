@@ -122,9 +122,9 @@ class ParticipationMixin:
                            "接较早的话时选择引用，话题已结束或问题已解决时不追答。")
         result = build_participation_prompt(persona=persona, life=life, rows=rows,
             now=self._now(), live_window=self._participation_window(source), style=style,
-            background=background, natural_silence=self.world.decider.natural_silence)
+            background=background, natural_silence=source == "browse" or self.world.decider.natural_silence)
         request.trace["scene"] = {"rows": len(rows), "characters": len(result[1])}
-        request.trace["natural_silence"] = self.world.decider.natural_silence
+        request.trace["natural_silence"] = source == "browse" or self.world.decider.natural_silence
         return result
 
     def participation_sample(self, state, target, new) -> bool:
@@ -250,7 +250,7 @@ class ParticipationMixin:
                                        if source == "browse" else self.participation_text(state, session_id))
             if (not message or self.participation_gate(state, session_id, source=source)
                     or self._now() >= outcome.chat_expires_at[session_id]):
-                reason = ("这轮继续旁听" if self.world.decider.natural_silence
+                reason = ("这轮继续旁听" if source == "browse" or self.world.decider.natural_silence
                           else "本轮没有可发送的接话，或现场与权限已变化")
                 self.decision_trace(session_id, "participation", "listening", reason)
                 return outcome

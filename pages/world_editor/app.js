@@ -8,7 +8,7 @@ import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js?v=4
 import { memorySearchFields } from "./memory-settings.js";
 import { relationshipPromptEditor } from "./relationship-prompt.js";
 import { mountLifeWorkspace } from "./life-workspace.js";
-import { openBrowseSettings } from "./browse-settings.js?v=4.33.2";
+import { openBrowseSettings } from "./browse-settings.js?v=4.34.7";
 import { personAvatar, personColor, bindPeopleSort } from "./people-ui.js";
 import { openRelationshipRulesEditor } from "./relationship-rules.js";
 import { applyDetailedLevels, DETAILED_LEVELS } from "./relationship-preset.js";
@@ -11722,7 +11722,7 @@ function renderActionForm() {
         action.scope = value;
         renderActionForm();
       },
-      { hint: "「全局」= 任何地点都能做；「仅特定地点」= 这个动作属于指定地点，她想去就会被带过去再做。" },
+      { hint: "「全局」= 任何地点都能做；「仅特定地点」= 先去指定地点再做，没有可用地点时暂不可执行。" },
     ),
   );
   form.appendChild(
@@ -11858,7 +11858,7 @@ function renderActionForm() {
           renderActionForm();
         },
         {
-          hint: "这个动作只在这些地点可用。",
+          hint: "这个动作只在这些地点可用；不选地点时暂不可执行，不会自动变成全局动作。",
           empty: "点击选择地点…",
           renderChips: true,
         },
@@ -12552,10 +12552,9 @@ function sortedActions(list) {
     );
   } else if (mode === "place") {
     // 按地点排序：同一处能做的事排在一起，没限定地点的排最后
-    const placeOf = (action) =>
-      String(action.scope || "") === "node" && (action.allowed_nodes || []).length
-        ? nodeLabel(String(action.allowed_nodes[0]))
-        : "（不限地点）";
+    const placeOf = (action) => action.scope === "node"
+      ? ((action.allowed_nodes || []).length ? nodeLabel(String(action.allowed_nodes[0])) : "（无可用地点）")
+      : "（不限地点）";
     rows.sort(
       (a, b) => placeOf(a).localeCompare(placeOf(b), "zh-Hans-CN") || byName(a, b),
     );
@@ -16235,16 +16234,16 @@ function renderBrowseStatus(visible) {
   head.append(settings); box.append(head);
   const grid = el("div", "browse-status-grid");
   for (const [label, value, detail] of [
-    [info.shared ? "生活组今日开始" : "今日开始浏览", `${info.started_today || 0} / ${info.daily_max || 0}`, "开始次数，包含中断或未留下感想的浏览"],
-    ["本会话最近读完", info.last_read_at ? formatStamp(info.last_read_at) : "暂无完成记录", info.last_result === "quiet" ? "这次读过了，没有特别感想" : info.last_result === "feeling" ? "留下了一点感想" : "旧版未统计完成次数"],
+    [info.shared ? "生活组今日开始" : "今日开始浏览", `${info.started_today || 0} / ${info.daily_max || 0}`, "开始次数，包含中断或想法生成失败的浏览"],
+    ["本会话最近读完", info.last_read_at ? formatStamp(info.last_read_at) : "暂无完成记录", info.last_result === "quiet" ? "旧版阅读未记录想法；新版成功读完必留想法" : info.last_result === "feeling" ? "已记录本次想法" : "旧版未统计完成次数"],
     ["最早可再浏览", info.next_at > Date.now() / 1000 ? formatStamp(info.next_at) : "间隔已满足", `至少间隔 ${info.cooldown_minutes || 120} 分钟，仍需等到空闲`],
-    ["浏览后接话", info.reply_enabled ? (info.reply_allowed ? (info.natural_silence ? "可选择旁听" : "按话题接话") : "未获发言授权") : "安静阅读", "跟随「自主发言 → 自然沉默」；只接仍在进行的话题"],
+    ["浏览后接话", info.reply_enabled ? (info.reply_allowed ? "由她决定是否接话" : "未获发言授权") : "安静阅读", "想法会记录，接话可选择；只接仍在进行的话题"],
   ]) {
     const item = el("div", "browse-status-item");
     item.append(el("small", "", label), el("strong", "", value), el("span", "muted", detail)); grid.append(item);
   }
   box.append(grid, el("p", "muted", info.note || ""));
-  if (info.last_error_at) box.append(el("p", "muted", `最近一次未能完成阅读：${formatStamp(info.last_error_at)}。浏览未推进，下次空闲时再试；详情可在「模型调用」查看。`));
+  if (info.last_error_at) box.append(el("p", "muted", `最近一次未能记录想法：${formatStamp(info.last_error_at)}${info.last_error ? `（${info.last_error}）` : ""}。本次不计为成功读完，仍计入开始次数与冷却；详情可在「模型调用」查看。`));
 }
 
 function openCurrentBrowseSettings() {

@@ -162,8 +162,39 @@ class TestConfigStore(TempDirMixin, unittest.TestCase):
         world, warnings = parse_world(raw)
         self.assertNotIn("nowhere", world.node_map())
         self.assertTrue(all(edge.to != "nowhere" for edge in world.edges))
-        self.assertEqual(world.action_map()["ghost"].scope, "global")
+        self.assertEqual(world.action_map()["ghost"].scope, "node")
+        self.assertEqual(world.action_map()["ghost"].allowed_nodes, [])
+        self.assertFalse(any(world.action_map()["ghost"].available_in(node.id) for node in world.nodes))
         self.assertTrue(warnings)
+
+    def test_missing_action_places_survive_save_reload_without_widening_scope(self):
+        store = ConfigStore(self.tmp_path)
+        raw = default_world()
+        raw["nodes"] = [node for node in raw["nodes"] if node["id"] != "kitchen"]
+        store.save_world(raw)
+        for _ in range(2):
+            world = store.load_world()
+            cook = world.action_map()["cook"]
+            self.assertTrue(cook.enabled)
+            self.assertEqual((cook.scope, cook.allowed_nodes), ("node", []))
+            self.assertFalse(any(cook.available_in(node.id) for node in world.nodes))
+            store.save_world(world.model_dump(mode="json", by_alias=True))
+
+    def test_empty_and_partial_action_places_keep_explicit_scope(self):
+        raw = default_world()
+        raw["actions"].extend([
+            {"id":"empty_place", "scope":"node", "allowed_nodes":[]},
+            {"id":"shared_place", "scope":"node", "allowed_nodes":["bedroom", "gone"]},
+            {"id":"everywhere", "scope":"global", "allowed_nodes":["gone"]},
+        ])
+        world, warnings = parse_world(raw)
+        self.assertFalse(world.action_map()["empty_place"].available_in("bedroom"))
+        shared = world.action_map()["shared_place"]
+        self.assertEqual((shared.scope, shared.allowed_nodes), ("node", ["bedroom"]))
+        self.assertTrue(shared.available_in("bedroom"))
+        self.assertFalse(shared.available_in("kitchen"))
+        self.assertTrue(world.action_map()["everywhere"].available_in("kitchen"))
+        self.assertTrue(any("重新选择地点" in warning for warning in warnings))
 
     def test_old_builtin_action_name_follows_the_rename(self):
         """内置动作改名（倒杯茶 → 倒茶提醒喝水）：老配置里没改过的名字 / 文案 / 说明一起换。"""

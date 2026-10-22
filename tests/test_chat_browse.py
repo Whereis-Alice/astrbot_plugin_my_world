@@ -231,12 +231,16 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.engine.profiles.list_people(S), [])
         self.assertIn("主观", feeling_context(state, S, self.clock.now()))
 
-    async def test_empty_feeling_consumes_cursor_without_memory_and_no_repeat(self):
+    async def test_empty_feeling_is_repaired_into_a_recorded_thought(self):
         action = await self.prepare()
-        state = await self.complete(action, inner="", source_seqs=[])
-        self.assertEqual(state.thoughts, [])
+        self.llm.replies = [json.dumps({"inner":"", "source_seqs":[]}), json.dumps({
+            "inner":"花的事看过了，先继续手头的小事。", "source_seqs":[action["browse_rows"][0]["seq"]]})]
+        await self.engine._complete_chat_browse(S, action["id"])
+        state = await self.engine.load_state(S)
+        self.assertEqual(state.thoughts[-1]["content"], "花的事看过了，先继续手头的小事。")
         status = self.engine.chat_browse_status(state, S)
-        self.assertEqual((status["started_today"], status["completed_today"], status["last_result"]), (1, 1, "quiet"))
+        self.assertEqual((status["started_today"], status["completed_today"], status["last_result"]), (1, 1, "feeling"))
+        self.assertEqual(len(self.llm.calls), 2)
         self.assertEqual(status["reason"], "等待最短浏览间隔结束")
         self.clock.advance(7201)
         self.assertFalse(self.engine.start_chat_browse(state, "browse_phone"))
@@ -285,9 +289,18 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(state.awaiting_reply)
         self.assertEqual(self.engine.contact_status(S)["left"], 6)
         self.assertIn("不主动介绍自己的日程", self.llm.calls[1]["system_prompt"])
-        self.assertIn("自然沉默：关闭", self.llm.calls[1]["system_prompt"])
+        self.assertIn("自然沉默：开启", self.llm.calls[1]["system_prompt"])
         self.assertNotIn("没有想说的就放下", self.llm.calls[1]["system_prompt"])
-        self.assertFalse(self.engine.chat_browse_status(state, S)["natural_silence"])
+        self.assertTrue(self.engine.chat_browse_status(state, S)["natural_silence"])
+
+    async def test_browse_can_stay_silent_with_global_natural_silence_off(self):
+        action = await self.prepare(reply_enabled=True)
+        self.assertFalse(self.engine.world.decider.natural_silence)
+        state = await self.complete(action, decision='{"say":"","reply_to":""}')
+        self.assertTrue(state.thoughts[-1]["content"])
+        self.assertFalse(state.thoughts[-1]["browse_replied"])
+        self.assertEqual(self.messenger.sent, [])
+        self.assertIn("自然沉默：开启", self.llm.calls[-1]["system_prompt"])
 
     async def test_expired_chat_is_not_replied_to_after_reading(self):
         action = await self.prepare(reply_enabled=True)
@@ -386,14 +399,34 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.engine.clear_thoughts(S, "inner"), 1)
         self.assertEqual([row["content"] for row in (await self.engine.load_state(S)).thoughts], ["只属于私聊的阅读感想"])
 
-    async def test_empty_feeling_without_citations_still_consumes_the_reading_cursor(self):
+    async def test_repeated_empty_feeling_is_a_visible_failure_without_progress(self):
         action = await self.prepare()
-        self.llm.replies = [json.dumps({"inner": "", "meaningful": False})]
+        self.llm.replies = [json.dumps({"inner": "", "meaningful": False})] * 2
         await self.engine._complete_chat_browse(S, action["id"])
         state = await self.engine.load_state(S)
         self.assertEqual(state.thoughts, [])
-        self.assertEqual(state.chat_browsing["sessions"][S]["seq"], action["browse_rows"][-1]["seq"])
+        self.assertNotIn("sessions", state.chat_browsing)
+        self.assertEqual(self.engine.chat_browse_status(state, S)["last_error"], "模型返回了空想法")
+        self.assertEqual(state.chat_browsing["count"], 1)
+        self.assertGreater(state.chat_browsing["next_at"], self.clock.now())
+        self.assertEqual(len(self.llm.calls), 2)
         self.assertIsNone(state.current_action)
+
+    async def test_daily_limit_above_twelve_is_saved_and_used_by_runtime(self):
+        self.configure(daily_max=100)
+        self.assertEqual(self.store.load_world().chat_browse.daily_max, 100)
+        async with self.engine.session_state(S) as state:
+            state.state, state.current_action, state.current_plan = "idle", None, None
+            state.energy = .8
+            self.note(state)
+            state.chat_browsing.update(day=self.engine._today_key(self.clock.now()), count=12, next_at=0)
+            self.assertTrue(self.engine.start_chat_browse(state, "browse_phone"))
+            self.engine._stop_chat_browse(state, state.current_action)
+            state.chat_browsing.update(count=100, next_at=0)
+            self.assertFalse(self.engine.start_chat_browse(state, "browse_phone"))
+        with self.assertRaises(ValueError):
+            ChatBrowseConfig(daily_max=101)
+        self.assertEqual(ChatBrowseConfig().daily_max, 3)
 
     async def test_invalid_citation_does_not_commit_progress(self):
         action = await self.prepare()
@@ -573,7 +606,7 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
         observed = []
         async def generate(**kwargs):
             observed.append((kwargs["max_tokens"], call_context()))
-            return LLMReply(ok=True, text='{"inner":"", "source_seqs":[]}')
+            return LLMReply(ok=True, text='{"inner":"花的事有点意思。", "source_seqs":[1]}')
         self.llm.generate = generate
         await self.engine._complete_chat_browse(S, action["id"])
         self.assertEqual(len(observed), 1)
@@ -594,15 +627,43 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(observed), 1)  # Previous request already used the day's budget.
         state = await self.engine.load_state(S)
         self.assertIsNone(state.current_action)
-        self.assertEqual(state.thoughts, [])
+        self.assertEqual(len(state.thoughts), 1)
 
     async def test_long_persona_keeps_important_traits_at_the_end(self):
         self.persona.text = "角色原有的世界背景。" * 1000 + "末尾的重要设定：不喜欢花，不能因阅读改变这个喜好。"
         action = await self.prepare()
         await self.complete(action, inner="", source_seqs=[])
-        material = json.loads(self.llm.calls[-1]["prompt"])
-        self.assertEqual(material["persona"], self.persona.text)
-        self.assertIn("不能因阅读改变这个喜好", material["persona"])
+        for call in self.llm.calls:
+            material = json.JSONDecoder().raw_decode(call["prompt"])[0]
+            self.assertEqual(material["persona"], self.persona.text)
+            self.assertIn("不能因阅读改变这个喜好", material["persona"])
+
+    async def test_retry_rechecks_configuration_and_never_commits_stale_thought(self):
+        action = await self.prepare()
+        calls = []
+        async def generate(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                return '{"inner":"", "source_seqs":[]}'
+            await self.engine.clear_chat_context(S)
+            return json.dumps({"inner":"旧消息的想法", "source_seqs":[action["browse_rows"][0]["seq"]]})
+        self.engine._ask_judge = AsyncMock(side_effect=generate)
+        await self.engine._complete_chat_browse(S, action["id"])
+        state = await self.engine.load_state(S)
+        self.assertEqual(state.thoughts, [])
+        self.assertNotIn("sessions", state.chat_browsing)
+        self.assertIsNone(state.current_action)
+
+    async def test_long_thought_is_rejected_whole_without_losing_qualification(self):
+        action = await self.prepare()
+        payload = {"inner":"看到大家讨论这个话题，" * 15 + "但这只是猜测，没有确认。",
+                   "source_seqs":[action["browse_rows"][0]["seq"]]}
+        self.llm.replies = [json.dumps(payload, ensure_ascii=False)] * 2
+        await self.engine._complete_chat_browse(S, action["id"])
+        state = await self.engine.load_state(S)
+        self.assertEqual(state.thoughts, [])
+        self.assertNotIn("sessions", state.chat_browsing)
+        self.assertEqual(self.engine.chat_browse_status(state, S)["last_error"], "模型返回的想法超过120字")
 
     async def test_cancelled_inference_stops_on_next_finish_without_retry(self):
         action = await self.prepare()

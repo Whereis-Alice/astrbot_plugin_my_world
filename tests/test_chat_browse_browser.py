@@ -53,7 +53,9 @@ class ChatBrowseBrowserTests(unittest.TestCase):
         sources = self.page.get_by_role('group', name='可以翻阅哪些会话', exact=True).get_by_role('checkbox')
         sources.first.check()
         source = sources.first.input_value()
-        self.page.get_by_label('每天最多浏览次数', exact=True).fill('2')
+        daily = self.page.get_by_label('每天最多浏览次数', exact=True)
+        expect(daily).to_have_attribute('max', '100')
+        daily.fill('100')
         expect(self.page.get_by_label('每次最多读取条数', exact=True)).to_have_value('500')
         self.page.get_by_label('每次最多读取条数', exact=True).fill('1000')
         self.page.get_by_label('每次正文最多字数', exact=True).fill('1800')
@@ -65,7 +67,7 @@ class ChatBrowseBrowserTests(unittest.TestCase):
         self.assertTrue(config['reply_enabled'])
         self.assertEqual(config['computer_nodes'], [computer])
         self.assertEqual(config['sessions'], [source])
-        self.assertEqual((config['daily_max'], config['max_chars']), (2, 1800))
+        self.assertEqual((config['daily_max'], config['max_chars']), (100, 1800))
         self.assertEqual(config['max_messages'], 1000)
         self.assertEqual(self.errors, [])
 
@@ -77,6 +79,26 @@ class ChatBrowseBrowserTests(unittest.TestCase):
         self.settings()
         expect(self.page.get_by_label('她有一部手机（随身可用）', exact=True)).not_to_be_checked()
         expect(self.page.get_by_label('浏览后允许她判断是否接话', exact=True)).not_to_be_checked()
+
+    def test_daily_limit_validation_and_legacy_reading_explanation(self):
+        self.settings()
+        self.page.get_by_label('每天最多浏览次数', exact=True).fill('101')
+        self.page.locator('#dialog-ok').click()
+        expect(self.page.locator('#dialog-error')).to_contain_text('1–100')
+        self.page.locator('#dialog-cancel').click()
+        self.page.evaluate("""() => {
+          const read = AstrBotPluginPage.apiGet;
+          AstrBotPluginPage.apiGet=(key,params)=>key==='thoughts'?Promise.resolve({thoughts:[],
+            browse:{started_today:4,daily_max:100,last_read_at:Date.now()/1000,last_result:'quiet',
+              reply_enabled:true,reply_allowed:true,last_error_at:Date.now()/1000,last_error:'模型返回了空想法'}}):read(key,params);
+        }""")
+        self.page.locator('button[data-tab="thoughts"]').click()
+        self.page.get_by_role('tab', name='翻消息时', exact=True).click()
+        expect(self.page.locator('#thoughts-browse-status')).to_contain_text('新版成功读完必留想法')
+        expect(self.page.locator('#thoughts-browse-status')).to_contain_text('由她决定是否接话')
+        expect(self.page.locator('#thoughts-browse-status')).to_contain_text('模型返回了空想法')
+        expect(self.page.locator('#thoughts-browse-status')).not_to_contain_text('这次读过了，没有特别感想')
+        self.assertEqual(self.errors, [])
         self.assertEqual(self.errors, [])
 
     def test_reading_feelings_have_collapsible_safe_evidence_and_responsive_layout(self):

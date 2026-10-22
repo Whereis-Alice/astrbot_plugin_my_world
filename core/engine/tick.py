@@ -402,6 +402,21 @@ class TickMixin:
         action = state.current_action
         if not isinstance(action, dict):
             return
+        definition = self.world.action_map().get(str(action.get("type") or ""))
+        if (definition and definition.id != "sleep" and definition.scope == "node"
+                and not definition.available_in(state.node_id)):
+            # A map/scope change can invalidate an already-running activity.
+            # Preserve prior effort without completing it in the wrong place.
+            # Existing sleep recovery keeps its own rhythm/fallback semantics.
+            self.pause_matter_action(state, action)
+            if definition.id == "nap":
+                self._finish_sleep_rhythm(state, action, interrupted=True)
+            state.current_action, state.state = None, STATE_IDLE
+            if action.get("from_plan") and state.current_plan and same_plan(action, state.current_plan):
+                advance(state, status="skipped")
+            await self._log_event(state, "skip", {"action": definition.id,
+                "note": f"「{definition.id}」的地点限制已变化，在 {state.node_id} 停止执行"}, outcome=outcome)
+            return
         if not action.pop("offline_tick_settled", False):
             action["elapsed_ticks"] = int(action.get("elapsed_ticks", 0)) + 1
         self.settle_life_practice(state, action)

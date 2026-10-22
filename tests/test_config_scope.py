@@ -91,6 +91,64 @@ class ConfigScopeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.engine.config_scope_id, "")
         self.assertNotIn(self.engine.world.name, {"A", "B"})
 
+    async def test_map_override_does_not_turn_inherited_cook_into_a_global_action(self):
+        raw = self.store.raw_world()
+        self.override(A, blocks=["map"], nodes=[n for n in raw["nodes"] if n["id"] != "kitchen"])
+        with self.engine.config_scope(A):
+            cook = self.engine.world.action_map()["cook"]
+            self.assertEqual((cook.scope, cook.allowed_nodes), ("node", []))
+            self.assertFalse(self.engine._nearest_node_with_action("bedroom", cook))
+            self.assertNotIn("cook", self.engine._parseable_action_ids("bedroom"))
+            async with self.engine.session_state(A) as state:
+                state.node_id = "bedroom"
+                state.state, state.current_action, state.current_plan = "idle", None, None
+                outcome = TickOutcome(A)
+                await self.engine._execute_actions(state, self.engine.node(state.node_id), outcome,
+                    [PlannedAction(type="cook")], depth=0, autonomous=True)
+                self.assertIsNone(state.current_action)
+                self.assertTrue(any("不可用" in note for note in outcome.notes))
+        with self.engine.config_scope(B):
+            self.assertTrue(self.engine.world.action_map()["cook"].available_in("kitchen"))
+
+    async def test_changed_places_stop_running_work_without_completion_effects(self):
+        async with self.engine.session_state(A) as state:
+            state.node_id = "kitchen"
+            state.state, state.current_action, state.current_plan = "idle", None, None
+            await self.engine._execute_actions(state, self.engine.node(state.node_id), TickOutcome(A),
+                [PlannedAction(type="cook")], depth=0, autonomous=True)
+            self.assertEqual(state.current_action["type"], "cook")
+        raw = self.store.raw_world()
+        cook = next(action for action in raw["actions"] if action["id"] == "cook")
+        cook["allowed_nodes"] = ["study"]
+        cook["on_complete"] = {"effects":{"energy":"+0.5"}, "next":"none"}
+        self.store.save_world(raw)
+        self.engine.reload_config()
+        async with self.engine.session_state(A) as state:
+            state.energy = .2
+            await self.engine._tick_continuous(state, self.engine.node(state.node_id), TickOutcome(A))
+            self.assertIsNone(state.current_action)
+            self.assertEqual(state.state, "idle")
+            self.assertEqual(state.node_id, "kitchen")
+            self.assertEqual(state.energy, .2)
+
+    async def test_invalid_running_place_skips_only_its_own_plan_step(self):
+        async with self.engine.session_state(A) as state:
+            state.node_id, state.state = "kitchen", "idle"
+            state.current_action = None
+            state.current_plan = create_plan(steps=[{"action":"cook"}, {"action":"think"}], world_time=state.world_time)
+            await self.engine._tick_plan(state, self.engine.node(state.node_id), TickOutcome(A), depth=0)
+            self.assertEqual(state.current_action["type"], "cook")
+        raw = self.store.raw_world()
+        next(action for action in raw["actions"] if action["id"] == "cook")["allowed_nodes"] = ["study"]
+        self.store.save_world(raw)
+        self.engine.reload_config()
+        async with self.engine.session_state(A) as state:
+            await self.engine._tick_continuous(state, self.engine.node(state.node_id), TickOutcome(A))
+            self.assertIsNone(state.current_action)
+            self.assertEqual(state.current_plan["steps"][0]["status"], "skipped")
+            self.assertEqual(state.current_plan["steps"][1]["status"], "pending")
+            self.assertEqual(state.current_plan["current_step"], 1)
+
     async def test_shared_life_uses_stable_main_configuration(self):
         self.override(A, name="main")
         self.override(B, name="member")

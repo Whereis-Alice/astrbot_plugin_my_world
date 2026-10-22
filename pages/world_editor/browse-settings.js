@@ -65,13 +65,13 @@ export function browseSettings({world, sessions = [], el, body}) {
   reading.append(el("p", "browse-reading-note muted", "推荐最近 12 小时 · 最多 500 条 · 60,000 字。条数和字数同时生效，取先到的上限；只读插件已收到且仍在缓存内的文字，不向平台补拉历史。"));
   content.insertBefore(reading, content.querySelector(".browse-choices"));
   const cadence = el("section", "browse-cadence"); cadence.append(el("h3", "", "多久翻一次"));
-  numbers(cadence, [["cooldown_minutes", "两次浏览至少间隔（分钟）", 30, 1440, "分钟"], ["daily_max", "每天最多浏览次数", 1, 12, "次"]]);
-  cadence.append(el("p", "muted", "这是最短间隔。时间到了，会等下一个有新消息、设备可用的空闲时刻；不会打断睡眠或手头的事。次数按开始浏览计算，没有特别感想也算读过。"));
+  numbers(cadence, [["cooldown_minutes", "两次浏览至少间隔（分钟）", 30, 1440, "分钟"], ["daily_max", "每天最多浏览次数", 1, 100, "次"]]);
+  cadence.append(el("p", "muted", "这是最短间隔。时间到了，会等下一个有新消息、设备可用的空闲时刻；不会打断睡眠或手头的事。次数按开始浏览计算，中断或想法生成失败也占用一次；成功读完会记录想法。"));
   content.append(cadence);
   const reply = el("section", "browse-reply");
   reply.append(el("h3", "", "看完，也可以接一句"));
   toggle(reply, "reply_enabled", "浏览后允许她判断是否接话");
-  reply.append(el("p", "muted", "默认关闭。开启后按来源会话里仍在进行的话题接一句，可以选择回应哪条消息，不补回过时聊天、不播报自己的生活。是否允许没话想说时放下，统一跟随「设置 → 自主发言 → 自然沉默」（默认关闭）。发言还需在全局主动发言白名单中获准，群聊和私聊均可。"));
+  reply.append(el("p", "muted", "默认关闭。每次成功浏览都会在「内心活动 → 翻消息时」留下一点想法。开启后由她自己决定是否接话，可以选择回应哪条消息，也可以看完继续生活；只接来源会话里仍在进行的话题。发言还需在全局主动发言白名单中获准，群聊和私聊均可。"));
   content.append(reply);
   const memory = el("div", "browse-memory");
   toggle(memory, "remember_meaningful", "有持续意义的感受可留下生活记忆");

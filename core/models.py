@@ -2322,7 +2322,7 @@ class ChatBrowseConfig(Permissive):
     computer_nodes: list[str] = Field(default_factory=list, max_length=100)
     sessions: list[str] = Field(default_factory=list, max_length=100)
     cooldown_minutes: int = Field(default=120, ge=30, le=1440)
-    daily_max: int = Field(default=3, ge=1, le=12)
+    daily_max: int = Field(default=3, ge=1, le=100)
     window_hours: int = Field(default=12, ge=1, le=24)
     max_messages: int = Field(default=500, ge=1, le=1000)
     max_chars: int = Field(default=60000, ge=300, le=120000)
@@ -3620,8 +3620,9 @@ def parse_world(data: dict[str, Any]) -> tuple[WorldConfig, list[str]]:
                 )
             action.allowed_nodes = kept
             if not kept:
-                warnings.append(f"动作 {action_id} 限定节点为空，已改为全局动作")
-                action.scope = "global"
+                warnings.append(
+                    f"动作 {action_id} 没有可用的限定地点，暂不可执行；请在动作库重新选择地点"
+                )
         actions.append(action)
     if legacy_disabled:
         warnings.append(
