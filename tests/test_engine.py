@@ -10940,6 +10940,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def test_once_schedule_fires_on_its_date_then_deletes_itself(self):
         """一次性日程：只认自己那一天，跑完就把自己删掉。"""
+        import asyncio
 
         self.add_schedule(
             id="once_thing",
@@ -10952,6 +10953,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         )
         self.clock.set_struct(datetime(2026, 9, 15, 12, 0))  # 周二：星期表对一次性日程不管用
         await self.engine.tick()
+        await asyncio.wait_for(self.engine._schedule_delivery_job, 5)
         self.assertIn("把衣服收了", self.messenger.flat_messages)
         self.assertEqual(self.store.raw_schedules()["schedules"], [])
         events = await self.db.call("query_events", session_id=SESSION, limit=20)

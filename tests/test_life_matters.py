@@ -119,6 +119,75 @@ class MattersAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         await self.engine.advance_life_matters(SESSION)
         self.assertEqual((await self.state()).current_action["duration_ticks"], 6)
 
+    async def test_resume_recovers_fully_accounted_step_without_replaying_activity(self):
+        async with self.engine.session_state(SESSION) as state:
+            state.state = "idle"
+            item = self.engine.add_life_matter(state, "核对两封信的日期")
+            item.update(status="working",steps=[{"id":"dates", "text":"比较邮戳与手写日期",
+                "action":"read", "node":"study", "minutes":5, "status":"pending"}])
+            state.current_action = {"type":"read", "matter_id":item["id"], "matter_step_id":"dates",
+                                    "elapsed_ticks":5, "duration_ticks":30}
+            self.engine.manage_life_matter(state, item["id"], "pause")
+            step = item["steps"][0]
+            self.assertEqual(step["worked_minutes"],5)
+            step["bookmark"].update(note="黎明不是完整日期，尚不能确认同一天",open_question="邮戳是哪一天")
+            self.engine.manage_life_matter(state, item["id"], "resume")
+        calls_before=len(self.llm.calls)
+        await self.engine.advance_life_matters(SESSION)
+        state = await self.state()
+        item = matters.find(state,item["id"])
+        self.assertEqual(item["steps"][0]["status"],"done")
+        self.assertTrue(item["needs_review"])
+        self.assertNotEqual(item["status"],"completed")
+        self.assertIn("尚不能确认同一天",matters.pending_review_bookmarks(item)[0]["note"])
+        self.assertIsNone(state.current_action)
+        self.assertIsNone(state.current_plan)
+        self.assertEqual(len(self.llm.calls),calls_before)
+        self.assertEqual(self.messenger.sent,[])
+        self.assertEqual(item["steps"][0]["result"]["minutes"],5)
+        self.assertEqual(item["steps"][0]["result"]["attempt_minutes"],0)
+        self.assertEqual(state.life_interests["read"]["minutes"],5)
+        events_before=copy.deepcopy(item["history"])
+        self.assertFalse(self.engine._complete_accounted_matter_step(state,item,item["steps"][0]))
+        self.assertEqual(item["history"],events_before)
+
+    async def test_reload_recovers_only_saved_online_work_and_keeps_promise_unconfirmed(self):
+        async with self.engine.session_state(SESSION) as state:
+            state.state = "idle"
+            item=self.engine.add_life_matter(state,"给42推荐一本书",who="42",kind="promise")
+            item.update(status="working",steps=[{"id":"read", "text":"读推荐书的开头",
+                "action":"read", "node":"study", "minutes":5, "status":"pending"}])
+            state.current_action={"type":"read", "matter_id":item["id"], "matter_step_id":"read",
+                                  "elapsed_ticks":5, "duration_ticks":30}
+            state.life_updated_at=self.clock.now()
+        self.clock.advance(3600)
+        self.engine.reload_config()
+        async with self.engine.session_state(SESSION) as state:
+            self.engine.reconcile_life_time(state)
+            step=matters.find(state,item["id"])["steps"][0]
+            self.assertEqual(step["worked_minutes"],5)
+            evidence_at=step["bookmark"]["at"]
+        await self.engine.advance_life_matters(SESSION)
+        item=matters.find(await self.state(),item["id"])
+        self.assertEqual(item["steps"][0]["status"],"done")
+        self.assertEqual(item["steps"][0]["result"]["at"],evidence_at)
+        self.assertEqual(item["blocker"],"evidence")
+        self.assertEqual(item["status"],"blocked")
+        self.assertEqual(self.messenger.sent,[])
+
+    async def test_recovery_does_not_complete_external_or_old_goal_work(self):
+        state=await self.state()
+        for action,old_goal in [("search_web",False),("say",False),("read",True)]:
+            with self.subTest(action=action,old_goal=old_goal):
+                item=self.engine.add_life_matter(state,"当前目标"+action)
+                step={"id":"old", "text":"以前做的一步", "action":action, "node":"study",
+                      "minutes":5, "worked_minutes":5, "status":"pending",
+                      "goal":"旧目标" if old_goal else item["text"]}
+                item["steps"]=[step]
+                self.assertFalse(self.engine._complete_accounted_matter_step(state,item,step,evidence_at=self.clock.now()))
+                self.assertEqual(step["status"],"pending")
+                self.assertNotEqual(item["status"],"completed")
+
     async def test_slow_stale_plan_does_not_overwrite_a_manual_pause(self):
         entered, release = asyncio.Event(), asyncio.Event()
         async def slow(*args):

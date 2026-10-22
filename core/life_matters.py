@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 CLOSED = {"completed", "abandoned", "expired"}
+ON_HOLD = frozenset({"paused", "waiting", "blocked"})
 RETIRED_COMPUTER_KEYS = frozenset({"executions", "artifacts", "execution_review_required", "capability_key", "failure_count"})
 
 
@@ -43,7 +44,7 @@ def current_stage_notes(item: dict) -> list[dict]:
 
 def stage_record_text(stage: dict, *, status: str = "active") -> str:
     """Keep the activity headline subordinate to its concrete qualifications."""
-    if status == "paused":
+    if status in ON_HOLD:
         next_focus = f"保留的后续位置（目前未执行）：{stage.get('next_focus') or '尚未确定'}。"
     elif status in CLOSED:
         next_focus = "此事项已结束；阶段记录只保留当时所得。"
@@ -382,7 +383,7 @@ def context_block(state, *, session_id: str, user_id: str = "", now: float = 0,
             continue
         if item.get("who") and item["who"] != user_id:
             continue
-        next_label = "保留的接续位置（目前未执行）" if item.get("status") == "paused" else "下一步"
+        next_label = "保留的接续位置（目前未执行）" if item.get("status") in ON_HOLD else "下一步"
         rows.append(f"- [{item['id']}] {item['text']}；动机：{item.get('motivation') or '原先想做的事'}；"
                     f"状态：{item['status']}；{progress_label(item)}；"
                     f"{next_label}：{item.get('next_step') or '尚待安排'}；阻碍：{item.get('obstacle') or '无'}")

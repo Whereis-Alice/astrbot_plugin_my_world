@@ -108,7 +108,7 @@ def build_participation_prompt(*, persona: str, life: dict, rows: list[dict],
               "包含自己刚说过的话；只接仍在进行的话题，避免重复自己。\n"
               + json.dumps(scene, ensure_ascii=False, separators=(",", ":")))
     prompt += ("\n写这句话时：问生活进展就按最新状态回答，已完成的讲已记录结果，未完成的讲具体进展与未解点，"
-               "暂停或放下的说明现在没在做，不把旧下一步说成当前活动。"
+               "暂停、等待、受阻或放下的说明现在没在做，只依据记录说明等什么，不把下一步说成当前活动。"
                "不补没有记录的成果、数字或日期；有人失落时先贴着其投入和落差回应，不急着劝别在意。")
     return system, prompt, targets
 

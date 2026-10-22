@@ -483,6 +483,14 @@ class MattersMixin:
         step = next((s for s in item.get("steps", []) if s.get("status") != "done"), None)
         if step is None:
             return
+        if (step.get("worked_minutes", 0) > 0
+                and step.get("worked_minutes", 0) + .01 >= step["minutes"]):
+            # An interrupted/reloaded action may have settled its last online
+            # tick before registering completion. Record that effort once;
+            # restarting an empty remainder would leave the step pending forever.
+            if self._complete_accounted_matter_step(state, item, step,
+                    evidence_at=float(matters.current_bookmark(item).get("at") or self._now())):
+                return
         if float(step.get("not_before") or 0) > self._now():
             item.update(status="waiting", resume_at=step["not_before"], next_step=step["text"])
             return
@@ -567,18 +575,37 @@ class MattersMixin:
         step = next((s for s in item.get("steps", []) if s["id"] == step_id), None)
         if step is None:
             return
+        self._complete_accounted_matter_step(state, item, step, attempt_minutes=minutes)
+
+    def _complete_accounted_matter_step(self, state, item: dict, step: dict, *,
+                                       attempt_minutes: float = 0, evidence_at: float | None = None) -> bool:
+        """Register saved online work; never replay activity or infer a goal result."""
+        definition = self.world.action_map().get(str(step.get("action") or ""))
+        if (not definition or definition.llm_level != "template" or definition.id == "walk_to"
+                or step.get("goal", item["text"]) != item["text"]
+                or step["minutes"] <= 0):
+            return False
+        if evidence_at is not None and definition.id != LIFE_SIMULATION_ACTION.id and (
+                definition.category != "continuous" or definition.target_type != "none"
+                or definition.tool_list() or definition.trigger_command
+                or definition.on_complete.trigger not in {"none", "llm_followup"}
+                or life_role(definition) not in {"interest", "explore"}):
+            return False  # Saved time can only recover quiet world work.
         simulated = definition.id == LIFE_SIMULATION_ACTION.id
         description = step["text"] if simulated else definition.name
         receipt = {"ok": True, "kind": "life_simulation" if simulated else "in_world_action", "action": definition.id,
-                   "matter_id": item["id"], "step_id": step_id, "goal": item["text"], "persona_key": item.get("persona_key", ""),
-                   "at": self._now(), "minutes": step.get("worked_minutes", 0), "attempt_minutes": minutes,
+                   "matter_id": item["id"], "step_id": step["id"], "goal": item["text"], "persona_key": item.get("persona_key", ""),
+                   "at": self._now() if evidence_at is None else evidence_at,
+                   "minutes": step["worked_minutes"], "attempt_minutes": attempt_minutes,
                    "result": f"{'世界内模拟' if simulated else '世界内进行了'}「{description}」，累计投入 {step.get('worked_minutes', 0):g} 分钟"}
         if step["worked_minutes"] + .01 < step["minutes"]:
             item["status"] = "active"
             matters.history(item, "progress", f"这一小步已投入 {step['worked_minutes']:g} 分钟，稍后继续", self._now(), receipt=receipt)
-            return
-        if matters.complete_step(state, matter_id, step_id, now=self._now(), receipt=receipt):
+            return False
+        if matters.complete_step(state, item["id"], step["id"], now=self._now(), receipt=receipt):
             self.memory.remember(session_id=item["session"], persona_id="", node_id=state.node_id,
                 content=f"（{'生活模拟，仅属于角色世界' if simulated else '生活事项的世界内进展'}）{item['text']}：{receipt['result']}", memory_type="scene",
                 source="life_matter", context=json.dumps(receipt, ensure_ascii=False),
                 participants=[item["who"]] if item.get("who") else [])
+            return True
+        return False

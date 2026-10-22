@@ -149,6 +149,28 @@ class LinkedContextTests(unittest.TestCase):
                 self.assertNotIn("后续待做",text)
         self.assertEqual(self.matter,before)
 
+    def test_waiting_and_blocked_steps_remain_future_work_in_all_context_paths(self):
+        for status in ("waiting","blocked"):
+            with self.subTest(status=status):
+                self.matter.update(status=status,result="",next_step="等底色干了再画树叶",
+                    obstacle="底色现在还没干",stage_notes=[{"summary":"铺好底色",
+                    "content":"树叶还没画，尚不知最终配色", "next_focus":"用小笔补树叶", "at":900}],
+                    steps=[{"id":"leaves", "text":"画树叶", "status":"pending", "minutes":10,
+                            "worked_minutes":3,"focus":"从右侧树冠开始","open_question":"树叶颜色是否合适"}])
+                before=copy.deepcopy(self.matter)
+                material=life_items(self.state,self.request())[0]
+                for text in (material.summary,
+                             matters.activity_basis(self.state,now=1000,persona_key="alice"),
+                             matters.context_block(self.state,session_id=S,now=1000,persona_key="alice")):
+                    self.assertIn("目前未执行",text)
+                    self.assertIn("用小笔补树叶",text)
+                    self.assertIn("树叶还没画",text)
+                    self.assertNotIn("一直在推进",text)
+                    self.assertNotIn("后续待做",text)
+                self.assertIn("树叶颜色是否合适",material.summary)
+                self.assertTrue(material.continuing,"waiting still belongs to the ongoing project")
+                self.assertEqual(self.matter,before)
+
     def test_unrelated_participation_never_gains_life_report_from_fresh_memory(self):
         request = self.request(task="participation", query="晚饭的咖喱有点辣")
         self.assertEqual(memory_context_items(self.state, request, [self.memory()]), [])
@@ -201,6 +223,7 @@ class LinkedContextTests(unittest.TestCase):
         self.assertIn("目标（尚未完成）", text)
         self.assertIn("待复核的活动：比较日期，署名留待下一阶段", text)
         self.assertIn("尚无该阶段的内容结论", text)
+        self.assertIn("不能推断其中某一项资料已比对", text)
         self.assertIn("不是整个目标的完成度", text)
 
     def test_last_unconfirmed_thought_survives_timer_end_and_atomic_selection(self):
