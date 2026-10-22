@@ -26,7 +26,8 @@ def activity_basis(state, *, now: float, persona_key: str = "") -> str:
             continue
         for stage in current_stage_notes(item)[-1:]:
             if 0 <= now - float(stage.get("at") or 0) <= 3 * 86400:
-                rows.append(f"- 世界内阶段：{item['text']}；{stage_record_text(stage)}")
+                rows.append(f"- 世界内阶段：{item['text']}；当前事项状态：{item.get('status') or 'active'}；"
+                            f"{stage_record_text(stage, status=item.get('status') or 'active')}")
     # A limit may omit a record, never cut off its qualifications or question.
     selected, used = [], 0
     for row in rows:
@@ -40,11 +41,17 @@ def current_stage_notes(item: dict) -> list[dict]:
     return [row for row in item.get("stage_notes", []) if row.get("goal", item["text"]) == item["text"]]
 
 
-def stage_record_text(stage: dict) -> str:
+def stage_record_text(stage: dict, *, status: str = "active") -> str:
     """Keep the activity headline subordinate to its concrete qualifications."""
+    if status == "paused":
+        next_focus = f"保留的后续位置（目前未执行）：{stage.get('next_focus') or '尚未确定'}。"
+    elif status in CLOSED:
+        next_focus = "此事项已结束；阶段记录只保留当时所得。"
+    else:
+        next_focus = f"后续待做：{stage.get('next_focus') or '尚未确定'}。"
     return (f"活动概述（不是独立的结论依据）：{stage.get('summary') or ''}；"
             f"具体记录与限定（回答依据优先）：{stage.get('content') or '未记录具体结论'}；"
-            f"后续待做：{stage.get('next_focus') or '尚未确定'}。"
+            f"{next_focus}"
             "正文里仍未确认的关系，不因标题写了完成或对照而变成已确认。")
 
 
@@ -375,15 +382,17 @@ def context_block(state, *, session_id: str, user_id: str = "", now: float = 0,
             continue
         if item.get("who") and item["who"] != user_id:
             continue
+        next_label = "保留的接续位置（目前未执行）" if item.get("status") == "paused" else "下一步"
         rows.append(f"- [{item['id']}] {item['text']}；动机：{item.get('motivation') or '原先想做的事'}；"
                     f"状态：{item['status']}；{progress_label(item)}；"
-                    f"下一步：{item.get('next_step') or '尚待安排'}；阻碍：{item.get('obstacle') or '无'}")
+                    f"{next_label}：{item.get('next_step') or '尚待安排'}；阻碍：{item.get('obstacle') or '无'}")
         for stage in current_stage_notes(item)[-1:]:
-            rows[-1] += f"\n  世界内阶段所得（模拟内容）：{stage_record_text(stage)}"
+            rows[-1] += (f"\n  世界内阶段所得（模拟内容）："
+                         f"{stage_record_text(stage, status=item['status'])}")
         for bookmark in pending_review_bookmarks(item):
             rows[-1] += (f"\n  计时结束前的思路（尚待复核）：{bookmark.get('note') or '未记录新发现'}；"
                          f"未解问题：{bookmark['open_question'] or '未记录'}")
-    block = ("# 你一直在推进的生活事项\n这些是角色世界内的活动；标为生活模拟的进展属于AI模拟经历，不能当作现实操作依据。"
+    block = ("# 你的生活事项与保留进度\n这些是角色世界内的活动；标为生活模拟的进展属于AI模拟经历，不能当作现实操作依据。"
             "只依据已记录的活动回忆进展，未开始的打算、梦和口头声称都不算完成。"
             "可以自然提起，不要逐条念清单。涉及他人的事情只能在来源会话提及。\n" + "\n".join(rows[:6])) if rows else ""
     interests = stable_interests(state, now=now)
@@ -396,7 +405,7 @@ def context_block(state, *, session_id: str, user_id: str = "", now: float = 0,
         block += "\n# 可参考的生活节奏\n以下是实际重复发生的时段，只在符合人设、困意和日程时作为轻微倾向；不能推断她喜欢或讨厌什么。\n" + "\n".join(
             f"- {item['explanation']}。可以沿用，也可以改变，不必排满时间。" for item in routines)
     known = {item['id']: item for item in items}
-    artifacts = [artifact for key, artifact in state.life_artifacts.items()
+    artifacts = [(key, artifact) for key, artifact in state.life_artifacts.items()
                  if artifact.get("session") == session_id and key in known
                  and visible(known[key], session_id)
                  and (not known[key].get("who") or known[key]["who"] == user_id)
@@ -404,5 +413,7 @@ def context_block(state, *, session_id: str, user_id: str = "", now: float = 0,
                  and artifact.get("label") == known[key].get("text")][-3:]
     if artifacts:
         block += "\n# 已留下的生活阶段记录\n这些活动和模拟成果只属于角色世界，不代表操作了现实文件、完成真实测试、寄送或向聊天发送成功。\n" + "\n".join(
-            f"- [{item.get('scope', 'in_world')}] {item['label']}：{stage_record_text({'summary': item['result'], 'content': item.get('content')})}" for item in artifacts)
+            f"- [{item.get('scope', 'in_world')}] {item['label']}；事项状态：{known[key]['status']}："
+            f"{stage_record_text({'summary': item['result'], 'content': item.get('content')}, status=known[key]['status'])}"
+            for key, item in artifacts)
     return block

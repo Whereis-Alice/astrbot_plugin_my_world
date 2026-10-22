@@ -79,6 +79,76 @@ class LinkedContextTests(unittest.TestCase):
         self.assertIn("abandoned", text)
         self.assertIn("换一个主题", text)
 
+    def test_closed_goal_does_not_reopen_old_stage_or_next_step_in_context(self):
+        self.matter.update(next_step="重新整理人物去向", needs_review=True,
+            steps=[{"id":"old", "text":"继续核对旧日期", "status":"done"}],
+            stage_notes=[{"summary":"章节已整理", "content":"莉娜回小镇，诺亚留港口。",
+                          "next_focus":"再核对两封信", "at":900}])
+        before=copy.deepcopy(self.matter)
+        material=life_items(self.state,self.request())
+        text=material[0].detail
+        self.assertIn("章节笔记已收尾",text)
+        self.assertNotIn("下一步（待做）",text)
+        self.assertNotIn("待复核的活动",text)
+        self.assertNotIn("重新整理人物去向",text)
+        self.assertNotIn("再核对两封信",text)
+        self.assertNotIn("一直在推进",text)
+        self.assertEqual(self.matter,before)
+
+    def test_paused_bookmark_is_saved_progress_instead_of_current_work(self):
+        self.matter.update(status="paused",result="",next_step="比较机翼折法",
+            steps=[{"id":"wings","text":"折纸飞机","status":"pending","minutes":20,
+                    "worked_minutes":5,"focus":"比较机翼折法"}])
+        text=life_items(self.state,self.request())[0].summary
+        self.assertIn("目前未执行",text)
+        self.assertIn("比较机翼折法",text)
+        self.assertNotIn("尚未完成的步骤",text)
+        self.assertNotIn("中途书签（步骤尚未做完）",text)
+
+    def test_autonomous_stage_basis_carries_finished_state_without_old_future_work(self):
+        self.matter.update(next_step="再次整理",stage_notes=[{
+            "summary":"整理人物去向", "content":"章节笔记已收尾。", "next_focus":"继续整理人物去向", "at":900}])
+        text=matters.activity_basis(self.state,now=1000,persona_key="alice")
+        self.assertIn("completed",text)
+        self.assertIn("章节笔记已收尾",text)
+        self.assertNotIn("继续整理人物去向",text)
+
+    def test_legacy_artifact_also_keeps_closed_goal_from_becoming_pending_work(self):
+        self.state.life_artifacts[self.matter['id']]={'label':self.matter['text'],
+            'result':'章节已收尾','content':'莉娜回小镇，诺亚留港口。','session':S}
+        text=matters.context_block(self.state,session_id=S,now=1000,persona_key="alice")
+        self.assertIn("completed",text)
+        self.assertIn("莉娜回小镇",text)
+        self.assertNotIn("后续待做",text)
+
+    def test_paused_review_keeps_unconfirmed_thought_without_starting_work(self):
+        self.matter.update(status="paused",result="",needs_review=True,
+            steps=[{"id":"dates","text":"比较日期","status":"done","minutes":20,"worked_minutes":20,
+                    "bookmark":{"note":"第一封只写了黎明，尚不能确定日期关系", "open_question":"邮戳是哪一天"}}])
+        before=copy.deepcopy(self.matter)
+        text=life_items(self.state,self.request())[0].summary
+        self.assertIn("尚不能确定日期关系",text)
+        self.assertIn("邮戳是哪一天",text)
+        self.assertIn("保留的待复核活动（目前未执行）",text)
+        self.assertEqual(self.matter,before)
+
+    def test_paused_stage_keeps_its_distinct_saved_focus_across_prompt_paths(self):
+        self.matter.update(status="paused",result="",next_step="明天再折纸飞机",
+            stage_notes=[{"summary":"试折机翼", "content":"翼尖有压痕，还没确认对飞行的影响。",
+                          "next_focus":"回看翼尖压痕", "at":900}])
+        before=copy.deepcopy(self.matter)
+        paths = {
+            "selected":life_items(self.state,self.request())[0].summary,
+            "autonomous":matters.activity_basis(self.state,now=1000,persona_key="alice"),
+            "legacy":matters.context_block(self.state,session_id=S,now=1000,persona_key="alice"),
+        }
+        for path,text in paths.items():
+            with self.subTest(path=path):
+                self.assertIn("还没确认对飞行的影响",text)
+                self.assertIn("保留的后续位置（目前未执行）：回看翼尖压痕",text)
+                self.assertNotIn("后续待做",text)
+        self.assertEqual(self.matter,before)
+
     def test_unrelated_participation_never_gains_life_report_from_fresh_memory(self):
         request = self.request(task="participation", query="晚饭的咖喱有点辣")
         self.assertEqual(memory_context_items(self.state, request, [self.memory()]), [])

@@ -27,24 +27,34 @@ def life_items(state: Any, request: ContextRequest) -> list[ContextItem]:
         title = str(item.get("text") or "")
         goal_state = {"completed": "已确认完成", "abandoned": "已放下", "paused": "暂停",
                       "expired": "已过期"}.get(status, "尚未完成")
-        summary = (f"# {'本会话的约定' if who else '一直在推进的生活事项'}\n"
+        ongoing = status not in CLOSED | {"paused"}
+        heading = "一直在推进的生活事项" if ongoing else "暂时放下的生活事项" if status == "paused" else "已经结束的生活事项"
+        summary = (f"# {'本会话的约定' if who else heading}\n"
                    f"[{item.get('id') or index}] 目标（{goal_state}）：{title}；状态：{status}；"
-                   f"当前阶段活动：{progress_label(item)}，不是整个目标的完成度；"
-                   f"下一步（待做）：{item.get('next_step') or '尚待安排'}；阻碍：{item.get('obstacle') or '无'}。\n"
+                   f"{'当前' if ongoing else '已记录'}阶段活动：{progress_label(item)}，不是整个目标的完成度；")
+        if status in CLOSED:
+            summary += "此目标已经结束，旧计划和阶段的后续不再是当前待办；"
+        elif status == "paused":
+            summary += f"保留的接续位置（目前未执行）：{item.get('next_step') or '尚未确定'}；"
+        else:
+            summary += f"下一步（待做）：{item.get('next_step') or '尚待安排'}；"
+        summary += (f"阻碍或结束缘由：{item.get('obstacle') or '无'}。\n"
                    "世界内的准备或模拟不代表现实操作成功，约定是否兑现以实际结果为准。")
         topic = [title, str(item.get("motivation") or ""), str(item.get("result") or "")]
         steps = [step for step in item.get("steps", []) if step.get("goal", title) == title]
         bookmark = current_bookmark(item)
-        if item.get("needs_review"):
+        if item.get("needs_review") and status not in CLOSED:
             done = "；".join(str(step.get("text") or "") for step in steps if step.get("status") == "done")
-            summary += (f"\n待复核的活动：{done or '尚无'}。这里只确认做过活动，尚无该阶段的内容结论；"
+            review_label = "待复核的活动" if ongoing else "保留的待复核活动（目前未执行）"
+            summary += (f"\n{review_label}：{done or '尚无'}。这里只确认做过活动，尚无该阶段的内容结论；"
                         "不能从步骤结束推断整个目标达成，也不能补出未记录的发现。")
             for last in pending_review_bookmarks(item):
                 summary += (f"\n计时结束前最后留下的思路（尚待复核）：{last.get('note') or '未记录新发现'}；"
                             f"未解问题：{last['open_question'] or '未记录'}；"
-                            f"接续位置（待做）：{last['next_focus']}。计时结束没有自动解决这些疑问。")
+                            f"{'接续位置（待做）' if ongoing else '保留的接续位置（目前未执行）'}：{last['next_focus']}。"
+                            "计时结束没有自动解决这些疑问。")
                 topic.extend(str(last.get(key) or "") for key in ("note", "open_question", "next_focus"))
-        elif status not in CLOSED:
+        elif ongoing:
             pending = next((step for step in steps if step.get("status") != "done"), None)
             if pending:
                 summary += f"\n尚未完成的步骤：{pending.get('text') or ''}"
@@ -61,10 +71,11 @@ def life_items(state: Any, request: ContextRequest) -> list[ContextItem]:
         stages = current_stage_notes(item)
         if stages:
             stage = stages[-1]
-            summary += "\n最近阶段记录（世界内模拟，正文与疑问须一起理解）：" + stage_record_text(stage)
+            summary += "\n最近阶段记录（世界内模拟，正文与疑问须一起理解）：" + stage_record_text(stage, status=status)
             topic.extend(str(stage.get(key) or "") for key in ("summary", "content", "next_focus"))
         if bookmark:
-            summary += (f"\n中途书签（步骤尚未做完）：{bookmark['step']}；继续位置：{bookmark['next_focus']}。"
+            label = "中途书签（步骤尚未做完）" if ongoing else "保留的书签（目前未执行）"
+            summary += (f"\n{label}：{bookmark['step']}；继续位置：{bookmark['next_focus']}。"
                         "尚未确认这一步的结果，投入和思路都不代表已完成或已核实。")
             if bookmark.get("note"):
                 summary += f"\n世界内中途思路：{bookmark['note']}"
