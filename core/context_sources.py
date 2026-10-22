@@ -120,9 +120,35 @@ def life_items(state: Any, request: ContextRequest) -> list[ContextItem]:
     return result
 
 
+def browse_feeling_item(state: Any, request: ContextRequest, browse_id: str) -> ContextItem | None:
+    """The just-completed reading is input to its own decision, not a new topic."""
+    progress = (state.chat_browsing.get("sessions") or {}).get(request.session) or {}
+    if request.task != "participation" or not browse_id or progress.get("browse_id") != browse_id:
+        return None
+    from .chat_browse import thought_visible
+    for index in range(len(state.thoughts) - 1, -1, -1):
+        item = state.thoughts[index]
+        if (not isinstance(item, dict) or item.get("browse_id") != browse_id
+                or item.get("browse_session") != request.session
+                or item.get("persona_key") != request.life_persona
+                or not thought_visible(item, request.session, request.now)):
+            continue
+        text = str(item.get("content") or "").strip()
+        if not text or len(text) > 120:
+            return None
+        return ContextItem(f"thought:{index}", "thought",
+            "# 本次阅读刚留下的想法（主观感受）\n" + text
+            + "\n这是决定是否接话的参考，不能证明亲历、他人动机或新的人物事实。"
+              "可以因这个想法继续听，也可以有话想接；结合当前对话再决定，不原样复述这段内心。",
+            at=float(item.get("at") or 0), session=request.session,
+            expires=float(item.get("expires_at") or 0), priority=10, source="chat_browse",
+            match_text=text)
+    return None
+
+
 def life_memory_metadata(source: str, context: Any) -> dict:
     """Only explicit provenance links records; similar wording is insufficient."""
-    if source != "life_matter":
+    if source not in {"life_matter", "chat_browse"}:
         return {}
     try:
         value = json.loads(context) if isinstance(context, str) else context

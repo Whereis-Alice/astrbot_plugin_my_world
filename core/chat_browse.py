@@ -109,8 +109,9 @@ def expire_feelings(state, now: float) -> None:
                       or float(row.get("expires_at") or 0) > now]
 
 
-def feeling_context(state, session: str, now: float) -> str:
+def feeling_context(state, session: str, now: float, *, persona_key: str = "") -> str:
     rows = [row for row in state.thoughts if row.get("browse_session")
+            and (not persona_key or not row.get("persona_key") or row["persona_key"] == persona_key)
             and thought_visible(row, session, now)][-2:]
     if not rows:
         return ""

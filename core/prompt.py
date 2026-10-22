@@ -2726,14 +2726,18 @@ class PromptBuilder:
             sample_text = self.samples_layer(samples, pronoun=pronoun_for(getattr(self.world, "gender", "female")))
             return system_prompt, runtime + ("\n\n" + sample_text if sample_text else "")
         from .chat_browse import feeling_context
+        from .context_sources import life_memory_metadata
+        from hashlib import sha256
+        persona_key = sha256(persona_text.encode("utf-8")).hexdigest()[:24]
         now = self._now()
         sid = current_session or state.session_id
         inner = self._inner_voice(state, sid, dialogue_only=True)
         if inner:
             runtime += "\n\n# 本会话留下的内心活动（只供当前交谈参考，不直接复述）\n" + inner
-        feelings = feeling_context(state, sid, now.timestamp() if now else 0)
+        feelings = feeling_context(state, sid, now.timestamp() if now else 0, persona_key=persona_key)
         older = list(dict.fromkeys(item.content for item in (memories or [])
                  if item.source == "chat_browse" and item.session_id == sid
+                 and life_memory_metadata(item.source, item.context).get("persona_key", persona_key) == persona_key
                  and item.content.removeprefix("翻阅消息时，我想到：") not in feelings))
         if older:
             feelings += ("\n阅读本会话曾留下的感想（主观想法，不是亲历或人物事实；仅当前交谈相关时参考）：\n"

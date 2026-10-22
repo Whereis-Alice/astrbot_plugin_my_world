@@ -85,7 +85,7 @@ class ChatBrowseMixin:
             "next_at": float(book.get("next_at") or 0), "last_read_at": progress.get("at", 0),
             "completed_today": int(progress.get("completed") or 0) if progress.get("day") == self._today_key(now) else None,
             "last_result": progress.get("result", ""), "reply_enabled": config.reply_enabled,
-            "last_error_at": float(book.get("last_error_at") or 0),
+            "last_error_at": float(book.get("last_error_at") or 0) if book.get("last_error_session") == session_id else 0,
             "reply_allowed": self.speech_allowed(session_id, "browse_reply"),
             "natural_silence": True,
             "shared": len(self.group_sessions(state.session_id)) > 1,
@@ -201,7 +201,7 @@ class ChatBrowseMixin:
                 self._stop_chat_browse(state, snapshot)
                 return
             if isinstance(payload, dict) and isinstance(payload.get("inner"), str):
-                completed = self._apply_browse_feeling(state, snapshot, payload)
+                completed = self._apply_browse_feeling(state, snapshot, payload, persona=persona)
             if not completed:
                 state.chat_browsing["last_error_at"] = self._now()
                 state.chat_browsing["last_error"] = error or "未能记录本次想法"
@@ -214,14 +214,14 @@ class ChatBrowseMixin:
         # look-back after reading. No historical replay, tools or forced speech.
         target = snapshot["browse_session"]
         if completed and self.speech_allowed(target, "browse_reply"):
-            outcome = await self.maybe_participate(target, source="browse")
+            outcome = await self.maybe_participate(target, source="browse", browse_id=action_id)
             async with self.session_state(session_id) as state:
                 sent = bool(outcome and outcome.delivered_messages.get(target))
                 for thought in state.thoughts:
                     if thought.get("browse_id") == action_id:
                         thought["browse_replied"] = sent
 
-    def _apply_browse_feeling(self, state, action: dict, payload: dict) -> bool:
+    def _apply_browse_feeling(self, state, action: dict, payload: dict, *, persona: str = "") -> bool:
         now, sid = self._now(), action["browse_session"]
         rows = action["browse_rows"]
         if feeling_error(payload, rows):
@@ -234,14 +234,16 @@ class ChatBrowseMixin:
         day = self._today_key(now)
         progress[sid] = {"seq": max(valid_seqs), "at": now, "day": day,
             "completed": (int(previous.get("completed") or 0) if previous.get("day") == day else 0) + 1,
-            "result": "feeling"}
+            "result": "feeling", "browse_id": action["id"]}
         state.chat_browsing["sessions"] = {key: value for key, value in progress.items() if key in self._browse_sources(state)}
         state.chat_browsing.pop("last_error_at", None)
         state.chat_browsing.pop("last_error", None)
         state.chat_browsing.pop("last_error_session", None)
         expire_feelings(state, now)
         quotes = [row for row in rows if row["seq"] in cited][:2]
-        state.add_thought(text, source="翻消息时", detail={"env": self._node_name(state.node_id), "state": "browsing",
+        persona_key = hashlib.sha256(persona.encode("utf-8")).hexdigest()[:24]
+        state.add_thought(text, source="翻消息时", persona_key=persona_key,
+            detail={"env": self._node_name(state.node_id), "state": "browsing",
             "mood": state.mood, "intent": "安静看看，然后继续自己的生活"})
         thought = state.thoughts[-1]
         thought.update(at=now, browse_session=sid, browse_id=action["id"], browse_replied=False, expires_at=now + 24 * 3600,
@@ -262,5 +264,6 @@ class ChatBrowseMixin:
                 content="翻阅消息时，我想到：" + text, memory_type="inner", source="chat_browse",
                 scope="group", weight=.3, conflict_policy="skip_conflict",
                 context=json.dumps({"kind": "chat_browse", "session": sid, "at": now, "reason": reason,
-                                    "source_seqs": cited[:20]}, ensure_ascii=False))
+                                    "source_seqs": cited[:20], "browse_id": action["id"],
+                                    "persona_key": persona_key}, ensure_ascii=False))
         return True

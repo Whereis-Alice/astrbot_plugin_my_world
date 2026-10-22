@@ -3,6 +3,7 @@ import asyncio
 import copy
 import json
 import unittest
+from hashlib import sha256
 from unittest.mock import AsyncMock, Mock
 
 from core.chat_browse import feeling_context, reading_view, thought_visible
@@ -302,6 +303,147 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.messenger.sent, [])
         self.assertIn("自然沉默：开启", self.llm.calls[-1]["system_prompt"])
 
+    async def test_current_reading_feeling_reaches_reply_even_without_shared_words_or_own_topics(self):
+        for own_topics in (False, True):
+            with self.subTest(own_topics=own_topics):
+                action = await self.prepare(reply_enabled=True)
+                self.engine.world.state_dynamics.own_topic_enabled = own_topics
+                async with self.engine.session_state(S) as state:
+                    state.current_action["identity"] = self.engine._browse_identity()
+                    state.participation = {}
+                text = "有点犹豫，先听他们继续说也不错。"
+                state = await self.complete(action, inner=text, decision='{"say":"","reply_to":""}')
+                self.assertIn(text, self.llm.calls[-1]["system_prompt"])
+                self.assertEqual(self.llm.calls[-1]["system_prompt"].count(text), 1)
+                self.assertIn("本次阅读", self.llm.calls[-1]["system_prompt"])
+                self.assertFalse(state.thoughts[-1]["browse_replied"])
+                self.assertEqual(self.messenger.sent, [])
+                async with self.engine.session_state(S) as state:
+                    state.chat_browsing, state.recent_chat, state.thoughts = {}, [], []
+
+    async def test_current_feeling_uses_context_budget_and_deduplicates_its_meaningful_memory(self):
+        action = await self.prepare(reply_enabled=False, remember_meaningful=True)
+        text = "也想在自己的窗边留一小盆花。"
+        await self.complete(action, meaningful=True, reason="愿意慢慢观察花的生长")
+        async with self.engine.session_state(S) as state:
+            self.note(state, "窗边那盆花还要不要挪位置？", message_id="live-flower")
+            for i in range(30):
+                self.engine.memory.remember(session_id=S, persona_id="", node_id=state.node_id,
+                    content=f"窗边的花，第{i}次记录：" + "观察花的生长，尚未确认。" * 35,
+                    memory_type="scene", scope="group", source="manual", conflict_policy="skip_conflict")
+            request = self.engine.context_request(state, S, task="participation", rows=state.recent_chat)
+            system, _, _ = self.engine.participation_prompt(state, S, self.persona.text,
+                source="browse", browse_id=action["id"], rows=state.recent_chat, request=request)
+            self.assertEqual(system.count(text), 1)
+            self.assertIn("本次阅读", system)
+            self.assertLessEqual(request.trace["background"]["selected_chars"], request.budget)
+            self.assertTrue(next(row for row in request.trace["background"]["items"]
+                                 if row["id"].startswith("thought:"))["selected"])
+
+    async def test_browse_reply_requires_current_source_persona_and_retained_feeling(self):
+        self.add_group(sessions=[S, P])
+        action = await self.prepare(reply_enabled=False)
+        await self.complete(action, inner="有点犹豫，先听他们继续说也不错。")
+        self.engine.world.chat_browse.reply_enabled = True
+        original = await self.engine.load_state(S)
+        before = len(self.llm.calls)
+        for change in ("missing_id", "wrong_id", "other_source", "persona", "superseded", "expired", "cleared"):
+            with self.subTest(change=change):
+                async with self.engine.session_state(S) as state:
+                    state.thoughts = copy.deepcopy(original.thoughts)
+                    state.chat_browsing = copy.deepcopy(original.chat_browsing)
+                    state.participation = {}
+                    if change == "superseded":
+                        state.chat_browsing["sessions"][S]["browse_id"] = "later-reading"
+                    elif change == "expired":
+                        state.thoughts[-1]["expires_at"] = self.clock.now()
+                    elif change == "cleared":
+                        state.thoughts = []
+                    elif change == "persona":
+                        state.thoughts[-1]["persona_key"] = "another-persona"
+                    elif change == "other_source":
+                        self.note(state, "私聊还有新消息", origin=P)
+                sid = P if change == "other_source" else S
+                browse_id = "" if change == "missing_id" else "other-reading" if change == "wrong_id" else action["id"]
+                self.assertIsNone(await self.engine.maybe_participate(sid, source="browse", browse_id=browse_id))
+                self.assertEqual(len(self.llm.calls), before)
+                self.assertEqual((await self.engine.load_state(S)).participation, {})
+        self.assertEqual(self.messenger.sent, [])
+
+    async def test_persona_change_while_preparing_reply_cannot_generate_without_current_feeling(self):
+        action = await self.prepare(reply_enabled=False)
+        await self.complete(action)
+        self.engine.world.chat_browse.reply_enabled = True
+        async def change_persona(request):
+            self.persona.text = "另一份人设"
+        self.engine.prepare_context_memory = AsyncMock(side_effect=change_persona)
+        await self.engine.maybe_participate(S, source="browse", browse_id=action["id"])
+        self.assertEqual(len(self.llm.calls), 1)
+        self.assertEqual(self.messenger.sent, [])
+
+    async def test_ordinary_reply_has_no_current_reading_block_when_own_topics_are_off(self):
+        action = await self.prepare(reply_enabled=False)
+        state = await self.complete(action, inner="有点犹豫，先听他们继续说也不错。")
+        self.engine.world.state_dynamics.own_topic_enabled = False
+        system, _, _ = self.engine.participation_prompt(state, S, self.persona.text,
+            source="message", browse_id=action["id"], rows=state.recent_chat)
+        self.assertNotIn("本次阅读", system)
+        self.assertNotIn(state.thoughts[-1]["content"], system)
+        self.assertEqual(state.thoughts[-1]["persona_key"], sha256(self.persona.text.encode()).hexdigest()[:24])
+
+    async def test_failed_reading_time_belongs_only_to_its_source(self):
+        self.add_group(sessions=[S, P])
+        action = await self.prepare(source=P)
+        self.llm.replies = ["provider returned no JSON"]
+        await self.engine._complete_chat_browse(S, action["id"])
+        state = await self.engine.load_state(S)
+        self.assertGreater(self.engine.chat_browse_status(state, P)["last_error_at"], 0)
+        self.assertTrue(self.engine.chat_browse_status(state, P)["last_error"])
+        self.assertEqual(self.engine.chat_browse_status(state, S)["last_error_at"], 0)
+        self.assertEqual(self.engine.chat_browse_status(state, S)["last_error"], "")
+
+    async def test_persona_tag_filters_reading_thought_and_memory_after_switch(self):
+        from core.context_sources import life_items, memory_context_items
+        action = await self.prepare(reply_enabled=False, remember_meaningful=True)
+        text = "也想在自己的窗边留一小盆花。"
+        state = await self.complete(action, meaningful=True, reason="愿意慢慢观察花的生长")
+        memories = self.engine.memory.recall(session_id=S, persona_id="", mode="global",
+            now=self.clock.now(), include_reading=True)
+        self.assertTrue(any(item.source == "chat_browse" for item in memories))
+        for persona, visible in ((self.persona.text, True), ("另一份人设", False)):
+            with self.subTest(visible=visible):
+                request = self.engine.context_request(state, S, task="participation", rows=state.recent_chat)
+                request.life_persona = sha256(persona.encode()).hexdigest()[:24]
+                thought_text = "\n".join(item.summary for item in life_items(state, request))
+                memory_text = "\n".join(item.summary for item in memory_context_items(state, request, memories))
+                self.assertEqual(text in thought_text, visible)
+                self.assertEqual(text in memory_text, visible)
+                _, legacy = self.engine.prompts.build_dialogue_prompt(persona_text=persona, state=state,
+                    node=None, current_session=S, memories=memories)
+                self.assertEqual(text in legacy, visible)
+
+    async def test_clearing_feeling_during_slow_reply_discards_speech(self):
+        action = await self.prepare(reply_enabled=False)
+        await self.complete(action)
+        self.engine.world.chat_browse.reply_enabled = True
+        started, release = asyncio.Event(), asyncio.Event()
+        async def slow(**kwargs):
+            started.set()
+            await release.wait()
+            return LLMReply(ok=True, text='{"say":"刚想到的这句也不该再发了","reply_to":""}')
+        self.llm.generate = slow
+        task = asyncio.create_task(self.engine.maybe_participate(S, source="browse", browse_id=action["id"]))
+        try:
+            await asyncio.wait_for(started.wait(), 2)
+            await self.engine.clear_thoughts(S, "browse")
+            release.set()
+            self.assertIsNone(await task)
+        finally:
+            release.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self.assertEqual(self.messenger.sent, [])
+
     async def test_expired_chat_is_not_replied_to_after_reading(self):
         action = await self.prepare(reply_enabled=True)
         self.clock.advance(901)
@@ -476,7 +618,7 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("私聊后的独有感受", await self.engine.preview_autonomous_prompt(P))
         state = await self.engine.load_state(S)
         for sid, visible in [(P, True), (S, False)]:
-            _, prompt = self.engine.prompts.build_dialogue_prompt(persona_text="人设", state=state, node=None, current_session=sid)
+            _, prompt = self.engine.prompts.build_dialogue_prompt(persona_text=self.persona.text, state=state, node=None, current_session=sid)
             self.assertEqual("私聊后的独有感受" in prompt, visible)
         self.clock.advance(86401)
         self.assertEqual((await self.engine.thoughts_payload(P))["thoughts"], [])
@@ -494,10 +636,10 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len([row for row in memories if row.source == "chat_browse"]), 1)
         self.assertFalse(any(row.source == "chat_browse" for row in self.engine.memory.recall(session_id=S, persona_id="", mode="global", include_reading=True)))
         self.assertFalse(any(row.source == "chat_browse" for row in self.engine.memory.recall(session_id=P, persona_id="", mode="global")))
-        _, passive = self.engine.prompts.build_dialogue_prompt(persona_text="人设", state=state, node=None, current_session=P, memories=memories)
+        _, passive = self.engine.prompts.build_dialogue_prompt(persona_text=self.persona.text, state=state, node=None, current_session=P, memories=memories)
         self.assertEqual(passive.count("也想在自己的窗边留一小盆花。"), 1)
         self.clock.advance(86401)
-        _, passive = self.engine.prompts.build_dialogue_prompt(persona_text="人设", state=state, node=None, current_session=P, memories=memories)
+        _, passive = self.engine.prompts.build_dialogue_prompt(persona_text=self.persona.text, state=state, node=None, current_session=P, memories=memories)
         self.assertIn("阅读本会话曾留下的感想", passive)
         self.assertNotIn("也想在", self.engine.prompts.runtime_layer(state, node=None, memories=memories, current_session=P))
         self.assertNotIn("也想在", "\n".join(self.engine.consolidator.memory_lines(S)))

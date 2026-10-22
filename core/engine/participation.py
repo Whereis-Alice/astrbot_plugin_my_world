@@ -83,14 +83,14 @@ class ParticipationMixin:
             return "reply_pending"
         return ""
 
-    def participation_prompt(self, state, target, persona, *, rows=None, request=None, source="message"):
+    def participation_prompt(self, state, target, persona, *, rows=None, request=None, source="message", browse_id=""):
         """Same builder for production and evaluation; never include another session."""
         if rows is None:
             rows = [row for row in state.recent_chat if self._chat_origin(row, state) == target
                     and self._now() - float(row.get("at") or 0) <= max(600, self._participation_window(source))
                     and not self.is_plugin_command(str(row.get("text") or ""))]
         from ..context_selection import CONTEXT_GUIDANCE, relevance, select_context
-        from ..context_sources import life_items, memory_context_items
+        from ..context_sources import browse_feeling_item, life_items, memory_context_items
         request = request or self.context_request(state, target, task="participation", rows=rows)
         from hashlib import sha256
         request.life_persona = sha256(persona.encode("utf-8")).hexdigest()[:24]
@@ -110,9 +110,20 @@ class ParticipationMixin:
                 node = self.node(state.node_id)
                 action = state.current_action or {}
                 life.update(place=node.name if node else "", activity=str(action.get("desc") or action.get("intent") or "自由活动"))
-        materials += memory_context_items(state, request, self.context_memories(state, request, rows),
+        memories = self.context_memories(state, request, rows)
+        current_feeling = browse_feeling_item(state, request, browse_id) if source == "browse" else None
+        if current_feeling:
+            from ..context_sources import life_memory_metadata
+            memories = [item for item in memories
+                        if not (item.source == "chat_browse"
+                                and life_memory_metadata(item.source, item.context).get("browse_id") == browse_id)]
+        materials += memory_context_items(state, request, memories,
             stamp=lambda at: self.prompts._memory_stamp(at, self.local_now()),
             life_enabled=self.world.state_dynamics.own_topic_enabled)
+        if current_feeling:
+            # Highest ordinary priority; still inside the shared context budget.
+            # Its key replaces the generic thought instead of repeating it.
+            materials.append(current_feeling)
         background = select_context(request, materials).render()
         profile = self.context_profiles(state, request)
         background = "\n\n".join(part for part in (CONTEXT_GUIDANCE, profile, self.context_emotions(state, request), background) if part)
@@ -140,7 +151,7 @@ class ParticipationMixin:
             return True
         return random.random() < 1 - (1 - p) ** min(len(new), 8)
 
-    async def participation_text(self, state, target, *, source="message") -> tuple[str, str]:
+    async def participation_text(self, state, target, *, source="message", browse_id="") -> tuple[str, str]:
         if self.llm is None:
             return "", ""
         rows = [row for row in state.recent_chat if self._chat_origin(row, state) == target
@@ -149,8 +160,15 @@ class ParticipationMixin:
         request = self.context_request(state, target, task="participation", rows=rows)
         await self.prepare_context_memory(request)
         self.style_for(state, target)
+        persona = await self._persona_text(target)
+        if source == "browse":
+            from hashlib import sha256
+            from ..context_sources import browse_feeling_item
+            request.life_persona = sha256(persona.encode("utf-8")).hexdigest()[:24]
+            if browse_feeling_item(state, request, browse_id) is None:
+                return "", ""
         system, prompt, targets = self.participation_prompt(state, target,
-            await self._persona_text(target), request=request, rows=rows, source=source)
+            persona, request=request, rows=rows, source=source, browse_id=browse_id)
         self.record_context_selection(request)
         raw = await self._ask_llm(target, system, prompt)
         return parse_participation(raw or "", targets)
@@ -223,7 +241,7 @@ class ParticipationMixin:
     @session_scoped
     @life_work()
     @model_operation("participation", "听完近期群聊，决定是否自然接一句")
-    async def maybe_participate(self, session_id: str, *, sample: bool = False, source: str = "message") -> TickOutcome | None:
+    async def maybe_participate(self, session_id: str, *, sample: bool = False, source: str = "message", browse_id: str = "") -> TickOutcome | None:
         if not self.is_enabled(session_id) or (source != "browse" and not self.chat_is_group(session_id)):
             return None
         outcome = TickOutcome(session_id=session_id, speech_kind="browse_reply" if source == "browse" else "participation", place=session_id)
@@ -235,6 +253,14 @@ class ParticipationMixin:
             new = [r for r in rows if int(r.get("seq") or 0) > observation.get("checked_seq", 0)]
             if gate or not new:
                 return None
+            if source == "browse":
+                from hashlib import sha256
+                from ..context_sources import browse_feeling_item
+                request = self.context_request(state, session_id, task="participation", rows=rows)
+                persona = await self._persona_text(session_id)
+                request.life_persona = sha256(persona.encode("utf-8")).hexdigest()[:24]
+                if browse_feeling_item(state, request, browse_id) is None:
+                    return None
             # Listening is a completed decision too. Persist before inference so a
             # discarded/empty response cannot re-evaluate the same burst forever.
             state.participation[session_id] = {"checked_seq": max(int(r.get("seq") or 0) for r in rows),
@@ -246,7 +272,7 @@ class ParticipationMixin:
             self.decision_trace(session_id, "participation", "considering", "近期群聊已聚合，判断是否有话想接",
                                 messages=len(rows))
             self.claim_chat_scene(outcome, session_id, rows, window=window)
-            message, reply_to = await (self.participation_text(state, session_id, source=source)
+            message, reply_to = await (self.participation_text(state, session_id, source=source, browse_id=browse_id)
                                        if source == "browse" else self.participation_text(state, session_id))
             if (not message or self.participation_gate(state, session_id, source=source)
                     or self._now() >= outcome.chat_expires_at[session_id]):
