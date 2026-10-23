@@ -217,7 +217,7 @@ class LifeApiMixin:
             if not getattr(self.engine.world.calendar, "enabled", True):
                 return error_response("请先在设置中启用生活日历")
             calendar = await self.engine.ensure_calendar(
-                session_id, year, force=True, automatic=False
+                session_id, year, force=True, automatic=False, extra_prompt=str(payload.get("extra_prompt") or "")
             )
         if calendar is None:
             return error_response(
@@ -293,7 +293,7 @@ class LifeApiMixin:
                     f"日期超出日记保留范围（最近 {keep_days} 天）"
                 )
             entry = await self.engine.ensure_diary(
-                session_id, day, force=True, automatic=False
+                session_id, day, force=True, automatic=False, extra_prompt=str(payload.get("extra_prompt") or "")
             )
         if entry is None:
             return error_response(

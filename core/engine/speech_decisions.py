@@ -65,14 +65,23 @@ class SpeechDecisionsMixin:
             # acquire chat privileges without a validated thought and reference.
             return "quiet" if payload.get("intent") or outcome.speech_kind in CHAT_KINDS else None
         await self.remember_speech_decision(state, target, decision, trigger=trigger, outcome=outcome,
-                                           drafts=lines)
+                                           drafts=lines, raw=raw)
         if decision.intent == "continue_chat":
             self.claim_chat_scene(outcome, target, rows, window=900)
             outcome.reply_targets[target] = decision.reply_to
             return "continuation"
         return "quiet" if decision.intent == "listen" else outcome.speech_kind
 
-    async def ask_speech(self, state, target, system, prompt, *, rows, images=None):
+    async def ask_speech(self, state, target, system, prompt, *, rows, images=None, allow_tools=True, live_window=900):
+        from ..speech_runtime import SPEECH_REQUEST, GROUNDING_RULES
+        token = SPEECH_REQUEST.set({"state": state, "target": target, "rows": list(rows),
+                                   "allow_tools": allow_tools, "live_window": live_window})
+        try:
+            return await self._ask_speech_media(state, target, system + GROUNDING_RULES, prompt, rows=rows, images=images)
+        finally:
+            SPEECH_REQUEST.reset(token)
+
+    async def _ask_speech_media(self, state, target, system, prompt, *, rows, images=None):
         media = getattr(self, "media", None)
         if media is None:
             return await self._ask_llm(target, system, prompt, image_urls=images)
@@ -92,7 +101,7 @@ class SpeechDecisionsMixin:
             and bool(self.expression_chat(state, target)))
 
     async def remember_speech_decision(self, state, target, decision, *, trigger,
-                                       outcome=None, browse_id="", drafts=None):
+                                       outcome=None, browse_id="", drafts=None, raw=None):
         identity = uuid4().hex
         sources = {"message": "接话前", "browse": "翻消息后接话", "plan": "主动接话",
                    "completion": "动作结束后", "expression": "准备说话"}
@@ -103,6 +112,12 @@ class SpeechDecisionsMixin:
                  "reply_to": decision.reply_to, "browse_id": browse_id,
                  "status": "prepared" if decision.say else "listening", "at": self._now(),
                  "draft": decision.say, "drafts": list(drafts) if drafts is not None else ([decision.say] if decision.say else []), "sent": []}
+        referenced = next((r for r in reversed(state.recent_chat) if str(r.get("message_id") or "") == decision.reply_to
+            and decision.reply_to and self._chat_origin(r, state) == target), None)
+        if referenced:
+            trace["reply_preview"] = {"text": str(referenced.get("text") or "")[:500],
+                "name": str(referenced.get("user_name") or referenced.get("name") or "")[:80]}
+        trace["tools"] = list(getattr(raw, "tools", []))
         # Browsing already has a grounded thought. Keep the speech decision on
         # that same record rather than generating another reading impression.
         thought = next((item for item in reversed(state.thoughts)
@@ -118,6 +133,8 @@ class SpeechDecisionsMixin:
             outcome.speech_decisions.append(trace)
         await self._log_event(state, "speech_decision", {k: v for k, v in trace.items() if k != "draft"},
                               outcome=outcome, silent=True)
+        if outcome is not None and decision.say:
+            outcome.add_images(list(getattr(raw, "images", [])), target)
         return trace
 
     async def finish_speech_decisions(self, outcome):

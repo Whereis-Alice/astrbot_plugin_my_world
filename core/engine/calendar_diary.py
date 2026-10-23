@@ -239,6 +239,7 @@ class CalendarDiaryMixin:
         *,
         force: bool = False,
         automatic: bool = False,
+        extra_prompt: str = "",
         _locked: bool = False,
     ) -> dict[str, Any] | None:
         year = int(year or self.local_now().year)
@@ -261,6 +262,7 @@ class CalendarDiaryMixin:
                     year,
                     force=force,
                     automatic=automatic,
+                    extra_prompt=extra_prompt,
                     _locked=True,
                 )
         cached = await self.db.call("calendar_year_get", scope, persona_key, year)
@@ -325,6 +327,7 @@ class CalendarDiaryMixin:
                 },
             )
         try:
+            prompt["本次额外要求"] = str(extra_prompt).strip()[:2000]
             raw = await self._ask_journal(session_id, "calendar", system, prompt)
         except Exception as exc:
             self._log("warning", f"生活日历模型失败，保留重试机会：{type(exc).__name__}")
@@ -561,6 +564,7 @@ class CalendarDiaryMixin:
         *,
         force: bool = False,
         automatic: bool = False,
+        extra_prompt: str = "",
         _locked: bool = False,
     ) -> dict[str, Any] | None:
         cfg = getattr(self.world, "diary", None)
@@ -593,6 +597,7 @@ class CalendarDiaryMixin:
                     day,
                     force=force,
                     automatic=automatic,
+                    extra_prompt=extra_prompt,
                     _locked=True,
                 )
         cached = await self.db.call("diary_get", scope, persona_key, day)
@@ -637,7 +642,8 @@ class CalendarDiaryMixin:
             session_id,
             "diary",
             system,
-            {"persona": persona, "day": day, "saved_life": sources},
+            {"persona": persona, "day": day, "saved_life": sources,
+             "本次额外要求（不得添加未发生事实）": str(extra_prompt).strip()[:2000]},
         )
         payload = extract_json_object(raw or "")
         if not isinstance(payload, dict):

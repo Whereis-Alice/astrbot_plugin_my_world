@@ -56,8 +56,8 @@ class ModelCallStoreMixin:
         if q.strip():
             # Search literal text; '%' and '_' are not user-controlled wildcards.
             query = q.strip()[:200].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            clauses.append("(reason LIKE ? ESCAPE '\\' OR model LIKE ? ESCAPE '\\' OR provider_id LIKE ? ESCAPE '\\' OR session_id LIKE ? ESCAPE '\\')")
-            values.extend([f"%{query}%"] * 4)
+            clauses.append("(reason LIKE ? ESCAPE '\\' OR model LIKE ? ESCAPE '\\' OR provider_id LIKE ? ESCAPE '\\' OR session_id LIKE ? ESCAPE '\\' OR json_extract(metadata,'$.trace_id') = ?)")
+            values.extend([f"%{query}%"] * 4 + [q.strip()[:200]])
         where = " AND ".join(clauses)
         summary = dict(self._query(f"""SELECT COUNT(*) AS calls,
             COALESCE(SUM(status='error'),0) AS errors, COALESCE(SUM(status='cancelled'),0) AS cancelled,

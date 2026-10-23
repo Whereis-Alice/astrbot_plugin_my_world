@@ -53,7 +53,7 @@ class PersonaDraftsBrowserTests(unittest.TestCase):
     def test_wizard_generate_and_manual_save_use_the_same_draft(self):
         self.draft()
         self.wizard()
-        area = self.page.locator('.wizard-body textarea')
+        area = self.page.locator('.wizard-body textarea').filter(visible=True).first
         self.page.locator('.wizard-body').get_by_role('button', name='从主人设生成', exact=True).click()
         expect(area).to_have_value('新草稿摘要')
         self.assert_draft_payload()

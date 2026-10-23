@@ -162,6 +162,8 @@ class ConfigMixin:
             # 规则要知道"现在几点"：夜里该睡整觉，白天只小睡
             hour_provider=lambda: self.local_now().hour,
             tick_seconds=self.tick_seconds,
+            action_check=lambda state, action: (self.action_quota_left(state, action) > 0
+                and self._check_preconditions(state, action)[0] and self._action_usable_now(action)),
         )
         engagement = EngagementTracker(world)
         prompts = PromptBuilder(

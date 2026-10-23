@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..recovery import sleep_action_kind
+
 from dataclasses import asdict
 from ..config_scope import session_scoped
 from ..json_actions import PlannedAction
@@ -33,6 +35,8 @@ class SleepMixin:
     def _is_asleep(self, state: WorldState) -> bool:
         """她现在算不算「睡着了」（小睡按配置决定要不要一起算）。"""
 
+        if self.world.sleep.mode == "activity":
+            return False
         if state.state == STATE_NAPPING:
             return bool(self.world.sleep.applies_to_nap)
         return state.state == STATE_SLEEPING
@@ -272,6 +276,9 @@ class SleepMixin:
     def sleep_notes(self, state: WorldState) -> list[str]:
         """睡着被吵醒 / 起床气这几句临时说明（提示词用，过期自动失效）。"""
 
+        from ..recovery import recovery_note
+        if self.world.sleep.mode == "activity":
+            return [recovery_note(self.world)]
         notes: list[str] = []
         if self.world.sleep.mode == "autonomous":
             decision = state.sleep_rhythm.get("decision")
@@ -332,7 +339,7 @@ class SleepMixin:
         极端保护的强制补觉不拖：那是她已经透支了。
         """
 
-        if skip_drowsy or definition.id != "sleep":
+        if skip_drowsy or sleep_action_kind(definition) != "sleep":
             return False
         if not bool(getattr(self.world.sleep, "drowsy", True)):
             return False
@@ -432,7 +439,7 @@ class SleepMixin:
         state.drowsy_started_world_time = 0
         state.drowsy_started_at = 0.0
         state.state = STATE_IDLE
-        definition = self.world.action_map().get("sleep")
+        definition = self.world.action_map().get(str(step.get("type") or "sleep"))
         if not step or definition is None:
             return
         outcome.notes.append(reason)
@@ -709,7 +716,8 @@ class SleepMixin:
         """把「被叫醒」落到状态上：停下动作、可选地清掉排队计划、给一段保护期。"""
 
         config = self.world.sleep
-        if state.current_action and str(state.current_action.get("type")) in {"sleep", "nap"}:
+        if state.current_action and sleep_action_kind(self.world.action_map().get(str(state.current_action.get("type")))):
+            self.settle_recovery_progress(state, state.current_action)
             self._finish_sleep_rhythm(state, state.current_action, interrupted=True)
         elif config.mode == "autonomous" and state.sleep_rhythm.get("decision") == "sleep":
             # 临睡时还没有实际睡眠，取消待睡决定，但保留已有清醒负担。

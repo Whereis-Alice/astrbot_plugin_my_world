@@ -154,6 +154,121 @@ class GenerationBrowserTests(unittest.TestCase):
             menu.locator("summary").first.click()
         trigger.click()
 
+    def test_rebuild_actions_preserves_map_and_waits_for_complete_preview(self):
+        before = self.page.evaluate("async () => (await AstrBotPluginPage.apiGet('config')).world")
+        self.open_generator("map", "map-rebuild-actions")
+        self.page.locator('#dialog-body textarea').fill("只安排充电，不要睡觉")
+        self.page.locator('#dialog-body input[type="number"]').first.fill("1")
+        self.page.locator("#dialog-ok").click()
+        for i, node in enumerate(before["nodes"]):
+            self.page.wait_for_function("() => pendingGeneration.length > 0")
+            call = self.page.evaluate("generationCalls.at(-1)")
+            self.assertEqual(call["data"]["node"], node["id"])
+            self.assertTrue(call["data"]["replacing"])
+            self.assertIn("只安排充电", call["data"]["extra_prompt"])
+            self.page.evaluate("result => finishGeneration(result)", {"actions": [{"id": f"renew_{i}", "name": "恢复精力",
+                "scope": "node", "allowed_nodes": [node["id"]], "recovery_kind": "restore"}], "problems": []})
+        expect(self.page.locator("#dialog-title")).to_contain_text("预览重做动作")
+        self.assertEqual(self.page.evaluate("saveCalls"), [])
+        self.host.screenshot(path=str(self.shots / "actions-rebuild-preview.png"))
+        self.page.locator("#dialog-ok").click()
+        expect(self.page.locator("#dialog")).to_be_hidden()
+        after = self.page.evaluate("async () => (await AstrBotPluginPage.apiGet('config')).world")
+        for key in ("nodes", "zones", "edges", "zone_edges"):
+            self.assertEqual(after.get(key), before.get(key), key)
+        self.assertEqual(len([a for a in after["actions"] if a["id"].startswith("renew_")]), len(before["nodes"]))
+        self.assertEqual(self.errors, [])
+
+    def test_rebuild_failure_keeps_all_old_actions(self):
+        before = self.page.evaluate("async () => (await AstrBotPluginPage.apiGet('config')).world")
+        self.open_generator("map", "map-rebuild-actions")
+        self.page.locator("#dialog-ok").click()
+        self.page.wait_for_function("() => pendingGeneration.length > 0")
+        self.page.evaluate("finishGeneration({actions: [], problems:['模型未生成动作']})")
+        expect(self.page.locator("#dialog-body")).to_contain_text("未替换任何旧动作")
+        self.assertEqual(self.page.evaluate("saveCalls"), [])
+        self.assertEqual(self.page.evaluate("async () => (await AstrBotPluginPage.apiGet('config')).world"), before)
+
+    def test_rebuild_zone_and_node_scopes_and_save_retry(self):
+        for scope in ("zone", "node"):
+            with self.subTest(scope=scope):
+                self.page.locator('button[data-tab="map"]').click()
+                if self.page.locator('#map-back').is_visible():
+                    self.page.locator('#map-back').click()
+                before = self.page.evaluate("async () => (await AstrBotPluginPage.apiGet('config')).world")
+                zone = self.page.locator('#canvas-nodes .node[data-kind="zone"]').first
+                zone_id = zone.get_attribute('data-id')
+                if scope == "zone":
+                    zone.click()
+                    selected = [n for n in before['nodes'] if n['zone_id'] == zone_id]
+                    self.page.get_by_role('button', name='重做区域动作…', exact=True).click()
+                else:
+                    zone.dblclick()
+                    if 'collapsed' in (self.page.locator('#map-side').get_attribute('class') or ''):
+                        self.page.locator('#map-side-toggle').click()
+                    node = self.page.locator('#canvas-nodes .node[data-kind="node"]').first
+                    node_id = node.get_attribute('data-id')
+                    node.click()
+                    selected = [n for n in before['nodes'] if n['id'] == node_id]
+                    self.page.get_by_role('button', name='重做地点动作…', exact=True).click()
+                self.page.locator('#dialog-ok').click()
+                for i, node in enumerate(selected):
+                    self.page.wait_for_function('pendingGeneration.length > 0')
+                    self.assertEqual(self.page.evaluate('generationCalls.at(-1).data.node'), node['id'])
+                    self.page.evaluate('r=>finishGeneration(r)', {'actions': [{'id': f'{scope}_new_{i}', 'name': '安静充电', 'scope': 'node', 'allowed_nodes': [node['id']]}]})
+                expect(self.page.locator('#dialog-title')).to_contain_text('预览重做动作')
+                self.host.set_viewport_size({'width': 390, 'height': 844})
+                self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'))
+                self.host.screenshot(path=str(self.shots / f'actions-rebuild-{scope}-mobile.png'))
+                self.page.evaluate("""() => { const post=AstrBotPluginPage.apiPost; let fail=true;
+                    AstrBotPluginPage.apiPost=(key,data)=>{if(key==='config/world' && fail){fail=false;return Promise.reject(new Error('模拟保存失败'));}return post(key,data)};
+                }""")
+                self.page.locator('#dialog-ok').click()
+                expect(self.page.locator('#dialog')).to_be_visible()
+                expect(self.page.locator('#dialog-ok')).to_be_enabled()
+                self.page.locator('#dialog-ok').click()
+                expect(self.page.locator('#dialog')).to_be_hidden()
+                after = self.page.evaluate("async () => (await AstrBotPluginPage.apiGet('config')).world")
+                self.assertEqual(after['nodes'], before['nodes'])
+                self.assertEqual(after['edges'], before['edges'])
+                outside = [a for a in before['actions'] if not any(n['id'] in a.get('allowed_nodes', []) for n in selected)]
+                for action in outside:
+                    self.assertIn(action, after['actions'])
+                self.host.set_viewport_size({'width': 1440, 'height': 1000})
+        self.assertEqual(self.errors, [])
+
+    def test_speech_links_keep_target_and_locate_beyond_first_page(self):
+        target = 'test:GroupMessage:100'
+        decision = {'id': 'linked-thought', 'trace_id': 'linked-trace', 'target': target, 'trigger': 'message',
+            'intent': 'join_chat', 'status': 'sent', 'reply_preview': {'text': '刚画完了一张图', 'name': '小羽'}, 'sent': ['让我看看。']}
+        thoughts = [{'content': f'想法{i}', 'at': 1_760_000_000+i} for i in range(60)]
+        thoughts[-1]['detail'] = {'speech': decision}
+        self.page.evaluate("""({thoughts,decision}) => { const get=AstrBotPluginPage.apiGet; window.relatedReads=[];
+            AstrBotPluginPage.apiGet=(key,p)=>{relatedReads.push({key,p});
+              if(key==='thoughts')return Promise.resolve({thoughts});
+              if(key==='logs')return Promise.resolve({events:[{id:1,event_type:'speech_result',text:'已接话',detail:decision}],total:1});
+              return get(key,p)};
+        }""", {'thoughts': thoughts, 'decision': decision})
+        self.page.locator('button[data-tab="logs"]').click()
+        self.page.locator('#log-session').evaluate('(select, target)=>select.add(new Option("测试对话",target))', target)
+        self.page.locator('#log-session').select_option(target)
+        self.page.locator('#log-list .log-item').first.click()
+        expect(self.page.locator('#log-detail')).to_contain_text('刚画完了一张图')
+        expect(self.page.locator('#log-detail .detail-facts')).to_have_count(0)
+        self.page.get_by_role('button', name='定位内心活动', exact=True).click()
+        expect(self.page.locator('.thought-row')).to_have_count(60)
+        expect(self.page.locator('.thought-row').last).to_be_focused()
+        self.assertEqual(self.page.locator('#thought-session').input_value(), target)
+        self.page.get_by_role('button', name='查看模型调用', exact=True).click()
+        self.assertEqual(self.page.locator('#calls-search').input_value(), 'linked-trace')
+        self.assertEqual(self.page.locator('#calls-session').input_value(), target)
+        self.page.locator('button[data-tab="thoughts"]').click()
+        self.page.locator('.thought-more').click()
+        self.page.get_by_role('button', name='查看相关日志', exact=True).click()
+        self.assertEqual(self.page.locator('#log-keyword').input_value(), 'linked-thought')
+        self.assertEqual(self.page.locator('#log-session').input_value(), target)
+        self.assertEqual(self.errors, [])
+
     def test_thought_and_schedule_history_keep_full_details(self):
         thoughts = [
             {

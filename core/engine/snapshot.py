@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..recovery import sleep_action_kind
+
 from datetime import date, timedelta
 from hashlib import sha256
 import time
@@ -95,7 +97,7 @@ class SnapshotMixin:
                 continue
             if not self.schedule_in_scope(item, session_id):
                 continue
-            if self.world.sleep.mode == "autonomous" and any(step.type == "sleep" for step in item.action_chain):
+            if self.world.sleep.mode == "autonomous" and any(sleep_action_kind(self.world.action_map().get(step.type)) == "sleep" for step in item.action_chain):
                 continue  # The scheduler intentionally yields fixed sleep to her own rhythm.
             try:
                 hour, minute = (int(part) for part in str(item.time).split(":")[:2])

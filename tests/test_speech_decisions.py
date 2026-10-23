@@ -15,6 +15,38 @@ class SpeechDecisionTests(unittest.IsolatedAsyncioTestCase):
     asyncSetUp = participation.ParticipationTests.asyncSetUp
     chat = participation.ParticipationTests.chat
 
+    async def test_format_repair_keeps_tool_material_without_replaying_tools(self):
+        from core.speech_runtime import SpeechDraft, SPEECH_REQUEST
+        await self.chat(message_id='material-source')
+        requests = []
+
+        async def generate(*args, **kwargs):
+            requests.append(SPEECH_REQUEST.get()['allow_tools'])
+            if len(requests) == 1:
+                return SpeechDraft('{"say":"看到了。"}', images=['/synthetic/image.png'],
+                                   tools=[{'name': 'lookup', 'status': 'completed'}])
+            return '{"inner":"终于看清了。","say":"看到了。"}'
+
+        self.engine._ask_llm = generate
+        outcome = TickOutcome(GROUP)
+        async with self.engine.session_state(GROUP) as state:
+            await self.engine.participation_text(state, GROUP, outcome=outcome)
+            self.assertEqual(requests, [True, False])
+            self.assertEqual(state.thoughts[-1]['detail']['speech']['tools'][0]['name'], 'lookup')
+            self.assertIn('/synthetic/image.png', outcome.images)
+
+    async def test_listening_does_not_release_a_tools_buffered_image(self):
+        from core.speech_runtime import SpeechDraft
+        await self.chat()
+        self.engine._ask_llm = AsyncMock(return_value=SpeechDraft(
+            '{"inner":"先记在心里。","intent":"listen","say":""}', images=['/synthetic/image.png']))
+        outcome = TickOutcome(GROUP)
+        async with self.engine.session_state(GROUP) as state:
+            await self.engine.participation_text(state, GROUP, outcome=outcome)
+            self.assertTrue(state.thoughts)
+        self.assertFalse(outcome.routed_images)
+        self.assertFalse(outcome.images)
+
     async def test_join_and_silence_both_keep_one_private_thought(self):
         for say, status in [("风车很好看。", "sent"), ("", "listening")]:
             self.llm.replies = [json.dumps({"inner": "有点想看看山上的风。", "say": say})]

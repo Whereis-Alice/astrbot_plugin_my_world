@@ -8,6 +8,7 @@ import json
 from .. import life_matters as matters
 from ..life_policy import admit_life
 from ..planner import active_plan
+from ..recovery import is_sleep_action, restores_energy
 
 
 class LifeControlMixin:
@@ -38,6 +39,7 @@ class LifeControlMixin:
     def suspend_life(self, state, *, reason: str, source: str) -> None:
         """Settle exactly once and retain a resumable plan, never a replayable tool call."""
         action, plan = state.current_action or {}, active_plan(state)
+        self.settle_recovery_progress(state, action)
         self.pause_matter_action(state, action)
         matter_id = str(action.get("matter_id") or (plan or {}).get("matter_id") or "")
         item = matters.find(state, matter_id)
@@ -57,6 +59,7 @@ class LifeControlMixin:
             pending = list((plan or {}).get("steps", []))[int((plan or {}).get("current_step", 0)):]
             if pending and all((d := defs.get(str(step.get("action") or "")))
                                and d.llm_level == "template" and d.target_type == "none"
+                               and not is_sleep_action(d) and not restores_energy(d)
                                and d.id not in {"sleep", "nap", "walk_to", "say", "share", "poke", "browse_phone", "browse_computer"}
                                and d.on_complete.trigger == "none" for step in pending):
                 saved = copy.deepcopy(plan)

@@ -192,7 +192,7 @@ class WorkspaceSourcesBrowserTests(unittest.TestCase):
         self.page.locator('.wizard-body').get_by_role('button', name='从主人设生成', exact=True).click()
         row = self.page.evaluate('sourceWrites.filter(x=>x.key==="persona-brief").at(-1)')
         self.assertEqual(row['params']['session'], SECOND)
-        expect(self.page.locator('.wizard-body textarea')).to_have_value('乙的简易人设')
+        expect(self.page.locator('.wizard-body textarea').first).to_have_value('乙的简易人设')
 
     def test_brief_old_success_and_failure_cannot_replace_new_session(self):
         area = self.brief()

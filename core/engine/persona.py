@@ -108,7 +108,7 @@ class PersonaMixin:
         return text
 
     @model_operation("persona", "管理员请求生成人设简报")
-    async def generate_persona_brief(self, session_id: str, *, persona_text: str | None = None) -> str:
+    async def generate_persona_brief(self, session_id: str, *, persona_text: str | None = None, extra_prompt: str = "") -> str:
         """用生成器模型把主人设压成一段摘要。
 
         ``persona_text``：编辑器里刚改过、还没保存的角色卡。传了就用它——
@@ -122,6 +122,8 @@ class PersonaMixin:
         system, prompt = self.prompts.build_persona_brief_prompt(
             persona_text=persona, limit=limit
         )
+        if extra_prompt.strip():
+            prompt += "\n本次补充要求（仍以原人设事实为准）：\n" + extra_prompt.strip()[:2000]
         brief = await self._ask_creator(session_id, system, prompt) or ""
         brief = " ".join(brief.split())[: max(80, limit * 2)]
         if brief:

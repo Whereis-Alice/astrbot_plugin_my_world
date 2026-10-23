@@ -12,6 +12,13 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
   let drawerSession = "", drawerScope = "", drawerRevision = 0;
   let weekData = {}, weekRequest = 0, weekSession = "", weekLoading = false;
   const weekPending = new Set();
+  const generationExtras = el("details", "generation-extra");
+  generationExtras.append(el("summary", "muted", "生成日历／日记的额外提示词（可选）"));
+  const generationHint = document.createElement("textarea"); generationHint.rows = 2; generationHint.maxLength = 2000;
+  generationHint.setAttribute("aria-label", "日历／日记额外提示词");
+  generationHint.placeholder = "本次生成偏好；日记仍只依据已保存的经历。";
+  generationExtras.append(generationHint);
+  $("life-week-generate-calendar").parentElement.after(generationExtras);
   function updateWeekControls() {
     const ready = !weekLoading && weekSession === getSession() && Boolean(weekData.week_start);
     for (const id of ["life-week-prev", "life-week-next"]) $(id).disabled = !ready;
@@ -389,7 +396,7 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
     const year = Number(start.slice(0, 4));
     weekPending.add("calendar"); updateWeekControls();
     try {
-      const response = await apiPost("calendar/generate", {session, year, force: true});
+      const response = await apiPost("calendar/generate", {session, year, force: true, extra_prompt: generationHint.value.trim()});
       if (!current()) return;
       if (!response.ok) throw new Error(response.error || response.message || "日历生成失败");
       toast(`${year} 年日历已生成`);
@@ -408,7 +415,7 @@ export function createLifePage({root, apiGet, apiPost, el, getSession, toast, op
     const current = () => session === getSession() && revision === weekRequest;
     weekPending.add("diary"); updateWeekControls();
     try {
-      const response = await apiPost("diary/generate", {session, day});
+      const response = await apiPost("diary/generate", {session, day, extra_prompt: generationHint.value.trim()});
       if (!current()) return;
       if (!response.ok) throw new Error(response.error || response.message || "日记生成失败");
       toast(`${day} 的日记已补写`);

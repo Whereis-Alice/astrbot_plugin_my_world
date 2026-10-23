@@ -139,7 +139,11 @@ class ActionsMixin:
         计划与日程实际执行时也检查此限制。
         """
 
-        if str(getattr(action, "id", "")) != "sleep":
+        from ..recovery import is_sleep_action
+        if self.world.sleep.mode == "activity" and is_sleep_action(action):
+            return False
+        from ..recovery import sleep_action_kind
+        if sleep_action_kind(action) != "sleep":
             return not bool(getattr(action, "idle", False))
         return self.world.sleep_allowed_now(self.local_now().hour)
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..recovery import sleep_action_kind
+
 from ..model_calls import model_operation
 
 from datetime import datetime, timedelta
@@ -415,7 +417,7 @@ class ScheduleMixin:
         """这条日程要不要过闸门：``heavy``（睡觉类）/ ``moving``（换地方）/ 空串。"""
 
         kinds = {str(getattr(step, "type", "") or "") for step in list(schedule.action_chain or [])}
-        if kinds & set(self.GATE_HEAVY_ACTIONS):
+        if any(sleep_action_kind(self.world.action_map().get(kind)) for kind in kinds):
             return "heavy"
         if kinds & set(self.GATE_MOVING_ACTIONS):
             return "moving"
@@ -695,7 +697,7 @@ class ScheduleMixin:
                             })
                         continue
                     if self.world.sleep.mode == "autonomous" and any(
-                        step.type == "sleep" for step in schedule.action_chain
+                        sleep_action_kind(self.world.action_map().get(step.type)) == "sleep" for step in schedule.action_chain
                     ):
                         claimed = await self.db.call("mark_schedule_fired", session_id=session_id,
                             schedule_id=schedule.id, day_key=day_key, slot=slot)

@@ -105,6 +105,7 @@ from .persona import PersonaMixin
 from .commands import CommandsMixin
 from .sleep import SleepMixin
 from .sleep_rhythm import SleepRhythmMixin
+from .recovery import RecoveryMixin
 from .message_rules import MessageRulesMixin
 from .addressing import AddressingMixin
 from .reply import ReplyMixin
@@ -231,6 +232,7 @@ class MyWorldEngine(
     CommandsMixin,
     SleepMixin,
     SleepRhythmMixin,
+    RecoveryMixin,
     MessageRulesMixin,
     AddressingMixin,
     ReplyMixin,

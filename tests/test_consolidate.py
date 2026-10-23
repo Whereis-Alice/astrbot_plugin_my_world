@@ -124,6 +124,19 @@ class ConsolidateTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.profiles.profile(SESSION, USER)["digest"], "爱猫、常忘吃早饭，认你当主人")
         self.assertGreaterEqual(self.profiles.profile(SESSION, USER)["affinity"], 0)
 
+    async def test_sleep_free_review_never_invents_a_dream(self):
+        self.world.sleep.mode = "activity"
+        self.memory.remember(session_id=SESSION, persona_id="", node_id="study",
+            content="今天在房间整理了书签", memory_type=SCENE, weight=.6)
+
+        async def llm(system, prompt):
+            self.assertIn("不生成 dream", system)
+            return '{"dream":"梦到了风车"}'
+
+        result = await self.consolidator.run(session_id=SESSION, llm=llm)
+        self.assertFalse(result.dream)
+        self.assertFalse(self.db.query_memories(session_ids=[SESSION], memory_types=["dream"]))
+
     async def test_forget_only_folds_the_memory(self):
         memory_id = self.memory.remember(
             session_id=SESSION,

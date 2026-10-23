@@ -170,7 +170,8 @@ class ParticipationMixin:
         system, prompt, targets = self.participation_prompt(state, target,
             persona, request=request, rows=rows, source=source, browse_id=browse_id)
         self.record_context_selection(request)
-        raw = await self.ask_speech(state, target, system, prompt, rows=rows)
+        raw = await self.ask_speech(state, target, system, prompt, rows=rows, live_window=self._participation_window(source))
+        original_draft = raw
         from ..speech_decision import parse_decision
         from ..json_actions import extract_json_object
         import json
@@ -185,7 +186,8 @@ class ParticipationMixin:
             # One bounded repair under the same background budget. Never invent
             # thoughts from the draft and never replay a failed provider call.
             raw = await self.ask_speech(state, target, system, prompt + "\n上轮结果未通过校验："
-                + decision.error + "。请重新给出完整 JSON，补上真实想法，并保留本轮发言选择。", rows=rows)
+                + decision.error + "。请重新给出完整 JSON，补上真实想法，并保留本轮发言选择。"
+                + "\n上轮草稿（只修复格式，不添加新事实）：" + str(raw)[:5000], rows=rows, allow_tools=False)
             decision = parse_decision(raw or "", targets)
         if decision.error:
             self.decision_trace(target, "participation", "failed", decision.error)
@@ -194,7 +196,7 @@ class ParticipationMixin:
             await self._log_event(state, "speech_decision_failed", {"trigger": source, "reason": decision.error}, outcome=outcome, silent=True)
             return "", ""
         await self.remember_speech_decision(state, target, decision, trigger=source,
-                                          outcome=outcome, browse_id=browse_id)
+                                          outcome=outcome, browse_id=browse_id, raw=original_draft)
         return decision.say, decision.reply_to
 
     def queue_participation(self, session_id: str) -> None:

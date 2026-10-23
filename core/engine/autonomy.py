@@ -62,6 +62,9 @@ class AutonomyMixin:
                 await self._run_rhythm_sleep(state, outcome)
             elif choice is not None and choice["kind"] in {"event", "schedule", "continue"}:
                 outcome.notes.append(choice["reason"])
+            elif state.energy < (self.world.sleep.recovery_threshold if self.world.sleep.mode == "activity" else .25) or self.decider.sleep_pressure_high(state):
+                # A needed recovery must not be replaced by a random social/model plan.
+                await self._quiet_rule_plan(state, node, outcome)
             elif self.maybe_start_chat_browse(state):
                 outcome.notes.append("空闲时安静翻阅近期消息")
             elif not self.proactive_chat_allowed(session_id):
@@ -323,7 +326,8 @@ class AutonomyMixin:
                 or a.target_type not in {"none", "node"} or a.tool_list() or a.trigger_command
                 or a.on_complete.trigger not in {"none", "llm_followup"})
         if self.world.sleep.mode == "autonomous":
-            blocked_actions.add("sleep")
+            from ..recovery import sleep_action_kind
+            blocked_actions.update(a.id for a in self.world.actions if sleep_action_kind(a) == "sleep")
         context_target = self.profile_session(state, focus_user) if focus_user else state.session_id
         request = self.context_request(state, context_target, task="plan", text=hint,
             rows=[] if quiet else None, focus=focus_user)

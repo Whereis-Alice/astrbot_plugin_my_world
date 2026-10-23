@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..recovery import sleep_action_kind
+
 import time
 import math
 from datetime import timedelta
@@ -898,7 +900,7 @@ class GenerationMixin:
             }
             for action in self.world.actions
             if action.enabled and not bool(getattr(action, "legacy", False))
-            and not (action.id == "sleep" and self.world.sleep.mode == "autonomous")
+            and not (sleep_action_kind(action) == "sleep" and self.world.sleep.mode == "autonomous")
         ]
         existing = []
         if self.schedules is not None:
@@ -1244,7 +1246,7 @@ class GenerationMixin:
         if mode == "now" and action is not None:
             if action.get("interruptible", True):
                 stopped = str(action.get("type") or "")
-                if stopped in {"sleep", "nap"}:
+                if sleep_action_kind(self.world.action_map().get(stopped)):
                     self._finish_sleep_rhythm(state, action, interrupted=True)
                 self.pause_matter_action(state, action)
                 state.current_action = None
@@ -1309,7 +1311,7 @@ class GenerationMixin:
                 return False
             if not force and not action.get("interruptible", True):
                 return False
-            if action.get("type") in {"sleep", "nap"}:
+            if sleep_action_kind(self.world.action_map().get(str(action.get("type") or ""))):
                 self._finish_sleep_rhythm(state, action, interrupted=True)
             self.pause_matter_action(state, action)
             if (state.current_plan or {}).get("matter_id") == action.get("matter_id") and action.get("matter_id"):
@@ -1489,7 +1491,7 @@ class GenerationMixin:
                         if (kind and kind not in actions) or (node and node not in nodes):
                             fixed.append(f"丢掉手上的「{kind or '动作'}」")
                             self.pause_matter_action(state, action)
-                            if kind in {"sleep", "nap"}:
+                            if sleep_action_kind(self.world.action_map().get(kind)) or state.is_sleeping:
                                 self._finish_sleep_rhythm(state, action, interrupted=True)
                             state.current_action = None
                             state.state = STATE_IDLE

@@ -692,7 +692,7 @@ class CalendarDiaryApiTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(200, result["status_code"], result)
         self.plugin.engine.ensure_calendar.assert_awaited_once_with(
-            self.session, 2026, force=True, automatic=False
+            self.session, 2026, force=True, automatic=False, extra_prompt=""
         )
         yesterday = (
             self.plugin.engine.local_now().date() - timedelta(days=1)
@@ -705,7 +705,7 @@ class CalendarDiaryApiTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(200, result["status_code"], result)
         self.plugin.engine.ensure_diary.assert_awaited_once_with(
-            self.session, yesterday, force=True, automatic=False
+            self.session, yesterday, force=True, automatic=False, extra_prompt=""
         )
 
     async def test_diary_generation_rejects_today_and_future_instead_of_inventing(self):

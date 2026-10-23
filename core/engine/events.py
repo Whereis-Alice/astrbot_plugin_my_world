@@ -181,6 +181,8 @@ class EventsMixin:
         「作息与夜晚」和「事件」里配。
         """
 
+        if self.world.sleep.mode == "activity":
+            return 1.0
         penalty = float(getattr(self.world.events, "stay_up_penalty", 1.0) or 1.0)
         if penalty <= 1.0:
             return 1.0

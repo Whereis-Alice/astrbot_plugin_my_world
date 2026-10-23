@@ -1,10 +1,11 @@
 import { updateWorldScene } from "./world-scene.js?v=4.29.0";
+import { openActionRebuild } from "./action-rebuild.js?v=4.37.0";
 import { relationshipBoundaryEditor } from "./relationship-boundary.js";
 import { createContactWorkbench } from "./contact-workbench.js";
 import { createSocialLearning } from "./social-learning.js";
 import { createRelationshipsPage } from "./relationships.js";
 import { createModelCallsPage } from "./model-calls.js?v=4.35.0";
-import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js?v=4.35.0";
+import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js?v=4.37.0";
 import { memorySearchFields } from "./memory-settings.js";
 import { relationshipPromptEditor } from "./relationship-prompt.js";
 import { mountLifeWorkspace } from "./life-workspace.js";
@@ -8690,7 +8691,7 @@ function zoneGeneratorBox(zone) {
   const runNodes = el("button", "ghost", "生成地点");
   runNodes.type = "button";
   runNodes.addEventListener("click", () =>
-    generateZoneNodes(zone.id, countInput.value, runNodes),
+    generateZoneNodes(zone.id, countInput.value, runNodes, extraPrompt.value),
   );
   row2.appendChild(el("span", "muted", "一次生成"));
   row2.appendChild(countInput);
@@ -8711,13 +8712,17 @@ function zoneGeneratorBox(zone) {
   runActions.type = "button";
   runActions.title = "给这个区域里的每个地点分别生成几个动作，弹窗里勾选后才写进配置";
   runActions.addEventListener("click", () =>
-    generateZoneActions(zone.id, actionCount.value, runActions),
+    generateZoneActions(zone.id, actionCount.value, runActions, extraPrompt.value),
   );
   row3.appendChild(el("span", "muted", "每个地点生成"));
   row3.appendChild(actionCount);
   row3.appendChild(el("span", "muted", "个动作"));
   row3.appendChild(runActions);
+  const rebuild = el("button", "ghost", "重做区域动作…"); rebuild.type = "button";
+  row3.style.flexWrap = "wrap";
+  rebuild.onclick = () => rebuildLocationActions({zone: zone.id}); row3.append(rebuild);
   wrapper.appendChild(row3);
+  const extraPrompt = generationExtraField(wrapper);
 
   // 一次配齐：地点 + 地点专属动作 + 额外提示词（可选替换现有地点）
   const row4 = el("div", "row-item");
@@ -8943,14 +8948,37 @@ function nodeGeneratorBox(node) {
   const run = el("button", "ghost", "生成动作");
   run.type = "button";
   run.addEventListener("click", () =>
-    generateNodeActions(node.id, countInput.value, run),
+    generateNodeActions(node.id, countInput.value, run, extraPrompt.value),
   );
   row.appendChild(el("span", "muted", "生成"));
   row.appendChild(countInput);
   row.appendChild(el("span", "muted", "个动作"));
   row.appendChild(run);
+  const rebuild = el("button", "ghost", "重做地点动作…"); rebuild.type = "button";
+  row.style.flexWrap = "wrap";
+  rebuild.onclick = () => rebuildLocationActions({node: node.id}); row.append(rebuild);
   wrapper.appendChild(row);
+  const extraPrompt = generationExtraField(wrapper);
   return wrapper;
+}
+
+function generationExtraField(parent) {
+  const details = el("details", "generation-extra");
+  details.append(el("summary", "muted", "额外提示词（可选）"));
+  const field = el("label", "field");
+  const input = document.createElement("textarea");
+  input.rows = 3;
+  input.setAttribute("aria-label", "额外提示词（可选）");
+  input.placeholder = "例如：适合不需要睡眠、通过充电恢复精力的角色；多一些安静的独处活动。";
+  field.append(input, el("span", "muted", "只用于这次生成，留空按原有设定生成。"));
+  details.append(field);
+  parent.append(details);
+  return input;
+}
+
+function rebuildLocationActions(scope = {}) {
+  return openActionRebuild(scope, {ui, el, nodes, askGenerateCount, apiPost, openCustomDialog,
+    buildActionDraftList, markDirty, render: () => {renderActionGrid(); renderMap();}, saveAll, toast});
 }
 
 /** 生成按钮的「正在跑」状态：禁用 + 换文案，防止连点。 */
@@ -8971,12 +8999,13 @@ async function withLoading(button, text, task) {
 }
 
 /** 生成动作：拉草稿 → 弹窗预览（可改名、改归属、勾选）→ 确认后才写进配置。 */
-async function generateNodeActions(nodeId, perNode, button) {
+async function generateNodeActions(nodeId, perNode, button, extraPrompt = "") {
   return withLoading(button, "生成中…", async () => {
     try {
       const result = await apiPost("generate/actions", {
         node: nodeId,
         per_node: num(perNode, 3),
+        extra_prompt: extraPrompt.trim(),
       });
       const drafts = result.actions || [];
       if (!drafts.length) {
@@ -8998,12 +9027,13 @@ async function generateNodeActions(nodeId, perNode, button) {
 }
 
 /** 区域级批量生成动作：和单个地点走同一套草稿弹窗。 */
-async function generateZoneActions(zoneId, perNode, button) {
+async function generateZoneActions(zoneId, perNode, button, extraPrompt = "") {
   return withLoading(button, "生成中…", async () => {
     try {
       const result = await apiPost("generate/actions", {
         zone: zoneId,
         per_node: num(perNode, 3),
+        extra_prompt: extraPrompt.trim(),
       });
       const drafts = result.actions || [];
       if (!drafts.length) {
@@ -9031,8 +9061,9 @@ function generateWorldActions() {
     defaultValue: 8,
     min: 1,
     max: 24,
-    onRun: async (count) => {
-      const result = await apiPost("generate/world-actions", { count });
+    extra: { placeholder: "希望生成的活动、角色习惯或需要避开的内容" },
+    onRun: async (count, _second, extraPrompt) => {
+      const result = await apiPost("generate/world-actions", { count, extra_prompt: extraPrompt });
       const drafts = result.actions || [];
       if (!drafts.length) {
         throw new Error(
@@ -9067,10 +9098,12 @@ function generateGenericActions() {
         { value: "free", text: "不看地图：生成后由插件铺到地点上" },
       ],
     },
-    onRun: async (count, _second, _extra, choiceValue) => {
+    extra: { placeholder: "例如：适合室内的小事，多一些可以恢复精力的活动" },
+    onRun: async (count, _second, extraPrompt, choiceValue) => {
       const result = await apiPost("generate/generic-actions", {
         count,
         use_map: choiceValue !== "free",
+        extra_prompt: extraPrompt,
       });
       const drafts = result.actions || [];
       if (!drafts.length) {
@@ -9119,9 +9152,10 @@ function generateIdleActions() {
     title: "按人设生成闲置动作",
     hint: "读当前人设和闲置生活的补充要求，生成不依赖特定地点的生活细节。确认后才加入动作库；运行时静默轮换。",
     defaultValue: 8, min: 1, max: 24,
-    onRun: async (count) => {
+    extra: { placeholder: "本次生成的额外要求，会与闲置生活设置中的补充要求一起使用" },
+    onRun: async (count, _second, extraPrompt) => {
       if (ui.dirty && !(await saveAll())) throw new Error("先保存人设与闲置设置，再生成动作");
-      const result = await apiPost("generate/idle-actions", { count });
+      const result = await apiPost("generate/idle-actions", { count, extra_prompt: extraPrompt });
       const drafts = result.actions || [];
       if (!drafts.length) throw new Error((result.problems || []).join("；") || "没有可用草稿，请重试");
       return () => openCustomDialog({
@@ -10425,12 +10459,13 @@ function openEventDraftDialog(drafts, problems) {
 }
 
 /** 生成地点：草稿带自动摆位与自动连线，确认后才加进来。 */
-async function generateZoneNodes(zoneId, count, button) {
+async function generateZoneNodes(zoneId, count, button, extraPrompt = "") {
   return withLoading(button, "生成中…", async () => {
     try {
       const result = await apiPost("generate/nodes", {
         zone: zoneId,
         count: num(count, 3),
+        extra_prompt: extraPrompt.trim(),
       });
       const drafts = result.nodes || [];
       if (!drafts.length) {
@@ -10441,7 +10476,7 @@ async function generateZoneNodes(zoneId, count, button) {
       openCustomDialog({
         title: `生成的地点（${drafts.length} 个）`,
         hint: "自动摆好位置并按区域连成链（首个连最近的地点，默认 1 tick）。「确认加入」写入配置后立即生效。"
-          (problems.length ? `模型那边有这些情况：${problems.join("；")}` : ""),
+          + (problems.length ? `模型那边有这些情况：${problems.join("；")}` : ""),
         confirmText: "确认加入选中的",
         build: (body) => buildNodeDraftList(body, drafts),
         onSubmit: () => commitGeneratedNodes(drafts, result.edges || []),
@@ -11661,6 +11696,18 @@ function renderActionForm() {
     { key: "rest", label: "休息：轻缓孤独与无聊" }, { key: "interest", label: "兴趣：主要缓解无聊" },
     { key: "explore", label: "探索：新鲜感与独处满足" }, { key: "social", label: "社交：共同活动与陪伴" },
   ], (value) => { action.life_role = value; }, { hint: "正式动作完成时生效；持续生活也会缓慢缓解。你手配的孤独 / 无聊效果优先，不叠加默认完成奖励。" }));
+  form.appendChild(selectField("恢复类型", action.recovery_kind || "auto", [
+    {key: "auto", label: "沿用动作状态与效果"}, {key: "none", label: "普通活动"},
+    {key: "sleep", label: "睡整觉"}, {key: "nap", label: "小睡"},
+    {key: "restore", label: "充电、冥想等恢复"},
+  ], value => {
+    action.recovery_kind = value;
+    if (["sleep", "nap", "restore"].includes(value)) action.category = "continuous";
+    action.during = action.during || {};
+    if (["sleep", "nap"].includes(value)) action.during.state = value === "sleep" ? "sleeping" : "napping";
+    else if (["sleeping", "napping"].includes(action.during.state)) action.during.state = "";
+    renderActionForm();
+  }, {hint: "睡眠类接入作息与唤醒；充电等只按配置恢复精力，不会触发睡眠门禁。恢复量在下方效果中设置，推荐按分钟恢复。"}));
 
   form.appendChild(
     inputField("动作 ID", action.id, (value) => {
@@ -14648,7 +14695,7 @@ function showLogDetail(item, event) {
   const decisions = detail.decisions || (detail.intent && detail.trigger ? [detail] : []);
   for (const decision of decisions) box.appendChild(speechDecisionDetail(decision));
   const pairs = Object.entries(detail).filter(
-    ([, value]) => value !== null && value !== undefined && value !== "" && String(value) !== "{}",
+    ([key, value]) => key !== "decisions" && !(detail.intent && detail.trigger) && value !== null && value !== undefined && value !== "" && String(value) !== "{}",
   );
   if (pairs.length) {
     const list = el("dl", "detail-facts");
@@ -14688,10 +14735,33 @@ function speechDecisionDetail(speech) {
     el("span", "thought-chip", intents[speech.intent] || speech.intent || "未记录意图"));
   if (speech.status) badges.append(el("span", "thought-chip", statuses[speech.status] || speech.status));
   box.append(badges);
-  if (speech.reply_to) box.append(el("span", "thought-quote", `引用消息：${speech.reply_to}`));
+  if (speech.target) box.append(el("span", "thought-quote", `对话：${sessionLabelOf(speech.target)}`));
+  if (speech.reply_preview?.text) box.append(el("blockquote", "thought-quote", `${speech.reply_preview.name || "对方"}：${speech.reply_preview.text}`));
+  else if (speech.reply_to) box.append(el("span", "muted", "引用消息未留存正文"));
+  if (speech.drafts?.length) box.append(el("p", "thought-quote", `想说：${speech.drafts.join("\n")}`));
+  if (speech.sent?.length) box.append(el("p", "thought-reply", `已发出：${speech.sent.join("\n")}`));
+  for (const tool of speech.tools || []) box.append(el("span", "thought-chip", `${tool.name} · ${tool.status === "completed" ? "已完成" : "未完成"}`));
   if (speech.note) box.append(el("span", "thought-quote", speech.note));
+  const links = el("div", "row");
+  const addLink = (label, callback) => { const button = el("button", "ghost small", label); button.type = "button"; button.onclick = callback; links.append(button); };
+  if (speech.trace_id && speech.target) addLink("查看模型调用", () => { modelCallsPage.openRelated(speech.target, speech.trace_id); showTab("model-calls"); });
+  if (speech.id && speech.target) {
+    const selectTarget = id => {
+      const select = $(id);
+      if (![...select.options].some(option => option.value === speech.target)) select.add(new Option(sessionLabelOf(speech.target), speech.target));
+      select.value = speech.target;
+    };
+    addLink("查看相关日志", () => {
+      selectTarget("log-session"); $("log-keyword").value = speech.id; $("log-type").value = ""; showTab("logs");
+    });
+    addLink("定位内心活动", () => {
+      selectTarget("thought-session");
+      ui.thoughtJump = {id: speech.id, session: speech.target}; showTab("thoughts");
+    });
+  }
+  box.append(links);
   const more = el("details");
-  more.append(el("summary", "muted", "关联记录"), el("pre", "pre", JSON.stringify({
+  more.append(el("summary", "muted", "技术编号"), el("pre", "pre", JSON.stringify({
     decision: speech.id, model_call: speech.trace_id, target: speech.target, browse: speech.browse_id,
   }, null, 2)));
   box.append(more);
@@ -16116,6 +16186,13 @@ function renderThoughts(data) {
   const list = $("thoughts-list");
   if (!list) return;
   ui.thoughtRows = (data && data.thoughts) || [];
+  ui.thoughtRenderLimit = 40;
+  const jump = ui.thoughtJump;
+  if (jump && jump.session === $("thought-session")?.value) {
+    const found = ui.thoughtRows.find(row => row.detail?.speech?.id === jump.id);
+    if (found) { ui.thoughtTab = found.browse_session ? "browse" : "inner"; ui.thoughtRenderLimit = 300; }
+    else { toast("关联内心活动已不在当前保留范围内，可查看日志"); ui.thoughtJump = null; }
+  }
   ui.browseStatus = data.browse || null;
   const health = $("thoughts-health");
   if (health && data.health) {
@@ -16125,7 +16202,6 @@ function renderThoughts(data) {
     health.querySelector("summary").textContent = `${info.message} · ${info.current}`;
     health.querySelector("p").textContent = `${info.note} 最近生活推进：${info.last_tick_at ? formatStamp(info.last_tick_at) : "暂无记录"}；最近规划尝试：${info.last_plan_at ? formatStamp(info.last_plan_at) : "暂无记录"}。调用失败与预算可在「模型调用」和「运行」中查看。`;
   }
-  ui.thoughtRenderLimit = 40;
   renderThoughtsPage();
 }
 
@@ -16167,6 +16243,11 @@ function renderThoughtsPage() {
   rows.slice(0, limit).forEach((row, index) => {
     const item = el("div", "thought-row");
     item.dataset.thoughtIndex = String(index);
+    if (ui.thoughtJump?.session === $("thought-session")?.value && row.detail?.speech?.id === ui.thoughtJump.id) {
+      item.tabIndex = -1;
+      requestAnimationFrame(() => { if (item.isConnected) { item.scrollIntoView({block: "center"}); item.focus(); } });
+      ui.thoughtJump = null;
+    }
     const head = el("div", "thought-head");
     head.appendChild(
       el("span", "thought-time", row.at ? formatStamp(row.at) : "（更早的记录）"),
@@ -18244,6 +18325,14 @@ function renderSettings() {
   );
   naturalSilence.querySelector("input").setAttribute("aria-label", "自然沉默");
   interject._fields.appendChild(naturalSilence);
+  interject._fields.appendChild(checkboxField("主动接话可使用工具", world.decider.proactive_tools !== false,
+    value => (world.decider.proactive_tools = value), {hint: "使用 AstrBot 工具循环，仍遵守人设、插件启用和地点工具权限；工具产出的图片在内心记录后随接话发送。"}));
+  interject._fields.appendChild(textareaField("主动工具范围（可选）", (world.decider.proactive_tool_names || []).join("\n"),
+    value => (world.decider.proactive_tool_names = value.split(/[\n,，]/).map(v => v.trim()).filter(Boolean)), {rows: 2, hint: "每行一个工具名；留空沿用当前可用工具，填写后只使用交集。"}));
+  interject._fields.appendChild(inputField("主动工具最多调用次数", world.decider.proactive_tool_steps ?? 5,
+    value => (world.decider.proactive_tool_steps = Math.max(1, Math.min(10, Number(value) || 5))), {type: "number", min: 1, max: 10, step: 1}));
+  interject._fields.appendChild(inputField("单次主动工具超时（秒）", world.decider.proactive_tool_timeout ?? 30,
+    value => (world.decider.proactive_tool_timeout = Math.max(5, Math.min(120, Number(value) || 30))), {type: "number", min: 5, max: 120, step: 1}));
   form.appendChild(interject);
 
   /* --- 睡眠与打断 --- */
@@ -18918,9 +19007,25 @@ function renderSettings() {
   );
   world.sleep = world.sleep || {};
   nightSection._fields.appendChild(selectField("作息模式", world.sleep.mode || "autonomous",
-    [{key: "autonomous", label: "自主作息（推荐）"}, {key: "fixed", label: "固定作息"}],
-    value => {world.sleep.mode = value;},
-    {hint: "自主作息独立于群聊发言冷却；固定作息按日程、精力与夜晚范围执行。"}));
+    [{key: "autonomous", label: "自主作息（推荐）"}, {key: "fixed", label: "固定作息"}, {key: "activity", label: "无需睡眠，通过活动恢复"}],
+    value => {world.sleep.mode = value; renderSettings();},
+    {hint: "不需要睡眠的角色可通过充电、冥想等动作恢复，不累计困意、不受连续清醒上限与熬夜惩罚影响。"}));
+  const recoveryAction = selectField("优先恢复动作", world.sleep.recovery_action_id || "",
+    [{key: "", label: world.sleep.mode === "activity" ? "自动选择可用的恢复动作" : "自动选择睡眠动作"},
+      ...ui.config.world.actions.filter(a => a.enabled !== false && a.category === "continuous" && !a.idle)
+        .map(a => ({key: a.id, label: a.name || a.id}))],
+    value => {world.sleep.recovery_action_id = value;},
+    {hint: "活动恢复模式请选择有正向精力效果的动作；系统会先前往允许的地点。睡眠模式可选择生成或自建的睡整觉动作。"});
+  nightSection._fields.append(recoveryAction);
+  const recoveryThreshold = inputField("精力低于多少安排恢复", num(world.sleep.recovery_threshold, .25),
+    value => {world.sleep.recovery_threshold = num(value, .25);},
+    {type: "number", min: .05, max: .8, step: .05, hint: "只用于活动恢复模式，0.25 表示精力低于 25%。"});
+  nightSection._fields.append(recoveryThreshold);
+  const recoveryTarget = inputField("恢复到多少精力", num(world.sleep.recovery_target, .85),
+    value => {world.sleep.recovery_target = num(value, .85);},
+    {type: "number", min: .3, max: 1, step: .05, hint: "按恢复速度估算每段时长，遵守动作时长上限；完成一段后按实际精力决定是否继续。"});
+  nightSection._fields.append(recoveryTarget);
+  const physiologicalFields = new Set(nightSection._fields.children);
   [
     ["evaluation_minutes", "常规作息评估间隔（分钟）", 60, 15, 180, 15, "进入疲劳或晚间评估窗口后，默认间隔 60 分钟；模型可提早复查，最短 15 分钟。精神好时不询问，失败按状态兜底。"],
     ["min_hours", "整觉最短时长（小时）", 6, 3, 12, 0.5, "模型在最短与最长之间决定，默认 6–10 小时；短时恢复使用小睡动作。"],
@@ -18992,6 +19097,11 @@ function renderSettings() {
       },
     ),
   );
+  if (world.sleep.mode === "activity") {
+    for (const field of nightSection._fields.children) {
+      if (!physiologicalFields.has(field)) field.hidden = true;
+    }
+  } else { recoveryThreshold.hidden = true; recoveryTarget.hidden = true; }
   form.appendChild(nightSection);
 
   /* --- 她自己的账 --- */
@@ -19850,6 +19960,7 @@ function renderSettings() {
   briefArea.placeholder = "还没有生成，点下面的按钮从主人设生成一段";
   briefFull.appendChild(fieldHead("简易人设"));
   briefFull.appendChild(briefArea);
+  const briefExtra = generationExtraField(briefFull);
   let briefRequest = 0, briefEdit = 0, briefLoading = false, briefPending = false;
   const briefSession = () => $("status-session")?.value || "";
   const briefCurrent = (request, session, draft = null) => request === briefRequest && briefArea.isConnected &&
@@ -19892,7 +20003,7 @@ function renderSettings() {
     briefPending = true; briefLoading = false; updateBriefButtons();
     briefGenerate.textContent = "生成中…";
     try {
-      const data = await apiPost("persona-brief", { session: sessionId, generate: true, ...draft });
+      const data = await apiPost("persona-brief", { session: sessionId, generate: true, extra_prompt: briefExtra.value, ...draft });
       if (!briefCurrent(request, sessionId, draft)) return;
       const state = (data && data.persona_brief) || {};
       renderBriefState(state, edit, data.matches_current_persona !== false);
@@ -20901,6 +21012,7 @@ function wizardGenerateStep(body) {
   const briefWrap = el("div", "field");
   briefWrap.appendChild(fieldHead("简易人设（给打杂模型）"));
   briefWrap.appendChild(briefArea);
+  const briefExtra = generationExtraField(briefWrap);
   const briefRow = el("div", "row");
   const briefButton = el("button", "small primary", "从主人设生成");
   briefButton.type = "button";
@@ -20919,6 +21031,7 @@ function wizardGenerateStep(body) {
       const data = await apiPost("persona-brief", {
         session,
         generate: true,
+        extra_prompt: briefExtra.value,
         ...draft,
       });
       if (!current(session, version, draft)) return;
@@ -21419,6 +21532,7 @@ $("status-session").addEventListener("change", () => {
   if ($("tab-life").dataset.lifeView === "experiences") lifeWorkspace.select("experiences");
 });
 $("log-model-calls").addEventListener("click", () => showTab("model-calls"));
+$("map-rebuild-actions").addEventListener("click", () => rebuildLocationActions());
 
 async function openRelationshipRules() {
   return openRelationshipRulesEditor({el, apiGet, apiPost, openCustomDialog,

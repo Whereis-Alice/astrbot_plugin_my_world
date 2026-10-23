@@ -1,6 +1,8 @@
 """Bounded background work, deadlines, backoff and conservative offline reconciliation."""
 from __future__ import annotations
 
+from ..recovery import sleep_action_kind
+
 import asyncio
 import time
 from collections import deque
@@ -126,6 +128,15 @@ class BackgroundMixin:
         reserve = (len(str(kwargs.get("system_prompt", ""))) + len(str(kwargs.get("prompt", "")))
                    + len(str(kwargs.get("contexts") or "")) + len(str(kwargs.get("func_tool") or ""))
                    + int(kwargs.get("max_tokens") or 2048))
+        from ..speech_runtime import SPEECH_REQUEST
+        speech = SPEECH_REQUEST.get()
+        available = self.allowed_tool_names(speech["state"].node_id) if speech else set()
+        if self.world.decider.proactive_tool_names:
+            available &= set(self.world.decider.proactive_tool_names)
+        context = getattr(getattr(channel, "plugin", None), "context", None)
+        if (speech and speech.get("allow_tools") and available and self.world.decider.proactive_tools
+                and getattr(channel, "role", "") == "main" and callable(getattr(context, "tool_loop_agent", None))):
+            reserve *= self.world.decider.proactive_tool_steps + 1
         day = self._today_key(now)
         admitted = False
         usage = None
@@ -177,7 +188,11 @@ class BackgroundMixin:
         # Translate relative counters by the elapsed life clock.
         current = state.current_action or {}
         remaining = min(gap, 6 * 3600)
-        if current.get("type") in {"sleep", "nap"}:
+        from ..recovery import passive_recovery
+        definition = self.world.action_map().get(str(current.get("type") or ""))
+        sleeping = sleep_action_kind(definition)
+        can_recover = definition and definition.enabled and (definition.id == "sleep" or definition.available_in(state.node_id))
+        if can_recover and (sleeping or passive_recovery(definition)):
             left = max(0, int(current.get("duration_ticks", 0)) - int(current.get("elapsed_ticks", 0)))
             slept = min(left, int(elapsed / self.tick_seconds))
             current["elapsed_ticks"] = int(current.get("elapsed_ticks", 0)) + slept
@@ -192,13 +207,12 @@ class BackgroundMixin:
                                    world=self.world, now=wake_at)
             definition = self.world.action_map().get(str(current.get("type")))
             if definition and slept:
-                self.dynamics.apply_effects(state, definition.on_complete.effects_per_minute,
-                    world=self.world, scale=slept * self.tick_seconds / 60, now=now)
-                current["effects_settled_minutes"] = float(current.get("effects_settled_minutes", 0)) + slept * self.tick_seconds / 60
+                self.settle_recovery_progress(state, current)
             if slept >= left:
-                current["offline_wake"] = True
-                current["offline_wake_at"] = wake_at
-                state.goodmorning_day = self._today_key(now)
+                if sleeping:
+                    current["offline_wake"] = True
+                    current["offline_wake_at"] = wake_at
+                    state.goodmorning_day = self._today_key(now)
                 remaining = min(max(0, elapsed - sleep_seconds), 6 * 3600)
             else:
                 remaining = max(0, gap - sleep_seconds)

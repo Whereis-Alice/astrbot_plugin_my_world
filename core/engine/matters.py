@@ -198,6 +198,7 @@ class MattersMixin:
         return total
 
     def pause_matter_action(self, state, action: dict, *, at: float | None = None) -> None:
+        self.settle_recovery_progress(state, action)
         self.settle_life_practice(state, action, at=at)
         settled = self.settle_matter_work(state, action, at=at)
         item = matters.find(state, str(action.get("matter_id") or ""))

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..recovery import sleep_action_kind
+
 from ..model_calls import model_operation
 
 import math
@@ -328,8 +330,8 @@ class ActionsRunMixin:
         from ..models import CHAT_BROWSE_IDS
         if definition.id in CHAT_BROWSE_IDS:
             return self.start_chat_browse(state, definition.id)
-        if definition.id == "sleep":
-            target = self.world.sleep_node_id()
+        if sleep_action_kind(definition) == "sleep":
+            target = self.world.sleep_node_id() if definition.id == "sleep" else self._nearest_node_with_action(state.node_id, definition)
             current_plan = active_plan(state) if from_plan else None
             fallback_here = bool(
                 current_plan
@@ -426,7 +428,7 @@ class ActionsRunMixin:
             # 睡前先进临睡期：不立刻躺下（见 _enter_drowsy）
             await self._enter_drowsy(state, node, outcome, definition, action, depth)
             return
-        if definition.id == "sleep" and str((active_plan(state) or {}).get("source")) != "forced":
+        if sleep_action_kind(definition) == "sleep" and str((active_plan(state) or {}).get("source")) != "forced":
             # 晚安与临睡期是两个独立开关；直接入睡也保留睡前问候机会。
             await self._maybe_say_goodnight(state, node, outcome)
         if definition.llm_level == "tool":
@@ -500,10 +502,10 @@ class ActionsRunMixin:
                 self.suspend_life(state, reason="到约好的时间了，保存进度后赴约", source="schedule")
             if definition.during.state:
                 state.state = definition.during.state
-            if state.current_action and str(state.current_action.get("type")) in {"sleep", "nap"}:
+            if state.current_action and sleep_action_kind(self.world.action_map().get(str(state.current_action.get("type") or ""))):
                 self._finish_sleep_rhythm(state, state.current_action, interrupted=True)
-            if definition.id in ("sleep", "nap"):
-                self._start_sleep_rhythm(state, definition.id, duration_ticks)
+            if sleep_action_kind(definition):
+                self._start_sleep_rhythm(state, sleep_action_kind(definition), duration_ticks)
                 # 一段新的睡眠：多久、被吵醒过几次、噪音计数都从这里重新算
                 state.sleep_started_at = int(state.world_time or 0)
                 state.startled_count = 0
@@ -1293,7 +1295,7 @@ class ActionsRunMixin:
           「小睡三小时」这种话写在 intent 里、duration 忘了填是最常见的写法）。
         """
 
-        if definition.id == "sleep" and self.world.sleep.mode == "autonomous":
+        if definition.id == "sleep" and sleep_action_kind(definition) == "sleep" and self.world.sleep.mode == "autonomous":
             low, high = self._rhythm_duration_bounds()
             seconds = min(high, max(low, float(action.duration or definition.duration or 28800)))
         elif definition.duration_mode == "llm":

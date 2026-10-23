@@ -224,13 +224,16 @@ class RecallMixin:
             + "\n".join(lines)
         )
 
-    @staticmethod
-    def _sleep_review_cycle(state: WorldState) -> list:
+    def _sleep_review_cycle(self, state: WorldState) -> list:
+        if self.world.sleep.mode == "activity":
+            return ["activity", self._today_key(self._now())]
         return [str(state.state), state.sleep_started_at, state.sleep_rhythm.get("sleep_started_at", 0)]
 
     def sleep_review_mode(self, state: WorldState) -> str | None:
         """Check eligibility without inference. Bookkeeping belongs to this saved sleep cycle."""
         now = self._now()
+        if self.world.sleep.mode == "activity":
+            return self.activity_review_mode(state)
         if str(state.state) not in (STATE_SLEEPING, STATE_NAPPING):
             state.sleep_rhythm.pop("review", None)
             return None
@@ -321,7 +324,7 @@ class RecallMixin:
                     current = await self.load_state(session_id, cold_start=False)
                     return await state_current(current)
 
-            reason = "睡眠达到整理时机" if automatic else "管理员预览整理" if dry_run else "管理员手动整理"
+            reason = ("无需睡眠角色的每日安静整理" if self.world.sleep.mode == "activity" else "睡眠达到整理时机") if automatic else "管理员预览整理" if dry_run else "管理员手动整理"
             with model_context("consolidate", reason, session_id):
                 result = await self.consolidate_now(snapshot, mode=mode, dry_run=dry_run, context_guard=context_current)
             if not await context_current():

@@ -480,6 +480,8 @@ class ActionDef(Permissive):
     """空闲时可静默执行的生活动作；不调用模型、不发送消息。"""
     life_role: Literal["auto", "none", "rest", "interest", "explore", "social"] = "auto"
     """生活需求的影响类别；none 只使用动作自己配置的数值效果。"""
+    recovery_kind: Literal["auto", "none", "sleep", "nap", "restore"] = "auto"
+    """恢复类型：睡整觉/小睡接入睡眠机制；restore 只按动作效果恢复，不进入睡眠。"""
     intimacy: float | None = None
     """这个动作有多"亲密的肢体接触"：0 = 不是，1 = 就是抱抱亲亲这种。
 
@@ -647,8 +649,12 @@ class ActionDef(Permissive):
 
     @model_validator(mode="after")
     def _normalize_tools(self) -> "ActionDef":
-        """把 ``tool_name`` / ``tool_names`` 两份写法对齐，老配置也能直接用。"""
-
+        """Normalize physiology and legacy tool fields together."""
+        if self.recovery_kind in {"sleep", "nap"}:
+            self.category = "continuous"
+            self.during.state = "sleeping" if self.recovery_kind == "sleep" else "napping"
+        elif self.recovery_kind in {"none", "restore"} and self.during.state in {"sleeping", "napping"}:
+            self.during.state = ""
         self.tool_names = _clean_names(self.tool_names or [], self.tool_name)
         self.tool_name = self.tool_names[0] if self.tool_names else ""
         return self
@@ -1117,7 +1123,11 @@ class SleepQuality(Permissive):
 class SleepConfig(Permissive):
     """她睡觉时怎么回应消息、怎么把她叫起来。"""
 
-    mode: Literal["autonomous", "fixed"] = "autonomous"
+    mode: Literal["autonomous", "fixed", "activity"] = "autonomous"
+    recovery_action_id: str = ""
+    """activity 模式不需要睡眠，精力低时前往指定恢复动作允许的地点。"""
+    recovery_threshold: float = Field(default=0.25, ge=0.05, le=0.8)
+    recovery_target: float = Field(default=0.85, ge=0.3, le=1.0)
     evaluation_minutes: int = Field(default=60, ge=15, le=180)
     min_hours: float = Field(default=6.0, ge=3, le=12)
     max_hours: float = Field(default=10.0, ge=3, le=14)
@@ -1528,6 +1538,12 @@ class DeciderConfig(Permissive):
     """聚合消息的观察机会；近期自己说得多时柔性降低。"""
     natural_silence: bool = False
     """接话时允许因没有想说的内容而继续旁听；默认直接生成回应，仍核验现场与权限。"""
+    proactive_tools: bool = True
+    """主动接话可通过宿主工具循环查询资料；遵守人设和当前地点工具权限。"""
+    proactive_tool_names: list[str] = Field(default_factory=list, max_length=200)
+    """可选进一步缩小主动工具范围；留空沿用当前可用工具。"""
+    proactive_tool_steps: int = Field(default=5, ge=1, le=10)
+    proactive_tool_timeout: int = Field(default=30, ge=5, le=120)
     live_window_seconds: int = Field(default=180, ge=30, le=1800)
     """真正的群聊现场窗口；与长期上下文保留时长分开。"""
     settle_seconds: float = Field(default=4, ge=1, le=10)
@@ -2602,6 +2618,8 @@ class WorldConfig(Permissive):
     def sleep_allowed_now(self, hour: int) -> bool:
         """这个小时能不能写「睡觉」这个动作。"""
 
+        if self.sleep.mode == "activity":
+            return False
         if self.sleep.mode == "autonomous":
             return True
         night = self.night
@@ -2613,6 +2631,17 @@ class WorldConfig(Permissive):
             return True
         return self.is_night_time(hour)
 
+    def sleep_action(self, kind: str = "sleep") -> ActionDef | None:
+        from .recovery import sleep_action_kind
+        actions = self.action_map()
+        preferred = actions.get(self.sleep.recovery_action_id)
+        if preferred and preferred.enabled and sleep_action_kind(preferred) == kind:
+            return preferred
+        builtin = actions.get(kind)
+        if builtin and builtin.enabled and sleep_action_kind(builtin) == kind:
+            return builtin
+        return next((a for a in actions.values() if a.enabled and sleep_action_kind(a) == kind), None)
+
     def node_map(self) -> dict[str, NodeDef]:
         return {node.id: node for node in self.nodes}
 
@@ -2620,6 +2649,10 @@ class WorldConfig(Permissive):
         # Internal, text-only activity: available to life matters even when the
         # optional action library is empty. It never invokes tools or commands.
         actions = {action.id: action for action in self.actions}
+        if self.sleep.mode == "activity":
+            from .recovery import is_sleep_action
+            actions = {key: action.model_copy(update={"enabled": False}) if is_sleep_action(action) else action
+                       for key, action in actions.items()}
         actions[LIFE_SIMULATION_ACTION.id] = LIFE_SIMULATION_ACTION
         for aid, name in (("browse_phone", "翻翻手机"), ("browse_computer", "看看电脑消息")):
             actions[aid] = ActionDef(id=aid, name=name, category="continuous", llm_level="template",
@@ -2631,7 +2664,7 @@ class WorldConfig(Permissive):
 
     def actions_in(self, node_id: str) -> list[ActionDef]:
         sleeping_place = self.sleep_node_id()
-        return [a for a in self.actions if a.id not in CHAT_BROWSE_IDS and a.enabled and not a.idle and (
+        return [a for a in self.action_map().values() if a.id not in CHAT_BROWSE_IDS and a.id != LIFE_SIMULATION_ACTION.id and a.enabled and not a.idle and (
             node_id == sleeping_place if a.id == "sleep" and sleeping_place else a.available_in(node_id)
         )]
 

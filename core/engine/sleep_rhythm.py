@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..recovery import sleep_action_kind
+
 from ..model_calls import model_operation
 
 import asyncio
@@ -31,7 +33,7 @@ class SleepRhythmMixin:
             postpone: bool = True) -> bool:
         """取消尚未开始的睡眠；保留真实睡眠、清醒负担和历史。"""
 
-        if state.is_sleeping or str((state.current_action or {}).get("type")) in {"sleep", "nap"}:
+        if state.is_sleeping or sleep_action_kind(self.world.action_map().get(str((state.current_action or {}).get("type") or ""))):
             return False
         rhythm = state.sleep_rhythm
         if rhythm.get("decision") != "sleep" and not state.drowsy_sleep_step and state.state != STATE_DROWSY:
@@ -55,6 +57,9 @@ class SleepRhythmMixin:
     def _sync_sleep_rhythm_mode(self, state: WorldState) -> None:
         """读取生活状态时协调新模式，避免旧的待睡步骤在下一拍继续。"""
 
+        if self.world.sleep.mode == "activity":
+            self.sync_activity_recovery(state)
+            return
         rhythm = state.sleep_rhythm
         mode = self.world.sleep.mode
         previous = rhythm.get("mode")
@@ -68,11 +73,11 @@ class SleepRhythmMixin:
         rhythm["mode"] = mode
         if previous == mode:
             return
-        sleeping = state.is_sleeping or str((state.current_action or {}).get("type")) in {"sleep", "nap"}
+        sleeping = state.is_sleeping or sleep_action_kind(self.world.action_map().get(str((state.current_action or {}).get("type") or "")))
         if sleeping:
             return  # 本段已经开始的睡眠按原时长完成，不虚构一次醒来。
         automatic = pending_source in {"sleep_rhythm", "forced", "schedule", "rule", "llm", "extreme"}
-        has_sleep = any(step.get("action") == "sleep" and step.get("status") != "done"
+        has_sleep = any(sleep_action_kind(self.world.action_map().get(str(step.get("action") or ""))) == "sleep" and step.get("status") != "done"
             for step in plan.get("steps", []) if isinstance(step, dict))
         pending_automatic = automatic and (has_sleep or bool(state.drowsy_sleep_step))
         if pending_automatic:
@@ -102,6 +107,9 @@ class SleepRhythmMixin:
 
     @model_operation("sleep", "生活时钟检查到睡眠决策时机")
     async def _tick_sleep_rhythm(self, state: WorldState, outcome: TickOutcome) -> None:
+        if self.world.sleep.mode == "activity":
+            await self.tick_activity_recovery(state, outcome)
+            return
         if self.world.sleep.mode != "autonomous" or state.is_sleeping:
             return
         config = self.world.sleep
@@ -151,7 +159,7 @@ class SleepRhythmMixin:
         if self.llm is not None:
             schedules = []
             for item in getattr(self.schedules, "schedules", []):
-                if item.enabled and self.schedule_in_scope(item, state.session_id) and not any(step.type == "sleep" for step in item.action_chain):
+                if item.enabled and self.schedule_in_scope(item, state.session_id) and not any(sleep_action_kind(self.world.action_map().get(step.type)) == "sleep" for step in item.action_chain):
                     schedules.append({"id": item.id, "time": str(item.time),
                         "actions": [step.type for step in item.action_chain]})
             current = state.current_action or {}
@@ -238,8 +246,8 @@ class SleepRhythmMixin:
             return
         if await self._defer_rhythm_for_event(state, outcome):
             return
-        definition = self.world.action_map().get("sleep")
-        target = self.world.sleep_node_id()
+        definition = self.world.sleep_action()
+        target = self.world.sleep_node_id() if definition is None or definition.id == "sleep" else self._nearest_node_with_action(state.node_id, definition)
         if definition is None or not definition.enabled:
             # 配置未提供睡觉动作/地点，不能虚构动作或每 tick 刷错误。
             state.sleep_rhythm["decision"] = "continue"
@@ -301,7 +309,7 @@ class SleepRhythmMixin:
             # 普通睡意先收尾；过劳时可以终止持续动作，但先走完正在行走的这一段。
             plan = active_plan(state) or {}
             if plan.get("source") in {"sleep_rhythm", "forced"} and any(
-                step.get("action") == "sleep" and step.get("status") != "done"
+                sleep_action_kind(self.world.action_map().get(str(step.get("action") or ""))) == "sleep" and step.get("status") != "done"
                 for step in plan.get("steps", [])
             ):
                 return
@@ -314,7 +322,7 @@ class SleepRhythmMixin:
         steps = []
         if state.node_id != target:
             steps.append({"action": "walk_to", "target_node": target})
-        steps.append({"action": "sleep", "duration": int(state.sleep_rhythm["duration_seconds"])})
+        steps.append({"action": definition.id, "duration": int(state.sleep_rhythm["duration_seconds"])})
         plan = create_plan(steps=steps, world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds,
             valid_for=12 * 3600,
             reason=str(state.sleep_rhythm.get("reason") or "休息"), source="forced" if force else "sleep_rhythm")
@@ -349,11 +357,14 @@ class SleepRhythmMixin:
             return
         action["sleep_recorded"] = True
         seconds = max(0, int(action.get("elapsed_ticks") or 0)) * self.tick_seconds
-        kind = str(action.get("type") or "sleep")
+        definition = self.world.action_map().get(str(action.get("type") or "sleep"))
+        kind = sleep_action_kind(definition) or "sleep"
         rhythm = state.sleep_rhythm
         ended = _number(action.get("offline_wake_at")) or self._now()
         started = _number(rhythm.get("sleep_started_at")) or ended - seconds
         low, _ = self._rhythm_duration_bounds()
+        if definition and definition.id != "sleep":
+            low = max(1, definition.duration if definition.duration_mode == "fixed" else definition.duration_min)
         state.sleep_history.append({"kind": kind, "started_at": started, "ended_at": ended,
             "hours": round(seconds / 3600, 2), "interrupted": interrupted,
             "disturbances": int(state.startled_count or 0), "rested": kind == "sleep" and seconds >= low,

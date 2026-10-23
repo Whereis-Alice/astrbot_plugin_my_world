@@ -383,6 +383,12 @@ class StateDynamics:
                 if state.state == "sleeping"
                 else self.config.nap_energy_recovery_per_min
             )
+            # Explicit recovery types own their configured rate. Legacy actions
+            # keep the historical base + per-minute behavior when kind is auto.
+            definition = world.action_map().get(str((state.current_action or {}).get("type") or "")) if world else None
+            if (definition and definition.recovery_kind in {"sleep", "nap"}
+                    and "energy" in definition.on_complete.effects_per_minute):
+                rate = 0.0
             state.energy += rate * minutes
             # 睡一觉把"昨天攒的好奇"放下：不然她会是带着满格好奇心入睡、
             # 一醒来（所有门禁放开）就冲去查东西。无聊 / 孤独在睡眠里维持原样。
@@ -620,6 +626,9 @@ class StateDynamics:
         攒到 ``sleep.pressure_threshold`` 才会自己排睡觉。
         """
 
+        if world is not None and world.sleep.mode == "activity":
+            state.sleep_pressure = 0.0
+            return
         if not state.is_sleeping and not bool(
             getattr(getattr(world, "sleep", None), "pressure_enabled", True)
         ):

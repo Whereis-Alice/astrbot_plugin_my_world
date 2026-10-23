@@ -15,6 +15,7 @@ from .mood import DAY_BRANCH_KEYS, day_mood_branches
 from .pathfinding import find_path
 from .planner import active_plan, create_plan
 from .state import WorldState
+from .recovery import is_sleep_action, sleep_action_kind
 
 # 「回复意愿」各项权重：越孤独、越无聊、心潮越高，越想说点什么；
 # 累、正在睡、刚被冷落都会把意愿压下去。
@@ -107,12 +108,14 @@ class Decider:
         now_provider: Any = None,
         hour_provider: Any = None,
         tick_seconds: float = 60.0,
+        action_check: Any = None,
     ) -> None:
         self.world = world
         self.rng = rng or random.Random()
         self._now_provider = now_provider
         self._hour_provider = hour_provider
         self.tick_seconds = max(1.0, float(tick_seconds))
+        self.action_check = action_check
 
     def _now(self) -> float:
         if self._now_provider is None:
@@ -146,17 +149,57 @@ class Decider:
 
         return self.world.is_night_time(self.local_hour())
 
-    def can_nap(self) -> bool:
+    def can_nap(self, state=None) -> bool:
         """小睡这条路能不能用：动作在、没停用，而且真的回得了精力。"""
 
-        if not self.action_usable("nap"):
-            return False
-        return self._nap_recovery_per_minute(self.world.action_map().get("nap")) > 0
+        if state is not None:
+            return bool(self._rest_steps(state, "nap"))
+        return any(self.action_usable(a.id) and self._nap_recovery_per_minute(a) > 0
+                   for a in self._rest_candidates("nap"))
+
+    def _rest_candidates(self, kind):
+        from .recovery import sleep_action_kind
+        preferred = self.world.sleep_action(kind)
+        return sorted((a for a in self.world.action_map().values() if a.enabled and sleep_action_kind(a) == kind),
+                      key=lambda a: a.id != getattr(preferred, "id", ""))
+
+    def recovery_plan(self, state: WorldState) -> dict[str, Any] | None:
+        from .pathfinding import nearest_node, travel_cost
+        from .recovery import is_sleep_action, restores_energy, recovery_seconds, recovery_gain
+        if self.world.sleep.mode != "activity":
+            return None
+        graph = self.world.adjacent()
+        selected = self.world.sleep.recovery_action_id
+        candidates = []
+        for action in self.world.action_map().values():
+            if (selected and action.id != selected) or (not action.enabled or action.idle
+                    or action.category != "continuous" or is_sleep_action(action)
+                    or action.recovery_kind == "none"
+                    or not restores_energy(action, energy=state.energy)
+                    or action.llm_level not in {"template", "single"} or action.tool_list() or action.trigger_command
+                    or action.target_type != "none" or action.on_complete.trigger not in {"none", "llm_followup"}):
+                continue
+            target = nearest_node(graph, state.node_id,
+                                  [node.id for node in self.world.nodes if action.available_in(node.id)])
+            if not target:
+                continue
+            seconds = recovery_seconds(action, state.energy, self.world, state)
+            if recovery_gain(action, state.energy, self.world, seconds, state) <= 0:
+                continue
+            steps = [*self._travel_then(state.node_id, target, graph), {"action": action.id, "duration": seconds}]
+            plan = create_plan(steps=steps, world_time=state.world_time, now=self._now(),
+                tick_seconds=self.tick_seconds, valid_for=max(3600, seconds + 1800),
+                reason=f"精力不足，去{action.name or action.id}恢复", source="recovery")
+            if self._valid_candidate(state, plan):
+                candidates.append((travel_cost(graph, state.node_id, target) or 0, seconds, action.id, plan))
+        return min(candidates, key=lambda item: item[:3])[3] if candidates else None
 
     def sleep_pressure_high(self, state: WorldState) -> bool:
         """困意攒够了没有（``sleep.pressure_threshold``，默认 0.85）。"""
 
         config = getattr(self.world, "sleep", None)
+        if getattr(config, "mode", "") == "activity":
+            return False
         if not bool(getattr(config, "pressure_enabled", True)):
             return False
         try:
@@ -169,7 +212,7 @@ class Decider:
             pressure = 0.0
         return pressure >= threshold
 
-    def nap_seconds(self, state: WorldState) -> int:
+    def nap_seconds(self, state: WorldState, action=None) -> int:
         """白天小睡睡多久：按小睡动作写的恢复速度，算到够她缓过来为止。
 
         小睡动作写的是「每持续 1 分钟精力 +0.0015」，睡多久由计划决定；
@@ -177,7 +220,9 @@ class Decider:
         用户把小睡的恢复速度调高了，这里的时长也会跟着变短。
         """
 
-        action = self.world.action_map().get("nap")
+        action = action or self.world.sleep_action("nap")
+        if action is not None and action.duration_mode == "fixed":
+            return max(1, action.duration)
         low, high = NAP_MIN_SECONDS, NAP_MAX_SECONDS
         if action is not None:
             try:
@@ -195,10 +240,11 @@ class Decider:
 
         effects = getattr(getattr(action, "on_complete", None), "effects_per_minute", None) or {}
         raw = str(effects.get("energy") or "").strip()
-        if not raw or raw[0] not in "+-":
-            return 0.0
         try:
-            return float(raw[1:])
+            rate = float(raw) if raw.startswith(("+", "-")) else 0
+            if action is not None and (action.recovery_kind == "auto" or "energy" not in effects):
+                rate += self.world.state_dynamics.nap_energy_recovery_per_min
+            return max(0.0, rate)
         except ValueError:
             return 0.0
 
@@ -260,6 +306,11 @@ class Decider:
         graph = self.world.adjacent()
         home = self.world.default_node_id()
 
+        if self.world.sleep.mode == "activity" and state.energy < self.world.sleep.recovery_threshold:
+            recovery = self.recovery_plan(state)
+            if recovery:
+                return recovery
+
         # 0) 群里正热闹 -> 主动插一句。两条动机分开算：
         #    A「想被注意到」：孤独感够了、心情也不太差才愿意主动social；
         #    B「想发作」：情绪上来了、心情又差，会憋不住呛一句（形态由风格格决定）。
@@ -286,17 +337,15 @@ class Decider:
         sleepy = self.sleep_pressure_high(state)
         if (
             (exhausted or sleepy)
-            and (self.world.sleep.mode == "fixed" or (not self.is_night() and self.can_nap()))
+            and (self.world.sleep.mode == "fixed" or (not self.is_night() and self.can_nap(state)))
             and state.world_time >= state.no_sleep_until
             and not state.sleep_delayed
-            and (self.can_nap() or self.world.sleep_allowed_now(self.local_hour()))
+            and (self.can_nap(state) or self.world.sleep_allowed_now(self.local_hour()))
         ):
-            steps = self._travel_then(node_id, home, graph)
-            if self.is_night() or not self.can_nap():
-                steps.append({"action": "sleep", "duration": self._action_duration("sleep")})
+            steps = self._rest_steps(state, "sleep" if self.is_night() or not self.can_nap(state) else "nap")
+            if self.is_night() or not self.can_nap(state):
                 reason = "困得撑不住了，该睡了" if sleepy and not exhausted else "精力低，该休息了"
             else:
-                steps.append({"action": "nap", "duration": self.nap_seconds(state)})
                 reason = (
                     "白天困得撑不住了，先眯一会儿"
                     if sleepy and not exhausted
@@ -503,6 +552,11 @@ class Decider:
             action = self.world.action_map().get(str(step.get("action") or ""))
             if not action or not action.enabled or action.idle:
                 return False
+            if self.action_check and not self.action_check(state, action):
+                return False
+            if (action.preconditions.min_energy is not None and state.energy < action.preconditions.min_energy
+                    or state.state in action.preconditions.not_state):
+                return False
             if action.id == "walk_to":
                 target = str(step.get("target_node") or "")
                 if target not in self.world.node_map() or find_path(self.world.adjacent(), position, target) is None:
@@ -565,15 +619,15 @@ class Decider:
         graph = self.world.adjacent()
         home = self.world.default_node_id()
         if flag == "force_sleep":
-            if not self.can_nap() and not self.world.sleep_allowed_now(self.local_hour()):
+            if self.world.sleep.mode == "activity":
+                return self.recovery_plan(state)
+            if not self.can_nap(state) and not self.world.sleep_allowed_now(self.local_hour()):
                 return None
-            steps = self._travel_then(state.node_id, home, graph)
+            steps = self._rest_steps(state, "sleep" if self.is_night() or not self.can_nap(state) else "nap")
             # 白天透支不该一睡八小时：先眯到小睡动作的上限，缓过来再说过。
-            if self.is_night() or not self.can_nap():
-                steps.append({"action": "sleep", "duration": self._action_duration("sleep")})
+            if self.is_night() or not self.can_nap(state):
                 reason = "精力透支，强制休息"
             else:
-                steps.append({"action": "nap", "duration": self.nap_seconds(state)})
                 reason = "精力透支，先眯一会儿"
             plan = create_plan(
                 steps=steps,
@@ -610,6 +664,24 @@ class Decider:
         return None
 
     # ---------------- 工具 ----------------
+
+    def _rest_steps(self, state, kind: str) -> list[dict[str, Any]]:
+        from .pathfinding import nearest_node
+        graph = self.world.adjacent()
+        for action in self._rest_candidates(kind):
+            if kind == "nap" and self._nap_recovery_per_minute(action) <= 0:
+                continue
+            candidates = [node.id for node in self.world.nodes if action.available_in(node.id)]
+            if action.id == "sleep" and self.world.sleep_node_id():
+                candidates = [self.world.sleep_node_id()]
+            target = nearest_node(graph, state.node_id, candidates)
+            if not target:
+                continue
+            duration = self.nap_seconds(state, action) if kind == "nap" else self._action_duration(action.id)
+            steps = [*self._travel_then(state.node_id, target, graph), {"action": action.id, "duration": duration}]
+            if self._valid_candidate(state, {"steps": steps}):
+                return steps
+        return []
 
     def _travel_then(
         self, current: str, target: str, graph: dict[str, list[tuple[str, int]]]
@@ -652,7 +724,7 @@ class Decider:
             actions = [
                 action
                 for action in self.world.actions_in(node.id)
-                if action.scope == "node" and action.enabled and not action.idle and action.id not in {"sleep", "nap"}
+                if action.scope == "node" and action.enabled and not action.idle and not is_sleep_action(action)
             ]
             if not actions:
                 continue

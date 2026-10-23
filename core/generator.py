@@ -311,6 +311,8 @@ def parse_generated_actions(
         payload["allowed_nodes"] = [node_id]
         payload["node_id"] = node_id
         category = _pick_literal(payload.get("category"), _CATEGORY_ALIASES, "instant")
+        if payload.get("recovery_kind") in {"sleep", "nap", "restore"}:
+            category = "continuous"
         payload["category"] = category
         payload["target_type"] = _pick_literal(
             payload.get("target_type"), _TARGET_ALIASES, "none"
@@ -329,6 +331,8 @@ def parse_generated_actions(
         payload.setdefault("enabled", True)
         payload.setdefault("interruptible", True)
         level = str(payload.get("llm_level") or "single")
+        if payload.get("recovery_kind") in {"sleep", "nap", "restore"} and "llm_level" not in payload:
+            level = "template"
         if level not in ("template", "single", "tool"):
             level = "single"
         if level == "tool":
@@ -362,7 +366,8 @@ def parse_generated_actions(
         if not isinstance(completed, dict):
             completed = {}
         completed["trigger"] = _pick_literal(
-            completed.get("trigger"), _TRIGGER_ALIASES, "llm_followup"
+            completed.get("trigger"), _TRIGGER_ALIASES,
+            "none" if payload.get("recovery_kind") in {"sleep", "nap", "restore"} else "llm_followup"
         )
         completed.setdefault("effects", {})
         completed.setdefault("effects_per_minute", {})

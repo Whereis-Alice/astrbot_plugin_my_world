@@ -2396,7 +2396,11 @@ class TestDecider(unittest.TestCase):
                 action["on_complete"]["effects_per_minute"] = {"energy": "+0.005"}
         world, _warnings = parse_world(data)
         stronger = Decider(world, hour_provider=lambda: 15)
-        # 恢复快了三倍多，睡 36 分钟就够（(0.42-0.24)/0.005）
+        # Auto keeps legacy base recovery as well as the configured action rate.
+        rate = .005 + world.state_dynamics.nap_energy_recovery_per_min
+        self.assertEqual(stronger.nap_seconds(state), round((.42 - .24) / rate * 60))
+        world.action_map()['nap'].recovery_kind = 'nap'
+        # Explicit naps replace the base rate, so this one needs exactly 36 minutes.
         self.assertEqual(stronger.nap_seconds(state), 36 * 60)
 
     def test_loneliness_no_longer_means_walking_to_the_lobby(self):

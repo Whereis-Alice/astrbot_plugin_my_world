@@ -19,7 +19,7 @@ from .util import _clip_text
 
 
 class InterruptMixin:
-    async def generate_idle_actions(self, count: Any = 8) -> dict[str, Any]:
+    async def generate_idle_actions(self, count: Any = 8, extra_prompt: str = "") -> dict[str, Any]:
         """Persona-based quiet activities, drafted once and used without runtime LLM calls."""
         wanted = clamp_world_action_count(count)
         session_id = self._generator_session_id()
@@ -38,6 +38,8 @@ class InterruptMixin:
             '"description":"随口哼一段熟悉的旋律","life_role":"interest",'
             '"on_complete":{"effects":{}}}]}'
         )
+        if str(extra_prompt or "").strip():
+            prompt += "\n本次额外要求：" + str(extra_prompt).strip()
         reply = await self._ask_creator(session_id, system, prompt, raise_errors=True)
         actions, problems = parse_generated_actions(reply, node_ids=["anywhere"],
             existing_ids={action.id for action in self.world.actions},
@@ -65,6 +67,17 @@ class InterruptMixin:
     ) -> str | None:
         """内容生成模型：编事件包，以及编辑器里批量生成动作 / 地点。"""
 
+        from ..recovery import recovery_note
+        physiology = recovery_note(self.world)
+        if physiology:
+            system_prompt += "\n" + physiology
+        system_prompt += (
+            "\n生成动作时如涉及恢复精力，请明确 recovery_kind：sleep=整觉，nap=小睡，"
+            "restore=充电/冥想等非睡眠恢复，none=无恢复。恢复动作使用 continuous，"
+            "按实际持续分钟配置 on_complete.effects_per_minute.energy 为正值；"
+            "避免以完成奖励直接把精力设满。睡眠类型会接入作息与唤醒，充电等不会进入睡眠。"
+            "是否需要睡眠、恢复方式和动作限制以角色设定及生理配置为准。"
+        )
         try:
             if self.creator_llm is None:
                 raise ValueError("没有可用的内容生成模型，请在插件配置中选择模型或配置 AstrBot 默认对话模型")
@@ -103,6 +116,7 @@ class InterruptMixin:
         per_node: Any = 0,
         extra_prompt: str = "",
         existing_ids: set[str] | None = None,
+        replacing: bool = False,
     ) -> dict[str, Any]:
         """给一批地点生成动作草稿（地点可以还没落库：地图 / 区域生成时用同一套）。
 
@@ -132,7 +146,8 @@ class InterruptMixin:
             existing_actions=[
                 action.name or action.id
                 for action in self.world.actions
-                if action.enabled
+                if action.enabled and not (replacing and action.scope == "node"
+                    and set(action.allowed_nodes).intersection(item["id"] for item in picked))
             ],
             tools=sorted(self.available_tools()),
             per_node=count,
@@ -147,9 +162,17 @@ class InterruptMixin:
             existing_ids=(
                 existing_ids
                 if existing_ids is not None
-                else {action.id for action in self.world.actions}
+                else set() if replacing else {action.id for action in self.world.actions}
             ),
         )
+        if replacing:
+            used = {action.id for action in self.world.actions} | set(existing_ids or ())
+            for action in actions:
+                base, suffix = action["id"], 2
+                while action["id"] in used:
+                    action["id"] = f"{base}_{suffix}"
+                    suffix += 1
+                used.add(action["id"])
         return {"actions": actions, "problems": problems, "raw": _clip_text(reply, 1200)}
 
     async def generate_actions_for_zone(
@@ -158,6 +181,7 @@ class InterruptMixin:
         per_node: Any = 0,
         node_ids: list[str] | None = None,
         extra_prompt: str = "",
+        replacing: bool = False,
     ) -> dict[str, Any]:
         """按区域里的**每个地点**批量生成动作草稿（不落库，交给编辑器预览勾选）。
 
@@ -192,9 +216,10 @@ class InterruptMixin:
             zone_note=zone.note,
             per_node=per_node,
             extra_prompt=extra_prompt,
+            replacing=replacing,
         )
 
-    async def generate_world_actions(self, count: Any = 0) -> dict[str, Any]:
+    async def generate_world_actions(self, count: Any = 0, extra_prompt: str = "") -> dict[str, Any]:
         """按人设与**整张地图**生成一批虚拟动作草稿（动作库的全局生成入口）。
 
         和「按区域生成」不同：这里会读全部区域与地点，让动作分摊到不同地点，
@@ -234,6 +259,8 @@ class InterruptMixin:
             ],
             count=wanted,
         )
+        if str(extra_prompt or "").strip():
+            prompt += "\n本次额外要求：" + str(extra_prompt).strip()
         reply = await self._ask_creator(
             session_id, system_prompt, prompt, raise_errors=True
         )
@@ -259,7 +286,7 @@ class InterruptMixin:
         }
 
     async def generate_generic_actions(
-        self, count: Any = 0, use_map: Any = True
+        self, count: Any = 0, use_map: Any = True, extra_prompt: str = ""
     ) -> dict[str, Any]:
         """生成一批**通用普通动作**（动作库的「生成通用动作」）。
 
@@ -302,6 +329,8 @@ class InterruptMixin:
             count=wanted,
             use_map=with_map,
         )
+        if str(extra_prompt or "").strip():
+            prompt += "\n本次额外要求：" + str(extra_prompt).strip()
         reply = await self._ask_creator(
             session_id, system_prompt, prompt, raise_errors=True
         )

@@ -326,6 +326,8 @@ class Consolidator:
             request = request_for(task="review", session=session_id, now=stamp)
             selected = evidence_context(request, prompt, key=kind)
             prompt = selected.render()
+            if self.world.sleep.mode == "activity":
+                system += "\n角色不需要睡眠。本次是清醒时安静整理资料，不是睡觉或做梦；不生成 dream，不编造梦境。"
             try:
                 reply = await llm(system, prompt)
                 payload = extract_json_object(reply or "")
@@ -348,6 +350,8 @@ class Consolidator:
                 keys = {"digests"} if result.mode == "nap" else {"facts", "relations", "digests"}
             else:
                 keys = {"forget", "dream"} if result.mode == "nap" else {"merge", "forget", "dream"}
+            if self.world.sleep.mode == "activity":
+                keys.discard("dream")
             payload = {key: value for key, value in payload.items() if key in keys}
             parsed[kind] = payload
             if dry_run:

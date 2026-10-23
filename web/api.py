@@ -1894,7 +1894,7 @@ class WebApiMixin(LifeApiMixin):
                 # 编辑器刚改过、还没保存的角色卡优先：向导里写完人设就点生成时，
                 # 读配置只会拿到旧那份。
                 brief = await self.engine.generate_persona_brief(
-                    session_id, persona_text=persona_text
+                    session_id, persona_text=persona_text, extra_prompt=str(payload.get("extra_prompt") or "")
                 )
                 if not brief:
                     return error_response(
@@ -2558,6 +2558,7 @@ class WebApiMixin(LifeApiMixin):
             payload.get("per_node"),
             node_ids=[node_id] if node_id else None,
             extra_prompt=str(payload.get("extra_prompt") or ""),
+            replacing=bool(payload.get("replacing", False)),
         )
 
     async def api_generate_world_actions(self):
@@ -2568,7 +2569,7 @@ class WebApiMixin(LifeApiMixin):
         if guard is not None:
             return guard
         return await self._generate_drafts_response(
-            self.engine.generate_world_actions, payload.get("count")
+            self.engine.generate_world_actions, payload.get("count"), str(payload.get("extra_prompt") or "")
         )
 
     async def api_generate_nodes(self):
@@ -2782,6 +2783,7 @@ class WebApiMixin(LifeApiMixin):
             self.engine.generate_generic_actions,
             payload.get("count"),
             payload.get("use_map", True),
+            str(payload.get("extra_prompt") or ""),
         )
 
     async def api_generate_idle_actions(self):
@@ -2789,7 +2791,8 @@ class WebApiMixin(LifeApiMixin):
         guard = self._guard(payload)
         if guard is not None:
             return guard
-        return await self._generate_drafts_response(self.engine.generate_idle_actions, payload.get("count", 8))
+        return await self._generate_drafts_response(
+            self.engine.generate_idle_actions, payload.get("count", 8), str(payload.get("extra_prompt") or ""))
 
     async def api_deliver_event(self):
         """把编辑器里挑好的事件草稿投递给她（等价于 /mw event 一句话）。"""

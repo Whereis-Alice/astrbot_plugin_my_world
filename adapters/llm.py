@@ -85,12 +85,26 @@ class AstrBotLLM:
         attempt = 0
         retry_reason = ""
         trace_id = call_context().get("trace_id") or uuid4().hex
+        from ..core.speech_runtime import SPEECH_REQUEST
+        speech = SPEECH_REQUEST.get()
+        agent, toolset = None, None
+        if (self.role == "main" and speech and speech.get("allow_tools")
+                and self.plugin.engine.world.decider.proactive_tools
+                and callable(getattr(context, "tool_loop_agent", None))):
+            try:
+                from .proactive_agent import ProactiveAgent
+                agent = ProactiveAgent(self.plugin, speech)
+                toolset = await agent.prepare()
+            except Exception as exc:
+                self.plugin.logger.debug(f"[my_world] 主动工具条件不具备，使用文字判断：{type(exc).__name__}")
 
         async def invoke(**options):
             nonlocal attempt
             attempt += 1
             return await tracked_generate(self.plugin, session_id=session_id, role=self.role,
-                trace_id=trace_id, attempt=attempt, retry_reason=retry_reason, **options)
+                trace_id=trace_id, attempt=attempt, retry_reason=retry_reason,
+                invoke=(lambda **kw: agent.invoke(toolset, **kw)) if toolset else None,
+                coverage="agent_final" if toolset else "direct", **options)
 
         options = dict(chat_provider_id=provider_id, prompt=prompt, system_prompt=system_prompt,
                        contexts=list(contexts) if contexts else None, image_urls=images or None, **kwargs)
@@ -102,6 +116,9 @@ class AstrBotLLM:
                     response = await invoke(**options)
                     break
                 except Exception as exc:
+                    if toolset:
+                        # A retry of the whole loop could repeat tool side effects.
+                        return LLMReply(ok=False, error=str(exc))
                     kind = _retry_kind(exc, sampling=any(key in options for key in (
                         "top_p", "frequency_penalty", "presence_penalty")),
                         images=bool(options.get("image_urls")), contexts=bool(options.get("contexts")),

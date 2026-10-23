@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..recovery import sleep_action_kind
+
 from ..model_calls import model_operation
 
 import asyncio
@@ -163,6 +165,8 @@ class TickMixin:
             if action and not action.pop("offline_tick_settled", False):
                 action["elapsed_ticks"] = min(int(action.get("duration_ticks", 1)), int(action.get("elapsed_ticks", 0)) + 1)
             self.dynamics.tick(state, node=self.node(state.node_id), elapsed_seconds=elapsed, world=self.world, now=self._now())
+            if action:
+                self.settle_recovery_progress(state, action)
             state.mood = self.dynamics.derive_mood(state)
             await self._record_history(state, self.node(state.node_id))
             return TickOutcome(session_id=session_id, notes=["后台仍在思考，基本生活时钟继续推进"],
@@ -217,7 +221,8 @@ class TickMixin:
             current_def = self.world.action_map().get(str(current.get("type") or ""))
             if current and (current_def is None or not current_def.enabled or current_def.idle):
                 action_id = str(current.get("type") or "")
-                if action_id in {"sleep", "nap"}:
+                self.settle_recovery_progress(state, current)
+                if sleep_action_kind(current_def):
                     self._finish_sleep_rhythm(state, current, interrupted=True)
                 self.pause_matter_action(state, current)
                 if (state.current_plan or {}).get("matter_id") and (state.current_plan or {}).get("matter_id") == current.get("matter_id"):
@@ -409,7 +414,7 @@ class TickMixin:
             # Preserve prior effort without completing it in the wrong place.
             # Existing sleep recovery keeps its own rhythm/fallback semantics.
             self.pause_matter_action(state, action)
-            if definition.id == "nap":
+            if sleep_action_kind(definition):
                 self._finish_sleep_rhythm(state, action, interrupted=True)
             state.current_action, state.state = None, STATE_IDLE
             if action.get("from_plan") and state.current_plan and same_plan(action, state.current_plan):
@@ -419,6 +424,14 @@ class TickMixin:
             return
         if not action.pop("offline_tick_settled", False):
             action["elapsed_ticks"] = int(action.get("elapsed_ticks", 0)) + 1
+        self.settle_recovery_progress(state, action)
+        from ..recovery import restores_energy
+        if (self.world.sleep.mode == "activity" and definition and definition.duration_mode == "llm"
+                and restores_energy(definition, energy=state.energy)
+                and (state.current_plan or {}).get("source") == "recovery"
+                and int(action.get("elapsed_ticks") or 0) * self.tick_seconds >= definition.duration_min
+                and state.energy >= max(self.world.sleep.recovery_threshold, self.world.sleep.recovery_target)):
+            action["duration_ticks"] = int(action.get("elapsed_ticks") or 0)
         self.settle_life_practice(state, action)
         self.settle_matter_work(state, action)
         if action.get("matter_id") and action.get("type") != "walk_to":
@@ -587,6 +600,10 @@ class TickMixin:
         # 按「实际持续时间」缩放的效果：例如小睡 30 分钟 → 精力 +0.002×30
         per_minute = (definition.on_complete.effects_per_minute if definition else {}) or {}
         if per_minute:
+            if action.get("effects_settled_minutes"):
+                deferred = {k: v for k, v in per_minute.items() if not str(v).strip().startswith(("+", "-"))}
+                self.dynamics.apply_effects(state, deferred, world=self.world, now=self._now())
+                per_minute = {k: v for k, v in per_minute.items() if k not in deferred}
             elapsed_seconds = int(action.get("elapsed_ticks", 0)) * self.tick_seconds
             minutes = max(0.0, elapsed_seconds / 60.0 - float(action.get("effects_settled_minutes", 0)))
             if minutes > 0:
@@ -594,7 +611,7 @@ class TickMixin:
                     state, per_minute, world=self.world, scale=minutes, now=self._now()
                 )
 
-        if definition is not None and definition.id == "sleep":
+        if sleep_action_kind(definition) == "sleep":
             self._finish_sleep_rhythm(state, action, interrupted=False)
             # 睡整觉结束：睡了多久、中途被吵醒过没有，决定她是清爽还是起床气
             self._apply_wake_quality(
@@ -606,7 +623,7 @@ class TickMixin:
             # 睡醒给她一次机会说早安（发不发、发给谁由她自己定，一天一次）
             state.current_action = None
             state.state = STATE_IDLE
-        elif definition is not None and definition.id == "nap":
+        elif sleep_action_kind(definition) == "nap":
             self._finish_sleep_rhythm(state, action, interrupted=False)
 
         self._record_matter_action(state, action)
@@ -653,7 +670,7 @@ class TickMixin:
         # The greeting releases the life lock during inference. Commit the
         # completed action and its plan step first: a discarded greeting or an
         # unload must never leave an idle character with sleep still pending.
-        if action_id == "sleep" and definition is not None and not action.get("offline_wake"):
+        if sleep_action_kind(definition) == "sleep" and not action.get("offline_wake"):
             await self._maybe_say_goodmorning(state, node, outcome)
 
         trigger = definition.on_complete.trigger if definition else "none"
