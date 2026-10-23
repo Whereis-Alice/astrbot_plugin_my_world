@@ -7,6 +7,7 @@ No server, provider, account or external database is accessed.
 import ast
 import asyncio
 import os
+import re
 from pathlib import Path
 import types
 import unittest
@@ -15,6 +16,7 @@ from unittest.mock import patch
 from tests import test_dialogue_inject as fixture
 
 UPSTREAM = Path(os.environ.get("MY_WORLD_ANAMNESIS_SOURCE", "__missing_anamnesis_fixture__"))
+SCENE_UPSTREAM = Path(os.environ.get("MY_WORLD_SCENE_MEMORY_SOURCE", "__missing_scene_fixture__"))
 MODULE = fixture.MODULE
 
 
@@ -161,3 +163,50 @@ class AnamnesisCompatibilityTests(unittest.TestCase):
             )
             turn = event.get_extra("mw_dialogue_turn")
             self.assertNotIn("外部聊天记忆", turn["user_text"])
+
+    @unittest.skipUnless((SCENE_UPSTREAM / "main.py").is_file(), "Set MY_WORLD_SCENE_MEMORY_SOURCE for three-plugin integration")
+    def test_scene_source_cleanup_and_injection_with_all_memory_modes(self):
+        # Execute upstream's own cleanup and injection methods with no server imports.
+        tree = ast.parse((SCENE_UPSTREAM / "main.py").read_text(encoding="utf-8"))
+        method_names = {"_strip_internal_scene_markers", "_clean_request_internal_markers", "_inject_scene"}
+        methods = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name in method_names]
+        regex_names = {"_INTERNAL_SCENE_BLOCK_RE", "_INTERNAL_REPLY_DIRECTION_BLOCK_RE", "_INTERNAL_SCENE_MARKER_RE"}
+        assignments = [ast.Assign(targets=[node.target], value=node.value) for node in tree.body
+                       if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+                       and node.target.id in regex_names]
+        scene_keys = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "ExtraKeys")
+        marker = next(node.value.value for node in scene_keys.body
+                      if isinstance(node, ast.AnnAssign) and node.target.id == "SCENE_INJECTED_MARKER")
+        cls = ast.ClassDef(name="Scene", bases=[], keywords=[], body=methods, decorator_list=[])
+        env = {"re": re, "Any": object, "ProviderRequest": object, "TextPart": self.module.TextPart,
+               "ExtraKeys": types.SimpleNamespace(SCENE_INJECTED_MARKER=marker),
+               "logger": types.SimpleNamespace(debug=lambda *a, **k: None, error=lambda *a, **k: None)}
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[*assignments, cls], type_ignores=[])),
+                     "scene_memory_injection", "exec"), env)
+        scene = env["Scene"]()
+        for mode in ("extra_user_content", "user_message_before", "user_message_after", "fake_tool_call"):
+            for native_first in (False, True):
+                with self.subTest(mode=mode, native_first=native_first):
+                    session = f"aiocqhttp:GroupMessage:real-scene-{mode}-{native_first}"
+                    plugin, _ = self._plugin(session)
+                    self.addCleanup(plugin.db.raw.close)
+                    req = fixture.Request("今天更喜欢热茶", "# Rules\n宿主规则")
+                    event = fixture.Event(req.prompt, session=session)
+                    if native_first:
+                        asyncio.run(plugin.on_llm_request(event, req))
+                    self.inject(req, mode, session)
+                    scene._clean_request_internal_markers(req)
+                    scene._inject_scene(req, "<conversation_scene>当前群聊与引用归属</conversation_scene>")
+                    if not native_first:
+                        asyncio.run(plugin.on_llm_request(event, req))
+                    body = req.system_prompt + req.prompt + str(req.contexts)
+                    body += "\n".join(part.text for part in req.extra_user_content_parts)
+                    self.assertEqual(body.count("当前群聊与引用归属"), 1)
+                    self.assertIn("外部聊天记忆", body)
+                    self.assertIn("[我的世界·此刻]", body)
+                    self.assertIn("宿主规则", body)
+                    self.assertFalse(event.is_stopped())
+                    if not native_first:
+                        preview = asyncio.run(plugin.engine.preview_last_reply_request(session))
+                        self.assertIn("当前群聊与引用归属", preview)
+                        self.assertIn("外部聊天记忆", preview)

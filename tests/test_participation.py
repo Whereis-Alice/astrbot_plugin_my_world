@@ -65,6 +65,24 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         await self.chat("周末想去山上看看风车", uid="alice")
         await self.chat("我也想去，山顶应该风很大", uid="bob")
 
+    async def test_silence_trace_matches_each_opportunity_without_changing_config(self):
+        await self.burst()
+        state = await self.engine.load_state(GROUP, cold_start=False)
+        for configured in (False, True):
+            self.engine.world.decider.natural_silence = configured
+            for source in ("message", "browse", "completion"):
+                with self.subTest(configured=configured, source=source):
+                    request = self.engine.context_request(state, GROUP, task="participation")
+                    system, _, _ = self.engine.participation_prompt(
+                        state, GROUP, "喜欢风车", source=source, request=request)
+                    effective = configured or source in {"browse", "completion"}
+                    self.assertIn("自然沉默：" + ("开启" if effective else "关闭"), system)
+                    self.assertEqual(request.trace["natural_silence"], effective)
+                    self.assertEqual(request.trace["silence_policy"], {
+                        "source": source, "configured": configured, "effective": effective,
+                    })
+                    self.assertEqual(self.engine.world.decider.natural_silence, configured)
+
     async def test_recent_context_is_not_live_conversation(self):
         await self.chat("两个小时前的话题", age=7200)
         await self.chat("旧回复", uid="bob", age=7199)

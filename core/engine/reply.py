@@ -762,8 +762,8 @@ class ReplyMixin:
                     )
                 node_id = state.node_id
                 self.record_context_selection(request)
-                # 留一份"实际发出去的完整请求"：调试页看的就是它（见 preview_last_reply_request）
-                self._remember_prompt_snapshot(
+                # 注入模式先记准备阶段；main 完成宿主请求注入后补成该钩子的快照。
+                prompt_snapshot = self._remember_prompt_snapshot(
                     session_id=ctx.session_id,
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
@@ -771,6 +771,9 @@ class ReplyMixin:
                     batch=batch,
                     chat_rows=list(state.recent_chat),
                     context_selection=request.trace,
+                    runtime_part=runtime_part if inject_only else "",
+                    stage="engine_prepared" if inject_only else "legacy_before_model",
+                    image_urls=ctx.image_urls,
                 )
                 if inject_only:
                     # 注入模式到此为止：剩下的交给宿主的原生工具循环与发送管线。
@@ -780,6 +783,7 @@ class ReplyMixin:
                         system_prompt=system_prompt,
                         user_prompt=user_prompt,
                         runtime_part=runtime_part,
+                        prompt_snapshot=prompt_snapshot,
                         batch=list(batch),
                         texts=list(texts),
                         say_limit=int(say_limit or 0),

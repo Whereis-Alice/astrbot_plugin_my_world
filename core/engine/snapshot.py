@@ -549,12 +549,9 @@ class SnapshotMixin:
         return removed
 
     async def preview_last_reply_request(self, session_id: str) -> str:
-        """预览**上一轮真正发出去的那份请求**（只读，不改变任何状态）。
+        """只读展示已记录阶段的请求，不冒充供应商最终请求。"""
 
-        排查"同一句话是不是被读成了三遍"这类问题时，看拼装逻辑永远不如看**实际交给
-        大模型的那一份**：这里连同本轮 batch 的事件身份、各部分的字符数一起给出来。
-        没有记录（还没接管回过话）时说清楚，而不是拿别的东西冒充。
-        """
+        import json
 
         snapshot = next(
             (
@@ -567,18 +564,29 @@ class SnapshotMixin:
         if snapshot is None:
             return (
                 f"会话 {session_id} 还没有接管回复的记录：\n"
-                "先让她回一次话，这里就会显示**上一次实际发出去的完整请求**\n"
-                "（system prompt / 宿主历史 / 最后一条用户消息，以及本轮 batch 的事件身份）。"
+                "先让她回一次话，这里就会显示上一次请求快照及其记录阶段\n"
+                "（system prompt / 宿主历史 / 用户消息 / 临时附加内容与本轮 batch）。"
             )
         contexts = list(snapshot.get("contexts") or [])
+        extra = list(snapshot.get("extra_user_content_parts") or [])
+        stage = {
+            "native_hook_complete": "My World 注入完成（on_llm_request 钩子结束前）",
+            "engine_prepared": "My World 引擎准备完成（尚未合并宿主请求）",
+            "legacy_before_model": "旧版接管调用模型前",
+        }.get(snapshot.get("stage"), "引擎准备阶段")
         parts = [
-            "# ===== 这一轮实际发出去的请求（最近一次）=====\n"
+            "# ===== 最近一次请求快照 =====\n"
             f"会话：{snapshot.get('session_id') or ''}\n"
             f"时间戳：{snapshot.get('at') or 0}\n"
-            f"字符数：system {len(str(snapshot.get('system_prompt') or ''))} / "
-            f"宿主历史 {sum(len(str(item)) for item in contexts)}（{len(contexts)} 条）/ "
-            f"用户消息 {len(str(snapshot.get('user_prompt') or ''))}\n"
+            f"记录阶段：{stage}\n"
+            "后续钩子、工具循环及供应商适配仍可能修改请求；此记录不证明已调用或发送成功。\n"
+            "只保存在内存中，不写入宿主历史；媒体载荷省略，超限截断时以下内容不完整。\n"
+            f"记录前大小：{json.dumps(snapshot.get('request_sizes', {}), ensure_ascii=False)}\n"
+            f"媒体与工具：{json.dumps(snapshot.get('media', {}), ensure_ascii=False)}\n"
+            f"工具名：{json.dumps(snapshot.get('tool_names', []), ensure_ascii=False)}\n"
         ]
+        if snapshot.get("snapshot_limits", {}).get("truncated"):
+            parts.append("注意：这份快照已截断；历史优先保留最近 128 条，其余集合最多 128 项。")
         keys = [str(item) for item in (snapshot.get("batch_keys") or [])]
         texts = [str(item) for item in (snapshot.get("batch_texts") or [])]
         parts.append("本轮 batch 的事件身份（按到达顺序）：")
@@ -588,12 +596,18 @@ class SnapshotMixin:
         parts.append(f"\n# ===== 1. system prompt =====\n{snapshot.get('system_prompt') or ''}")
         parts.append(
             "# ===== 2. 宿主历史（AstrBot contexts）=====\n"
-            + ("\n".join(str(item) for item in contexts) if contexts else "（这一轮没有带宿主历史）")
+            + (json.dumps(contexts, ensure_ascii=False, indent=2) if contexts else "（没有记录到宿主历史）")
         )
         parts.append(f"# ===== 3. 最后一条用户消息 =====\n{snapshot.get('user_prompt') or ''}")
+        parts.append("# ===== 4. 临时附加内容（extra_user_content_parts）=====\n"
+                     + json.dumps(extra, ensure_ascii=False, indent=2))
+        if snapshot.get("runtime_part"):
+            parts.append("引擎待注入的动态上下文：\n" + snapshot["runtime_part"])
+        if snapshot.get("original_user_text"):
+            parts.append("本轮事件原始用户文本（诊断对照，不是额外发送一遍）：\n"
+                         + snapshot["original_user_text"])
         if snapshot.get("context_selection"):
-            import json
-            parts.append("# ===== 4. 本轮上下文取材依据 =====\n" + json.dumps(
+            parts.append("# ===== 5. 本轮上下文取材依据 =====\n" + json.dumps(
                 snapshot["context_selection"], ensure_ascii=False, indent=2))
         return "\n".join(parts)
 
@@ -607,27 +621,74 @@ class SnapshotMixin:
         batch: list[dict[str, Any]],
         chat_rows: list[dict[str, Any]],
         context_selection: dict | None = None,
-    ) -> None:
-        """留一份"这一轮真正发出去的完整请求"（内存里只留最近几条）。"""
+        runtime_part: str = "",
+        stage: str = "engine_prepared",
+        image_urls: Any = (),
+    ) -> dict[str, Any] | None:
+        """留一份有界副本；注入完成后由调用方携带身份补全，避免会话并发串轮。"""
 
         try:
+            from ..prompt_snapshot import MAX_ITEMS, bounded_snapshot, request_sizes
+
             entries = self.reply_batch_entries(batch, chat_rows=chat_rows)
-            self._prompt_snapshots.insert(
-                0,
-                {
+            snapshot = bounded_snapshot({
                     "session_id": str(session_id),
                     "at": self._now(),
-                    "system_prompt": str(system_prompt or ""),
-                    "user_prompt": str(user_prompt or ""),
-                    "contexts": list(contexts or []),
+                    "stage": stage,
+                    "request_sizes": request_sizes(system_prompt, user_prompt, contexts),
+                    "media": {"image_urls": len(image_urls or [])},
                     "batch_keys": [str(item.get("event_key") or "") for item in entries],
                     "batch_texts": [str(item.get("text") or "") for item in entries],
-                    "context_selection": dict(context_selection or {}),
-                },
-            )
+                    "context_selection": context_selection or {},
+                    "system_prompt": str(system_prompt or ""),
+                    "user_prompt": str(user_prompt or ""),
+                    "runtime_part": runtime_part,
+                    "contexts": (contexts or [])[-MAX_ITEMS:],
+                })
+            snapshot["snapshot_limits"]["truncated"] |= len(contexts or []) > MAX_ITEMS
+            self._prompt_snapshots.insert(0, snapshot)
             del self._prompt_snapshots[PROMPT_SNAPSHOT_KEEP:]
+            return snapshot
         except Exception as exc:  # 调试快照绝不能影响回复本身
             self._log("debug", f"请求快照没留住：{exc}")
+            return None
+
+    def complete_prompt_snapshot(self, snapshot, req, *, original_user_text: str = "") -> None:
+        """记录本钩子完成后的宿主请求；不改请求、历史、工具或其他插件的临时标记。"""
+
+        if snapshot is None:
+            return
+        try:
+            from ..prompt_snapshot import MAX_ITEMS, bounded_snapshot, request_sizes
+
+            system = getattr(req, "system_prompt", "") or ""
+            prompt = getattr(req, "prompt", "") or ""
+            contexts = getattr(req, "contexts", None) or []
+            extra = getattr(req, "extra_user_content_parts", None) or []
+            tools = getattr(getattr(req, "func_tool", None), "tools", None) or []
+            completed = bounded_snapshot({
+                "session_id": snapshot["session_id"], "at": self._now(),
+                "stage": "native_hook_complete",
+                "request_sizes": request_sizes(system, prompt, contexts, extra),
+                "media": {"image_urls": len(getattr(req, "image_urls", None) or []),
+                          "audio_urls": len(getattr(req, "audio_urls", None) or []),
+                          "tools": len(tools)},
+                "batch_keys": snapshot.get("batch_keys", []),
+                "batch_texts": snapshot.get("batch_texts", []),
+                "context_selection": snapshot.get("context_selection", {}),
+                "system_prompt": system, "user_prompt": prompt,
+                "original_user_text": original_user_text,
+                "extra_user_content_parts": extra,
+                "contexts": contexts[-MAX_ITEMS:],
+                "tool_names": [getattr(tool, "name", "") for tool in tools[:MAX_ITEMS]],
+            })
+            completed["snapshot_limits"]["truncated"] |= (
+                len(contexts) > MAX_ITEMS or len(tools) > MAX_ITEMS
+                or bool(snapshot.get("snapshot_limits", {}).get("truncated")))
+            snapshot.clear()
+            snapshot.update(completed)
+        except Exception as exc:
+            self._log("debug", f"宿主请求快照没补全：{exc}")
 
     async def overview(self) -> list[dict[str, Any]]:
         """所有启用会话的简要状态：编辑器地图页一次看全"谁在哪"。"""

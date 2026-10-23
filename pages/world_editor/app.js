@@ -21328,7 +21328,7 @@ function showDebugPlaceholder() {
   box.appendChild(
     emptyState(
       "🔍",
-      "点右上角「预览接管请求」看这一轮真正发出去的提示词，"
+      "点右上角「预览接管请求」看最近一次请求快照及记录阶段，"
         + "或者「预览自主提示词」看她自己安排事情时看到的版本。",
     ),
   );
@@ -21350,7 +21350,7 @@ function renderDebugOutput(data, mode) {
 
   const summary = $("debug-summary");
   if (summary) {
-    const label = mode === "autonomous" ? "自主提示词" : "接管请求（上一轮实际发出的）";
+    const label = mode === "autonomous" ? "自主提示词" : "接管请求（最近一次快照）";
     summary.textContent = `${label} · ${Number(data.chars || prompt.length)} 字符`;
   }
 

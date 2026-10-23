@@ -220,28 +220,6 @@ class GroupChatMixin:
             kept.append(item)
         return kept
 
-    async def quote_in_records(self, session_id: str, text: str) -> bool:
-        """被引用的那条，聊天记录里还看得到吗。
-
-        看得到就只给她一个开头（让她自己往上对照：省 token，也更像人）；
-        看不到（很久以前的、已经掉出留档的）才需要把原文写进提示词。
-        """
-
-        probe = " ".join(str(text or "").split())[:24]
-        if not probe or not self.is_enabled(session_id):
-            return False
-        try:
-            state = await self.load_state(session_id, cold_start=False)
-        except Exception:
-            return False
-        # 只看"这一轮真的会带进提示词"的那一份（时间窗 + 已回过的那截），
-        # 原始留档里还留着、但早就没带进去的那几条，说了"照上面看"她也找不到
-        for item in self.chat_window(state, session_id):
-            body = " ".join(str(item.get("text") or "").split())
-            if probe in body:
-                return True
-        return False
-
     async def chat_images_for_reply(
         self, session_id: str, limit: int
     ) -> list[dict[str, Any]]:

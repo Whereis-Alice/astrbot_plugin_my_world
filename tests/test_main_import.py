@@ -763,8 +763,8 @@ class TestMainImport(unittest.TestCase):
         ]
         self.assertEqual(self.module._quoted_text(event), "你自己：［图片］")
 
-    def test_a_quote_of_a_message_in_the_records_only_shows_its_head(self):
-        """引用的那条聊天记录里就有：只点出开头，让她自己往上对照（不再抄一遍原文）。"""
+    def test_a_quote_in_records_still_keeps_body_when_final_visibility_is_unknown(self):
+        """留档存在不等于经过上下文选择、预算裁剪后仍能看到完整原文。"""
 
         session = "aiocqhttp:GroupMessage:probe-quote-inside"
         plugin, _context, _session = self._plugin_with_session(session=session)
@@ -785,8 +785,37 @@ class TestMainImport(unittest.TestCase):
         self.assertIn("不相疑", note)
         self.assertIn(long_one[:40], note)
         self.assertIn("不是他这次打的字", note)
-        # 原文不再重复一份：这条注解比原文短得多
-        self.assertLess(len(note), len(long_one))
+        self.assertIn(" ".join(long_one.split()), note)
+        self.assertNotIn("照上面那条看", note)
+
+    def test_quotes_with_the_same_prefix_do_not_lose_a_different_ending(self):
+        session = "aiocqhttp:GroupMessage:probe-quote-prefix"
+        plugin, _, _ = self._plugin_with_session(session=session)
+        self.addCleanup(plugin.db.raw.close)
+        prefix = "这次活动的安排和大家说明一下，具体场地与开放时间请以这条通知为准。" * 2
+        quoted = prefix + "周六不营业"
+
+        async def drive():
+            await plugin.on_any_message(_GateEvent(prefix + "周六正常营业", session=session))
+            event = _GateEvent("确认这个", session=session)
+            event.message_obj.message = [Reply(message_str=quoted, sender_id="42", sender_nickname="小明")]
+            return await plugin._quoted_note(event)
+
+        note = asyncio.run(drive())
+        self.assertIn(quoted, note)
+        self.assertNotIn("照上面那条看", note)
+
+    def test_disabled_quote_body_does_not_claim_the_original_is_missing(self):
+        session = "aiocqhttp:GroupMessage:probe-quote-disabled"
+        plugin, _, _ = self._plugin_with_session(session=session)
+        self.addCleanup(plugin.db.raw.close)
+        plugin.engine.world.context.quote_chars = 0
+        event = _GateEvent("这个呢", session=session)
+        event.message_obj.message = [Reply(message_str="完整原文", sender_id="42", sender_nickname="小明")]
+        note = asyncio.run(plugin._quoted_note(event))
+        self.assertNotIn("完整原文", note)
+        self.assertNotIn("不在聊天记录", note)
+        self.assertIn("配置", note)
 
     def test_a_quote_of_a_message_outside_the_records_shows_the_full_text(self):
         """引用的是很久以前、聊天记录里已经没有的消息：把原文写进正文。"""

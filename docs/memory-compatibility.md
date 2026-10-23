@@ -1,8 +1,14 @@
-# 与 Anamnesis 配合
+# 与场景记忆、Anamnesis 配合
 
 [文档目录](README.md) · [生活记忆与通讯录](memory.md) · [数据与迁移](data-and-migration.md)
 
 My World 构造她自己的生活，Anamnesis 记录聊天往事。两者可以一起使用，无需选择双份聊天存储模式，也不需要共享数据库。
+
+同时常开 [Context Scene Memory](https://github.com/Whereis-Alice/astrbot_plugin_context_scene_memory) 与 [Anamnesis](https://github.com/Whereis-Alice/astrbot_plugin_anamnesis) 是本插件的兼容场景。前者负责当前群聊的参与者、引用归属和聊天现场，后者负责长期聊天记忆；My World 推进角色生活并记录自身经历。
+
+AstrBot 按优先级从高到低运行请求钩子；当前默认顺序为 Anamnesis（0）、Context Scene Memory（-10）、My World（-1000000）。My World 保留已有的场景块、引用指向、记忆块、临时标记和工具历史，不因检测到安装名就关闭生活能力，也不把这些外部注入复制到生活证据中。连续消息合并时，Anamnesis 写在用户文本前后的记忆会作为临时内容保留，避免混成用户新说的话。各插件仍可能提供部分重叠背景，没有跨插件总预算或自动去重保证。
+
+v4.37.4 的隔离集成核对使用场景插件提交 `630188059de5513e6a2d20e74e46e12b9f33e515`、Anamnesis 提交 `18514fc72fbe74aae776167e83beb443d3e022d1`：执行真实注入分支，覆盖四种记忆注入方式、钩子先后顺序、场景临时标记清理与 My World 连续消息合并。常规 CI 同时保留不依赖外部源码的三插件请求契约测试。这些验证不包含真实模型生成与平台发送。
 
 ## 各自负责什么
 

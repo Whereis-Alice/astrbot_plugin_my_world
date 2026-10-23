@@ -392,7 +392,7 @@ class MyWorldEngine(
         """
 
         self._prompt_snapshots: list[dict[str, Any]] = []
-        """最近几次"实际发出去的完整请求"（只读调试用，见 :meth:`preview_last_reply_request`）。"""
+        """最近几次带记录阶段的有界请求副本（见 :meth:`preview_last_reply_request`）。"""
 
         self._tick_log: deque[dict[str, Any]] = deque(maxlen=TICK_LOG_KEEP)
         """最近几拍 tick 的结果（编辑器「运行记录」页读它；不进后台日志）。"""

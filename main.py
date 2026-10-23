@@ -1536,6 +1536,9 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
             else plan.system_prompt
         )
         _append_extra_text(req, plan.runtime_part)
+        self.engine.complete_prompt_snapshot(
+            getattr(plan, "prompt_snapshot", None), req, original_user_text=ctx.raw_text or ctx.text,
+        )
         event.set_extra(
             MW_TURN_EXTRA,
             {

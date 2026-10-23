@@ -420,6 +420,7 @@ class DialoguePlan:
     system_prompt: str = ""
     user_prompt: str = ""
     runtime_part: str = ""
+    prompt_snapshot: dict[str, Any] | None = None
     batch: list[dict[str, Any]] = field(default_factory=list)
     texts: list[str] = field(default_factory=list)
     say_limit: int = 0

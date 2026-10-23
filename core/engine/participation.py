@@ -131,11 +131,16 @@ class ParticipationMixin:
             background += ("\n\n# 刚翻过消息\n你刚安静看过这段对话。看清每条消息距今多久，以及后续是否换了话题、"
                            "问题是否已解决。回看范围只代表还可以考虑，不代表现在应该回复。"
                            "接较早的话时选择引用，话题已结束或问题已解决时不追答。")
+        configured_silence = bool(self.world.decider.natural_silence)
+        natural_silence = source in {"browse", "completion"} or configured_silence
         result = build_participation_prompt(persona=persona, life=life, rows=rows,
             now=self._now(), live_window=self._participation_window(source), style=style,
-            background=background, natural_silence=source in {"browse", "completion"} or self.world.decider.natural_silence)
+            background=background, natural_silence=natural_silence)
         request.trace["scene"] = {"rows": len(rows), "characters": len(result[1])}
-        request.trace["natural_silence"] = source == "browse" or self.world.decider.natural_silence
+        request.trace["natural_silence"] = natural_silence
+        request.trace["silence_policy"] = {
+            "source": source, "configured": configured_silence, "effective": natural_silence,
+        }
         return result
 
     def participation_sample(self, state, target, new) -> bool:
