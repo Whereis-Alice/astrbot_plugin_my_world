@@ -1,5 +1,6 @@
 """Behavioral checks for recovery admission and idle/formal-work handoff."""
 import unittest
+from unittest.mock import Mock
 
 from core.models import ActionDef
 from core.planner import create_plan
@@ -76,6 +77,39 @@ class RecoveryAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.engine.world.sleep.mode = "autonomous"
         await self.engine.advance_life_matters(S)
         self.assertIsNone((await self.engine.load_state(S, cold_start=False)).current_action)
+
+    async def prepare_recovery_decision(self, *, energy=.55, threshold=.25, recovering=True):
+        self.engine.world.sleep.mode = "activity"
+        self.engine.world.sleep.recovery_threshold = threshold
+        self.engine.world.sleep.recovery_action_id = "charge"
+        self.engine.world.actions.append(ActionDef(id="charge", name="充电", category="continuous",
+            recovery_kind="restore", duration_mode="fixed", duration=600,
+            on_complete={"effects_per_minute": {"energy": "+0.02"}}))
+        async with self.engine.session_state(S) as state:
+            state.state, state.energy, state.current_action, state.current_plan = "idle", energy, None, None
+            state.sleep_rhythm["recovering"] = recovering
+        # A valid quiet proposal must not displace an unfinished recovery.
+        self.engine.decider.rule_plan = Mock(return_value=create_plan(
+            steps=[{"action": "read", "duration": 300}], world_time=0, now=self.clock.now()))
+        self.engine.decider.should_ask_llm = Mock(return_value=False)
+
+    async def test_autonomous_decision_keeps_recovering_instead_of_starting_new_free_activity(self):
+        await self.prepare_recovery_decision()
+        await self.engine.maybe_decide(S, force=True)
+        state = await self.engine.load_state(S, cold_start=False)
+        self.assertEqual((state.current_action or {}).get("type"), "charge")
+
+    async def test_autonomous_decision_starts_recovery_at_the_configured_higher_threshold(self):
+        await self.prepare_recovery_decision(energy=.6, threshold=.7, recovering=False)
+        await self.engine.maybe_decide(S, force=True)
+        state = await self.engine.load_state(S, cold_start=False)
+        self.assertEqual((state.current_action or {}).get("type"), "charge")
+
+    async def test_arrival_decision_keeps_unfinished_recovery_before_new_free_activity(self):
+        await self.prepare_recovery_decision()
+        async with self.engine.session_state(S) as state:
+            await self.engine.decide_after_arrival(state, self.engine.node("study"), fixture.TickOutcome(S))
+            self.assertEqual((state.current_action or {}).get("type"), "charge")
 
 
 class IdleHandoffTests(unittest.IsolatedAsyncioTestCase):

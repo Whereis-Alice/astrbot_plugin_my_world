@@ -62,6 +62,8 @@ class AutonomyMixin:
                 await self._run_rhythm_sleep(state, outcome)
             elif choice is not None and choice["kind"] in {"event", "schedule", "continue"}:
                 outcome.notes.append(choice["reason"])
+            elif self.world.sleep.mode == "activity" and choice is not None and choice["kind"] == "rest":
+                await self.tick_activity_recovery(state, outcome)
             elif state.energy < (self.world.sleep.recovery_threshold if self.world.sleep.mode == "activity" else .25) or self.decider.sleep_pressure_high(state):
                 # A needed recovery must not be replaced by a random social/model plan.
                 await self._quiet_rule_plan(state, node, outcome)
@@ -260,6 +262,9 @@ class AutonomyMixin:
             return
         if self.world.sleep.mode == "autonomous" and state.sleep_rhythm.get("decision") == "sleep":
             await self._run_rhythm_sleep(state, outcome)
+            return
+        if self.world.sleep.mode == "activity" and self.life_choice(state)["kind"] == "rest":
+            await self.tick_activity_recovery(state, outcome)
             return
         if not self.proactive_chat_allowed(outcome.session_id):
             outcome.notes.append("抵达新地点，冷却期内继续安静生活")
