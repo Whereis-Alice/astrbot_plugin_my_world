@@ -11,6 +11,7 @@ def choose_life(
     schedule_minutes: int | None = None,
     sleep_requested: bool = True,
     persona_key: str | None = None,
+    recovery_required: bool | None = None,
 ) -> dict:
     choice = {"kind": "idle", "reason": "暂时没有必须开始的事，留一点自由时间", "at": now}
     if critical:
@@ -23,7 +24,7 @@ def choose_life(
         choice.update(kind="rest", reason="已经进入休息安排，新的生活事项等醒来再继续")
     elif schedule_minutes is not None and 0 <= schedule_minutes <= 10:
         choice.update(kind="schedule", reason="日程即将开始，暂不启动新的长事项")
-    elif state.energy < 0.4 and not state.current_action:
+    elif (state.energy < 0.4 if recovery_required is None else recovery_required) and not state.current_action:
         choice.update(kind="rest", reason="现在精力不足，先休息，保留事项进度")
     elif state.current_action or state.current_plan:
         choice.update(

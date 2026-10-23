@@ -77,7 +77,8 @@ class ActionsMixin:
         if not self.world.idle_life.enabled or state.current_action or state.state != "idle":
             state.idle_activity = {}
             return
-        if idle_definition(state, self.world):
+        has_plan = active_plan(state) is not None
+        if idle_definition(state, self.world) and not has_plan:
             return
         # Only a naturally completed idle action gets its configured completion effects.
         previous = state.idle_activity or {}
@@ -88,13 +89,17 @@ class ActionsMixin:
             minutes = max(0, int(previous.get("until_tick", 0)) - int(previous.get("start_tick", 0))) * self.tick_seconds / 60
             self.dynamics.apply_effects(state, old.on_complete.effects_per_minute,
                                        world=self.world, scale=minutes, now=self._now())
+        state.idle_activity = {}
+        # A queued formal step owns the next free moment. Keep genuinely earned
+        # idle completion above, but do not start and immediately cancel a new one.
+        if has_plan:
+            return
         candidates = [action for action in self.world.actions if (
             safe_idle_action(action) and action.available_in(state.node_id)
             and self.action_quota_left(state, action) > 0
             and self._check_preconditions(state, action)[0]
         )]
         fresh = [action for action in candidates if action.id != previous.get("id")]
-        state.idle_activity = {}
         if not candidates:
             return
         definition = self.rng.choice(fresh or candidates)

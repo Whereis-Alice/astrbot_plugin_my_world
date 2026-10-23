@@ -36,9 +36,16 @@ class MattersMixin:
         schedules = [self._next_schedule(sid, state=state, persona_key=persona_key)
                      for sid in self.group_sessions(state.session_id)]
         minutes = [row["in_minutes"] for row in schedules if row is not None]
+        recovery_required = None
+        if self.world.sleep.mode == "activity":
+            config = self.world.sleep
+            recovery_required = state.energy < config.recovery_threshold or (
+                bool(state.sleep_rhythm.get("recovering"))
+                and state.energy < max(config.recovery_threshold, config.recovery_target))
         return choose_life(state, now=self._now(), critical=bool(thread and self._thread_critical(thread)),
                            schedule_minutes=min(minutes) if minutes else None,
-                           sleep_requested=self.world.sleep.mode == "autonomous", persona_key=persona_key)
+                           sleep_requested=self.world.sleep.mode == "autonomous", persona_key=persona_key,
+                           recovery_required=recovery_required)
 
     def _matter_can_work(self, state) -> bool:
         return state.state == "idle" and self.life_choice(state)["kind"] in {"idle", "matter"}
