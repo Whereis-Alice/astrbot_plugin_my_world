@@ -140,8 +140,8 @@ class ActionsMixin:
         计划与日程实际执行时也检查此限制。
         """
 
-        from ..recovery import is_sleep_action
-        if self.world.sleep.mode == "activity" and is_sleep_action(action):
+        from ..recovery import recovery_mode_allows
+        if not recovery_mode_allows(action, self.world):
             return False
         from ..recovery import sleep_action_kind
         if sleep_action_kind(action) != "sleep":

@@ -213,6 +213,8 @@ class BackgroundMixin:
                     current["offline_wake"] = True
                     current["offline_wake_at"] = wake_at
                     state.goodmorning_day = self._today_key(now)
+                else:
+                    current["offline_recovery_complete"] = True
                 remaining = min(max(0, elapsed - sleep_seconds), 6 * 3600)
             else:
                 remaining = max(0, gap - sleep_seconds)

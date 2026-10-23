@@ -122,6 +122,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         # scripted replies or exercise another generator.
         raw.setdefault("calendar", {})["auto_generate"] = False
         raw.setdefault("diary", {})["automatic"] = False
+        raw.setdefault("limits", {})["life_matter_notes_per_day"] = 0
         # 本组验证既有日程/夜晚睡眠行为；自主作息由 test_sleep_rhythm 独立验证。
         raw["sleep"]["mode"] = "fixed"
         for action in raw["actions"]:
@@ -11574,6 +11575,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_schedule_start_can_be_echoed_to_the_group(self):
         """勾了「日程开始执行」这一档，就会把这一行发到群里。"""
 
+        import asyncio
+
         raw = self.store.raw_world()
         raw["echo_types"] = ["schedule"]
         self.store.save_world(raw)
@@ -11585,6 +11588,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         )
         self.clock.set_struct(datetime(2026, 9, 15, 12, 0))
         await self.engine.tick()
+        # Slower ticks intentionally return before scheduled delivery finishes.
+        await asyncio.wait_for(self.engine._schedule_delivery_job, timeout=5)
         self.assertTrue(
             any("news" in line and "📅" in line for line in self.messenger.flat_messages),
             self.messenger.flat_messages,

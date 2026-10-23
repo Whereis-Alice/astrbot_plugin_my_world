@@ -313,6 +313,10 @@ class MattersMixin:
     async def advance_life_matters(self, session_id: str) -> None:
         if not self.is_enabled(session_id) or not self.world.limits.life_matter_enabled:
             return
+        try:
+            await self.note_life_progress(session_id)
+        except Exception as exc:
+            self._log("warning", f"生活小结暂未完成：{type(exc).__name__}")
         world, state_key = self.world, self.state_key(session_id)
         now = self._now()
         async with self.session_state(session_id) as state:
@@ -437,12 +441,54 @@ class MattersMixin:
                 and self.is_enabled(session_id) and self.world.limits.life_matter_enabled
                 and current_persona == persona and (not day or self._today_key(self._now()) == day))
 
-    async def _review_matter_stage(self, session_id: str, snapshot: dict, *, world, state_key, persona, day: str = "") -> None:
+    async def note_life_progress(self, session_id: str) -> None:
+        """Summarize completed small steps without advancing tomorrow's plan."""
+        limit = self.world.limits.life_matter_notes_per_day
+        if not limit or self.native_turn_busy(session_id):
+            return
+        from hashlib import sha256
+        world, key = self.world, self.state_key(session_id)
+        persona = await self._persona_text(session_id)
+        persona_key = sha256(persona.encode("utf-8")).hexdigest()[:24]
+        now, day = self._now(), self._today_key(self._now())
+        async with self.session_state(session_id) as state:
+            if not self._matter_can_work(state):
+                return
+            attempts = sum(int(m.get("note_review", {}).get("attempts", 0)) for m in state.life_matters
+                           if m.get("note_review", {}).get("day") == day)
+            if attempts >= limit:
+                return
+            candidates = [m for m in state.life_matters
+                if m.get("status") not in matters.CLOSED | {"paused"} and not m.get("needs_review")
+                and m.get("kind") != "promise" and matters.visible(m, session_id)
+                and (not m.get("persona_key") or m["persona_key"] == persona_key)
+                and any(s.get("status") != "done" for s in m.get("steps", []))
+                and matters.unnoted_steps(m)
+                and float(m.get("note_review", {}).get("retry_at", 0)) <= now]
+            if not candidates:
+                return
+            item = min(candidates, key=lambda m: float(m.get("note_review", {}).get("at", 0)))
+            previous = item.get("note_review", {})
+            token = uuid4().hex
+            item["note_review"] = {"day": day, "at": now, "token": token,
+                "attempts": (int(previous.get("attempts", 0)) if previous.get("day") == day else 0) + 1,
+                "retry_at": now + max(3600, self.world.limits.background_llm_timeout_seconds + 60)}
+            snapshot = copy.deepcopy(item)
+            snapshot["steps"] = copy.deepcopy(matters.unnoted_steps(item)[:6])
+            snapshot["stage_notes"] = matters.current_stage_notes(item)[-3:]
+            snapshot["history"] = snapshot.get("history", [])[-8:]
+        await self._review_matter_stage(session_id, snapshot, world=world, state_key=key,
+                                       persona=persona, day=day, partial=True)
+
+    async def _review_matter_stage(self, session_id: str, snapshot: dict, *, world, state_key, persona,
+                                   day: str = "", partial: bool = False) -> None:
         day = day or self._today_key(self._now())
         with model_context("life_matter", f"核对生活事项 {snapshot['id']} 的实际阶段结果", session_id):
             raw = await self._ask_judge(session_id,
-                "根据事项目标和实际动作收据，判断整个目标是否已达成，只输出JSON。"
+                ("本轮只为已做完的小步留下一则生活小结，不决定整个目标是否完成，不改后续日程。outcome用continue。"
+                 if partial else "根据事项目标和实际动作收据，判断整个目标是否已达成，只输出JSON。") +
                 '格式：{"outcome":"completed|continue|blocked","reason":"",'
+                '"inner":"此刻真实想到的一句话，120字以内",'
                 '"stage":{"summary":"这一阶段具体留下什么","content":"具体草稿、推演、结论或未解问题",'
                 '"next_focus":"下阶段从哪一处继续","basis_step_ids":["本阶段已完成步骤ID"]}}。'
                 "个人项目属于角色世界内的生活，life_simulation步骤是AI模拟，不要求真实电脑、文件或工具。"
@@ -467,15 +513,28 @@ class MattersMixin:
             if (not item or item["revision"] != snapshot["revision"] or item["status"] in matters.CLOSED | {"paused"}
                     or not await self._matter_context_current(session_id, world, state_key, persona, day=day)):
                 return
+            if partial:
+                if (not self.world.limits.life_matter_notes_per_day or item.get("needs_review")
+                        or item.get("note_review", {}).get("token") != snapshot.get("note_review", {}).get("token")):
+                    return
+                item["note_review"]["retry_at"] = self._now() + 3600
             # The wait for a slow review does not consume the retry interval.
             # Only guarded results update this scheduling marker, not life history.
-            item["last_attempt_at"] = self._now()
+            if not partial:
+                item["last_attempt_at"] = self._now()
             reason = str(result.get("reason") or "尚未取得可核对的目标结果")[:300]
             outcome = result.get("outcome")
             if outcome not in {"completed", "continue", "blocked"}:
                 return  # Failed/malformed review is not a new life result.
             pending = {row["step_id"] for row in matters.pending_review_bookmarks(item)}
             stage_payload = result.get("stage")
+            if isinstance(stage_payload, dict):
+                ids = stage_payload.get("basis_step_ids")
+                captured = {s["id"]: s for s in snapshot.get("steps", [])}
+                current = {s["id"]: s for s in item.get("steps", [])}
+                if (not isinstance(ids, list) or any(not isinstance(sid, str) or sid not in captured
+                        or captured[sid] != current.get(sid) for sid in ids)):
+                    return  # A later completion/edit is not evidence seen by this request.
             if pending and not stage_payload:
                 self.decision_trace(session_id, "life_stage", "rejected", "阶段笔记缺少接续内容，保留最后思路等待复核", matter_id=item["id"])
                 return
@@ -493,6 +552,16 @@ class MattersMixin:
                     memory_type="scene", source="life_matter", context=json.dumps({**stage,
                         "matter_id": item["id"], "persona_key": item.get("persona_key", "")}, ensure_ascii=False),
                     participants=[item["who"]] if item.get("who") else [])
+                inner = result.get("inner")
+                if isinstance(inner, str) and len(inner.strip()) <= 120:
+                    await self._remember_inner_thought(state, inner, source="生活小结",
+                        dialogue_session=item["session"], persona_key=item.get("persona_key", ""))
+            if partial:
+                if stage:
+                    self.decision_trace(session_id, "life_stage", "noted", "已记录小步所得，保留后续安排",
+                                        matter_id=item["id"])
+                matters.sync(state)
+                return
             if stage and matters.pending_review_bookmarks(item):
                 # Older saves can contain more than one batch without notes.
                 # Keep useful content, but never retire the remaining questions.

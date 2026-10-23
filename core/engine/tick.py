@@ -161,6 +161,8 @@ class TickMixin:
         async with self.session_state(session_id) as state:
             elapsed = self.reconcile_life_time(state)
             state.world_time += 1
+            if (state.current_action or {}).get("offline_recovery_complete"):
+                await self._tick_continuous(state, self.node(state.node_id), TickOutcome(session_id=session_id))
             action = state.current_action
             if action and not action.pop("offline_tick_settled", False):
                 action["elapsed_ticks"] = min(int(action.get("duration_ticks", 1)), int(action.get("elapsed_ticks", 0)) + 1)
@@ -195,7 +197,7 @@ class TickMixin:
             # loses recovery, and a newly started rest recovers earlier awake time.
             # Offline rest has already been settled by reconcile_life_time; finish
             # it first so only the remaining awake interval is evolved here.
-            if (state.current_action or {}).get("offline_wake"):
+            if any((state.current_action or {}).get(flag) for flag in ("offline_wake", "offline_recovery_complete")):
                 await self._tick_continuous(state, node, outcome)
             was_storm = bool(state.storm)
             if self._roll_day_mood(state, self._now()):
@@ -1042,7 +1044,10 @@ class TickMixin:
             reply = await self.ask_speech(state, home, system_prompt, prompt,
                 rows=self.expression_chat(state, home), images=image_urls)
         else:
-            reply = await self._ask_llm(home, system_prompt, prompt, image_urls=image_urls)
+            # Normalize tool images too; this is still a reply, so don't open
+            # proactive tools or re-read unrelated live chat to prepare it.
+            reply = await self._ask_speech_media(state, home, system_prompt, prompt,
+                rows=[], images=image_urls)
         self.record_context_selection(request)
         outcome.llm_calls += 1
         if reply is None:

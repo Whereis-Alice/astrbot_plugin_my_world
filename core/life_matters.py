@@ -197,12 +197,7 @@ def record_stage(item: dict, payload: Any, *, now: float) -> dict | None:
         return None  # Do not truncate away a qualification or unresolved question.
     if not isinstance(ids, list) or not ids or len(ids) > 6 or any(not isinstance(x, str) for x in ids):
         return None
-    known = {s["id"]: s for s in item.get("steps", []) if s.get("status") == "done"
-             and not s.get("stage_noted")
-             and s.get("goal", item.get("text")) == item.get("text")
-             and isinstance(s.get("result"), dict)
-             and s.get("result", {}).get("ok") and s.get("result", {}).get("kind") in {"life_simulation", "in_world_action"}
-             and _minutes(s["result"].get("minutes")) > 0}
+    known = {s["id"]: s for s in unnoted_steps(item)}
     used = {sid for row in item.get("stage_notes", []) for sid in row.get("basis_step_ids", [])}
     if not set(ids) <= known.keys() or set(ids) & used:
         return None
@@ -213,6 +208,16 @@ def record_stage(item: dict, payload: Any, *, now: float) -> dict | None:
     for sid in stage["basis_step_ids"]:
         known[sid]["stage_noted"] = True
     return stage
+
+
+def unnoted_steps(item: dict) -> list[dict]:
+    """Completed effort that may support new content, independent of plan timing."""
+    return [s for s in item.get("steps", []) if s.get("status") == "done"
+            and not s.get("stage_noted")
+            and s.get("goal", item.get("text")) == item.get("text")
+            and isinstance(s.get("result"), dict) and s["result"].get("ok")
+            and s["result"].get("kind") in {"life_simulation", "in_world_action"}
+            and _minutes(s["result"].get("minutes")) > 0]
 
 
 def stable_interests(state, *, now: float = 0) -> list[dict]:
@@ -401,6 +406,7 @@ def context_block(state, *, session_id: str, user_id: str = "", now: float = 0,
                   persona_key: str = "") -> str:
     items = ensure(state, now)
     rows = []
+    shown_stages = set()
     for item in items:
         if item.get("status") in CLOSED or not visible(item, session_id):
             continue
@@ -415,6 +421,8 @@ def context_block(state, *, session_id: str, user_id: str = "", now: float = 0,
         for stage in current_stage_notes(item)[-1:]:
             rows[-1] += (f"\n  世界内阶段所得（模拟内容）："
                          f"{stage_record_text(stage, status=item['status'])}")
+            if len(rows) <= 6:
+                shown_stages.add((item["id"], stage.get("summary"), stage.get("content")))
         for bookmark in pending_review_bookmarks(item):
             rows[-1] += (f"\n  计时结束前的思路（尚待复核）：{bookmark.get('note') or '未记录新发现'}；"
                          f"未解问题：{bookmark['open_question'] or '未记录'}")
@@ -433,6 +441,7 @@ def context_block(state, *, session_id: str, user_id: str = "", now: float = 0,
     known = {item['id']: item for item in items}
     artifacts = [(key, artifact) for key, artifact in state.life_artifacts.items()
                  if artifact.get("session") == session_id and key in known
+                 and (key, artifact.get("result"), artifact.get("content")) not in shown_stages
                  and visible(known[key], session_id)
                  and (not known[key].get("who") or known[key]["who"] == user_id)
                  and (not known[key].get("persona_key") or known[key]["persona_key"] == persona_key)

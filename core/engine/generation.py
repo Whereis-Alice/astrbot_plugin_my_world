@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..recovery import sleep_action_kind
+from ..recovery import sleep_action_kind, recovery_mode_allows
 
 import time
 import math
@@ -900,6 +900,7 @@ class GenerationMixin:
             }
             for action in self.world.actions
             if action.enabled and not bool(getattr(action, "legacy", False))
+            and recovery_mode_allows(action, self.world)
             and not (sleep_action_kind(action) == "sleep" and self.world.sleep.mode == "autonomous")
         ]
         existing = []

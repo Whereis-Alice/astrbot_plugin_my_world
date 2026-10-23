@@ -61,13 +61,17 @@ def decision_state(payload: dict) -> dict:
         # time. Only a changed choice, reason or matter invalidates inference.
         result["life_decision"].pop("at", None)
     if result.get("current_action"):
-        result["current_action"].pop("elapsed_ticks", None)
+        for name in ACTION_TIME_FIELDS:
+            result["current_action"].pop(name, None)
     # Rule-only numerical evolution can continue; crossing meaningful boundaries
     # invalidates the decision rather than applying an old plan to an exhausted life.
     result["energy_band"] = int(float(payload.get("energy", .5)) * 5)
     result["valence_band"] = int(float(payload.get("valence", .5)) * 4)
     result["sleep_band"] = int(float(payload.get("sleep_pressure", 0)) * 4)
     return result
+
+
+ACTION_TIME_FIELDS = ("elapsed_ticks", "effects_settled_minutes")
 
 
 @asynccontextmanager
@@ -120,7 +124,11 @@ async def released_life_lock(engine):
             if isinstance(after.get("life_decision"), dict):
                 state.life_decision = copy.deepcopy(after["life_decision"])
             if state.current_action and latest.current_action:
-                state.current_action["elapsed_ticks"] = latest.current_action.get("elapsed_ticks", 0)
+                for name in ACTION_TIME_FIELDS:
+                    if name in latest.current_action:
+                        state.current_action[name] = copy.deepcopy(latest.current_action[name])
+                    else:
+                        state.current_action.pop(name, None)
             lease["save"] = True
         # Even cancellation while another writer owns the lock must rejoin before
         # session_state saves and releases it. Shield only this short commit phase.

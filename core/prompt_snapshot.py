@@ -86,6 +86,30 @@ def bounded_snapshot(data: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def request_sizes(system: str, prompt: str, contexts: Any, extra: Any = ()) -> dict[str, int]:
+def request_sizes(system: str, prompt: str, contexts: Any, extra: Any = ()) -> dict[str, int | bool]:
+    remaining, complete = MAX_NODES, True
+
+    def text_chars(value, depth=0):
+        nonlocal remaining, complete
+        if remaining <= 0 or depth > MAX_DEPTH:
+            complete = False
+            return 0
+        remaining -= 1
+        if isinstance(value, str):
+            return 0 if value.startswith("data:") else len(value)
+        if isinstance(value, (list, tuple)):
+            complete &= len(value) <= MAX_ITEMS
+            return sum(text_chars(part, depth + 1) for part in value[:MAX_ITEMS])
+        kind = value.get("type") if isinstance(value, dict) else getattr(value, "type", None)
+        if isinstance(kind, str) and kind in _MEDIA_TYPES:
+            return 0
+        return sum(text_chars(value.get(key) if isinstance(value, dict) else getattr(value, key, None), depth + 1)
+                   for key in ("text", "content")
+                   if (key in value if isinstance(value, dict) else hasattr(value, key)))
+
+    history_chars, extra_chars = text_chars(contexts or []), text_chars(extra or [])
     return {"system_chars": len(system or ""), "prompt_chars": len(prompt or ""),
-            "contexts": len(contexts or []), "extra_parts": len(extra or [])}
+            "contexts": len(contexts or []), "extra_parts": len(extra or []),
+            "history_text_chars": history_chars, "extra_text_chars": extra_chars,
+            "text_chars_observed": len(system or "") + len(prompt or "") + history_chars + extra_chars,
+            "text_scan_complete": complete}

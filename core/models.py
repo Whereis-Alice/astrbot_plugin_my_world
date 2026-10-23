@@ -887,6 +887,7 @@ class Limits(Permissive):
     life_matter_active_max: int = Field(default=6, ge=1, le=20)
     life_matter_daily_minutes: int = Field(default=90, ge=5, le=480)
     life_matter_interval_minutes: int = Field(default=60, ge=5, le=1440)
+    life_matter_notes_per_day: int = Field(default=2, ge=0, le=12)
     background_llm_timeout_seconds: float = Field(default=120, ge=1, le=1800)
     """后台决策、复盘、事件和睡眠整理的单次模型等待上限；原生聊天不受影响。"""
 

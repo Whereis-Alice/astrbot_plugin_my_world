@@ -154,6 +154,25 @@ class GenerationBrowserTests(unittest.TestCase):
             menu.locator("summary").first.click()
         trigger.click()
 
+    def test_sleep_free_settings_hide_sleep_controls_and_preserve_values(self):
+        self.page.locator('button[data-tab="settings"]').click()
+        self.page.get_by_role('button', name='生活与作息', exact=True).click()
+        mode = self.page.get_by_role('combobox', name='作息模式', exact=True)
+        minimum = self.page.locator('label').filter(
+            has=self.page.get_by_text('整觉最短时长（小时）', exact=True)).locator('input')
+        target = self.page.locator('label').filter(
+            has=self.page.get_by_text('恢复到多少精力', exact=True)).locator('input')
+        original = minimum.input_value()
+        mode.select_option('activity')
+        expect(minimum).not_to_be_visible()
+        expect(target).to_be_visible()
+        expect(self.page.get_by_text('当前编辑配置：', exact=False)).to_contain_text('无需睡眠')
+        mode.select_option('fixed')
+        expect(minimum).to_be_visible()
+        self.assertEqual(minimum.input_value(), original)
+        expect(target).not_to_be_visible()
+        self.assertEqual(self.errors, [])
+
     def test_rebuild_actions_preserves_map_and_waits_for_complete_preview(self):
         before = self.page.evaluate("async () => (await AstrBotPluginPage.apiGet('config')).world")
         self.open_generator("map", "map-rebuild-actions")

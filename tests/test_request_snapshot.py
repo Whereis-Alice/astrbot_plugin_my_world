@@ -13,6 +13,21 @@ class RequestSnapshotTests(unittest.TestCase):
     module = fixture.MODULE
     _plugin = fixture.DialogueInjectTests._plugin
 
+    def test_text_sizes_include_external_parts_without_retaining_or_counting_media(self):
+        from core.prompt_snapshot import request_sizes
+        history = [{"role":"user", "content":[{"type":"text", "text":"历史"},
+                    {"type":"image_url", "image_url":{"url":"data:image/png;base64," + "a" * 10000}}]}]
+        extra = [types.SimpleNamespace(type="text", text="场景记忆")]
+        original = json.dumps(history)
+        sizes = request_sizes("系统", "提问", history, extra)
+        self.assertEqual(sizes["history_text_chars"], 2)
+        self.assertEqual(sizes["extra_text_chars"], 4)
+        self.assertEqual(sizes["text_chars_observed"], 10)
+        self.assertTrue(sizes["text_scan_complete"])
+        self.assertEqual(json.dumps(history), original)
+        sizes = request_sizes("", "", history * 1000, extra)
+        self.assertFalse(sizes["text_scan_complete"])
+
     def test_native_snapshot_includes_runtime_external_content_and_real_prompt(self):
         session = "aiocqhttp:GroupMessage:snapshot-native"
         plugin, _ = self._plugin(session)

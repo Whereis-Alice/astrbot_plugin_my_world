@@ -5,7 +5,7 @@ import { createContactWorkbench } from "./contact-workbench.js";
 import { createSocialLearning } from "./social-learning.js";
 import { createRelationshipsPage } from "./relationships.js";
 import { createModelCallsPage } from "./model-calls.js?v=4.35.0";
-import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js?v=4.37.0";
+import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js?v=4.38.0";
 import { memorySearchFields } from "./memory-settings.js";
 import { relationshipPromptEditor } from "./relationship-prompt.js";
 import { mountLifeWorkspace } from "./life-workspace.js";
@@ -18525,9 +18525,11 @@ function renderSettings() {
   }
   for (const [key, label, fallback, min, max] of [
     ["life_matter_active_max", "活跃事项上限", 6, 1, 20], ["life_matter_daily_minutes", "每件事每天最多投入（分钟）", 90, 5, 480],
-    ["life_matter_interval_minutes", "再次推进前的间隔（分钟）", 60, 5, 1440]]) {
+    ["life_matter_interval_minutes", "再次推进前的间隔（分钟）", 60, 5, 1440],
+    ["life_matter_notes_per_day", "每天最多生成小结（0 关闭，失败也计入）", 2, 0, 12]]) {
     living._fields.appendChild(inputField(label, world.limits[key] ?? fallback, value => { world.limits[key] = num(value, fallback); }, {type: "number", min, max}));
   }
+  living._fields.appendChild(el("p", "muted", "完成小步后，在空闲时记下具体所得和未解点，保留跨天安排；小结不会自动发送到聊天。"));
   form.appendChild(living);
   const background = settingsSection("后台预算", "生活规划、事件和复盘共用的模型额度；原生聊天的模型与工具由 AstrBot 管理。", "0 表示不设每日调用或 Token 上限；计划决策次数为 0 则关闭该类模型规划。");
   for (const [key, label, fallback, min, max] of [
@@ -19000,12 +19002,14 @@ function renderSettings() {
 
   /* --- 作息与夜晚 --- */
   world.night = world.night || {};
+  world.sleep = world.sleep || {};
   const nightSection = settingsSection(
     "作息与夜晚",
-    "默认由她决定什么时候睡、睡多久；固定模式保留原来的睡眠日程。",
-    "自主模式根据清醒时长、睡眠记录、疲劳、人设与当天安排低频评估，不受固定夜晚起点限制。含睡整觉的自动日程会跳过，手动试跑仍可用。夜晚时段继续决定熬夜的代价。",
+    world.sleep.mode === "activity" ? "通过充电、冥想等活动恢复精力，适用于无需睡眠的角色。" :
+      "默认由她决定什么时候睡、睡多久；固定模式保留原来的睡眠日程。",
+    world.sleep.mode === "activity" ? "精力不足时选择可用的恢复动作，并先前往允许的地点；这个模式不累计困意，也不使用睡眠时长和熬夜惩罚。" :
+      "自主模式根据清醒时长、睡眠记录、疲劳、人设与当天安排低频评估，不受固定夜晚起点限制。含睡整觉的自动日程会跳过，手动试跑仍可用。夜晚时段继续决定熬夜的代价。",
   );
-  world.sleep = world.sleep || {};
   nightSection._fields.appendChild(selectField("作息模式", world.sleep.mode || "autonomous",
     [{key: "autonomous", label: "自主作息（推荐）"}, {key: "fixed", label: "固定作息"}, {key: "activity", label: "无需睡眠，通过活动恢复"}],
     value => {world.sleep.mode = value; renderSettings();},
@@ -19014,9 +19018,22 @@ function renderSettings() {
     [{key: "", label: world.sleep.mode === "activity" ? "自动选择可用的恢复动作" : "自动选择睡眠动作"},
       ...ui.config.world.actions.filter(a => a.enabled !== false && a.category === "continuous" && !a.idle)
         .map(a => ({key: a.id, label: a.name || a.id}))],
-    value => {world.sleep.recovery_action_id = value;},
+    value => {world.sleep.recovery_action_id = value; renderSettings();},
     {hint: "活动恢复模式请选择有正向精力效果的动作；系统会先前往允许的地点。睡眠模式可选择生成或自建的睡整觉动作。"});
   nightSection._fields.append(recoveryAction);
+  const selectedRecovery = world.actions.find(a => a.id === world.sleep.recovery_action_id);
+  const recoveryMode = world.sleep.mode === "activity" ? "无需睡眠，通过活动恢复" : world.sleep.mode === "fixed" ? "固定作息" : "自主作息";
+  const recoveryKind = a => a.recovery_kind && a.recovery_kind !== "auto" ? a.recovery_kind :
+    (["sleep", "nap"].includes(a.id) ? a.id : ({sleeping: "sleep", napping: "nap"}[a.during?.state] || ""));
+  let recoveryHint = `当前编辑配置：${recoveryMode}；${selectedRecovery ? `优先使用「${selectedRecovery.name || selectedRecovery.id}」` : world.sleep.recovery_action_id ? "所选恢复动作已不存在" : "自动选择符合条件的恢复动作"}。保存后按所选配置范围生效。`;
+  if (selectedRecovery) {
+    const unavailable = selectedRecovery.enabled === false || selectedRecovery.category !== "continuous" || selectedRecovery.idle ||
+      (world.sleep.mode === "activity" ? ["sleep", "nap", "none"].includes(recoveryKind(selectedRecovery)) : recoveryKind(selectedRecovery) !== "sleep");
+    if (unavailable) recoveryHint += " 所选动作与当前模式不兼容或已停用，请重新选择。";
+    if (selectedRecovery.scope === "node" && !(selectedRecovery.allowed_nodes || []).some(id => world.nodes.some(n => n.id === id)))
+      recoveryHint += " 所选动作没有可用地点，请先补齐地点绑定。";
+  }
+  nightSection._fields.append(el("p", "muted", recoveryHint));
   const recoveryThreshold = inputField("精力低于多少安排恢复", num(world.sleep.recovery_threshold, .25),
     value => {world.sleep.recovery_threshold = num(value, .25);},
     {type: "number", min: .05, max: .8, step: .05, hint: "只用于活动恢复模式，0.25 表示精力低于 25%。"});
@@ -19099,9 +19116,9 @@ function renderSettings() {
   );
   if (world.sleep.mode === "activity") {
     for (const field of nightSection._fields.children) {
-      if (!physiologicalFields.has(field)) field.hidden = true;
+      if (!physiologicalFields.has(field)) field.classList.add("hidden");
     }
-  } else { recoveryThreshold.hidden = true; recoveryTarget.hidden = true; }
+  } else { recoveryThreshold.classList.add("hidden"); recoveryTarget.classList.add("hidden"); }
   form.appendChild(nightSection);
 
   /* --- 她自己的账 --- */

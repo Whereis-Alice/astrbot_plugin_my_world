@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from ..planner import active_plan
-from ..recovery import is_sleep_action, restores_energy
+from ..recovery import is_sleep_action, restores_energy, recovery_gain
 
 
 class RecoveryMixin:
@@ -85,9 +85,10 @@ class RecoveryMixin:
             return
         current = state.current_action or {}
         definition = self.world.action_map().get(str(current.get("type") or ""))
-        if definition and restores_energy(definition, energy=state.energy):
+        remaining = max(0, int(current.get("duration_ticks", 0)) - int(current.get("elapsed_ticks", 0))) * self.tick_seconds
+        if definition and recovery_gain(definition, state.energy, self.world, remaining, state) > 0:
             return
-        if (active_plan(state) or {}).get("source") == "recovery":
+        if (active_plan(state) or {}).get("source") == "recovery" and (not current or current.get("type") == "walk_to"):
             return
         if self._now() < float(state.sleep_rhythm.get("retry_at") or 0):
             return

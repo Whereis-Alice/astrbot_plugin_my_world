@@ -449,11 +449,12 @@ export function renderLifeFocus(container, data, {el, open}) {
 export function openLifeSettings({world, el, openCustomDialog, markDirty, isCurrent = () => true}) {
   const limits = {...world.limits};
   const controls = [];
-  openCustomDialog({title: "生活的节奏与后台预算", confirmText: "应用设置", hint: "应用后使用顶栏「保存」写入配置。0 表示不设对应预算上限。", build: host => {
+  openCustomDialog({title: "生活的节奏与后台预算", confirmText: "应用设置", hint: "应用后使用顶栏「保存」写入配置。后台每日预算为 0 表示不限；小结次数为 0 表示关闭小结。", build: host => {
     const body = el("div", "life-budget-settings"); host.append(body);
     for (const [key, label, fallback, min, max] of [
       ["life_matter_active_max", "活跃事项上限", 6, 1, 20], ["life_matter_daily_minutes", "每件事每天最多投入（分钟）", 90, 5, 480],
       ["life_matter_interval_minutes", "再次推进前的间隔（分钟）", 60, 5, 1440], ["background_daily_calls", "每天后台调用预算", 1000, 0, 10000],
+      ["life_matter_notes_per_day", "每天最多生成小结（失败也计入）", 2, 0, 12],
       ["background_daily_tokens", "每天后台 token 预算", 0, 0, 100000000], ["background_concurrency", "同时运行的后台模型请求", 1, 1, 12]]) {
       const wrap = el("label", "field"), input = el("input"); input.type = "number"; input.min = min; input.max = max; input.value = limits[key] ?? fallback;
       wrap.append(el("span", "", label), input); body.append(wrap); controls.push(() => { if (!input.checkValidity()) throw new Error(`${label}超出范围`); limits[key] = Number(input.value); });

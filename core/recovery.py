@@ -19,6 +19,10 @@ def is_sleep_action(action) -> bool:
     return bool(sleep_action_kind(action))
 
 
+def recovery_mode_allows(action, world) -> bool:
+    return world.sleep.mode != "activity" or not is_sleep_action(action)
+
+
 def restores_energy(action, *, energy: float = 0.0) -> bool:
     from .state_dynamics import StateDynamics
     for effects in (action.on_complete.effects, action.on_complete.effects_per_minute):
@@ -68,10 +72,15 @@ def recovery_gain(action, energy: float, world, seconds: int, state=None) -> flo
     """Conservative net benefit; don't repeatedly choose an exhausting 'rest'."""
     from .state_dynamics import StateDynamics
     minutes = seconds / 60
-    value = max(0, energy - recovery_cost(action, world, state) * minutes)
+    value = energy - recovery_cost(action, world, state) * minutes
     per_minute = action.on_complete.effects_per_minute
     incremental = str(per_minute.get("energy", "")).strip().startswith(("+", "-"))
-    ordered = ((per_minute, minutes), (action.on_complete.effects, 1)) if incremental else (
+    # Combine elapsed consumption and incremental recovery before clamping.
+    # Clamping the entire cost first invents a positive yield near empty energy.
+    if incremental:
+        value = StateDynamics._apply_operator(str(per_minute["energy"]), value, minutes)
+    value = max(0, min(1, value))
+    ordered = ((action.on_complete.effects, 1),) if incremental else (
         (action.on_complete.effects, 1), (per_minute, 1))
     for effects, scale in ordered:
         if "energy" in effects:

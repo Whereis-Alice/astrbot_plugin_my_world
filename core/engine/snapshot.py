@@ -582,6 +582,8 @@ class SnapshotMixin:
             "后续钩子、工具循环及供应商适配仍可能修改请求；此记录不证明已调用或发送成功。\n"
             "只保存在内存中，不写入宿主历史；媒体载荷省略，超限截断时以下内容不完整。\n"
             f"记录前大小：{json.dumps(snapshot.get('request_sizes', {}), ensure_ascii=False)}\n"
+            "文本统计按系统提示、用户消息、宿主历史和临时附加内容分别计字符，不是 Token；"
+            "不含媒体载荷与工具参数。text_scan_complete=false 时仅为已扫描部分，不改写任何插件内容。\n"
             f"媒体与工具：{json.dumps(snapshot.get('media', {}), ensure_ascii=False)}\n"
             f"工具名：{json.dumps(snapshot.get('tool_names', []), ensure_ascii=False)}\n"
         ]
