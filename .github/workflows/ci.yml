@@ -18,7 +18,10 @@ jobs:
           python -m pip install -r requirements-dev.txt
       - name: Install browser
         timeout-minutes: 5
-        run: python -m playwright install --with-deps chromium
+        run: |
+          # Azure's font downloads repeatedly stalled on this runner image.
+          echo 'https://archive.ubuntu.com/ubuntu/' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          python -m playwright install --with-deps chromium
       - name: Lint
         run: ruff check .
       - name: Tests
