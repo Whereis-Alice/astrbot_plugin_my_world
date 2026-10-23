@@ -9711,6 +9711,19 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_cook_action_uses_llm_duration_and_shares(self):
         """做饭：时长由大模型定，做完把经历讲成人话。"""
 
+        import asyncio
+
+        async def settled_tick():
+            await self.engine.tick()
+            # A tick yields slow inference/delivery after 150 ms. Finish that
+            # work before advancing another simulated minute or checking speech.
+            jobs = list(getattr(self.engine, "_life_delivery_jobs", set()))
+            schedule = getattr(self.engine, "_schedule_delivery_job", None)
+            if schedule is not None:
+                jobs.append(schedule)
+            if jobs:
+                await asyncio.wait_for(asyncio.gather(*jobs), timeout=5)
+
         self.set_schedules(
             [
                 {
@@ -9729,9 +9742,9 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         )
         self.engine.reload_config()
         self.clock.set_struct(datetime(2026, 9, 10, 18, 0))
-        await self.engine.tick()  # 触发日程：开始走向厨房
+        await settled_tick()  # 触发日程：开始走向厨房
         for _ in range(3):
-            await self.engine.tick()  # 书房 -> 大厅 -> 吧台 -> 厨房
+            await settled_tick()  # 书房 -> 大厅 -> 吧台 -> 厨房
         state = await self.get_state()
         self.assertEqual(state.node_id, "kitchen")
         self.assertEqual((state.current_action or {}).get("type"), "cook")
@@ -9739,7 +9752,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((state.current_action or {}).get("duration_ticks"), 30)
         self.assertEqual(state.state, "cooking")
         for _ in range(30):
-            await self.engine.tick()
+            await settled_tick()
         self.assertIn("有人在吗？", self.messenger.flat_messages)
 
     async def test_overview_lists_every_session_position(self):

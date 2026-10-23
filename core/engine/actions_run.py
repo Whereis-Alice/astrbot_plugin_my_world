@@ -1213,12 +1213,18 @@ class ActionsRunMixin:
         )
         # Sending is gated by the caller; scheduled text generation must remain available.
         note = self.autonomous_prompt_note(state, respect_pause=False)
+        output_shape = '{"actions":[{"type":"say","messages":["..."]}]}'
+        if self.world.reasoning_enabled:
+            output_shape = (
+                '{"reasoning":{"inner":"此刻的心里话","who":"想到的对象，没有可留空",'
+                '"intent":"想开口或保持安静的原因"},"actions":[{"type":"say","messages":["..."]}]}'
+            )
         prompt = (
             instruction
             + ("\n\n" + note if note else "")
             + "\n\n"
             + self.prompts.AUTONOMOUS_MANNERS
-            + '\n只输出 JSON：{"actions":[{"type":"say","messages":["..."]}]}'
+            + "\n只输出 JSON：" + output_shape
         )
         reply = await self._ask_llm(state.session_id, system_prompt, prompt)
         self.record_context_selection(request)
@@ -1230,6 +1236,14 @@ class ActionsRunMixin:
             available_actions={"say"},
             max_actions=1,
             max_messages=say_limit,
+        )
+        await self._remember_inner_thought(
+            state,
+            result.reasoning.get("inner", ""),
+            source="准备说话",
+            target=result.reasoning.get("who", ""),
+            intent=result.reasoning.get("intent", ""),
+            dialogue_session=current,
         )
         for item in result.actions:
             if item.type == "say" and item.messages:

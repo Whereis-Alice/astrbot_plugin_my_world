@@ -878,8 +878,8 @@ class TickMixin:
         """把这一轮她心里冒出来的那一句留下来（编辑器「内心活动」那一栏）。
 
         以前只有 ``think`` 动作会写它，而模型很少主动选那个动作，
-        于是那一栏动不动停在一句很多轮之前的旧话上。现在两条路都会补一句：
-        回合复盘里的 reasoning.inner，和自主决策计划里的 inner。
+        于是那一栏动不动停在一句很多轮之前的旧话上。回合复盘、自主决策、
+        动作续说和台词生成都会保留模型实际给出的 inner。
         同一句连着出现就跳过，免得连着几条一模一样的。
         """
 
@@ -1036,6 +1036,17 @@ class TickMixin:
             max_actions=self.world.limits.max_actions_per_message,
             max_messages=say_limit,
             json_fields=self.extensions.json_fields(),
+        )
+        # This path bypasses the host's post-send reflection hook. Keep the
+        # model's own thought even when it chooses silence; do not invent one
+        # from its dialogue or claim that queued speech has already been sent.
+        await self._remember_inner_thought(
+            state,
+            result.reasoning.get("inner", ""),
+            source="动作结束后",
+            target=result.reasoning.get("who", ""),
+            intent=result.reasoning.get("intent", ""),
+            dialogue_session=home,
         )
         actions, blocked = self._followup_actions(
             result.actions, depth=depth, after_search=after_search
