@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 PLUGIN_NAME = "astrbot_plugin_my_world"
-PLUGIN_VERSION = "v4.37.4"
+PLUGIN_VERSION = "v4.38.0"
 """插件版本：与 metadata.yaml 保持一致，`@register` 也读它，别再各写一份。"""
 # 给主人格 / 别的插件用的日程工具（配置里可以关掉，见 `expose_schedule_tools`）
 SCHEDULE_TOOL_NAMES = ("mw_schedule_list", "mw_schedule_add", "mw_schedule_remove")
