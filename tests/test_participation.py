@@ -21,7 +21,7 @@ from core.engine.participation import ParticipationMixin
 GROUP = "aiocqhttp:GroupMessage:1001"
 OTHER = "aiocqhttp:GroupMessage:2002"
 PRIVATE = "aiocqhttp:PrivateMessage:alice"
-SAY = '{"actions":[{"type":"say","messages":["那个我也想试试。"]}]}'
+SAY = '{"inner":"山顶的风车让我有点期待。","actions":[{"type":"say","messages":["那个我也想试试。"]}]}'
 
 
 class ParticipationTests(unittest.IsolatedAsyncioTestCase):
@@ -91,7 +91,7 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("你喜欢风车", self.llm.calls[0]["system_prompt"])
 
     async def test_empty_actions_listens_without_retrying_the_same_burst(self):
-        self.llm.replies = ['{"actions":[]}']
+        self.llm.replies = ['{"inner":"先听听他们聊到哪里。","actions":[]}']
         await self.burst()
         await self.engine.maybe_participate(GROUP)
         self.clock.advance(120)
@@ -105,7 +105,7 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_natural_silence_can_be_enabled_without_changing_scene_boundaries(self):
         self.engine.world.decider.natural_silence = True
-        self.llm.replies = ['{"say":"","reply_to":""}']
+        self.llm.replies = ['{"inner":"这件事让我有点在意。","say":"","reply_to":""}']
         await self.burst()
         await self.engine.maybe_participate(GROUP)
         call = self.llm.calls[0]
@@ -126,7 +126,7 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIs(request.trace["natural_silence"], enabled)
                 self.assertEqual("没有人要求你必须回复" in prompt, enabled)
                 self.assertEqual("没话想说时可以继续听" in system, enabled)
-                self.llm.replies = ['{"say":"风吹起来一定很好看。","reply_to":""}']
+                self.llm.replies = ['{"inner":"这件事让我有点在意。","say":"风吹起来一定很好看。","reply_to":""}']
                 await self.engine.run_eval(GROUP, [{"user_text": "周末去看风车吧"}], variant="participation")
                 self.assertIn("自然沉默：" + ("开启" if enabled else "关闭"), self.llm.calls[-1]["system_prompt"])
         self.assertEqual(self.messenger.sent, [])
@@ -171,7 +171,7 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         await self.engine._participation_settlers[self.engine.state_key(GROUP)]
         self.assertIsNone(await self.engine.maybe_participate(GROUP))
         self.assertEqual(self.llm.calls, [])
-        self.assertEqual(self.engine.interject_gate(await self.engine.load_state(GROUP)), "")
+        self.assertEqual(self.engine.interject_gate(await self.engine.load_state(GROUP)), "message_driven_disabled")
 
     async def test_slow_generation_does_not_reply_to_an_expired_topic(self):
         await self.burst()
@@ -185,17 +185,17 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.engine.contact_status(GROUP)["left"], 6)
 
     async def test_expired_contact_token_starts_a_new_counted_contact(self):
-        first = TickOutcome(GROUP, messages=["我去找找那张照片"], contact_id="one-plan")
+        first = TickOutcome(GROUP, speech_kind="outreach", messages=["我去找找那张照片"], contact_id="one-plan")
         await self.engine._deliver(first)
         self.clock.advance(121)
-        second = TickOutcome(GROUP, messages=["找到了一张新照片"], contact_id="one-plan")
+        second = TickOutcome(GROUP, speech_kind="outreach", messages=["找到了一张新照片"], contact_id="one-plan")
         await self.engine._deliver(second)
         self.assertEqual(len(self.messenger.sent), 2)
         self.assertEqual(self.engine.contact_status(GROUP)["left"], 4)
 
     async def test_old_plan_cannot_bypass_the_daily_limit(self):
         self.engine.world.profile.proactive_daily_max = 1
-        first = TickOutcome(GROUP, messages=["先说一句"], contact_id="one-plan")
+        first = TickOutcome(GROUP, speech_kind="outreach", messages=["先说一句"], contact_id="one-plan")
         await self.engine._deliver(first)
         self.clock.advance(121)
         first.add_speech("晚些又来一句")
@@ -329,7 +329,7 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         await self.chat("群里的图纸", message_id="group-old")
         await self.chat("私密图纸", sid=PRIVATE, message_id="private-id")
         await self.chat("今天的天气", uid="bob", message_id="group-new")
-        self.llm.replies = ['{"say":"第一张图纸的左翼很有意思。","reply_to":"m1"}']
+        self.llm.replies = ['{"inner":"这件事让我有点在意。","say":"第一张图纸的左翼很有意思。","reply_to":"m1"}']
         captured = []
         async def send(target, lines):
             captured.append(reply_target(target))
@@ -370,7 +370,7 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.messenger.sent), 1)
 
     async def test_evaluation_uses_the_lightweight_protocol_without_building_a_life_plan(self):
-        self.llm.replies = ['{"say":"那个风车我也想看看。","reply_to":""}']
+        self.llm.replies = ['{"inner":"这件事让我有点在意。","say":"那个风车我也想看看。","reply_to":""}']
         with patch.object(self.engine.prompts, "build_autonomous_system_prompt",
                           side_effect=AssertionError("旁听不需要完整规划提示词")):
             result = await self.engine.run_eval(GROUP,
@@ -459,21 +459,21 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.engine.outreach_gate(GROUP))
 
     async def test_same_contact_can_flush_split_lines_but_new_module_cannot(self):
-        outcome = TickOutcome(GROUP, messages=["一会儿见"])
+        outcome = TickOutcome(GROUP, speech_kind="outreach", messages=["一会儿见"])
         await self.engine._deliver(outcome)
-        receipt, reason = self.engine._reserve_contact(outcome, GROUP, [""])
+        receipt, reason = self.engine._reserve_contact(outcome, GROUP, ["outreach"])
         self.assertFalse(reason)
         self.engine._finish_contact(receipt, False)
-        other = TickOutcome(GROUP)
-        receipt, reason = self.engine._reserve_contact(other, GROUP, [""])
+        other = TickOutcome(GROUP, speech_kind="outreach")
+        receipt, reason = self.engine._reserve_contact(other, GROUP, ["outreach"])
         self.assertIsNone(receipt)
         self.assertTrue(reason)
 
     async def test_pending_send_blocks_another_contact_without_spending_quota(self):
-        one, two = TickOutcome(GROUP), TickOutcome(GROUP)
-        receipt, reason = self.engine._reserve_contact(one, GROUP, [""])
+        one, two = TickOutcome(GROUP, speech_kind="outreach"), TickOutcome(GROUP, speech_kind="outreach")
+        receipt, reason = self.engine._reserve_contact(one, GROUP, ["outreach"])
         self.assertFalse(reason)
-        blocked, reason = self.engine._reserve_contact(two, GROUP, [""])
+        blocked, reason = self.engine._reserve_contact(two, GROUP, ["outreach"])
         self.assertIsNone(blocked)
         self.assertTrue(reason)
         self.engine._finish_contact(receipt, False)
@@ -485,7 +485,7 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
                                "main_session": GROUP}]
         self.engine.store.save_sessions(sessions)
         self.engine.reload_config()
-        one = TickOutcome(GROUP, messages=["Alice，风车的照片找到了"], contact_people={"alice"})
+        one = TickOutcome(GROUP, speech_kind="outreach", messages=["Alice，风车的照片找到了"], contact_people={"alice"})
         await self.engine._deliver(one)
         self.clock.advance(100)
         self.assertTrue(self.engine.contact_status(PRIVATE, "alice")["reason"])
@@ -604,7 +604,7 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         self.engine.store.save_world(raw)
         self.engine.reload_config()
         await self.chat("下雨，周末不去山上了")
-        self.llm.replies = ['{"actions":[]}']
+        self.llm.replies = ['{"inner":"先听听他们聊到哪里。","actions":[]}']
         async with self.engine.session_state(GROUP) as state:
             outcome = TickOutcome(GROUP)
             await self.engine._start_action(state, self.engine.node(state.node_id), outcome,
@@ -627,7 +627,7 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         await self.engine._flush_say(outcome)
         self.assertEqual(self.engine.say_sink.await_count, 1)
         self.assertEqual(outcome.live_messages, ["第一句"])
-        self.assertEqual(self.engine.contact_status(GROUP)["left"], 5)
+        self.assertEqual(self.engine.contact_status(GROUP)["left"], 6)
 
     async def test_final_delivery_drops_expired_scene_without_spending_quota(self):
         row = await self.chat()
@@ -662,18 +662,18 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.engine.contact_status(GROUP)["left"], 6)
 
     async def test_legacy_contact_continuation_is_counted_once_then_expires(self):
-        outcome = TickOutcome(GROUP, contact_id="legacy-plan")
+        outcome = TickOutcome(GROUP, speech_kind="outreach", contact_id="legacy-plan")
         token = "legacy-plan:" + GROUP
         self.db.raw.kv_set("proactive_contacts:" + self.engine.state_key(GROUP),
             {"day": self.engine._today_key(self.clock.now()), "contacts": {token: []}})
         self.engine.note_visible_speech(GROUP, token=token)
         self.clock.advance(91)
-        receipt, reason = self.engine._reserve_contact(outcome, GROUP, [""])
+        receipt, reason = self.engine._reserve_contact(outcome, GROUP, ["outreach"])
         self.assertFalse(reason)
         self.engine._finish_contact(receipt, True)
         self.assertEqual(self.engine.contact_status(GROUP)["left"], 5)
         self.clock.advance(121)
-        receipt, reason = self.engine._reserve_contact(outcome, GROUP, [""])
+        receipt, reason = self.engine._reserve_contact(outcome, GROUP, ["outreach"])
         self.assertFalse(reason)
         self.engine._finish_contact(receipt, True)
         self.assertEqual(self.engine.contact_status(GROUP)["left"], 4)
@@ -681,7 +681,7 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
     async def test_new_person_in_split_contact_cannot_bypass_their_existing_wait(self):
         self.engine.note_visible_speech(GROUP, token="old-contact", people=["alice"])
         self.clock.advance(100)
-        outcome = TickOutcome(GROUP, messages=["顺便分享给大家"])
+        outcome = TickOutcome(GROUP, speech_kind="outreach", messages=["顺便分享给大家"])
         await self.engine._deliver(outcome)
         token = self.engine._contact_token(outcome, GROUP)
         self.assertFalse(self.engine.contact_status(GROUP, "bob", token=token)["reason"])

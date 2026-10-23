@@ -207,6 +207,8 @@ class ContactsEngineTests(unittest.IsolatedAsyncioTestCase):
     async def test_quiet_plan_keeps_silence_after_the_cooldown_ends(self):
         from core.planner import create_plan
         from core.engine.models import TickOutcome
+        self.engine.world.profile.proactive_daily_max = 0
+        self.engine.world.life_share_daily_max = 0
 
         self.engine.decider.rule_plan = lambda state, **kwargs: create_plan(
             steps=[{"action": "read", "duration": 60}], world_time=state.world_time,
@@ -216,6 +218,8 @@ class ContactsEngineTests(unittest.IsolatedAsyncioTestCase):
         state = await self.get_state()
         self.assertEqual(state.current_action["speech_kind"], "quiet")
         self.clock.advance(120)
+        self.engine.world.profile.proactive_daily_max = 6
+        self.engine.world.life_share_daily_max = 6
         await self.set_state(cooldown_until=0)
         outcome = TickOutcome(session_id=SESSION)
         async with self.engine.session_state(SESSION) as live:

@@ -133,6 +133,10 @@ class TickOutcome:
     contact_tokens: dict[str, str] = field(default_factory=dict)
     contact_people: set[str] = field(default_factory=set)
     delivered_messages: dict[str, list[str]] = field(default_factory=dict)
+    speech_decisions: list[dict[str, Any]] = field(default_factory=list)
+    speech_ids: dict[str, list[str]] = field(default_factory=dict)
+    live_ids: list[str] = field(default_factory=list)
+    delivered_decisions: dict[str, list[str]] = field(default_factory=dict)
     """Messages accepted by the platform, used to distinguish thinking from speaking."""
 
     def add_speech(self, text: str, session_id: str = "", *, kind: str | None = None) -> None:
@@ -153,6 +157,17 @@ class TickOutcome:
         kinds = self.speech_kinds.setdefault(key, [])
         kinds.extend([self.speech_kind] * max(0, len(bucket) - len(kinds)))
         kinds.append(self.speech_kind if kind is None else kind)
+        ids = self.speech_ids.setdefault(key, [])
+        ids.extend([""] * max(0, len(bucket) - len(ids)))
+        decision_id = ""
+        for decision in reversed(self.speech_decisions):
+            if decision["target"] == (target or self.home()) and body in decision["drafts"]:
+                assigned = decision.setdefault("assigned", [])
+                if assigned.count(body) < decision["drafts"].count(body):
+                    assigned.append(body)
+                    decision_id = decision["id"]
+                    break
+        ids.append(decision_id)
         if not target or target == str(self.session_id):
             self.messages.append(body)
             return

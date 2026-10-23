@@ -86,7 +86,6 @@ from .core.message_parts import (
     _image_sources,
     _is_forwarded,
     _provider_supports_images,
-    _quoted_parts,
     _quoted_text,
     _sendable_images,
     _sticker_note,
@@ -123,6 +122,7 @@ from .adapters.commands import AstrBotCommands
 from .adapters.llm import AstrBotLLM
 from .adapters.embedding import AstrBotEmbedding
 from .adapters.reflection import ReflectionMixin
+from .adapters.quote_context import quoted_message_note
 from .core.model_call_runtime import observe_native_response
 from .core.model_calls import call_context, model_operation
 from .adapters.messenger import AstrBotMessenger
@@ -153,6 +153,7 @@ from .adapters.vision import (
     _strip_image_index as _strip_image_index,
 )
 from .core.message_parts import (
+    _quoted_parts as _quoted_parts,
     _strip_forward_placeholders as _strip_forward_placeholders,
 )
 
@@ -414,6 +415,8 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
         self.messenger = AstrBotMessenger(self)
         # 看图（多模态）：图片转述、天气工具返回的图都走它
         self.vision = AstrBotVision(self, self.vision_provider_id)
+        from .adapters.proactive_media import ProactiveMedia
+        self.proactive_media = ProactiveMedia(self)
         # 人设：默认沿用 AstrBot 给这个会话选的那份，也可以在「全局设置 → 她是谁」里
         # 换成插件自己的一份（跟着预设走，不再随会话组漂移）
         self.persona_port = AstrBotPersona(self)
@@ -442,6 +445,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
             extensions=self.extension_host,
         )
         self.engine.profile_weaver_service = self.profile_weaver_service
+        self.engine.media = self.proactive_media
         # 别的插件的数据目录在同一个 plugin_data 下（心迹画像的同步要用）
         self.engine.external_data_root = str(self.store.data_dir.parent)
         # 调试回显实时发：工具/指令调用在发生的那一下就走这条通道，
@@ -592,6 +596,9 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
                 pass
         await self._close_response_tasks()
         await self.engine.close_background()
+        media = getattr(self, "proactive_media", None)
+        if media is not None:
+            media.close()
         unregister_profile_tools(self)
         try:
             await self.db.close()
@@ -770,6 +777,9 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
         return float(snapshot.get("willingness") or 0.0)
 
     def _remember_event(self, event: AstrMessageEvent) -> None:
+        media = getattr(self, "proactive_media", None)
+        if media is not None:
+            media.remember(event, _incoming_identity(event, event.get_message_str() or ""))
         session_id = event.unified_msg_origin
         self._last_events[session_id] = event
         self._last_events.move_to_end(session_id)
@@ -828,38 +838,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
         return f"{text}\n［{'；'.join(notes)}］".strip()
 
     async def _quoted_note(self, event: AstrMessageEvent) -> str:
-        """他引用了哪一条：聊天记录里还看得到就给个开头，看不到才写原文。
-
-        引用内容本来完全没进正文（只喂给了看图那一步），于是「如何评价」这种
-        靠引用才有意义的话，她只能对着聊天记录里被掐成半句的旧消息猜。
-        """
-
-        who, text = _quoted_parts(event)
-        body = " ".join(str(text or "").split())
-        if not body:
-            return ""
-        someone = who or "有人"
-        context = self.engine.world.context
-        line_limit = max(40, int(getattr(context, "chat_line_chars", 500) or 500))
-        found = await self.engine.quote_in_records(event.unified_msg_origin, body)
-        # 记录里就有**而且那一行没被截断**时，只点出开头让她自己往上对照；
-        # 那条本身已经被截断（或者干脆不在留档里）时，还是把原文写全——
-        # 否则她对着"还有 N 字没显示"的那半句，根本不知道被引用的是哪一段。
-        if found and len(body) <= line_limit:
-            head = body[:40] + ("…" if len(body) > 40 else "")
-            return (
-                f"他引用的是上面聊天记录里的那条（{someone}：「{head}」）"
-                "——照上面那条看，这不是他这次打的字"
-            )
-        limit = max(0, int(getattr(context, "quote_chars", 1000) or 0))
-        if limit <= 0:
-            return f"他引用了一条更早的消息（{someone}），那条已经不在聊天记录里了"
-        shown = body if len(body) <= limit else clip_line(body, limit)
-        where = "上面聊天记录里那条太长，只显示了开头" if found else "聊天记录里已经没有了"
-        return (
-            f"他引用了一条更早的消息（{someone}），{where}，"
-            f"原文：「{shown}」——这是引用，不是他这次打的字"
-        )
+        return await quoted_message_note(self.engine, event)
 
     async def _forward_summary_text(self, event: AstrMessageEvent) -> str:
         """把这条转发读成摘要：关掉、没配多模态模型、读不出来都返回空串。"""

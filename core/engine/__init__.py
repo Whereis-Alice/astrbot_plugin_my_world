@@ -134,6 +134,7 @@ from .group_chat import GroupChatMixin
 from .send import SendMixin
 from .proactive_contact import ProactiveContactMixin
 from .participation import ParticipationMixin
+from .speech_decisions import SpeechDecisionsMixin
 from .snapshot import SnapshotMixin
 from .turn import TurnMixin
 from .social import SocialMixin
@@ -259,6 +260,7 @@ class MyWorldEngine(
     SendMixin,
     ProactiveContactMixin,
     ParticipationMixin,
+    SpeechDecisionsMixin,
     SnapshotMixin,
     TurnMixin,
     SocialMixin,

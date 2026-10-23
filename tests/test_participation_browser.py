@@ -18,6 +18,8 @@ class ParticipationBrowserTests(unittest.TestCase):
         expect(self.page.get_by_text('新消息到来后自然接话', exact=True)).to_be_visible()
         expect(self.page.get_by_text('参与程度', exact=True)).to_be_visible()
         expect(self.page.get_by_text('自然沉默', exact=True)).to_be_visible()
+        expect(self.page.get_by_text('每天最多分享生活', exact=True)).to_be_visible()
+        expect(self.page.get_by_text('生活分享前留白（秒）', exact=True)).to_be_visible()
         self.assertEqual(self.page.get_by_text('插话最短间隔（分钟）', exact=True).count(), 0)
         self.assertEqual(self.page.get_by_text('至少几条消息才插话', exact=True).count(), 0)
         self.page.locator('#theme-toggle').click()

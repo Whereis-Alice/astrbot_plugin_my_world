@@ -7,7 +7,7 @@ import random
 
 from ..config_scope import session_scoped
 from ..model_calls import model_operation
-from ..participation import build_participation_prompt, parse_participation
+from ..participation import build_participation_prompt
 from ..state import STATE_DROWSY
 from .life_inference import life_work
 from .models import TickOutcome
@@ -17,7 +17,7 @@ class ParticipationMixin:
     def _participation_window(self, source: str = "message") -> int:
         # Reading itself lasts 3–8 minutes. A three-minute live window would
         # expire every message she picked up before she could finish reading.
-        return 900 if source == "browse" else self.world.decider.live_window_seconds
+        return 900 if source in {"browse", "completion"} else self.world.decider.live_window_seconds
 
     def claim_chat_scene(self, outcome, target: str, rows: list[dict], *, window: int | None = None) -> None:
         outcome.chat_claims[target] = [str(row["seq"]) for row in rows]
@@ -133,7 +133,7 @@ class ParticipationMixin:
                            "接较早的话时选择引用，话题已结束或问题已解决时不追答。")
         result = build_participation_prompt(persona=persona, life=life, rows=rows,
             now=self._now(), live_window=self._participation_window(source), style=style,
-            background=background, natural_silence=source == "browse" or self.world.decider.natural_silence)
+            background=background, natural_silence=source in {"browse", "completion"} or self.world.decider.natural_silence)
         request.trace["scene"] = {"rows": len(rows), "characters": len(result[1])}
         request.trace["natural_silence"] = source == "browse" or self.world.decider.natural_silence
         return result
@@ -151,7 +151,7 @@ class ParticipationMixin:
             return True
         return random.random() < 1 - (1 - p) ** min(len(new), 8)
 
-    async def participation_text(self, state, target, *, source="message", browse_id="") -> tuple[str, str]:
+    async def participation_text(self, state, target, *, source="message", browse_id="", outcome=None) -> tuple[str, str]:
         if self.llm is None:
             return "", ""
         rows = [row for row in state.recent_chat if self._chat_origin(row, state) == target
@@ -170,8 +170,32 @@ class ParticipationMixin:
         system, prompt, targets = self.participation_prompt(state, target,
             persona, request=request, rows=rows, source=source, browse_id=browse_id)
         self.record_context_selection(request)
-        raw = await self._ask_llm(target, system, prompt)
-        return parse_participation(raw or "", targets)
+        raw = await self.ask_speech(state, target, system, prompt, rows=rows)
+        from ..speech_decision import parse_decision
+        from ..json_actions import extract_json_object
+        import json
+        feeling = next((item for item in reversed(state.thoughts)
+                        if browse_id and item.get("browse_id") == browse_id), None)
+        if feeling and isinstance(extract_json_object(raw or ""), dict):
+            payload = extract_json_object(raw)
+            payload["inner"] = feeling["content"][:240]
+            raw = json.dumps(payload, ensure_ascii=False)
+        decision = parse_decision(raw or "", targets)
+        if decision.error and raw and not feeling:
+            # One bounded repair under the same background budget. Never invent
+            # thoughts from the draft and never replay a failed provider call.
+            raw = await self.ask_speech(state, target, system, prompt + "\n上轮结果未通过校验："
+                + decision.error + "。请重新给出完整 JSON，补上真实想法，并保留本轮发言选择。", rows=rows)
+            decision = parse_decision(raw or "", targets)
+        if decision.error:
+            self.decision_trace(target, "participation", "failed", decision.error)
+            state.participation[target] = {**state.participation.get(target, {}),
+                                           "decision": "failed", "reason": decision.error}
+            await self._log_event(state, "speech_decision_failed", {"trigger": source, "reason": decision.error}, outcome=outcome, silent=True)
+            return "", ""
+        await self.remember_speech_decision(state, target, decision, trigger=source,
+                                          outcome=outcome, browse_id=browse_id)
+        return decision.say, decision.reply_to
 
     def queue_participation(self, session_id: str) -> None:
         """One settling job per life; new messages update its target without spawning workers."""
@@ -272,17 +296,20 @@ class ParticipationMixin:
             self.decision_trace(session_id, "participation", "considering", "近期群聊已聚合，判断是否有话想接",
                                 messages=len(rows))
             self.claim_chat_scene(outcome, session_id, rows, window=window)
-            message, reply_to = await (self.participation_text(state, session_id, source=source, browse_id=browse_id)
-                                       if source == "browse" else self.participation_text(state, session_id))
+            message, reply_to = await self.participation_text(state, session_id,
+                source=source, browse_id=browse_id, outcome=outcome)
             if (not message or self.participation_gate(state, session_id, source=source)
                     or self._now() >= outcome.chat_expires_at[session_id]):
                 reason = ("这轮继续旁听" if source == "browse" or self.world.decider.natural_silence
                           else "本轮没有可发送的接话，或现场与权限已变化")
-                self.decision_trace(session_id, "participation", "listening", reason)
-                return outcome
-            outcome.add_speech(message)
-            if reply_to:
-                outcome.reply_targets[session_id] = reply_to
+                if outcome.speech_decisions:
+                    self.decision_trace(session_id, "participation", "listening" if not message else "cancelled", reason)
+                    state.participation[session_id]["decision"] = "listening" if not message else "cancelled"
+                outcome.notes.append(reason)
+            else:
+                outcome.add_speech(message)
+                if reply_to:
+                    outcome.reply_targets[session_id] = reply_to
         await self._deliver(outcome)
         return outcome
 

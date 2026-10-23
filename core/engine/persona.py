@@ -369,10 +369,13 @@ class PersonaMixin:
                         elif raw.strip() and extract_json_object(raw) is None and not raw.lstrip().startswith(("{", "```")):
                             row["reply"] = [raw.strip()[:200]]
                     if variant == "participation":
-                        from ..participation import parse_participation
-                        say, quote = parse_participation(raw, quote_targets)
-                        row["reply"] = [say] if say else []
-                        row["reply_to"] = quote
+                        from ..speech_decision import parse_decision
+                        decision = parse_decision(raw, quote_targets)
+                        row["reply"] = [decision.say] if decision.say else []
+                        row["reply_to"] = decision.reply_to
+                        row["decision"] = {"inner": decision.inner, "intent": decision.intent}
+                        if decision.error:
+                            row["error"] = decision.error
                     if parsed.reasoning:
                         row["reasoning"] = parsed.reasoning
                     row["actions"] = [action.type for action in parsed.actions]

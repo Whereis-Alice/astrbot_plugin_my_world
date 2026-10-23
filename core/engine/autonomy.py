@@ -67,11 +67,10 @@ class AutonomyMixin:
             elif not self.proactive_chat_allowed(session_id):
                 outcome.notes.append("自主搭话已关闭，继续安静生活")
                 await self._quiet_rule_plan(state, node, outcome)
-            elif self.contact_status(session_id)["reason"]:
+            elif (self.contact_status(session_id)["reason"]
+                  and self.life_share_status(session_id)["reason"]
+                  and not self.live_chat(state, session_id)):
                 outcome.notes.append(self.contact_status(session_id)["reason"] + "，继续安静生活")
-                await self._quiet_rule_plan(state, node, outcome)
-            elif not self.engagement.can_speak(state):
-                outcome.notes.append("处于发言冷却期，继续安静生活")
                 await self._quiet_rule_plan(state, node, outcome)
             elif not self._within_hourly_limit(state):
                 outcome.notes.append("达到每小时自主行为上限，继续安静生活")
@@ -90,7 +89,7 @@ class AutonomyMixin:
                     await self._decide_normally(state, node, outcome, session_id)
             await self._echo_events_since(state, outcome, echo_marker)
         # 发消息这件事必须在**出锁之后**做：_deliver 自己还要拿这把会话锁
-        if outcome.messages or outcome.live_messages or outcome.debug_messages:
+        if outcome.messages or outcome.live_messages or outcome.debug_messages or outcome.speech_decisions:
             await self._deliver(outcome)
         return outcome
 
@@ -155,16 +154,6 @@ class AutonomyMixin:
         if self.decider.should_ask_llm(state):
             llm_plan = await self._ask_llm_for_plan(state, node, outcome)
             plan = llm_plan or plan
-        if plan is not None and self.plan_speaks(plan):
-            # 刚被搭话、她也回过了：这段时间别主动开口，免得跟被动回复挤在一起
-            if self.engagement.proactive_blocked(state):
-                outcome.notes.append("刚回过话，这轮不主动搭话")
-                await self._log_event(
-                    state,
-                    "engagement",
-                    {"reason": "刚回过话，跳过主动发言"},
-                )
-                plan = None
         if plan is not None:
             # 她想说给谁：她自己在计划里挑了一个会话就发那儿；没挑就按动机定——
             # 「因为别人在说话所以她想接一句」要落在**那个说话的会话**，
@@ -190,7 +179,7 @@ class AutonomyMixin:
 
         for step in plan.get("steps", []):
             if isinstance(step, dict) and not step.get("kind"):
-                step["kind"] = outcome.speech_kind or "life_share"
+                step["kind"] = outcome.speech_kind or ("outreach" if plan.get("contact_people") else "life_share")
         state.current_plan = plan
         # 留一份「最近一次生成的计划」：做完之后提示词里还要能提到它
         state.last_plan = {
@@ -264,8 +253,7 @@ class AutonomyMixin:
         if self.world.sleep.mode == "autonomous" and state.sleep_rhythm.get("decision") == "sleep":
             await self._run_rhythm_sleep(state, outcome)
             return
-        if (not self.proactive_chat_allowed(outcome.session_id) or not self.engagement.can_speak(state)
-                or self.contact_status(outcome.session_id)["reason"]):
+        if not self.proactive_chat_allowed(outcome.session_id):
             outcome.notes.append("抵达新地点，冷却期内继续安静生活")
             await self._quiet_rule_plan(state, node, outcome)
             return
@@ -278,9 +266,6 @@ class AutonomyMixin:
             group_chatting=self.group_is_chatting(state),
             interject_allowed=self.interject_allowed(state),
         )
-        if plan is not None and self.plan_speaks(plan) and self.engagement.proactive_blocked(state):
-            outcome.notes.append("刚回过话，到了新地方也不主动搭话")
-            plan = None
         # 她特地走过来通常是有目的的：把刚才的打算和她现在能做什么摆在最前面，
         # 免得这次调用还在"重新规划整段时间"。
         where = (node.name if node else "") or state.node_id

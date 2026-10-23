@@ -276,6 +276,7 @@ class ContextIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotEqual(self.state.last_style_cell, "previous-style")
 
     async def test_ambient_evaluation_uses_production_builder_and_does_not_mutate_world(self):
+        self.llm.replies = ['{"inner":"我先听他们把话说完。","say":"","reply_to":""}']
         self.remember("昨天和阿梨一起看过风车", related_users=["alice"])
         async with self.engine.session_state(GROUP) as state:
             state.recent_chat = [self.row("明天去看风车吗？")]
@@ -310,6 +311,7 @@ class ContextIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("蓝色邮戳", self.llm.calls[-1]["system_prompt"])
 
     async def test_semantic_failure_keeps_lexical_facts_without_an_extra_decision_model(self):
+        self.llm.replies = ['{"inner":"我先听他们把风车的事聊完。","say":"","reply_to":""}']
         self.remember("和阿梨一起看过风车", related_users=["alice"])
         self.state.recent_chat = [self.row("还记得风车吗？")]
         self.engine.memory.semantic.prepare = AsyncMock(return_value=None)

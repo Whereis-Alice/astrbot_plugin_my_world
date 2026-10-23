@@ -159,6 +159,17 @@ def _render_body(
             text += f"\n　　⚠ {warning}"
         return text
 
+    if kind in {"speech_decision", "speech_result", "speech_decision_failed"}:
+        trigger = {"message": "新消息", "browse": "翻消息完成", "plan": "计划接话",
+                   "completion": "动作完成", "expression": "生活表达"}.get(detail.get("trigger"), "主动表达")
+        if kind == "speech_decision_failed":
+            return trigger + "：未形成有效发言决定（" + str(detail.get("reason") or "模型结果不可用") + "）"
+        intent = {"join_chat": "接当前话题", "continue_chat": "继续之前的对话", "life_share": "分享生活",
+                  "outreach": "主动找人", "listen": "继续旁听"}.get(detail.get("intent"), "表达")
+        status = {"prepared": "待发送", "sent": "已发送", "partial": "部分发送", "not_sent": "未发出",
+                  "listening": "仅有想法"}.get(detail.get("status"), "")
+        return f"{trigger} → {intent} · {status}"
+
     if kind == "bot_message":
         text = f"主动发言：{_join(detail.get('messages'), sep='\n　　')}"
         images = int(detail.get("images") or 0)

@@ -859,11 +859,13 @@ class ActionsMixin:
         if self.say_sink is None or not outcome.messages:
             return
         kinds = outcome.speech_kinds.pop("", [])
+        ids = outcome.speech_ids.pop("", [])
         lines = outcome.take_messages()
         sent_count = 0
         for index, line in enumerate(lines):
             kind = kinds[index] if index < len(kinds) else outcome.speech_kind
-            if not self.speech_allowed(outcome.home(), kind):
+            if (not self.speech_allowed(outcome.home(), kind)
+                    or not self.contact_speech_allowed(outcome, outcome.home(), kind)):
                 sent_count += 1
                 continue
             receipt, blocked = self._reserve_contact(outcome, outcome.home(), [kind])
@@ -876,7 +878,7 @@ class ActionsMixin:
                 from ..speech_policy import guard_send, quote_send
                 with quote_send(outcome.home(), outcome.reply_targets.get(outcome.home(), "")), guard_send(
                     lambda sid, i: self.speech_allowed(sid, kind) and (
-                        kind not in {"interject", "participation"}
+                        kind not in {"interject", "participation", "browse_reply", "continuation"}
                         or (not self.native_turn_busy(sid)
                             and self._now() < outcome.chat_expires_at.get(sid, float("inf"))))):
                     sent = bool(await self.say_sink(outcome.home(), line))
@@ -894,11 +896,13 @@ class ActionsMixin:
             outcome.live_messages.append(line)
             outcome.live_kinds.append(kind)
             outcome.live_origins.append(outcome.home())
+            outcome.live_ids.append(ids[index] if index < len(ids) else "")
             sent_count += 1
         if sent_count >= len(lines):
             return
         outcome.messages = lines[sent_count:]
         outcome.speech_kinds[""] = kinds[sent_count:]
+        outcome.speech_ids[""] = ids[sent_count:]
         # 回显的位置是"排在第几句之后"：前面几句已经当场发出去了，位置整体往前挪
         outcome.debug_positions = [
             max(0, int(position) - sent_count) for position in outcome.debug_positions

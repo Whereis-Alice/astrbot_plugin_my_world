@@ -3607,19 +3607,14 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(metrics["low_minutes"], 0)
 
     async def test_interject_gate_reports_which_one_blocks(self):
-        """插话被拦住时要能说清是哪一道闸。"""
-
-        state = await self.get_state()
-        self.assertEqual(self.engine.interject_gate(state), "")
-        await self.set_state(last_interject_at=self.clock.now())
-        state = await self.get_state()
-        self.assertEqual(self.engine.interject_gate(state), "cooldown")
-        await self.set_state(last_interject_at=0.0, cooldown_until=999999)
-        state = await self.get_state()
-        self.assertEqual(self.engine.interject_gate(state), "engage")
-        await self.set_state(cooldown_until=0, autonomous_count_hour=99)
-        state = await self.get_state()
-        self.assertEqual(self.engine.interject_gate(state), "hourly")
+        """Live participation ignores outreach quotas but respects current availability."""
+        await self.set_state(last_interject_at=self.clock.now(), cooldown_until=999999, autonomous_count_hour=99)
+        self.assertEqual(self.engine.interject_gate(await self.get_state()), "")
+        await self.set_state(energy=.1)
+        self.assertEqual(self.engine.interject_gate(await self.get_state()), "resting")
+        await self.set_state(energy=.9)
+        self.engine.world.decider.message_driven = False
+        self.assertEqual(self.engine.interject_gate(await self.get_state()), "message_driven_disabled")
 
     async def test_blocked_interjections_are_counted(self):
         """她想插话却被拦住时按闸门计数：光看频率看不出是谁在限流。"""
@@ -3633,10 +3628,11 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
                     now=self.clock.now(),
                     keep=12,
                 )
+        self.engine.world.decider.message_driven = False
         await self.set_state(loneliness=0.95, last_interject_at=self.clock.now())
         await self.engine.maybe_decide(SESSION, force=True)
         state = await self.get_state()
-        self.assertEqual(state.interject_stats.get("cooldown"), 1)
+        self.assertEqual(state.interject_stats.get("message_driven_disabled"), 1)
         self.assertTrue(state.interject_stats)
 
     # ---------------- 生活事件与心情 ----------------
@@ -6344,6 +6340,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def test_chiming_in_lands_in_the_chat_that_is_actually_busy(self):
         """她在哪个会话名下做的决定不重要：想接的那句话在群里，就该说在群里。"""
+        self.llm.replies = ['{"inner":"周末能和他们聊聊，有点期待。","actions":[{"type":"say","messages":["有人在吗？"]}]}'] * 4
+
 
         private = "aiocqhttp:FriendMessage:2002"
         self.store.add_session(private, session_type="private", platform="aiocqhttp")
@@ -7917,8 +7915,9 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         vision = [item for item in events if item["event_type"] == "vision"]
         self.assertEqual(len(vision), 2)
 
-    async def test_proactive_speech_is_blocked_after_a_reply(self):
-        """刚被搭话、她回完话之后：群里正热闹也不接话（别和被动回复挤在一起）。"""
+    async def test_passive_reply_cooldown_does_not_block_live_interjection(self):
+        """已结束的原生回复不再用主动找人冷却挡住当前群聊接话。"""
+        self.llm.replies = ['{"inner":"他们在聊周末，我也想去。","actions":[{"type":"say","messages":["有人在吗？"]}]}'] * 4
 
         self.engine.engagement.set_world(self.engine.world)
         await self.engine.note_presence(
@@ -7938,11 +7937,13 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         outcome = await self.engine.maybe_decide(SESSION, force=True)
         state = await self.engine.load_state(SESSION, cold_start=False)
 
-        self.assertIsNone(state.current_plan, "冷却期内不该排「主动开口」的计划")
-        self.assertNotIn("有人在吗？", self.messenger.flat_messages)
+        self.assertIsNotNone(outcome)
+        self.assertIn("有人在吗？", self.messenger.flat_messages)
 
     async def test_proactive_speech_resumes_after_cooldown(self):
         """冷却过去之后，群里正热闹她又会接一句。"""
+        self.llm.replies = ['{"inner":"周末能和他们聊聊，有点期待。","actions":[{"type":"say","messages":["有人在吗？"]}]}'] * 4
+
 
         await self.engine.note_presence(
             self.ctx(text="你们觉得这个周末去哪玩好", user_id="1", user_name="小明")
@@ -9790,6 +9791,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def test_interjection_sends_a_message(self):
         """孤独感高 + 群里在聊 -> 她主动插一句（文案由大模型给）。"""
+        self.llm.replies = ['{"inner":"周末能和他们聊聊，有点期待。","actions":[{"type":"say","messages":["有人在吗？"]}]}'] * 4
+
 
         await self.engine.note_presence(self.ctx(text="你们觉得这个周末去哪玩好", user_id="1", user_name="小明"))
         await self.engine.note_presence(self.ctx(text="我觉得去爬山不错", user_id="2", user_name="小红"))
@@ -9799,8 +9802,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("有人在吗？", self.messenger.flat_messages)
         state = await self.get_state()
         self.assertGreater(state.last_interject_at, 0)
-        # 插话冷却内不会连着插
-        self.assertFalse(self.engine.interject_allowed(state))
+        # 刚才看过并回应的现场已消耗，不再重复参与
+        self.assertFalse(self.engine.group_is_chatting(state))
 
     async def test_quiet_group_does_not_interject(self):
         # 0.65 高于插话阈值(0.6)但低于"去大厅找人"阈值(0.7)，
@@ -10911,6 +10914,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.store.save_schedules(raw)
         self.engine.reload_config()
 
+        self.clock.advance(1800)
         self.clock.set_struct(datetime(2026, 9, 10, 12, 30))
         await self.engine.tick()
         self.assertIn("改完时间之后", self.messenger.flat_messages)
@@ -11073,6 +11077,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         )
         self.clock.set_struct(datetime(2026, 9, 15, 9, 0))
         await self.engine.run_schedule_now(SESSION, "manual")
+        self.clock.advance(10800)
         self.clock.set_struct(datetime(2026, 9, 15, 12, 0))
         await self.engine.tick()
         # 手动那次 1 条 + 到点正常触发 1 条

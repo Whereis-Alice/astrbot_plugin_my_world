@@ -9,6 +9,7 @@ from contextlib import contextmanager
 SILENT_FOLLOWUP = ContextVar("world_silent_followup", default=False)
 SEND_CHECK = ContextVar("world_send_check", default=None)
 REPLY_TARGET = ContextVar("world_reply_target", default=None)
+SPEECH_OUTCOME = ContextVar("world_speech_outcome", default=None)
 
 
 @contextmanager
@@ -64,7 +65,8 @@ def speech_origin(source):
                 steps = plan.get("steps") or []
                 index = int(plan.get("current_step") or 0)
                 step = steps[index] if 0 <= index < len(steps) else {}
-                kind = step.get("kind") or ("schedule" if plan.get("source") == "schedule" else "life_share")
+                kind = step.get("kind") or ("schedule" if plan.get("source") == "schedule"
+                    else "outreach" if outcome.contact_people else "life_share")
             elif source == "actions":
                 kind = "schedule" if bound.get("from_schedule") else previous
                 if not kind and not bound.get("autonomous", True):
@@ -77,9 +79,11 @@ def speech_origin(source):
                 outcome.contact_id = action.get("contact_id") or action.get("plan_id") or outcome.contact_id
                 outcome.contact_people.update(action.get("contact_people") or [])
             outcome.speech_kind = kind
+            token = SPEECH_OUTCOME.set(outcome)
             try:
                 return await function(self, *args, **kwargs)
             finally:
+                SPEECH_OUTCOME.reset(token)
                 outcome.speech_kind = previous
 
         return invoke

@@ -144,7 +144,7 @@ class ScopedConfigMixin:
             with self.config_scope(session_id):
                 return bool(self.proactive_chat_allowed(session_id)
                             and self.world.chat_browse.enabled and self.world.chat_browse.reply_enabled)
-        if kind == "participation":
+        if kind in {"participation", "continuation", "interject"}:
             with self.config_scope(session_id):
                 return bool(self.proactive_chat_allowed(session_id)
                             and self.world.decider.enabled and self.world.decider.message_driven)

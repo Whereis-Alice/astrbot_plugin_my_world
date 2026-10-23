@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import Counter
 from dataclasses import replace
 from typing import Any
@@ -14,6 +15,8 @@ from ..nickname import (
 from ..ports import CardResult
 from ..state import WorldState
 from .constants import MAX_GROUP_IMAGES
+from .speech_decisions import traced_delivery
+from .proactive_contact import CHAT_KINDS, LIFE_KINDS
 from .models import (
     MessageContext,
     TickOutcome,
@@ -320,24 +323,27 @@ class SendMixin:
             def allowed(i):
                 kind = kinds[i] if i < len(kinds) else outcome.speech_kind
                 target = key or outcome.home()
-                protected = kind in {"reply", "event", "schedule"}
+                protected = kind == "reply"
                 from ..participation import speakable
                 targets = [target, *outcome.broadcast_targets] if not key and include_broadcast else [target]
                 def contact_allowed(sid):
                     if contact_reserved:
                         # This delivery already holds its allowance. Rechecking the
                         # ledger would mistake our own reservation for another contact.
-                        return kind not in {"interject", "participation", "browse_reply"} or self._now() < outcome.chat_expires_at.get(sid, float("inf"))
+                        return kind not in CHAT_KINDS or self._now() < outcome.chat_expires_at.get(sid, 0)
                     return self.contact_speech_allowed(outcome, sid, kind)
                 return (images or kind == "reply" or speakable(lines[i])) and any(
                     self.speech_allowed(sid, kind) and (protected or (
-                        not block_contact and contact_allowed(sid)))
+                        (not block_contact or kind in CHAT_KINDS) and contact_allowed(sid)))
                     for sid in targets)
             mask = [allowed(i) for i in range(len(lines))]
             if key == "" and not images:
                 outcome.debug_positions = [sum(mask[:int(pos)]) for pos in outcome.debug_positions]
             removed += len(mask) - sum(mask)
             metadata[key] = [kinds[i] if i < len(kinds) else outcome.speech_kind for i, ok in enumerate(mask) if ok]
+            if not images:
+                ids = outcome.speech_ids.get(key, [])
+                outcome.speech_ids[key] = [ids[i] if i < len(ids) else "" for i, ok in enumerate(mask) if ok]
             return [line for line, ok in zip(lines, mask) if ok]
 
         outcome.messages = keep(outcome.messages, "", outcome.speech_kinds)
@@ -348,6 +354,7 @@ class SendMixin:
             outcome.notes.append(f"自主发言未获授权、已过期或联系额度不足，未发送 {removed} 条内容")
 
     @session_scoped
+    @traced_delivery
     async def _deliver(self, outcome: TickOutcome) -> None:
         if self.messenger is None:
             return
@@ -401,7 +408,7 @@ class SendMixin:
         is_event_speech = bool(kinds & {"event", "schedule"})
         # 排在后面的回话（当时有人跟她说话，她在忙，轮到她时才说）同样不算"主动开口"：
         # 被"主动发言冷却"吞掉的话，对方再也等不到那句回应，而计划上却记成"已经说过了"
-        is_reply_speech = bool(kinds & {"reply", "participation", "browse_reply"})
+        is_reply_speech = bool(kinds & (CHAT_KINDS | LIFE_KINDS | {"reply"}))
         # 已经即时发出去的几句挡不回来：这一轮不能再看冷却，否则群里会"说了一句就没下文"，
         # 那句即时发言也不进聊天记录（下一轮她就不知道自己刚说过）
         spoke_live = bool(outcome.live_messages)
@@ -416,7 +423,7 @@ class SendMixin:
         # 计划里有一句话并不意味着她已经说出口。先收平台回执，再写聊天与冷却。
         delivered: dict[str, list[str]] = {}
         delivered_images: dict[str, int] = {}
-        autonomous_kinds = {"reply", "schedule", "event", "quiet", "participation", "browse_reply"}
+        autonomous_kinds = CHAT_KINDS | LIFE_KINDS | {"reply", "quiet"}
         autonomous_delivered = False
         autonomous_targets: set[str] = set()
         interject_delivered = False
@@ -424,15 +431,19 @@ class SendMixin:
             target = outcome.live_origins[index] if index < len(outcome.live_origins) else outcome.home()
             kind = outcome.live_kinds[index] if index < len(outcome.live_kinds) else outcome.speech_kind
             delivered.setdefault(target, []).append(message)
+            identity = outcome.live_ids[index] if index < len(outcome.live_ids) else ""
+            if identity:
+                outcome.delivered_decisions.setdefault(identity, []).append(message)
             autonomous_delivered = autonomous_delivered or kind not in autonomous_kinds
             if kind not in autonomous_kinds:
                 autonomous_targets.add(target)
             interject_delivered = interject_delivered or kind == "interject"
         sent = False
         attempted = False
+        cancelled = False
         # Reserve only while sending, and count only platform-accepted content.
         async def send_target(target, view, echoes=()):
-            nonlocal sent, attempted, autonomous_delivered, interject_delivered
+            nonlocal sent, attempted, autonomous_delivered, interject_delivered, cancelled
             self._filter_proactive_speech(view)
             if not self.speech_allowed(target, view.speech_kind):
                 echoes = ()
@@ -451,7 +462,7 @@ class SendMixin:
             target_images = self._group_images(view)
             def autonomous(values):
                 return any(kind not in autonomous_kinds for kind in values)
-            contact_sent = False
+            sent_kinds = set()
             try:
                 if target_ordered:
                     attempted = True
@@ -464,13 +475,22 @@ class SendMixin:
                     ordered_kinds = [line_kinds[line].popleft() if line_kinds[line] else "reply"
                                      for line in target_ordered]
                     quote_index = next((i for i, kind in enumerate(ordered_kinds)
-                                        if kind in {"interject", "participation", "browse_reply"}), 0)
+                                        if kind in CHAT_KINDS), 0)
                     with quote_send(target, view.reply_targets.get(target, ""), quote_index), guard_send(
                         lambda sid, i: self.speech_allowed(sid, ordered_kinds[i]) and (
-                            ordered_kinds[i] not in {"interject", "participation", "browse_reply"}
+                            ordered_kinds[i] not in CHAT_KINDS
                             or (not self.native_turn_busy(sid)
                                 and self._now() < view.chat_expires_at.get(sid, float("inf"))))):
-                        accepted = bool(await self.messenger.send_text(target, target_ordered))
+                        try:
+                            accepted = bool(await self.messenger.send_text(target, target_ordered))
+                        except asyncio.CancelledError:
+                            # Preserve the adapter's partial receipt before
+                            # propagating shutdown; unsent drafts stay private.
+                            cancelled, accepted = True, False
+                            outcome.notes.append("发送中断，保留平台已接收的部分")
+                        except Exception as exc:
+                            accepted = False
+                            outcome.notes.append(f"发到 {target} 失败：{exc}")
                     sent = sent or accepted
                     receipt_reader = getattr(self.messenger, "take_sent_texts", None)
                     received = receipt_reader(target) if callable(receipt_reader) else (target_ordered if accepted else [])
@@ -481,11 +501,15 @@ class SendMixin:
                     for index, message in enumerate(view.messages):
                         if received_counts[message] > 0:
                             actual_messages.append(message)
+                            ids = view.speech_ids.get("", [])
+                            if index < len(ids) and any(d["id"] == ids[index] and d["target"] == target
+                                                       for d in outcome.speech_decisions):
+                                outcome.delivered_decisions.setdefault(ids[index], []).append(message)
                             received_counts[message] -= 1
                             kind = message_kinds[index] if index < len(message_kinds) else view.speech_kind
+                            sent_kinds.add(kind)
                             actual_auto_text = actual_auto_text or kind not in autonomous_kinds
                             interject_delivered = interject_delivered or kind == "interject"
-                    contact_sent = actual_auto_text
                     if actual_messages:
                         delivered.setdefault(target, []).extend(actual_messages)
                         autonomous_delivered = autonomous_delivered or actual_auto_text
@@ -496,40 +520,46 @@ class SendMixin:
                     if not accepted:
                         outcome.notes.append(f"发到 {target} 失败：平台没有接收")
                         self._log("warning", f"发到 {target} 失败：平台没有接收")
-                if target_images:
+                if target_images and not cancelled:
                     # A text send may have awaited the platform or typing delay.
                     self._filter_proactive_speech(view, contact_reserved=receipt is not None)
                     target_images = self._group_images(view)
-                if target_images:
+                if target_images and not cancelled:
                     auto_images = autonomous(view.image_kinds.get("", []) or [view.speech_kind])
                     accepted = await self._send_group_images(target, target_images)
                     sent = sent or accepted
                     if accepted:
+                        sent_kinds.update(view.image_kinds.get("", []) or [view.speech_kind])
                         delivered_images[target] = delivered_images.get(target, 0) + len(target_images)
                         autonomous_delivered = autonomous_delivered or auto_images
                         if auto_images:
                             autonomous_targets.add(target)
                         else:
                             self.note_visible_speech(target)
-                    contact_sent = contact_sent or bool(accepted and auto_images)
             except Exception as exc:
                 outcome.notes.append(f"发到 {target} 失败：{exc}")
                 self._log("warning", f"发到 {target} 失败：{exc}")
             finally:
-                self._finish_contact(receipt, contact_sent)
+                self._finish_contact(receipt, sent_kinds)
 
         for target in broadcast_targets:
+            if cancelled:
+                break
             view = replace(outcome, session_id=target, speech_home=target,
                 messages=list(outcome.messages), images=list(outcome.images),
                 routed={}, routed_images={}, notes=[], broadcast_targets=[],
                 speech_kinds={"": list(outcome.speech_kinds.get("", []))},
+                speech_ids={"": list(outcome.speech_ids.get("", []))},
                 image_kinds={"": list(outcome.image_kinds.get("", []))})
             await send_target(target, view, pending)
         for target in dict.fromkeys([*routed, *routed_images]):
+            if cancelled:
+                break
             view = replace(outcome, session_id=target, speech_home=target,
                 messages=list(routed.get(target, [])), images=list(routed_images.get(target, [])),
                 routed={}, routed_images={}, notes=[], broadcast_targets=[], debug_messages=[], debug_positions=[],
                 speech_kinds={"": list(outcome.speech_kinds.get(target, []))},
+                speech_ids={"": list(outcome.speech_ids.get(target, []))},
                 image_kinds={"": list(outcome.image_kinds.get(target, []))})
             await send_target(target, view)
         outcome.delivered_messages.update(delivered)
@@ -556,6 +586,9 @@ class SendMixin:
                     messages = delivered.get(target, [])
                     detail = {"messages": messages, "images": delivered_images.get(target, 0),
                               "style_cell": state.last_style_cell, "say_limit": int(state.last_say_limit or 0)}
+                    detail["decisions"] = [{k: row.get(k) for k in ("id", "trace_id", "trigger", "origin", "intent", "reply_to")}
+                        for row in outcome.speech_decisions if row["target"] == target
+                        and outcome.delivered_decisions.get(row["id"])]
                     if target != outcome.session_id:
                         detail.update(session=self.session_label(target, state), note="这一句说给了另一个会话")
                     await self._log_event(state, "bot_message", detail)
@@ -579,3 +612,5 @@ class SendMixin:
                 )
         elif not sent and ordered and attempted:
             outcome.notes.append("平台没有接收这批消息")
+        if cancelled:
+            raise asyncio.CancelledError()

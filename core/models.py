@@ -1532,8 +1532,9 @@ class DeciderConfig(Permissive):
     """真正的群聊现场窗口；与长期上下文保留时长分开。"""
     settle_seconds: float = Field(default=4, ge=1, le=10)
     evaluation_cooldown_seconds: int = Field(default=60, ge=15, le=600)
+    """旧配置兼容字段；现场判断已由消息聚合、采样与模型预算管理，不再读取此间隔。"""
     min_speech_gap_seconds: int = Field(default=90, ge=0, le=3600)
-    """所有主动入口与最近一次实际发言的最短间隔；直接回应不受限。"""
+    """主动找人与最近一次实际发言的最短间隔；生活分享另设留白，现场接话不受限。"""
     person_retry_hours: float = Field(default=6, ge=0, le=72)
     """某人未回应时，再次主动联系前至少等待多久，跨群聊和私聊共用。"""
 
@@ -2413,6 +2414,10 @@ class WorldConfig(Permissive):
     """主动分享自身生活的额外全局白名单；还需通过自主发言总白名单。"""
     proactive_chat_enabled: bool = True
     """允许自主搭话；默认全局继承，会话可单独关闭。"""
+    life_share_daily_max: int = Field(default=6, ge=0, le=1000)
+    """普通生活分享、日程和事件表达共用的每日成功分享额度，与找人额度独立。"""
+    life_share_min_interval_seconds: int = Field(default=90, ge=0, le=86400)
+    """同一实际会话刚发言后留白多久再分享生活；同次分享 120 秒内分段只计一次。"""
     schedule_speech_enabled: bool = True
     """日程到点时允不允许她说话。关掉 = 日程照跑，只是不发出去。"""
 

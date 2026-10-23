@@ -725,7 +725,7 @@ class TickMixin:
             want_followup = False
             outcome.notes.append(f"动作 {action_id} 的结果只用于事件判断，不作续说")
         followup_spoke = False
-        if want_followup and not self.speech_allowed(outcome.home(), outcome.speech_kind):
+        if want_followup and not self.can_express(state, outcome.home(), outcome.speech_kind):
             want_followup = False
             note = ("生活分享未获全局授权，动作照常完成，不作自主续说"
                     if outcome.speech_kind == "life_share"
@@ -874,6 +874,7 @@ class TickMixin:
         intent: str = "",
         dialogue_session: str = "",
         persona_key: str = "",
+        decision_id: str = "",
     ) -> None:
         """把这一轮她心里冒出来的那一句留下来（编辑器「内心活动」那一栏）。
 
@@ -898,7 +899,7 @@ class TickMixin:
             and item.get("persona_key") == persona_key
             and dialogue_origin(item) == dialogue_session
         ]
-        if clean in recent:
+        if clean in recent and not decision_id:
             return
         detail = {
             "env": self._node_name(state.node_id),
@@ -917,6 +918,8 @@ class TickMixin:
             dialogue_session=dialogue_session,
             persona_key=persona_key,
         )
+        if decision_id:
+            state.thoughts[-1]["decision_id"] = decision_id
 
     async def _remember_action(
         self, state: WorldState, definition: ActionDef, action: dict[str, Any]
@@ -991,7 +994,7 @@ class TickMixin:
             # 的额度取（目标会话的话被挤进"别处听到的"），她续说时聊的根本不是
             # 自己刚在说话的那个地方，已回应过的历史也补不齐。
             recent_chat=self.context_chat(state, request),
-            reasoning=bool(self.world.reasoning_enabled),
+            reasoning=bool(self.world.reasoning_enabled) or outcome.speech_kind != "reply",
             style_block=style_text,
             hidden_actions=blocked_actions,
             session_directory=self.session_directory(state),
@@ -1015,14 +1018,14 @@ class TickMixin:
         )
         if outcome.speech_kind != "reply":
             prompt += "\n" + self.prompts.AUTONOMOUS_MANNERS
+            prompt += self.expression_contract(state, home, outcome.speech_kind)
         # 用过了就清掉：这段时间发生的事只带出来一次
         state.event_digest = []
-        reply = await self._ask_llm(
-            state.session_id,
-            system_prompt,
-            prompt,
-            image_urls=list(image_urls or []) or None,
-        )
+        if outcome.speech_kind != "reply":
+            reply = await self.ask_speech(state, home, system_prompt, prompt,
+                rows=self.expression_chat(state, home), images=image_urls)
+        else:
+            reply = await self._ask_llm(home, system_prompt, prompt, image_urls=image_urls)
         self.record_context_selection(request)
         outcome.llm_calls += 1
         if reply is None:
@@ -1040,14 +1043,20 @@ class TickMixin:
         # This path bypasses the host's post-send reflection hook. Keep the
         # model's own thought even when it chooses silence; do not invent one
         # from its dialogue or claim that queued speech has already been sent.
-        await self._remember_inner_thought(
-            state,
-            result.reasoning.get("inner", ""),
-            source="动作结束后",
-            target=result.reasoning.get("who", ""),
-            intent=result.reasoning.get("intent", ""),
-            dialogue_session=home,
-        )
+        expression_kind = None
+        if outcome.speech_kind != "reply":
+            expression_kind = await self.note_expression(state, outcome, reply,
+                [text for item in result.actions if item.type == "say" for text in (item.messages or [])],
+                target=home, trigger="completion")
+        if expression_kind is None:
+            await self._remember_inner_thought(
+                state,
+                result.reasoning.get("inner", ""),
+                source="动作结束后",
+                target=result.reasoning.get("who", ""),
+                intent=result.reasoning.get("intent", ""),
+                dialogue_session=home,
+            )
         actions, blocked = self._followup_actions(
             result.actions, depth=depth, after_search=after_search
         )
@@ -1070,9 +1079,13 @@ class TickMixin:
                 outcome=outcome,
             )
         before = len(outcome.said_messages())
-        await self._execute_actions(
-            state, node, outcome, actions, depth=depth, autonomous=True
-        )
+        previous = outcome.speech_kind
+        try:
+            if expression_kind:
+                outcome.speech_kind = expression_kind
+            await self._execute_actions(state, node, outcome, actions, depth=depth, autonomous=True)
+        finally:
+            outcome.speech_kind = previous
         return len(outcome.said_messages()) > before
 
     def _note_action_state_slot(

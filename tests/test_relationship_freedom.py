@@ -59,7 +59,7 @@ class SuccessfulContactTests(unittest.IsolatedAsyncioTestCase):
         self.engine.world.profile.proactive_person_daily_max = person
         await self.set_state(state="idle", current_action=None, current_plan=None)
 
-    def outcome(self, token="contact", kind="", text="过来看看你"):
+    def outcome(self, token="contact", kind="outreach", text="过来看看你"):
         result = TickOutcome(S, contact_id=token, contact_people={"42"}, speech_kind=kind)
         result.add_speech(text)
         return result
@@ -84,6 +84,7 @@ class SuccessfulContactTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_replies_events_schedules_and_debug_only_output_do_not_consume(self):
         await self.prepare(total=0, person=0)
+        self.engine.world.life_share_min_interval_seconds = 0
         for kind in ("reply", "event", "schedule"):
             await self.engine._deliver(self.outcome(kind=kind))
         debug = TickOutcome(S)
@@ -156,7 +157,7 @@ class SuccessfulContactTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.engine.contact_status(other, "42")["person_left"], 1)
         self.assertTrue(self.engine.contact_status(other, "42")["reason"])
         await self.engine.note_presence(MessageContext(other, user_id="42", text="看到了", is_mentioned=True))
-        second = TickOutcome(other, contact_id="second", contact_people={"42"})
+        second = TickOutcome(other, contact_id="second", contact_people={"42"}, speech_kind="outreach")
         second.add_speech("在这边接着聊")
         await self.engine._deliver(second)
         self.assertEqual(self.engine.contact_status(S)["left"], 0)
@@ -168,7 +169,7 @@ class SuccessfulContactTests(unittest.IsolatedAsyncioTestCase):
         self.engine.reload_config()
         await self.prepare(total=6, person=1)
         uid = private.rsplit(":", 1)[-1]
-        outcome = TickOutcome(S)
+        outcome = TickOutcome(S, speech_kind="outreach")
         outcome.add_speech("想起一件事", private)
         await self.engine._deliver(outcome)
         self.assertEqual(self.engine.contact_status(private, uid)["person_left"], 0)

@@ -471,6 +471,7 @@ class SnapshotMixin:
                     "target": str(item.get("target") or ""),
                     "quote": str(item.get("quote") or ""),
                     "reply": str(item.get("reply") or ""),
+                    "decision_id": str(item.get("decision_id") or ""),
                     "detail": dict(item.get("detail") or {}),
                     "browse_session": str(item.get("browse_session") or ""),
                     "browse_label": self.session_label(item["browse_session"], state) if item.get("browse_session") else "",

@@ -607,25 +607,15 @@ class GroupChatMixin:
     def interject_gate(self, state: WorldState) -> str:
         """插话被哪道闸拦住（空字符串 = 放行）。
 
-        分工：`cooldown` 是两次插话的间隔，`engage` 是无人回应保护，
-        `hourly` 是每小时自主额度，`reply_cd` 是"刚回过话就别主动开口"。
-        把它们分开报出来，才能知道到底是谁在限流。
+        旧计划里的插话与新消息参与共用作息、忙碌和原生回复检查；
+        不再使用主动找人的冷却和联系额度。
         """
 
         if not self.proactive_chat_allowed(state.session_id):
             return "paused"
         if not self.world.decider.enabled:
             return "disabled"
-        cooldown = max(0, int(self.world.decider.interject_cooldown_minutes)) * 60
-        if self._now() - float(state.last_interject_at or 0.0) < cooldown:
-            return "cooldown"
-        if not self.engagement.can_speak(state):
-            return "engage"
-        if not self._within_hourly_limit(state):
-            return "hourly"
-        if self.engagement.proactive_blocked(state):
-            return "reply_cd"
-        return ""
+        return self.participation_gate(state, state.session_id)
 
     def _count_interject_gate(self, state: WorldState, gate: str) -> None:
         """记一笔「她这轮想插话，结果如何」——按小时归零。"""

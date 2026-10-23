@@ -182,6 +182,30 @@ class RecordSessionsBrowserTests(unittest.TestCase):
         self.release()
         expect(self.page.locator('#thoughts-list')).to_contain_text('乙的心里话')
 
+    def test_speech_decision_details_show_intent_and_actual_partial_delivery(self):
+        self.page.evaluate("""() => {
+          const original=recordReply;
+          window.recordReply=(key,params)=>{
+            const data=original(key,params);
+            const speech={id:'synthetic-decision',trace_id:'synthetic-model',trigger:'completion',
+              intent:'continue_chat',status:'partial',reply_to:'m42',target:params.session};
+            if(key==='thoughts')data.thoughts[0].detail={env:'书房',speech};
+            if(key==='logs')data.events[0].detail={decisions:[speech]};
+            return data;
+          };
+        }""")
+        self.open_page('thoughts')
+        expect(self.page.locator('#thoughts-list')).to_contain_text('继续之前的对话')
+        expect(self.page.locator('#thoughts-list')).to_contain_text('部分发送')
+        self.host.set_viewport_size({'width': 390, 'height': 900})
+        self.page.locator('#thoughts-list').scroll_into_view_if_needed()
+        self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'))
+        self.host.screenshot(path=str(self.shots / 'speech-decision-mobile.png'), animations='disabled')
+        self.open_page('logs')
+        self.page.locator('#log-list .log-item').first.click()
+        expect(self.page.locator('#log-detail')).to_contain_text('继续之前的对话')
+        expect(self.page.locator('#log-detail')).to_contain_text('部分发送')
+
     def test_record_and_global_pages_hide_only_the_unused_top_session(self):
         for width in (1440, 390):
             self.host.set_viewport_size({'width': width, 'height': 1000})

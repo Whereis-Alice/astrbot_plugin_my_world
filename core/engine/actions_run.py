@@ -351,7 +351,10 @@ class ActionsRunMixin:
         if definition.id in {"say", "share"} and not action.send_to:
             speech_targets.extend(outcome.broadcast_targets)
         speech_kind = "interject" if action.interject and definition.id in {"say", "share"} else outcome.speech_kind
-        can_speak = any(self.speech_allowed(sid, speech_kind) for sid in speech_targets)
+        if definition.id == "poke" and speech_kind in {"", "life_share"}:
+            speech_kind = "outreach"
+        can_speak = any((self.can_express(state, sid, speech_kind) if definition.id in {"say", "share"}
+                         else self.speech_allowed(sid, speech_kind)) for sid in speech_targets)
         if (definition.id in {"say", "share", "poke"} or definition.llm_level in {"tool", "command"}) and not can_speak:
             reason = "生活分享未获全局授权" if outcome.speech_kind in {"", "life_share"} else "自主发言未获授权"
             outcome.notes.append(f"{reason}，跳过发言动作 {definition.id}")
@@ -650,7 +653,7 @@ class ActionsRunMixin:
                 messages = []
             else:
                 self.claim_chat_scene(outcome, outcome.home(), rows)
-                message, reply_to = await self.participation_text(state, outcome.home())
+                message, reply_to = await self.participation_text(state, outcome.home(), source="plan", outcome=outcome)
                 messages = [message] if message else []
                 if reply_to:
                     outcome.reply_targets[outcome.home()] = reply_to
@@ -685,12 +688,12 @@ class ActionsRunMixin:
         if definition.id == "share":
             if messages and not dropped:
                 for text in messages:
-                    outcome.add_speech(text, speaker, kind="interject" if action.interject else None)
+                    outcome.add_speech(text, speaker, kind="interject" if action.interject else getattr(messages, "speech_kind", None))
                 self._count_share(state)
         elif self._action_speaks(definition):
             if not dropped:
                 for text in messages:
-                    outcome.add_speech(text, speaker, kind="interject" if action.interject else None)
+                    outcome.add_speech(text, speaker, kind="interject" if action.interject else getattr(messages, "speech_kind", None))
         elif definition.id == "think" and action.content:
             await self._remember_inner_thought(
                 state,
@@ -902,7 +905,8 @@ class ActionsRunMixin:
         """戳一戳：调平台接口戳对方一下；平台不支持就退化成一句动作文案。"""
 
         target = str(action.target or "").strip()
-        if not self.speech_allowed(outcome.home(), outcome.speech_kind):
+        kind = "outreach" if outcome.speech_kind in {"", "life_share"} else outcome.speech_kind
+        if not self.speech_allowed(outcome.home(), kind):
             outcome.notes.append("自主发言未获授权，跳过戳一戳")
             return
         if not target:
@@ -920,14 +924,14 @@ class ActionsRunMixin:
             reason = "当前发送通道不支持戳一戳"
         else:
             outcome.contact_people.add(target)
-            receipt, blocked = self._reserve_contact(outcome, outcome.home(), [outcome.speech_kind])
+            receipt, blocked = self._reserve_contact(outcome, outcome.home(), [kind])
             if blocked:
                 outcome.notes.append(blocked)
                 return
             try:
                 # 在"她现在说话的地方"戳：私聊里说话就戳私聊，别戳到群里去
                 from ..speech_policy import guard_send
-                with guard_send(lambda sid, i: self.speech_allowed(sid, outcome.speech_kind)):
+                with guard_send(lambda sid, i: self.speech_allowed(sid, kind)):
                     result = await poker(outcome.home(), target)
                 ok = bool(getattr(result, "ok", result))
                 reason = str(getattr(result, "reason", "") or "")
@@ -1179,6 +1183,9 @@ class ActionsRunMixin:
         if not self._llm_text_allowed(state):
             self._log("debug", "自主发言的 LLM 预算用完了，这一轮保持安静")
             return []
+        from ..speech_policy import SPEECH_OUTCOME
+        speech_outcome = SPEECH_OUTCOME.get()
+        active_expression = speech_outcome is not None and speech_outcome.speech_kind not in {"reply", "quiet"}
         persona_text = await self._persona_text(state.session_id)
         _cell, say_limit, style_text = self.style_for(state, state.session_id)
         current = str(session_id or state.session_id or "")
@@ -1195,7 +1202,7 @@ class ActionsRunMixin:
             # 这一轮是要说给 current（定向会话）听的：窗口也必须按它取，
             # 否则目标会话的话可能只落进"别处听到的"，本会话的上下文反而是代表会话的。
             recent_chat=self.context_chat(state, request),
-            reasoning=bool(self.world.reasoning_enabled),
+            reasoning=bool(self.world.reasoning_enabled) or active_expression,
             style_block=style_text,
             profile_text=self.context_profiles(state, request),
             context_request=request,
@@ -1214,7 +1221,7 @@ class ActionsRunMixin:
         # Sending is gated by the caller; scheduled text generation must remain available.
         note = self.autonomous_prompt_note(state, respect_pause=False)
         output_shape = '{"actions":[{"type":"say","messages":["..."]}]}'
-        if self.world.reasoning_enabled:
+        if self.world.reasoning_enabled or active_expression:
             output_shape = (
                 '{"reasoning":{"inner":"此刻的心里话","who":"想到的对象，没有可留空",'
                 '"intent":"想开口或保持安静的原因"},"actions":[{"type":"say","messages":["..."]}]}'
@@ -1226,7 +1233,11 @@ class ActionsRunMixin:
             + self.prompts.AUTONOMOUS_MANNERS
             + "\n只输出 JSON：" + output_shape
         )
-        reply = await self._ask_llm(state.session_id, system_prompt, prompt)
+        if active_expression:
+            prompt += self.expression_contract(state, current, speech_outcome.speech_kind)
+            reply = await self.ask_speech(state, current, system_prompt, prompt, rows=self.expression_chat(state, current))
+        else:
+            reply = await self._ask_llm(current, system_prompt, prompt)
         self.record_context_selection(request)
         self._count_llm_text(state)
         if not reply:
@@ -1237,6 +1248,12 @@ class ActionsRunMixin:
             max_actions=1,
             max_messages=say_limit,
         )
+        if active_expression:
+            lines = [text for item in result.actions if item.type == "say" for text in (item.messages or [])]
+            kind = await self.note_expression(state, speech_outcome, reply, lines, target=current, trigger="expression")
+            if kind is not None:
+                from .speech_decisions import SpeechLines
+                return SpeechLines([] if kind == "quiet" else lines, kind=kind)
         await self._remember_inner_thought(
             state,
             result.reasoning.get("inner", ""),

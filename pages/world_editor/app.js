@@ -489,6 +489,9 @@ const LOG_TYPES = {
   action_start: { icon: "▶️", label: "开始持续动作" },
   action_done: { icon: "✅", label: "动作完成" },
   bot_message: { icon: "📣", label: "主动发言" },
+  speech_decision: { icon: "💭", label: "想法与发言决定" },
+  speech_result: { icon: "💬", label: "发言结果" },
+  speech_decision_failed: { icon: "⚠️", label: "未形成有效发言决定" },
   user_message: { icon: "👤", label: "用户消息" },
   tool: { icon: "🔧", label: "工具调用" },
   move: { icon: "🚶", label: "移动" },
@@ -14642,6 +14645,8 @@ function showLogDetail(item, event) {
 
   // 2) 结构化字段：把 detail 里能读的都摊开
   const detail = event.detail && typeof event.detail === "object" ? event.detail : {};
+  const decisions = detail.decisions || (detail.intent && detail.trigger ? [detail] : []);
+  for (const decision of decisions) box.appendChild(speechDecisionDetail(decision));
   const pairs = Object.entries(detail).filter(
     ([, value]) => value !== null && value !== undefined && value !== "" && String(value) !== "{}",
   );
@@ -14670,6 +14675,28 @@ function showLogDetail(item, event) {
 /* ================================================================== */
 /* 通讯录：她认识的人（画像 / 关系 / 好感度）                            */
 /* ================================================================== */
+
+function speechDecisionDetail(speech) {
+  const triggers = { message: "新消息", browse: "翻消息完成", plan: "计划接话", completion: "动作完成", expression: "生活表达" };
+  const intents = { join_chat: "接当前话题", continue_chat: "继续之前的对话", life_share: "分享生活", outreach: "主动找人", listen: "继续旁听" };
+  const statuses = { prepared: "待发送", sent: "已发送", partial: "部分发送", not_sent: "未发出", listening: "仅有想法" };
+  const box = el("div", "thought-context");
+  const badges = el("div", "thought-head");
+  const origins = { schedule: "日程", event: "事件", outreach: "主动找人" };
+  if (origins[speech.origin]) badges.append(el("span", "thought-chip", origins[speech.origin]));
+  badges.append(el("span", "thought-chip", triggers[speech.trigger] || speech.trigger || "主动表达"),
+    el("span", "thought-chip", intents[speech.intent] || speech.intent || "未记录意图"));
+  if (speech.status) badges.append(el("span", "thought-chip", statuses[speech.status] || speech.status));
+  box.append(badges);
+  if (speech.reply_to) box.append(el("span", "thought-quote", `引用消息：${speech.reply_to}`));
+  if (speech.note) box.append(el("span", "thought-quote", speech.note));
+  const more = el("details");
+  more.append(el("summary", "muted", "关联记录"), el("pre", "pre", JSON.stringify({
+    decision: speech.id, model_call: speech.trace_id, target: speech.target, browse: speech.browse_id,
+  }, null, 2)));
+  box.append(more);
+  return box;
+}
 
 function contactBadge(text, className = "pill") {
   return el("span", className, text);
@@ -16153,6 +16180,7 @@ function renderThoughtsPage() {
     );
     if (!hasSnapshot) head.appendChild(el("span", "thought-legacy", "未附状态快照"));
     item.appendChild(head);
+    if (detail.speech) item.appendChild(speechDecisionDetail(detail.speech));
 
     // 每条都按同一份详细快照展示；旧记录确实没有的字段会明确写出来。
     const stateText = stateLabelOf(detail.state || "", {}) || "未记录";
@@ -17052,7 +17080,14 @@ function consolidateProactiveSettings(form, main) {
       const field = [...main._fields.children].find(f => fieldLabelOf(f) === label);
       if (field) fields.append(field);
     }
-    if (title === "现场接话") fields.append(el("p", "hint-line full", "自然沉默默认关闭；新消息与浏览后接话共用。参与程度只控制留意频率。"));
+    if (title === "现场接话") fields.append(el("p", "hint-line full", "自然沉默控制新消息和计划接话；浏览后始终可以自主决定是否开口。直接找她聊天走正常回复。"));
+    if (title === "生活的表达") {
+      for (const [key, label, fallback, max, hint] of [
+        ["life_share_daily_max", "每天最多分享生活", 6, 1000, "普通分享、日程与事件共用生活额度，独立于主动找人；同一生活组共用，发送成功才计数。0 为暂停。"],
+        ["life_share_min_interval_seconds", "生活分享前留白（秒）", 90, 86400, "刚说过话时，生活分享等一会儿；同次分享的连续消息合计一次，最多延续两分钟。"],
+      ]) fields.append(inputField(label, num(ui.config.world[key], fallback), value => (ui.config.world[key] = num(value, fallback)),
+        { type: "number", min: 0, max, hint }));
+    }
     group.append(fields); main._fields.append(group);
   }
   main.after(advanced);
@@ -17085,7 +17120,7 @@ function renderSettings() {
     value => {world.proactive_chat_enabled = value;},
     {hint: "当前配置范围内允许接话、找人和问候；全局白名单与顶栏总开关始终优先。"}));
   for (const [key, label, fallback, hint] of [
-    ["proactive_daily_max", "每天最多主动找人", 6, "仅限制自主发起的联系与分享，现场接话不扣次数。每个生活组共用；填 0 暂停找人。"],
+    ["proactive_daily_max", "每天最多主动找人", 6, "仅限制自主发起的联系；生活分享使用独立额度，现场接话不扣次数。每个生活组共用；填 0 暂停找人。"],
     ["proactive_person_daily_max", "每天最多主动找同一个人", 2, "按实际会话分别计数，所有档位共用。填 0 不主动联系具体的人。"],
   ]) {
     const field = inputField(label, world.profile?.[key] ?? fallback,
@@ -18205,7 +18240,7 @@ function renderSettings() {
   const naturalSilence = checkboxField(
     "自然沉默", world.decider.natural_silence === true,
     value => (world.decider.natural_silence = value),
-    { hint: "默认关闭，接话请求直接生成回应；开启后允许选择不说。新消息与浏览接话共用，仍遵守作息、授权和话题时效。" },
+    { hint: "默认关闭，新消息与计划接话直接生成回应；开启后允许选择不说。翻消息后始终由她决定是否接话。直接找她聊天不受此开关影响。" },
   );
   naturalSilence.querySelector("input").setAttribute("aria-label", "自然沉默");
   interject._fields.appendChild(naturalSilence);
