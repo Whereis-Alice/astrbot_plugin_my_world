@@ -129,9 +129,13 @@ class RecalledMemory:
         detail = ""
         if self.tier == "gist" and self.context:
             original = self.context
-            if self.source == "life_event":
-                from .context_sources import life_memory_metadata
-                original = str(life_memory_metadata(self.source, self.context).get("original") or "")
+            from .context_sources import life_memory_metadata
+            meta = life_memory_metadata(self.source, self.context)
+            if meta and (self.source in {"life_event", "life_matter", "chat_browse"}
+                         or "persona_key" in meta or "original" in meta):
+                original = str(meta.get("original") or "")
+            elif self.source == "life_event":
+                original = ""
             # 要点 + 当时那句原话：她记得住结论，也说得清细节
             detail = f"｜当时：{_one_line(original, 80)}" if original else ""
         return f"- {prefix}{self.content}{suffix}{detail}"
@@ -214,6 +218,7 @@ class MemoryEngine:
         keywords: list[str] | None = None,
         next_review_at: float = 0.0,
         pinned: bool = False,
+        persona_key: str | None = None,
     ) -> int | None:
         """写入一条记忆。返回记忆 id；因冲突被跳过时返回 None。
 
@@ -224,6 +229,8 @@ class MemoryEngine:
         text = (content or "").strip()
         if not text:
             return None
+        if persona_key and source in {"runtime", "dream"}:
+            context = json.dumps({"persona_key": persona_key, "original": context or text}, ensure_ascii=False)
         scope = scope or (self.world.memory_scope_mode if self.world else SCOPE_GROUP_PERSONA)
         policy = conflict_policy or (
             self.world.memory_conflict_policy if self.world else "newest"

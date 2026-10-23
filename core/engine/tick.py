@@ -947,16 +947,20 @@ class TickMixin:
     ) -> None:
         if definition.id == "life_simulation":
             return  # The matter records its scoped, explicitly simulated memory.
+        persona_key = str(action.get("persona_key") or self._matter_persona_key(state) or "")
+        if not persona_key:
+            _, persona_key = await self._journal_persona(state.session_id)
         label = definition.name or definition.id
         if definition.id == "think":
             content = str(action.get("content", "") or "")
             if content:
                 await self._remember_inner_thought(
-                    state, content, source="她想事情"
+                    state, content, source="她想事情", persona_key=persona_key
                 )
                 self.memory.remember(
                     session_id=state.session_id,
                     persona_id=str(action.get("persona_id", "")),
+                    persona_key=persona_key,
                     node_id=state.node_id,
                     content=content,
                     memory_type=INNER,
@@ -969,6 +973,7 @@ class TickMixin:
         self.memory.remember(
             session_id=state.session_id,
             persona_id=str(action.get("persona_id", "")),
+            persona_key=persona_key,
             node_id=state.node_id,
             content=f"在这里{label}",
             memory_type=SCENE,

@@ -21278,8 +21278,13 @@ async function openMemoryDetail(memory) {
     ["内容", String(memory.content || "")],
   ];
   let original = String(memory.context || "");
-  if (memory.source === "life_event") {
-    try { original = String(JSON.parse(original).original || ""); } catch (_) { original = ""; }
+  if (["life_event", "life_matter", "chat_browse", "runtime", "dream"].includes(memory.source)) {
+    try {
+      const context = JSON.parse(original);
+      if (context && typeof context === "object" && (["life_event", "life_matter", "chat_browse"].includes(memory.source) ||
+          Object.hasOwn(context, "persona_key") || Object.hasOwn(context, "original"))) original = String(context.original || "");
+      else if (memory.source === "life_event") original = "";
+    } catch (_) { if (memory.source === "life_event") original = ""; }
   }
   if (original.trim()) {
     rows.push(["整理前的原文", original]);

@@ -148,7 +148,7 @@ def browse_feeling_item(state: Any, request: ContextRequest, browse_id: str) -> 
 
 def life_memory_metadata(source: str, context: Any) -> dict:
     """Only explicit provenance links records; similar wording is insufficient."""
-    if source not in {"life_matter", "chat_browse", "life_event"}:
+    if source not in {"life_matter", "chat_browse", "life_event", "runtime", "dream"}:
         return {}
     try:
         value = json.loads(context) if isinstance(context, str) else context

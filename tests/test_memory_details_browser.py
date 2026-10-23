@@ -95,3 +95,42 @@ class MemoryDetailsBrowserTests(unittest.TestCase):
         expect(body).to_contain_text('生活事件')
         expect(body).not_to_contain_text('persona_key')
         expect(body).not_to_contain_text('internal_thread_key')
+
+    def test_activity_and_dream_details_show_readable_originals(self):
+        self.page.evaluate('''() => {
+          const reply = recordReply;
+          window.memoryDetailSource = 'runtime';
+          window.recordReply = (key, params) => {
+            const result = reply(key, params);
+            if (key === 'memories') result.memories[0] = {...result.memories[0], tier:'gist', source:memoryDetailSource,
+              context:JSON.stringify({persona_key:'internal_character_key', original:'下午读了风车的故事'})};
+            return result;
+          };
+        }''')
+        for kind in ('runtime', 'dream', 'life_matter', 'chat_browse'):
+            with self.subTest(source=kind):
+                self.page.evaluate('(kind) => { window.memoryDetailSource = kind; }', kind)
+                self.open_page('memories')
+                self.page.locator('#memory-list').get_by_role('button', name='详情', exact=True).click()
+                body = self.page.locator('#dialog-body')
+                expect(body).to_contain_text('下午读了风车的故事')
+                expect(body).not_to_contain_text('persona_key')
+                expect(body).not_to_contain_text('internal_character_key')
+                self.page.locator('#dialog-ok').click()
+
+    def test_matter_metadata_without_original_is_not_displayed_as_text(self):
+        self.page.evaluate('''() => {
+          const reply = recordReply;
+          window.recordReply = (key, params) => {
+            const result = reply(key, params);
+            if (key === 'memories') result.memories[0] = {...result.memories[0], tier:'gist', source:'life_matter',
+              context:JSON.stringify({persona_key:'internal_character_key', matter_id:'internal_matter_key', goal:'读完风车的故事'})};
+            return result;
+          };
+        }''')
+        self.open_page('memories')
+        self.page.locator('#memory-list').get_by_role('button', name='详情', exact=True).click()
+        body = self.page.locator('#dialog-body')
+        expect(body).to_contain_text('甲的生活记忆')
+        expect(body).not_to_contain_text('persona_key')
+        expect(body).not_to_contain_text('internal_matter_key')

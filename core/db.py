@@ -574,7 +574,7 @@ class Database(
         if life_persona_key is not None:
             # Filter ownership before LIMIT so foreign records cannot starve
             # the current character's recall or sleep review. Legacy text stays valid.
-            sql += (" AND (source NOT IN ('life_matter','chat_browse','life_event') OR "
+            sql += (" AND (source NOT IN ('life_matter','chat_browse','life_event','runtime','dream') OR "
                     "coalesce(CASE WHEN json_valid(context) THEN json_extract(context,'$.persona_key') END,'') IN ('',?))")
             params.append(life_persona_key)
         if exclude_source_scoped:
@@ -706,10 +706,15 @@ class Database(
         context = str(row.get("context") or "").strip()
         if not context:
             context = str(row.get("content") or "")
+        from .context_sources import life_memory_metadata
+        # Cutting JSON loses both provenance and original text, making an owned
+        # record look like unmarked legacy data on the next recall.
+        if not life_memory_metadata(str(row.get("source") or ""), context):
+            context = context[:600]
         self.update_memory(
             int(memory_id),
             content=body[:200],
-            context=context[:600],
+            context=context,
             tier="gist",
             folded_at=stamp,
         )

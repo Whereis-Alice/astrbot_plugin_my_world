@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import json
 from typing import Any
 from ..memory import INNER
 from ..prompt import readable_caption
@@ -229,6 +230,8 @@ class RelationsMixin:
         matters.ensure(state, now)
         days = max(1, self.world.state_dynamics.own_topic_days)
         for item in state.life_matters:
+            if not matters.belongs_to(item, self._matter_persona_key(state)):
+                continue
             # Projects and promises persist until an explicit outcome; fleeting legacy ideas may fade.
             if (item.get("legacy") or item.get("kind") == "idea") and not item.get("steps") and item["status"] not in matters.CLOSED:
                 if now - float(item.get("at") or now) >= days * 86400:
@@ -242,6 +245,8 @@ class RelationsMixin:
         if text:
             self.memory.remember(session_id=str(item.get("session") or state.session_id), persona_id="", node_id=state.node_id,
                 content=f"（后来搁置、尚未确认完成的打算）{text}", memory_type=INNER, weight=0.3,
+                source="life_matter", context=json.dumps({"matter_id": item.get("id") or "",
+                    "persona_key": item.get("persona_key") or "", "goal": text}, ensure_ascii=False),
                 participants=[str(item["who"])] if item.get("who") else [])
 
     def _own_topic_block(self, state: WorldState, ctx: Any = None, *, autonomy: bool = False,

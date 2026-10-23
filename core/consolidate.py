@@ -401,7 +401,8 @@ class Consolidator:
                         result.skipped.append("生活材料已改变，本次整理结果不保存")
                         continue
                     payload["_review_ids"] = valid
-                    self._apply_full(session_id, payload, result, now=stamp, known=set())
+                    self._apply_full(session_id, payload, result, now=stamp, known=set(),
+                        persona_key=sha256(persona_text.encode("utf-8")).hexdigest()[:24])
                 self.memory.db.kv_set(batch_key, {"at": stamp})
                 if kind == "life":
                     after = {mid: version(mid) for mid in before}
@@ -543,6 +544,7 @@ class Consolidator:
         *,
         now: float,
         known: set[str] | None = None,
+        persona_key: str | None = None,
     ) -> None:
         for item in self._rows(payload.get("merge")):
             keep = self._int(item.get("keep_id"))
@@ -640,7 +642,7 @@ class Consolidator:
             if memory_id in payload.get("_review_ids", set()) and row and not row.get("pinned"):
                 self.memory.fold(memory_id, text=str(item.get("text") or ""), when=now)
                 result.folded += 1
-        result.dream = self._apply_dream(session_id, payload.get("dream"), now=now)
+        result.dream = self._apply_dream(session_id, payload.get("dream"), now=now, persona_key=persona_key)
 
     # ---------------- 落库：小睡 ----------------
 
@@ -699,13 +701,14 @@ class Consolidator:
             count += 1
         return count
 
-    def _apply_dream(self, session_id: str, value: Any, *, now: float) -> str:
+    def _apply_dream(self, session_id: str, value: Any, *, now: float, persona_key: str | None = None) -> str:
         text = " ".join(str(value or "").split())[:200]
         if not text:
             return ""
         self.memory.remember(
             session_id=session_id,
             persona_id="",
+            persona_key=persona_key,
             node_id="",
             content=f"做了个梦：{text}",
             memory_type=DREAM,

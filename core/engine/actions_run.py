@@ -463,6 +463,7 @@ class ActionsRunMixin:
                 "visible": bool(definition.visible),
                 "depth": depth,
                 "persona_id": "",
+                "persona_key": self._matter_persona_key(state) or (await self._journal_persona(state.session_id))[1],
                 "from_plan": bool(from_plan),
                 # 这个动作是在哪个会话里被安排/触发的：做完的续说回那儿
                 "session": outcome.home(),
@@ -697,14 +698,17 @@ class ActionsRunMixin:
                 for text in messages:
                     outcome.add_speech(text, speaker, kind="interject" if action.interject else getattr(messages, "speech_kind", None))
         elif definition.id == "think" and action.content:
+            persona_key = self._matter_persona_key(state) or (await self._journal_persona(state.session_id))[1]
             await self._remember_inner_thought(
                 state,
                 action.content,
                 source="她想事情",
+                persona_key=persona_key,
             )
             self.memory.remember(
                 session_id=state.session_id,
                 persona_id="",
+                persona_key=persona_key,
                 node_id=state.node_id,
                 content=action.content,
                 memory_type=INNER,
