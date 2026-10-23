@@ -163,8 +163,12 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_paused_resting_busy_and_pending_reply_make_no_model_call(self):
         await self.burst()
+        self.engine.world.action_map()["read"].enabled = True
+        self.engine.world.action_map()["read"].interruptible = False
+        async with self.engine.session_state(GROUP) as state:
+            state.node_id = "study"
         for field, value in (("state", STATE_SLEEPING), ("energy", .1),
-                             ("current_action", {"type": "read_book"})):
+                             ("current_action", {"type": "read", "elapsed_ticks": 0, "duration_ticks": 10})):
             with self.subTest(field=field):
                 async with self.engine.session_state(GROUP) as state:
                     old = getattr(state, field)

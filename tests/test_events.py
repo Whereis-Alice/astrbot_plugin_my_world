@@ -1031,8 +1031,10 @@ class EventEngineTest(unittest.IsolatedAsyncioTestCase):
         state = await self.get_state()
         self.assertEqual(state.event_threads, [])
 
+        self.engine.world.action_map()["cook"].enabled = True
         async with self.engine.session_state(SESSION) as state:
             state.state = "idle"
+            state.node_id = "kitchen"
             state.current_action = {
                 "type": "cook",
                 "desc": "做饭",

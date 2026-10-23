@@ -236,7 +236,7 @@ class LifeAuditTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(secret, common)
         for sid, visible in ((S, False), (P, True)):
             with self.subTest(session=sid):
-                prompt = self.engine.prompts.build_dialogue_prompt(persona_text="角色", state=state,
+                prompt = self.engine.prompts.build_dialogue_prompt(persona_text=self.persona.text, state=state,
                     node=None, current_session=sid)[1]
                 self.assertEqual(secret in prompt, visible)
                 thoughts = (await self.engine.thoughts_payload(sid))["thoughts"]
