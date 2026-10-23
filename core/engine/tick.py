@@ -490,13 +490,14 @@ class TickMixin:
         *,
         depth: int = 0,
     ) -> bool:
-        await self._validate_running_life(state, outcome)
-        if self._running_action_invalid_reason(state, action):
-            return False
         action_id = str(action.get("type", ""))
         from ..models import CHAT_BROWSE_IDS
         if action_id in CHAT_BROWSE_IDS:
+            # Reading completion acquires its own state lease before inference.
             self.finish_chat_browse(state, action)
+            return False
+        await self._validate_running_life(state, outcome)
+        if self._running_action_invalid_reason(state, action):
             return False
         definition = self.world.action_map().get(action_id)
 

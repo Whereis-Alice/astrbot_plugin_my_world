@@ -773,7 +773,7 @@ class CalendarDiaryMixin:
         cfg = getattr(self.world, "life_context", None)
         if cfg is None or not getattr(cfg, "enabled", True):
             return ""
-        limit = int(getattr(cfg, "max_chars", 1600) or 1600)
+        limit = int(getattr(cfg, "max_chars", 1600))
         if limit <= 0:
             return ""
         parts: list[str] = []

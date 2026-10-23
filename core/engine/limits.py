@@ -92,11 +92,13 @@ class LimitsMixin:
         """记一次动作使用（只记真正开始执行的那些）。"""
 
         table = dict((state.action_usage or {}).get(action.id) or {})
-        for key in self._usage_keys().values():
+        keys = self._usage_keys()
+        for key in keys.values():
             table[key] = int(table.get(key, 0) or 0) + 1
         # 只留最近的一小段，免得这个字典无限长
         if len(table) > 12:
-            table = dict(sorted(table.items())[-12:])
+            current = set(keys.values())
+            table = {key: table[key] for key in sorted(table, key=lambda key: (key in current, key))[-12:]}
         state.action_usage = {**(state.action_usage or {}), action.id: table}
 
     def _arrival_decision_allowed(self, state: WorldState) -> bool:

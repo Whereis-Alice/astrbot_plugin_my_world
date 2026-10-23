@@ -110,6 +110,7 @@ class ChatBrowseMixin:
         # No follow-on plan can turn this reading into queued speech or tools.
         state.current_plan = None
         state.current_action = {"type": action_id, "id": uuid4().hex, "desc": self.world.action_map()[action_id].name,
+            "persona_key": self._matter_persona_key(state) or "",
             "duration_ticks": max(1, math.ceil(self.rng.randint(3, 8) * 60 / self.tick_seconds)), "elapsed_ticks": 0,
             "browse_session": sid, "browse_rows": rows, "started_at": now, "start_node": state.node_id,
             "identity": self._browse_identity(), "silent_followup": True}
@@ -119,8 +120,12 @@ class ChatBrowseMixin:
     def _browse_valid(self, state, action: dict) -> bool:
         sid = str(action.get("browse_session") or "")
         config = self.world.chat_browse
+        persona_key = self._matter_persona_key(state)
+        definition = self.world.action_map().get(str(action.get("type") or ""))
         if (action.get("type") not in CHAT_BROWSE_IDS or not action.get("id") or not action.get("browse_rows")
                 or not config.enabled or not self.is_enabled(state.session_id)
+                or definition is None or not definition.enabled or definition.idle or not definition.available_in(state.node_id)
+                or (persona_key is not None and action.get("persona_key") and action["persona_key"] != persona_key)
                 or state.node_id != action.get("start_node")
                 or (action["type"] == "browse_phone" and not config.phone)
                 or (action["type"] == "browse_computer" and state.node_id not in config.computer_nodes)

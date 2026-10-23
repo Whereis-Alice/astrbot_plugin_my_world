@@ -379,12 +379,12 @@ class InterruptMixin:
         for action in actions:
             haystack = f"{action.get('name') or ''}{action.get('id') or ''}" \
                 f"{action.get('description') or ''}"
-            picked = ""
+            haystack = haystack.casefold()
+            picked, specificity = "", 1
             for node in nodes:
                 label = str(node.get("name") or node.get("id") or "")
-                if len(label) >= 2 and any(char in haystack for char in label):
-                    picked = str(node["id"])
-                    break
+                if len(label) > specificity and label.casefold() in haystack:
+                    picked, specificity = str(node["id"]), len(label)
             if not picked:
                 picked = min(assigned, key=lambda key: assigned[key])
             assigned[picked] = assigned.get(picked, 0) + 1
