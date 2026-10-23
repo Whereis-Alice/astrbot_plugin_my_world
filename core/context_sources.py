@@ -97,7 +97,7 @@ def life_items(state: Any, request: ContextRequest) -> list[ContextItem]:
             continuing=status not in CLOSED | {"paused"},
             priority=.5 if request.task in {"plan", "sleep"} and status not in CLOSED else 0,
             match_text="\n".join(topic)))
-    for index, item in enumerate(stable_interests(state, now=request.now)):
+    for index, item in enumerate(stable_interests(state, now=request.now, persona_key=request.life_persona)):
         result.append(ContextItem(f"interest:{index}", "experience",
             f"# 近期反复投入的实际活动\n{item['label']}：在 {len(item['days'])} 个不同日期做过，"
             f"累计 {item['minutes']:g} 分钟。投入记录不是新的喜好或性格设定。",

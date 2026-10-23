@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
+import copy
 from datetime import date
 import math
 import re
@@ -34,7 +35,7 @@ def execution_state(state: Any, item: dict) -> str:
 def activity_basis(state, *, now: float, persona_key: str = "") -> str:
     """Only shared personal activity is motivation for autonomous life."""
     rows = []
-    for item in sorted(state.life_interests.values(), key=lambda r: r.get("last_at", 0), reverse=True):
+    for item in sorted(practice_records(state, persona_key=persona_key).values(), key=lambda r: r.get("last_at", 0), reverse=True):
         if 0 <= now - float(item.get("last_at") or 0) <= 3 * 86400:
             rows.append(f"- 实际活动：{str(item.get('label') or '')[:80]}；累计投入{float(item.get('minutes') or 0):g}分钟。")
     for item in state.life_matters:
@@ -220,18 +221,85 @@ def unnoted_steps(item: dict) -> list[dict]:
             and _minutes(s["result"].get("minutes")) > 0]
 
 
-def stable_interests(state, *, now: float = 0) -> list[dict]:
+PRACTICE_FIELDS = ("label", "sessions", "minutes", "days", "last_at", "episodes")
+
+
+def _merge_practice(records: list[dict]) -> dict:
+    rows = sorted(records, key=lambda row: _minutes(row.get("last_at")))
+    if not rows:
+        return {}
+    return {"label": rows[-1].get("label", ""),
+            "sessions": sum(int(_minutes(row.get("sessions"))) for row in rows),
+            "minutes": sum(_minutes(row.get("minutes")) for row in rows),
+            "days": sorted({day for row in rows for day in row.get("days", [])})[-30:],
+            "last_at": max(_minutes(row.get("last_at")) for row in rows),
+            "episodes": sorted([copy.deepcopy(episode) for row in rows for episode in row.get("episodes", [])],
+                               key=lambda row: _minutes(row.get("at")))[-30:]}
+
+
+def practice_records(state, *, persona_key: str | None = None) -> dict[str, dict]:
+    """Select owned activity; unmarked historical effort remains compatible."""
+    result = {}
+    for action, record in state.life_interests.items():
+        if not isinstance(record, dict):
+            continue
+        owners = record.get("personas")
+        if not isinstance(owners, dict):
+            result[action] = copy.deepcopy(record)
+            continue
+        selected = [owners[key] for key in dict.fromkeys(("", persona_key or ""))
+                    if isinstance(owners.get(key), dict)]
+        if selected:
+            result[action] = _merge_practice(selected)
+    return result
+
+
+def practice_owner(record: dict, persona_key: str) -> dict:
+    """Keep the pre-upgrade totals unmarked, then account each character separately."""
+    owners = record.get("personas")
+    if not isinstance(owners, dict):
+        owners = record["personas"] = {}
+        if record.get("sessions") or record.get("minutes") or record.get("days"):
+            owners[""] = {key: copy.deepcopy(record[key]) for key in PRACTICE_FIELDS if key in record}
+    owner = owners.setdefault(persona_key, {"label": record.get("label", ""), "sessions": 0, "minutes": 0, "days": []})
+    return owner
+
+
+def trim_practice_owners(record: dict) -> None:
+    owners = record.get("personas", {})
+    tagged = sorted(((key, row) for key, row in owners.items() if key),
+                    key=lambda pair: _minutes(pair[1].get("last_at")))[-31:]
+    record["personas"] = {**({"": owners[""]} if "" in owners else {}), **dict(tagged)}
+
+
+def forget_practice(state, action: str, *, persona_key: str | None) -> dict | None:
+    removed = practice_records(state, persona_key=persona_key).get(action)
+    if removed is None:
+        return None
+    record = state.life_interests[action]
+    owners = record.get("personas")
+    if isinstance(owners, dict):
+        for key in dict.fromkeys(("", persona_key or "")):
+            owners.pop(key, None)
+        if owners:
+            state.life_interests[action] = {**_merge_practice(list(owners.values())), "personas": owners}
+            return removed
+    state.life_interests.pop(action, None)
+    return removed
+
+
+def stable_interests(state, *, now: float = 0, persona_key: str | None = None) -> list[dict]:
     """Several actual sessions across three days, rather than a sampled personality change."""
-    return [{"action": key, **value} for key, value in state.life_interests.items()
+    return [{"action": key, **value} for key, value in practice_records(state, persona_key=persona_key).items()
             if len(value.get("days", [])) >= 3 and value.get("sessions", 0) >= 3
             and value.get("minutes", 0) >= 45
             and (not now or not value.get("last_at") or now - value["last_at"] <= 30 * 86400)][:8]
 
 
-def routine_hints(state, *, now: float = 0) -> list[dict]:
+def routine_hints(state, *, now: float = 0, persona_key: str | None = None) -> list[dict]:
     """Repeated, dated circumstances are context, never a new identity or taste."""
     hints = []
-    for item in stable_interests(state, now=now):
+    for item in stable_interests(state, now=now, persona_key=persona_key):
         periods, weekdays, recent = {}, {}, []
         for episode in item.get("episodes", []):
             if not isinstance(episode, dict) or not episode.get("day") or not episode.get("period"):
@@ -434,12 +502,12 @@ def context_block(state, *, session_id: str, user_id: str = "", now: float = 0,
     block = ("# 你的生活事项与保留进度\n这些是角色世界内的活动；标为生活模拟的进展属于AI模拟经历，不能当作现实操作依据。"
             "只依据已记录的活动回忆进展，未开始的打算、梦和口头声称都不算完成。"
             "可以自然提起，不要逐条念清单。涉及他人的事情只能在来源会话提及。\n" + "\n".join(rows[:6])) if rows else ""
-    interests = stable_interests(state, now=now)
+    interests = stable_interests(state, now=now, persona_key=persona_key)
     if interests:
         block += "\n# 从日子里积累的活动经验\n这些只证明实际多日投入，不证明喜欢，更不能覆盖人设的喜恶、身份和说话方式。"
         block += "符合原有人设时才可温和延伸为日常偏好；可改变或放下，不必每次重复。\n" + "\n".join(
             f"- {item['label']}：{len(item['days'])} 天、{item['sessions']} 次、累计 {item['minutes']:g} 分钟" for item in interests)
-    routines = routine_hints(state, now=now)
+    routines = routine_hints(state, now=now, persona_key=persona_key)
     if routines:
         block += "\n# 可参考的生活节奏\n以下是实际重复发生的时段，只在符合人设、困意和日程时作为轻微倾向；不能推断她喜欢或讨厌什么。\n" + "\n".join(
             f"- {item['explanation']}。可以沿用，也可以改变，不必排满时间。" for item in routines)

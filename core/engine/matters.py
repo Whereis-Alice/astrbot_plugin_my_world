@@ -72,7 +72,7 @@ class MattersMixin:
             if not self.life_seed_due(state):
                 return
             candidates = self._matter_actions(state)
-            interests = matters.stable_interests(state, now=self._now())
+            interests = matters.stable_interests(state, now=self._now(), persona_key=self._matter_persona_key(state))
             marker = self.db.raw.kv_get(key) or {}
             attempts = int(marker.get("attempts") or 0) + 1
             self.db.raw.kv_set(key, {"at": self._now(), "attempts": attempts,
@@ -154,7 +154,8 @@ class MattersMixin:
     def confirm_matter_from_turn(self, state, ctx, matter_id: str, evidence: str, trace: list) -> bool:
         matters.ensure(state, self._now())
         item = matters.find(state, matter_id)
-        if not item or item.get("session") != ctx.session_id or (item.get("who") and item["who"] != ctx.user_id):
+        if (not item or not matters.belongs_to(item, self._matter_persona_key(state))
+                or item.get("session") != ctx.session_id or (item.get("who") and item["who"] != ctx.user_id)):
             return False
         # An exact observed success can ground a conclusion; a character's claim cannot.
         failure_words = ("失败", "未发送", "没有发送", "未完成", "超时", "取消", '"ok": false', '"success": false', "error:", "failed")
@@ -656,7 +657,7 @@ class MattersMixin:
 
     def settle_life_practice(self, state, action: dict, *, at: float | None = None) -> None:
         """Record actual online effort once, even if the action never reaches completion."""
-        if action.get("type") == LIFE_SIMULATION_ACTION.id:
+        if not self._running_life_belongs(state, action) or action.get("type") == LIFE_SIMULATION_ACTION.id:
             return  # A generic simulation cannot establish a specific interest.
         definition = self.world.action_map().get(str(action.get("type") or ""))
         elapsed = max(0, int(action.get("elapsed_ticks") or 0))
@@ -669,12 +670,14 @@ class MattersMixin:
         end = float(self._now() if at is None else at)
         start = end - (elapsed - accounted) * self.tick_seconds
         interest = state.life_interests.setdefault(definition.id, {"label": definition.name, "sessions": 0, "minutes": 0, "days": []})
+        owner = matters.practice_owner(interest, str(action.get("persona_key") or self._matter_persona_key(state) or ""))
+        records = (interest, owner)
         if not action.get("practice_id"):
             action["practice_id"] = uuid4().hex
-            interest["sessions"] = int(interest.get("sessions", 0)) + 1
-        interest.update(label=definition.name, minutes=float(interest.get("minutes", 0)) + (end - start) / 60, last_at=end)
-        episodes = interest.setdefault("episodes", [])
-        days = set(interest.get("days", []))
+            for record in records:
+                record["sessions"] = int(record.get("sessions", 0)) + 1
+        for record in records:
+            record.update(label=definition.name, minutes=float(record.get("minutes", 0)) + (end - start) / 60, last_at=end)
         node_id = str(action.get("node_id") or state.node_id)
         while start < end:
             local = self.local_at(start)
@@ -683,16 +686,19 @@ class MattersMixin:
             stop = min(end, boundary)
             day = self._today_key(start)
             period = "早晨" if 5 <= local.hour < 11 else "白天" if 11 <= local.hour < 18 else "晚间" if 18 <= local.hour < 23 else "夜间"
-            episode = next((row for row in reversed(episodes) if row.get("practice_id") == action["practice_id"]
-                            and row.get("day") == day and row.get("period") == period and row.get("node") == node_id), None)
-            if episode is None:
-                episode = {"practice_id": action["practice_id"], "day": day, "period": period,
-                           "node": node_id, "action": definition.id, "minutes": 0}
-                episodes.append(episode)
-            episode.update(at=stop, minutes=episode["minutes"] + (stop - start) / 60)
-            days.add(day)
+            for record in records:
+                episodes = record.setdefault("episodes", [])
+                episode = next((row for row in reversed(episodes) if row.get("practice_id") == action["practice_id"]
+                                and row.get("day") == day and row.get("period") == period and row.get("node") == node_id), None)
+                if episode is None:
+                    episode = {"practice_id": action["practice_id"], "day": day, "period": period,
+                               "node": node_id, "action": definition.id, "minutes": 0}
+                    episodes.append(episode)
+                episode.update(at=stop, minutes=episode["minutes"] + (stop - start) / 60)
+                record["days"] = sorted(set(record.get("days", [])) | {day})[-30:]
+                record["episodes"] = episodes[-30:]
             start = stop
-        interest["days"], interest["episodes"] = sorted(days)[-30:], episodes[-30:]
+        matters.trim_practice_owners(interest)
         action["practice_accounted_ticks"] = elapsed
         state.life_interests = dict(sorted(state.life_interests.items(), key=lambda pair: pair[1].get("last_at", 0))[-40:])
 

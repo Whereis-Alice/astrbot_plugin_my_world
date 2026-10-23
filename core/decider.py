@@ -109,6 +109,7 @@ class Decider:
         hour_provider: Any = None,
         tick_seconds: float = 60.0,
         action_check: Any = None,
+        persona_key_provider: Any = None,
     ) -> None:
         self.world = world
         self.rng = rng or random.Random()
@@ -116,6 +117,7 @@ class Decider:
         self._hour_provider = hour_provider
         self.tick_seconds = max(1.0, float(tick_seconds))
         self.action_check = action_check
+        self.persona_key_provider = persona_key_provider
 
     def _now(self) -> float:
         if self._now_provider is None:
@@ -570,11 +572,12 @@ class Decider:
         from .life import life_role
         if state.energy < .4 or state.boredom <= .45:
             return None
-        from .life_matters import routine_hints
+        from .life_matters import practice_records, routine_hints
+        persona_key = self.persona_key_provider(state) if self.persona_key_provider else None
         hour = self.local_hour()
         period = "早晨" if 5 <= hour < 11 else "白天" if 11 <= hour < 18 else "晚间" if 18 <= hour < 23 else "夜间"
-        preferred = {item["action"]: item for item in routine_hints(state, now=self._now()) if item["period"] == period}
-        recent = {key: row for key, row in state.life_interests.items()
+        preferred = {item["action"]: item for item in routine_hints(state, now=self._now(), persona_key=persona_key) if item["period"] == period}
+        recent = {key: row for key, row in practice_records(state, persona_key=persona_key).items()
                   if 0 <= self._now() - float(row.get("last_at") or 0) < 90 * 60}
         choices = []
         graph = self.world.adjacent()

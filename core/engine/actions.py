@@ -71,6 +71,8 @@ class ActionsMixin:
         """Run a quiet background action; formal work always has priority."""
         from ..life import idle_definition, safe_idle_action
 
+        if state.idle_activity and not self._running_life_belongs(state, state.idle_activity):
+            state.idle_activity = {}
         self._settle_idle_practice(state)
         if not self.world.idle_life.enabled or state.current_action or state.state != "idle":
             state.idle_activity = {}
@@ -104,6 +106,7 @@ class ActionsMixin:
         seconds = max(low * 60, min(high * 60, seconds))
         ticks = max(1, math.ceil(seconds / max(1, self.tick_seconds)))
         state.idle_activity = {"id": definition.id, "node_id": state.node_id,
+                               "persona_key": self._matter_persona_key(state) or "",
                                "start_tick": state.world_time, "until_tick": state.world_time + ticks}
 
     def _apply_life_completion(self, state: WorldState, definition: ActionDef | None,

@@ -7,7 +7,7 @@ from datetime import date, timedelta
 
 from astrbot.api.web import error_response, json_response, request
 
-from ..core.life_matters import CLOSED, ensure, visible
+from ..core.life_matters import CLOSED, ensure, visible, practice_records, forget_practice
 
 
 class LifeApiMixin:
@@ -82,7 +82,8 @@ class LifeApiMixin:
                     **self.engine.life_overview(state, session_id),
                     "activity": self.engine.activity_view(state), "reason": (state.current_plan or {}).get("reason", ""),
                     "choice": self.engine.life_choice(state),
-                    "recovery": state.life_recovery, "interests": state.life_interests,
+                    "recovery": state.life_recovery, "interests": practice_records(
+                        state, persona_key=self.engine._matter_persona_key(state)),
                     "artifacts": [item for item in state.life_artifacts.values() if item.get("session") == session_id],
                     "semantic": self.engine.memory.semantic.status,
                     "active": sum(item.get("status") not in CLOSED for item in items)})
@@ -104,10 +105,10 @@ class LifeApiMixin:
                     operation = str(payload.get("operation") or "")
                     if operation == "forget_experience":
                         action = str(payload.get("action") or "")
-                        if action not in state.life_interests:
+                        removed = forget_practice(state, action, persona_key=self.engine._matter_persona_key(state))
+                        if removed is None:
                             raise ValueError("找不到这条生活经验，请刷新")
-                        removed = state.life_interests.pop(action)
-                        state.add_event("life_experience_removed", {"action": action, "label": removed.get("label"), "source": "管理员整理"})
+                        self.engine._note_event(state, "life_experience_removed", {"action": action, "label": removed.get("label"), "source": "管理员整理"})
                         return json_response({"ok": True})
                     if operation == "create":
                         _, persona_key = await self.engine._journal_persona(

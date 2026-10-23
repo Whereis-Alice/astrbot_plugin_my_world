@@ -23,7 +23,7 @@ from ..prompt import (
     clock_text,
 )
 from ..state import WorldState
-from ..life_matters import ensure as ensure_matters
+from ..life_matters import ensure as ensure_matters, practice_records
 from ..timeline import render_event
 from .constants import (
     DEBUG_ECHO_DEBOUNCE_SECONDS,
@@ -302,7 +302,7 @@ class SnapshotMixin:
             "life_matters": [item for item in ensure_matters(state, self._now())
                              if not item.get("who") or item.get("session") == session_id],
             "life_recovery": state.life_recovery,
-            "life_interests": state.life_interests,
+            "life_interests": practice_records(state, persona_key=event_persona),
             "life_decision": state.life_decision,
             "activity_reason": str((state.current_plan or {}).get("reason") or ""),
             "current_plan": state.current_plan,

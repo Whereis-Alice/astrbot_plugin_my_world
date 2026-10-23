@@ -164,6 +164,7 @@ class ConfigMixin:
             tick_seconds=self.tick_seconds,
             action_check=lambda state, action: (self.action_quota_left(state, action) > 0
                 and self._check_preconditions(state, action)[0] and self._action_usable_now(action)),
+            persona_key_provider=self._matter_persona_key,
         )
         engagement = EngagementTracker(world)
         prompts = PromptBuilder(

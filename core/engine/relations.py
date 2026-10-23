@@ -237,7 +237,8 @@ class RelationsMixin:
         from .. import life_matters as matters
         matters.ensure(state, self._now())
         item = matters.find(state, matter_id)
-        if (not item or not confirmed or not evidence or item["status"] in matters.CLOSED
+        if (not item or not matters.belongs_to(item, self._matter_persona_key(state))
+                or not confirmed or not evidence or item["status"] in matters.CLOSED
                 or (item.get("who") and item["who"] != str(user_id))):
             return 0
         self._stop_matter_work(state, matter_id)

@@ -34,6 +34,9 @@ class LifeControlMixin:
 
     async def _validate_running_life(self, state, outcome=None) -> None:
         """Stop invalid work before any new time, completion effects or queued speech."""
+        if state.idle_activity and not self._running_life_belongs(state, state.idle_activity):
+            state.idle_activity = {}
+            await self._log_event(state, "skip", {"note": "人设已变化，停止原角色的闲置活动"}, outcome=outcome)
         plan = state.current_plan or {}
         if plan and not self._running_life_belongs(state, plan):
             state.current_plan = None
@@ -260,5 +263,6 @@ class LifeControlMixin:
                         "result": str((row.get("steps") or [{}])[-1].get("result") or "")[:200]}
                        for row in self._event_threads(state)[-12:] if (row.get("session") or state.session_id) == session]
         return {"day": day, "agenda": sorted(agenda, key=lambda row: (row["time"], row["id"])),
-                "experiences": list(reversed(experiences)), "rhythms": matters.routine_hints(state, now=self._now()),
+                "experiences": list(reversed(experiences)), "rhythms": matters.routine_hints(state, now=self._now(),
+                    persona_key=self._matter_persona_key(state)),
                 "resume": {"reason": state.life_resume.get("reason"), "at": state.life_resume.get("at")} if state.life_resume else {}}
