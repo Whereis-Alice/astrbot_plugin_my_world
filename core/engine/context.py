@@ -78,10 +78,14 @@ class ContextMixin:
         materials = []
         sources = (("heart_knots", "about", "text", "since"), ("grudges", "user_id", "reason", "at"))
         for field, person_field, text_field, time_field in sources:
+            if (field == "heart_knots" and not self.world.state_dynamics.heart_knot_enabled
+                    or field == "grudges" and not self.world.profile.grudge_enabled):
+                continue
             for index, row in enumerate(getattr(state, field, []) or []):
                 uid = str(row.get(person_field) or "")
                 origin = str(row.get("session") or state.session_id)
-                if origin != request.session or (uid and uid not in request.people):
+                if (not self._emotion_belongs(state, row, request.life_persona)
+                        or origin != request.session or (uid and uid not in request.people)):
                     continue
                 materials.append(ContextItem(f"{field}:{index}", "relationship",
                     f"# 当时留下的心情（仅本会话；不当成任务，也不强行翻旧账）\n涉及用户ID：{uid or '自己'}；{row.get(text_field) or ''}",

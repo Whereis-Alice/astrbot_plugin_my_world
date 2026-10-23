@@ -169,6 +169,9 @@ def memory_context_items(state: Any, request: ContextRequest, memories, *, stamp
         people = tuple(memory.participants or memory.related_users)
         if memory.private_matter and (request.task in {"plan", "sleep", "diary"} or not set(people) & set(request.people)):
             continue
+        if memory.private_emotion and (request.task in {"plan", "sleep", "diary"}
+                                      or (people and not set(people) & set(request.people))):
+            continue
         meta = life_memory_metadata(memory.source, memory.context)
         if meta.get("persona_key") and meta["persona_key"] != request.life_persona:
             continue

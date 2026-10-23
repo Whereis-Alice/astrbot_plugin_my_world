@@ -45,7 +45,7 @@ class MemoryActionsMixin:
 
         limit = max(1, min(5, int(query.get("limit") or 3)))
         memories = self.memory.recall(
-            session_id=state.session_id,
+            session_id=str(outcome.place or outcome.session_id or state.session_id),
             persona_id="",
             nodes=list(query.get("nodes") or []),
             keyword=str(query.get("keyword") or ""),
@@ -54,6 +54,7 @@ class MemoryActionsMixin:
             mode=(self.world.memory_scope_mode if self.world else None),
             limit=limit,
             now=self._now(),
+            life_persona_key=self._matter_persona_key(state),
         )
         # 「回想一下关于主人的事」：她点名了某个人时，优先给跟这个人有关的记忆
         focus = self._recall_focus_user(state, f"{intent} {query.get('keyword') or ''}")

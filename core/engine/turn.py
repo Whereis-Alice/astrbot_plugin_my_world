@@ -168,7 +168,7 @@ class TurnMixin:
                 self.note_open_topic(state, ctx, parsed.open_topic)
             if parsed.heart_knot:
                 self.note_heart_knot(
-                    state, parsed.heart_knot, about=str(ctx.user_id or "")
+                    state, parsed.heart_knot, about=str(ctx.user_id or ""), session_id=session_id
                 )
             if parsed.grudge:
                 self.note_grudge(
@@ -179,7 +179,7 @@ class TurnMixin:
                     session_id=str(getattr(ctx, "session_id", "") or ""),
                 )
             if parsed.forgive:
-                self.resolve_grudge(state, user_id=str(getattr(ctx, "user_id", "") or ""))
+                self.resolve_grudge(state, user_id=str(getattr(ctx, "user_id", "") or ""), session_id=session_id)
             if parsed.own_topic:
                 await self.note_own_topic(
                     state,

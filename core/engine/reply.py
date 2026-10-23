@@ -1004,7 +1004,7 @@ class ReplyMixin:
             self.note_open_topic(state, ctx, parsed.open_topic)
             # 「你心里搁着的事」：她自己的事，挂着，会自己淡掉
             if parsed.heart_knot:
-                self.note_heart_knot(state, parsed.heart_knot, about=str(ctx.user_id or ""))
+                self.note_heart_knot(state, parsed.heart_knot, about=str(ctx.user_id or ""), session_id=ctx.session_id)
             # 「他这笔账我记着了」：冲人的，会让她对他冷一档，而且只在他面前提
             if parsed.grudge:
                 self.note_grudge(
@@ -1016,7 +1016,7 @@ class ReplyMixin:
                 )
             # 「他道歉了 / 补上了」：那笔账划掉
             if parsed.forgive:
-                self.resolve_grudge(state, user_id=str(getattr(ctx, "user_id", "") or ""))
+                self.resolve_grudge(state, user_id=str(getattr(ctx, "user_id", "") or ""), session_id=ctx.session_id)
             # 「我自己答应过的事」：她自己的账本，跟 open_topic 正好对称
             if parsed.own_topic:
                 await self.note_own_topic(

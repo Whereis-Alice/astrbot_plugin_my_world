@@ -17,16 +17,44 @@ from .util import _clip_text
 
 
 class RelationsMixin:
+    def _emotion_belongs(self, state: WorldState, item: dict, persona_key: str | None = None) -> bool:
+        key = self._matter_persona_key(state) if persona_key is None else persona_key
+        return not item.get("persona_key") or item["persona_key"] == key
+
+    @staticmethod
+    def _emotion_origin(state: WorldState, session_id: str = "") -> str:
+        from .life_inference import STATE_LEASE
+        lease = STATE_LEASE.get() or {}
+        return str(session_id or (lease.get("origin") if lease.get("state") is state else "") or state.session_id)
+
+    def _emotion_visible(self, state: WorldState, item: dict, session_id: str = "", *,
+                         persona_key: str | None = None) -> bool:
+        return (self._emotion_belongs(state, item, persona_key)
+                and str(item.get("session") or state.session_id) == self._emotion_origin(state, session_id))
+
+    def _archive_emotion(self, state: WorldState, item: dict, *, kind: str, content: str, weight: float) -> None:
+        """Keep the original person, character and conversation after a feeling fades."""
+        uid = str(item.get("about") or item.get("user_id") or "")
+        self.memory.remember(session_id=str(item.get("session") or state.session_id), persona_id="",
+            node_id=state.node_id, content=content, memory_type=INNER, emotion=state.mood, weight=weight,
+            affect=state.affect, valence=state.valence, participants=[uid] if uid else [], source="runtime",
+            context=json.dumps({"kind": kind, "persona_key": item.get("persona_key") or "",
+                "emotion_user": uid,
+                "original": str(item.get("text") or item.get("reason") or ""),
+                "source_scoped": bool(item.get("session") or uid)}, ensure_ascii=False))
+
     # ---------------- 她记着的账（记仇） ----------------
 
-    def grudge_for(self, state: WorldState, user_id: str) -> dict[str, Any] | None:
+    def grudge_for(self, state: WorldState, user_id: str, *, session_id: str = "",
+                   persona_key: str | None = None) -> dict[str, Any] | None:
         """这个人身上有没有她还记着的账。"""
 
         uid = str(user_id or "")
         if not uid:
             return None
         for item in list(state.grudges or []):
-            if isinstance(item, dict) and str(item.get("user_id") or "") == uid:
+            if (isinstance(item, dict) and str(item.get("user_id") or "") == uid
+                    and self._emotion_visible(state, item, session_id, persona_key=persona_key)):
                 return item
         return None
 
@@ -55,6 +83,8 @@ class RelationsMixin:
         if not body or not uid:
             return False
         now = self._now()
+        origin = self._emotion_origin(state, session_id)
+        persona_key = self._matter_persona_key(state) or ""
         day = self._today_key(now)
         if str(state.grudge_day or "") != day:
             state.grudge_day = day
@@ -65,7 +95,8 @@ class RelationsMixin:
             return False
         items = [dict(item) for item in (state.grudges or []) if isinstance(item, dict)]
         # 同一个人只留一笔：这件事比那件事更气人，就换掉，但不叠加
-        existing = next((item for item in items if str(item.get("user_id") or "") == uid), None)
+        existing = next((item for item in items if str(item.get("user_id") or "") == uid
+                         and self._emotion_visible(state, item, origin)), None)
         if existing is not None and body in str(existing.get("reason") or ""):
             return False
         keep_days = max(1, int(getattr(config, "grudge_days", 7) or 7))
@@ -75,43 +106,36 @@ class RelationsMixin:
             "reason": body,
             "at": now,
             "until": now + keep_days * 86400.0,
-            "session": str(session_id or "") or state.session_id,
+            "session": origin,
+            "persona_key": persona_key,
         }
-        items = [item for item in items if str(item.get("user_id") or "") != uid]
+        items = [item for item in items if item is not existing]
         items.append(record)
         limit = max(1, int(getattr(config, "grudge_max", 2) or 2))
-        state.grudges = items[-limit:]
+        own = [item for item in items if self._emotion_belongs(state, item)][-limit:]
+        state.grudges = [item for item in items if not self._emotion_belongs(state, item)] + own
+        state.grudges = state.grudges[-32:]
         state.grudge_count = int(state.grudge_count or 0) + 1
         # 当场气一下：只给一次脉冲，之后靠"冷一档 + 提示词"，不再反复扣
         self.dynamics.apply_event(state, "grudge", now=float(now))
         self._log("debug", f"记了一笔账：{body}")
         return True
 
-    def resolve_grudge(self, state: WorldState, *, user_id: str = "") -> bool:
+    def resolve_grudge(self, state: WorldState, *, user_id: str = "", session_id: str = "") -> bool:
         """这笔账算了：他道歉 / 补上 / 解释清楚了。返回有没有真的划掉一笔。"""
 
         uid = str(user_id or "")
-        record = self.grudge_for(state, uid)
+        record = self.grudge_for(state, uid, session_id=session_id)
         if record is None:
             return False
         state.grudges = [
             item
             for item in (state.grudges or [])
-            if not (isinstance(item, dict) and str(item.get("user_id") or "") == uid)
+            if item is not record
         ]
         reason = str(record.get("reason") or "").strip()
         name = str(record.get("who_name") or "") or self._user_label(state, uid)
-        self.memory.remember(
-            session_id=state.session_id,
-            persona_id="",
-            node_id=state.node_id,
-            content=f"（跟他算清了一笔账）{name}：{reason}"[:120],
-            memory_type=INNER,
-            emotion=state.mood,
-            weight=0.35,
-            affect=state.affect,
-            valence=state.valence,
-        )
+        self._archive_emotion(state, record, kind="grudge", content=f"（跟他算清了一笔账）{name}：{reason}", weight=.35)
         self._log("debug", f"这笔账算了：{reason}")
         return True
 
@@ -120,34 +144,27 @@ class RelationsMixin:
 
         config = self.world.profile
         if not bool(getattr(config, "grudge_enabled", True)):
-            state.grudges = []
+            state.grudges = [item for item in state.grudges if not self._emotion_belongs(state, item)]
             return
         keep: list[dict[str, Any]] = []
         for item in list(state.grudges or []):
             if not isinstance(item, dict):
+                continue
+            if not self._emotion_belongs(state, item):
+                keep.append(item)
                 continue
             until = float(item.get("until") or 0.0)
             if until > 0 and float(now) >= until:
                 reason = str(item.get("reason") or "").strip()
                 name = str(item.get("who_name") or "")
                 if reason:
-                    self.memory.remember(
-                        session_id=state.session_id,
-                        persona_id="",
-                        node_id=state.node_id,
-                        content=f"（气过一阵就算了）{name}：{reason}"[:120],
-                        memory_type=INNER,
-                        emotion=state.mood,
-                        weight=0.3,
-                        affect=state.affect,
-                        valence=state.valence,
-                    )
+                    self._archive_emotion(state, item, kind="grudge", content=f"（气过一阵就算了）{name}：{reason}", weight=.3)
                 continue
             keep.append(item)
         state.grudges = keep
 
     def _grudge_block(
-        self, state: WorldState, ctx: Any = None, *, autonomy: bool = False
+        self, state: WorldState, ctx: Any = None, *, autonomy: bool = False, persona_key: str | None = None
     ) -> str:
         """「他还欠着我一笔」那一段。
 
@@ -160,8 +177,10 @@ class RelationsMixin:
             return ""
         who = str(getattr(ctx, "user_id", "") or "")
         lines: list[str] = []
-        for item in list(state.grudges or [])[:2]:
+        for item in list(state.grudges or []):
             if not isinstance(item, dict):
+                continue
+            if not self._emotion_visible(state, item, str(getattr(ctx, "session_id", "") or ""), persona_key=persona_key):
                 continue
             uid = str(item.get("user_id") or "")
             if who and uid and uid != who:
@@ -176,6 +195,8 @@ class RelationsMixin:
                 name = str(item.get("who_name") or "") or self._user_label(state, uid)
                 label = f"{name}：" if name else ""
             lines.append(f"- {label}{reason}{age}")
+            if len(lines) >= 2:
+                break
         if not lines:
             return ""
         return (
@@ -272,12 +293,15 @@ class RelationsMixin:
 
         config = self.world.state_dynamics
         if not bool(getattr(config, "heart_knot_enabled", True)):
-            state.heart_knots = []
+            state.heart_knots = [item for item in state.heart_knots if not self._emotion_belongs(state, item)]
             return
         keep: list[dict[str, Any]] = []
         per_hour = max(0.0, float(getattr(config, "heart_knot_decay_per_hour", 0.0) or 0.0))
         for item in list(state.heart_knots or []):
             if not isinstance(item, dict):
+                continue
+            if not self._emotion_belongs(state, item):
+                keep.append(item)
                 continue
             last = float(item.get("at") or item.get("since") or now)
             hours = max(0.0, (float(now) - last) / 3600.0)
@@ -287,22 +311,12 @@ class RelationsMixin:
             if strength <= 0.02 or expired:
                 text = str(item.get("text") or "").strip()
                 if text:
-                    self.memory.remember(
-                        session_id=state.session_id,
-                        persona_id="",
-                        node_id=state.node_id,
-                        content=f"（心里搁过的事）{text}"[:120],
-                        memory_type=INNER,
-                        emotion=state.mood,
-                        weight=0.3,
-                        affect=state.affect,
-                        valence=state.valence,
-                    )
+                    self._archive_emotion(state, item, kind="heart_knot", content=f"（心里搁过的事）{text}", weight=.3)
                 continue
-            keep.append({**item, "strength": round(strength, 4), "at": float(now)})
+            keep.append({**item, "strength": strength, "at": max(last, float(now))})
         state.heart_knots = keep
 
-    def note_heart_knot(self, state: WorldState, text: str, about: str = "") -> None:
+    def note_heart_knot(self, state: WorldState, text: str, about: str = "", *, session_id: str = "") -> None:
         """记下一件心事（她自己在回复里写的，或者整理时发现的）。"""
 
         config = self.world.state_dynamics
@@ -316,11 +330,15 @@ class RelationsMixin:
         items = [
             item
             for item in list(state.heart_knots or [])
-            if str(item.get("text") or "").strip() != body
+            if (str(item.get("text") or "").strip() != body
+                or str(item.get("about") or "") != str(about or "")
+                or not self._emotion_visible(state, item, session_id))
         ]
         items.append(
             {
                 "text": body,
+                "session": self._emotion_origin(state, session_id),
+                "persona_key": self._matter_persona_key(state) or "",
                 "about": " ".join(str(about or "").split())[:20],
                 "strength": 0.7,
                 "since": now,
@@ -330,7 +348,9 @@ class RelationsMixin:
         )
         limit = max(1, int(getattr(config, "heart_knot_max", 2) or 2))
         # 超了先扔最旧的（新的那件说明她现在更在意）
-        state.heart_knots = items[-limit:]
+        own = [item for item in items if self._emotion_belongs(state, item)][-limit:]
+        state.heart_knots = [item for item in items if not self._emotion_belongs(state, item)] + own
+        state.heart_knots = state.heart_knots[-32:]
 
     def _person_places(self, state: WorldState, user_id: str) -> str:
         """这个人最近在哪个会话跟她说过话（"找他发到哪儿"）。"""

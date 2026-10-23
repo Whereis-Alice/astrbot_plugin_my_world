@@ -2578,7 +2578,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         await self.engine.handle_incoming(ctx)
         await self.engine.handle_reply(ctx)
         state = await self.get_state()
-        self.assertIsNotNone(self.engine.grudge_for(state, "9"))
+        _, current_persona_key = await self.engine._journal_persona(SESSION)
+        self.assertIsNotNone(self.engine.grudge_for(state, "9", persona_key=current_persona_key))
         self.assertEqual(len(state.own_topics), 1)
         self.assertIn("看照片", state.own_topics[0]["text"])
 
@@ -2588,7 +2589,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         await self.engine.handle_incoming(ctx2)
         await self.engine.handle_reply(ctx2)
         state = await self.get_state()
-        self.assertIsNone(self.engine.grudge_for(state, "9"))
+        self.assertIsNone(self.engine.grudge_for(state, "9", persona_key=current_persona_key))
 
     async def test_heart_knot_is_kept_then_fades(self):
         """心事挂着、会淡；淡没了就写进记忆放下。"""

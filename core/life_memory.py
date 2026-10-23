@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 import sqlite3
 import time
+from typing import Any
 
 LIFE_TYPES = frozenset({"scene", "event", "inner", "dream"})
 LIFE_SOURCES = frozenset({"runtime", "life_matter", "life_event", "preset", "manual", "import", "dream", "chat_browse"})
@@ -18,7 +19,10 @@ LIFE_DOMAIN = "my_world.life"
 LIFE_SQL = "type IN ('scene','event','inner','dream') AND source IN ('runtime','life_matter','life_event','preset','manual','import','dream','chat_browse')"
 # Stored JSON arrays are normalized by Database.add_memory. Private progress and
 # reading feelings must never be broadened by a shared world or a global recall.
-SOURCE_SCOPED_SQL = "(source='chat_browse' OR (source='life_matter' AND (coalesce(participants,'[]')!='[]' OR coalesce(related_users,'[]')!='[]')))"
+SOURCE_SCOPED_SQL = ("(source='chat_browse' OR (source='life_matter' AND "
+    "(coalesce(participants,'[]')!='[]' OR coalesce(related_users,'[]')!='[]')) OR "
+    "(source='runtime' AND coalesce(CASE WHEN json_valid(context) THEN json_extract(context,'$.kind') END,'') "
+    "IN ('heart_knot','grudge') AND coalesce(CASE WHEN json_valid(context) THEN json_extract(context,'$.source_scoped') END,0)=1))")
 RETIRED_MEMORY = {"dialogue_summary", "summary_trigger_messages", "summary_idle_minutes", "summary_on_move", "summary_max_chars"}
 RETIRED_CONTEXT = {"chat_overflow", "chat_compress_threshold", "chat_keep_after_compress", "summary_refresh_minutes"}
 RETIRED_STATE = {"pending_memory", "pending_memory_node", "memory_hints", "memory_flush_at", "memory_flush_wanted",
@@ -28,6 +32,17 @@ RETIRED_STATE = {"pending_memory", "pending_memory_node", "memory_hints", "memor
 def is_life_memory(row: dict) -> bool:
     kind, source = row.get("type", "scene"), row.get("source", "manual")
     return isinstance(kind, str) and isinstance(source, str) and kind in LIFE_TYPES and source in LIFE_SOURCES
+
+
+def scoped_emotion(source: str, context: Any) -> bool:
+    if source != "runtime":
+        return False
+    try:
+        meta = json.loads(context) if isinstance(context, str) else context
+    except (ValueError, TypeError):
+        return False
+    return (isinstance(meta, dict) and meta.get("kind") in {"heart_knot", "grudge"}
+            and meta.get("source_scoped") is True)
 
 
 def clean_memory_settings(data: dict) -> dict:

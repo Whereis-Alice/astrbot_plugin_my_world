@@ -10,6 +10,7 @@ from typing import Any
 
 from .db import Database
 from .models import WorldConfig
+from .life_memory import scoped_emotion
 
 SCENE = "scene"
 EVENT = "event"
@@ -115,7 +116,11 @@ class RecalledMemory:
 
     @property
     def source_scoped(self) -> bool:
-        return self.source == "chat_browse" or self.private_matter
+        return self.source == "chat_browse" or self.private_matter or self.private_emotion
+
+    @property
+    def private_emotion(self) -> bool:
+        return scoped_emotion(self.source, self.context)
 
     def render(self, *, stamp: str = "") -> str:
         """渲染成提示词里的一行；``stamp`` 是日期标签，例如 ``09-11``。"""
@@ -300,8 +305,10 @@ class MemoryEngine:
         origin = life_memory_metadata(source, context)
         for item in candidates:
             prior = life_memory_metadata(str(item.get("source") or ""), item.get("context"))
-            if (origin or prior) and (source, origin.get("persona_key", ""), origin.get("matter_id", "")) != (
-                    item.get("source"), prior.get("persona_key", ""), prior.get("matter_id", "")):
+            if (origin or prior) and (source, origin.get("persona_key", ""), origin.get("matter_id", ""),
+                                     origin.get("kind", ""), origin.get("emotion_user", "")) != (
+                    item.get("source"), prior.get("persona_key", ""), prior.get("matter_id", ""),
+                    prior.get("kind", ""), prior.get("emotion_user", "")):
                 continue
             other = _normalize(str(item.get("content", "")))
             if not other:
@@ -390,6 +397,7 @@ class MemoryEngine:
                 )
             return [row for row in rows
                     if (include_reading or row.get("source") != "chat_browse")
+                    and (include_private_matters or not scoped_emotion(row.get("source", ""), row.get("context")))
                     and (include_private_matters or row.get("source") != "life_matter"
                          or not (row.get("participants") or row.get("related_users")))]
 
@@ -535,6 +543,9 @@ class MemoryEngine:
                 continue  # Filter before relevance, semantic scores and selection traces.
             people = tuple(str(uid) for uid in (*row.get("related_users", []), *row.get("participants", [])))
             related = bool(set(people) & set(request.people))
+            if scoped_emotion(str(row.get("source") or ""), row.get("context")):
+                if request.task in {"plan", "sleep", "diary"} or (people and not related):
+                    continue
             if row.get("source") == "life_matter" and people:
                 if request.task in {"plan", "sleep", "diary"} or not related:
                     continue

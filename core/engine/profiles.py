@@ -235,7 +235,8 @@ class ProfilesMixin:
         return "\n\n".join(block for block in blocks if str(block or "").strip())
 
     def _apply_grudge_coldness(
-        self, state: WorldState, user_id: str, person: dict[str, Any], *, session_id: str = ""
+        self, state: WorldState, user_id: str, person: dict[str, Any], *, session_id: str = "",
+        persona_key: str | None = None
     ) -> dict[str, Any]:
         """她记着这个人的账 → 对他的**生效档位降一档**（关系、好感都不动）。
 
@@ -245,7 +246,7 @@ class ProfilesMixin:
         config = self.world.profile
         if not bool(getattr(config, "grudge_enabled", True)):
             return person
-        if self.grudge_for(state, user_id) is None:
+        if self.grudge_for(state, user_id, session_id=session_id, persona_key=persona_key) is None:
             return person
         drop = max(0, int(getattr(config, "grudge_level_drop", 1) or 0))
         levels = list(getattr(config, "levels", None) or [])

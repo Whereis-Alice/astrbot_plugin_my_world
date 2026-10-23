@@ -399,8 +399,8 @@ class CuddleMixin:
         if autonomy or include_life:
             parts.append(self._greet_hint(state))
             parts.append(self._outdoor_hint(state))
-        parts.append(self._heart_knot_block(state, ctx, autonomy=autonomy))
-        parts.append(self._grudge_block(state, ctx, autonomy=autonomy))
+        parts.append(self._heart_knot_block(state, ctx, autonomy=autonomy, persona_key=persona_key or None))
+        parts.append(self._grudge_block(state, ctx, autonomy=autonomy, persona_key=persona_key or None))
         if include_life:
             parts.append(self._own_topic_block(state, ctx, autonomy=autonomy, persona_key=persona_key))
         if autonomy:
@@ -668,7 +668,7 @@ class CuddleMixin:
         return ""
 
     def _heart_knot_block(
-        self, state: WorldState, ctx: Any = None, *, autonomy: bool = False
+        self, state: WorldState, ctx: Any = None, *, autonomy: bool = False, persona_key: str | None = None
     ) -> str:
         """「心里搁着的事」那一段：挂着、不推进，影响她说话的样子。
 
@@ -677,10 +677,14 @@ class CuddleMixin:
         自主决策那一路把名字带上（她可能要为此去找人）。
         """
 
+        if not self.world.state_dynamics.heart_knot_enabled:
+            return ""
         who = str(getattr(ctx, "user_id", "") or "")
         lines: list[str] = []
-        for item in list(state.heart_knots or [])[:3]:
+        for item in list(state.heart_knots or []):
             if not isinstance(item, dict):
+                continue
+            if not self._emotion_visible(state, item, str(getattr(ctx, "session_id", "") or ""), persona_key=persona_key):
                 continue
             text = str(item.get("text") or "").strip()
             if not text:
@@ -697,6 +701,8 @@ class CuddleMixin:
                 name = self._user_label(state, about)
                 label = f"（关于 {name}）" if name else ""
             lines.append(f"- {label}{text}{age}")
+            if len(lines) >= 3:
+                break
         if not lines:
             return ""
         return (

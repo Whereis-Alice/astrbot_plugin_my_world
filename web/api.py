@@ -1194,9 +1194,11 @@ class WebApiMixin(LifeApiMixin):
         # 「她想不想这个人」：通讯录里一眼能看到，不用去状态页翻
         state = await self.engine.load_state(session_id, cold_start=False)
         # 「她记着他一笔账」：记的账是分人的，这里只回这个人的那条
-        grudge = self.engine.grudge_for(state, user_id)
+        _, emotion_persona_key = await self.engine._journal_persona(session_id)
+        grudge = self.engine.grudge_for(state, user_id, session_id=session_id, persona_key=emotion_persona_key)
         if isinstance(payload.get("person"), dict):
-            payload["person"] = self.engine._apply_grudge_coldness(state, user_id, payload["person"], session_id=session_id)
+            payload["person"] = self.engine._apply_grudge_coldness(state, user_id, payload["person"],
+                session_id=session_id, persona_key=emotion_persona_key)
         payload["relationship"] = (payload.get("person") or {}).get("relationship", {})
         payload["grudge"] = (
             {
@@ -1692,7 +1694,7 @@ class WebApiMixin(LifeApiMixin):
                 if not ok:
                     return error_response("这笔账没能记下来（记仇关着吗？）")
             elif action == "resolve":
-                self.engine.resolve_grudge(state, user_id=user_id)
+                self.engine.resolve_grudge(state, user_id=user_id, session_id=session_id)
             elif action == "delete":
                 state.grudges = [
                     item
@@ -1700,6 +1702,7 @@ class WebApiMixin(LifeApiMixin):
                     if not (
                         isinstance(item, dict)
                         and str(item.get("user_id") or "") == user_id
+                        and self.engine._emotion_visible(state, item, session_id)
                     )
                 ]
             else:

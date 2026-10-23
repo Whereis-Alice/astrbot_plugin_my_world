@@ -940,7 +940,7 @@ class WorldState:
         else:
             self.grudges = [
                 dict(item) for item in self.grudges if isinstance(item, dict)
-            ][:8]
+            ][-32:]
         self.grudge_day = str(self.grudge_day or "")
         self.grudge_count = max(0, int(self.grudge_count or 0))
         if not isinstance(self.own_topics, list):
@@ -1184,7 +1184,7 @@ class WorldState:
                     "strength": max(0.0, min(1.0, strength)),
                 }
             )
-        self.heart_knots = knots[-4:]
+        self.heart_knots = knots[-32:]
         if not isinstance(self.pending_help, dict):
             self.pending_help = {}
         self.node_since = max(0.0, float(self.node_since or 0.0))
