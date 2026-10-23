@@ -25,6 +25,14 @@ astrbot_plugin_my_world/
 `main.py` 只做编排。测试替身在 `tests/fake_astrbot.py` 与
 `tests/stub_ports.py` 里，所以跑测试不需要装 AstrBot、也不碰真实数据目录。
 
+### 重构与维护边界
+
+`core/timeline.py` 保留日志和调试输出的公共入口；正文由 `core/timeline_renderers/` 按消息与表达、动作与日程、工具与平台、生活节奏、记忆、世界事件分派，格式化工具在 `common.py`。新增日志类型只放进对应职责并登记分派，不把全部类型重新塞回入口。正常文案、精简模式、扩展优先级和未知类型摘要保持兼容；异常历史字段只影响本条显示，不改写数据库或推断角色行为。`tests/test_timeline_resilience.py` 验证正式日志列表、导出、原始记录保留与会话范围，`tests/test_structure.py` 防止渲染再次集中为长函数。
+
+恢复配置的目标和门槛公式集中在 `core/recovery.py` 的 `recovery_target`、`recovery_needed`。两个函数只读取输入：是否采用活动恢复仍由调用方的模式决定，恢复意图的写入和清除仍由 `core/engine/recovery.py` 负责，危急事件、日程与直接聊天的优先级在原入口处理。规则候选的初始低精力判断和生活选择的持续恢复意图分别显式传入，避免重构时无意扩大门禁。改动恢复行为时，先跑 `tests/test_recovery.py` 和 `tests/test_life_review_round11_20261024.py` 中的实际入口回归。
+
+大型模块分次拆分，以可验证的职责为单位；保留已使用的公共导入，先对照旧实现，再跑调用方回归。不要仅以减少行数为目标，增加新的 mixin、全局状态或相互引用。
+
 ## 本地验证与测试
 
 ```powershell

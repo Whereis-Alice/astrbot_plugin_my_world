@@ -92,6 +92,19 @@ class EntryPointTest(unittest.TestCase):
             f"MyWorldEngine 本体只该留 __init__ 与几个入口方法，现在有：{methods}",
         )
 
+    def test_timeline_renderers_stay_focused(self) -> None:
+        """日志已按职责拆分，不再把所有事件塞回一个渲染函数。"""
+        paths = [ROOT / "core" / "timeline.py", *(ROOT / "core" / "timeline_renderers").glob("*.py")]
+        oversized = []
+        for path in paths:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    length = node.end_lineno - node.lineno + 1
+                    if length > 220:
+                        oversized.append(f"{path.name}:{node.name}: {length} 行")
+        self.assertEqual([], oversized, "日志渲染又集中到一个大函数，请按职责拆分：" + str(oversized))
+
     def test_api_handlers_live_in_the_mixin(self) -> None:
         tree = ast.parse((ROOT / "main.py").read_text(encoding="utf-8"))
         plugin = next(

@@ -2,6 +2,24 @@
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .models import SleepConfig
+
+
+def recovery_target(config: SleepConfig) -> float:
+    """A recovery cannot end below the threshold that would start it again."""
+    return max(config.recovery_threshold, config.recovery_target)
+
+
+def recovery_needed(energy: float, config: SleepConfig, *, recovering: bool = False) -> bool:
+    """Start below the threshold; an existing intent continues to its target.
+
+    This only reads state. The recovery executor owns setting/clearing intent,
+    and callers retain their own activity/sleep mode and priority checks.
+    """
+    return energy < config.recovery_threshold or (recovering and energy < recovery_target(config))
 
 
 def sleep_action_kind(action) -> str:
@@ -64,7 +82,7 @@ def recovery_seconds(action, energy: float, world, state=None) -> int:
     # Non-sleeping recovery still pays normal energy use. Ignore calming-area
     # bonuses when estimating so the plan does not depend on invented recovery.
     rate -= recovery_cost(action, world, state)
-    wanted = max(world.sleep.recovery_threshold, world.sleep.recovery_target) - energy - bonus
+    wanted = recovery_target(world.sleep) - energy - bonus
     return min(high, max(low, math.ceil(max(0, wanted) / rate * 60))) if rate > 0 else low
 
 

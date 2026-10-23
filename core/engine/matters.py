@@ -18,6 +18,7 @@ from ..models import LIFE_SIMULATION_ACTION
 from ..model_calls import model_context
 from ..pathfinding import find_path
 from ..planner import create_plan
+from ..recovery import recovery_needed
 from ..state import WorldState
 from .models import TickOutcome
 
@@ -38,10 +39,8 @@ class MattersMixin:
         minutes = [row["in_minutes"] for row in schedules if row is not None]
         recovery_required = None
         if self.world.sleep.mode == "activity":
-            config = self.world.sleep
-            recovery_required = state.energy < config.recovery_threshold or (
-                bool(state.sleep_rhythm.get("recovering"))
-                and state.energy < max(config.recovery_threshold, config.recovery_target))
+            recovery_required = recovery_needed(state.energy, self.world.sleep,
+                                                 recovering=bool(state.sleep_rhythm.get("recovering")))
         return choose_life(state, now=self._now(), critical=bool(thread and self._thread_critical(thread)),
                            schedule_minutes=min(minutes) if minutes else None,
                            sleep_requested=self.world.sleep.mode == "autonomous", persona_key=persona_key,

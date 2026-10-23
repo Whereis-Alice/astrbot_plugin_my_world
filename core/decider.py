@@ -15,7 +15,7 @@ from .mood import DAY_BRANCH_KEYS, day_mood_branches
 from .pathfinding import find_path
 from .planner import active_plan, create_plan
 from .state import WorldState
-from .recovery import is_sleep_action, sleep_action_kind
+from .recovery import is_sleep_action, sleep_action_kind, recovery_needed
 
 # 「回复意愿」各项权重：越孤独、越无聊、心潮越高，越想说点什么；
 # 累、正在睡、刚被冷落都会把意愿压下去。
@@ -308,7 +308,7 @@ class Decider:
         graph = self.world.adjacent()
         home = self.world.default_node_id()
 
-        if self.world.sleep.mode == "activity" and state.energy < self.world.sleep.recovery_threshold:
+        if self.world.sleep.mode == "activity" and recovery_needed(state.energy, self.world.sleep):
             recovery = self.recovery_plan(state)
             if recovery:
                 return recovery

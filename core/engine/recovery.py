@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from ..planner import active_plan
-from ..recovery import is_sleep_action, restores_energy, recovery_gain
+from ..recovery import is_sleep_action, restores_energy, recovery_gain, recovery_needed, recovery_target
 
 
 class RecoveryMixin:
@@ -70,11 +70,10 @@ class RecoveryMixin:
 
     async def tick_activity_recovery(self, state, outcome) -> None:
         config = self.world.sleep
-        target = max(config.recovery_threshold, config.recovery_target)
-        if state.energy >= target:
+        if state.energy >= recovery_target(config):
             state.sleep_rhythm.pop("recovering", None)
             return
-        if state.energy < config.recovery_threshold:
+        if recovery_needed(state.energy, config):
             state.sleep_rhythm["recovering"] = True
         if not state.sleep_rhythm.get("recovering"):
             return
