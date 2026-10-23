@@ -98,7 +98,10 @@ class CommandsMixin:
             state = await self.load_state(session_id, cold_start=False)
         except Exception:
             return 0.0
-        info = state.pending_help or {}
+        _, key = await self._journal_persona(session_id)
+        info = self._pending_event_help(state, key)
+        if str(info.get("session") or state.session_id) != session_id:
+            return 0.0
         if str(info.get("state") or "") != "active":
             return 0.0
         try:
@@ -162,6 +165,8 @@ class CommandsMixin:
             thread = self._thread_by_id(state, thread_id) if thread_id else self._active_thread(state)
             if thread is None:
                 note = "她现在没有没完的事"
+            elif not self._event_belongs(state, thread):
+                note = "这件事属于另一份人设，切回原人设后再推进"
             elif str(thread.get("status") or "open") != "open":
                 note = "这件事已经完结了"
             elif self._thread_waiting_help(state, thread):
@@ -205,6 +210,8 @@ class CommandsMixin:
             thread = self._thread_by_id(state, thread_id) if thread_id else self._active_thread(state)
             if thread is None:
                 return "她现在没有正在进行的事"
+            if not self._event_belongs(state, thread):
+                return "这件事属于另一份人设，切回原人设后再完结"
             if str(thread.get("status") or "open") != "open":
                 return "这件事已经完结了"
             now = self._event_time()
@@ -214,9 +221,10 @@ class CommandsMixin:
             thread["pending_followup"] = ""
             thread["next_step_at"] = 0.0
             # 正在等群友回话的那条一起放掉：不然下一次有人说话还会被她当成"在帮忙"
-            info = dict(state.pending_help or {})
+            info = dict(self._pending_event_help(state))
             if str(info.get("thread_id") or "") == str(thread.get("id") or ""):
-                state.pending_help = {}
+                self._set_event_help(state, {})
+            thread["pending_help"] = {}
             content = f"（{title}）这件事就到这里了"
             settled = str(thread.get("line") or "").strip()
             if settled:
@@ -227,6 +235,8 @@ class CommandsMixin:
                 node_id=str(thread.get("place") or state.node_id),
                 content=content,
                 memory_type=SCENE,
+                source="life_event",
+                context=self._event_memory_context(thread, content),
                 emotion=state.mood,
                 weight=0.3,
                 affect=state.affect,
@@ -242,7 +252,7 @@ class CommandsMixin:
     def _thread_waiting_help(self, state: WorldState, thread: dict[str, Any]) -> bool:
         """这条线索是不是正等着群友拿主意。"""
 
-        info = state.pending_help or {}
+        info = self._pending_event_help(state)
         if str(info.get("state") or "") not in ("active", "idle"):
             return False
         return str(info.get("thread_id") or "") == str(thread.get("id") or "")
@@ -256,11 +266,12 @@ class CommandsMixin:
 
         state = await self.load_state(session_id, cold_start=False)
         values = normalize_abilities(state.abilities or self.world.abilities.initial)
-        threads = [item for item in list(state.event_threads or []) if isinstance(item, dict)]
+        _, key = await self._journal_persona(session_id)
+        threads = self._event_threads(state, key)
         opened = [item for item in threads if str(item.get("status") or "open") == "open"]
-        info = state.pending_help or {}
+        info = self._pending_event_help(state, key)
         now = self._event_time()
-        active = self._active_thread(state)
+        active = self._active_thread(state, key)
         active_id = str((active or {}).get("id") or "")
         help_thread_id = str(info.get("thread_id") or "")
         help_state = str(info.get("state") or "")

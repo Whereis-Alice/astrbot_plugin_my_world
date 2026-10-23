@@ -200,7 +200,7 @@ class LifeControlMixin:
                         "status": row.get("status"), "matter_id": row.get("matter_linked", ""),
                         "next": row.get("pending_followup", ""), "at": row.get("updated_at") or row.get("started_at") or row.get("created_at") or 0,
                         "result": str((row.get("steps") or [{}])[-1].get("result") or "")[:200]}
-                       for row in state.event_threads[-12:] if (row.get("session") or state.session_id) == session]
+                       for row in self._event_threads(state)[-12:] if (row.get("session") or state.session_id) == session]
         return {"day": day, "agenda": sorted(agenda, key=lambda row: (row["time"], row["id"])),
                 "experiences": list(reversed(experiences)), "rhythms": matters.routine_hints(state, now=self._now()),
                 "resume": {"reason": state.life_resume.get("reason"), "at": state.life_resume.get("at")} if state.life_resume else {}}

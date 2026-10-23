@@ -91,10 +91,11 @@ class WeatherMixin:
         except Exception:
             return notes
         # 能力值给的是人话；心里挂着的事按需注入（没挂着就整段不出现）
+        _, persona_key = await self._journal_persona(session_id)
         notes["abilities_line"] = self.abilities_line(state)
-        notes["pending_event"] = self.pending_event_line(state)
+        notes["pending_event"] = self.pending_event_line(state, persona_key)
         # 她自己的账：正在经历 / 最近发生在我身上的事 / 还挂着的（窗口外的不出现）
-        notes["event_journal"] = self.event_journal(state)
+        notes["event_journal"] = self.event_journal(state, persona_key=persona_key)
         return notes
 
     async def _recent_search_line(self, session_id: str) -> str:

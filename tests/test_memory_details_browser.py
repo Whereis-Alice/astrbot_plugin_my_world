@@ -75,3 +75,23 @@ class MemoryDetailsBrowserTests(unittest.TestCase):
         self.page.locator('#dialog-ok').click()
         self.release()
         expect(self.page.locator('#dialog')).to_be_hidden()
+
+    def test_event_detail_shows_original_experience_instead_of_internal_metadata(self):
+        self.page.evaluate('''() => {
+          const reply = recordReply;
+          window.recordReply = (key, params) => {
+            const result = reply(key, params);
+            if (key === 'memories') result.memories[0] = {...result.memories[0], tier:'gist', source:'life_event',
+              context:JSON.stringify({persona_key:'internal_character_key', event_id:'internal_thread_key', original:'下午试着打开盒子，还没有成功'})};
+            return result;
+          };
+        }''')
+        self.open_page('memories')
+        expect(self.page.locator('#memory-list')).to_contain_text('甲的生活记忆')
+        self.page.locator('#memory-list').get_by_role('button', name='详情', exact=True).click()
+        expect(self.page.locator('#dialog')).to_be_visible()
+        body = self.page.locator('#dialog-body')
+        expect(body).to_contain_text('下午试着打开盒子，还没有成功')
+        expect(body).to_contain_text('生活事件')
+        expect(body).not_to_contain_text('persona_key')
+        expect(body).not_to_contain_text('internal_thread_key')

@@ -9,6 +9,8 @@ from datetime import (
     timedelta,
 )
 from typing import Any
+import copy
+import json
 from ..event_rhythm import TONES, in_event_hours, pick_tone
 from ..events import (
     ABILITIES,
@@ -68,6 +70,67 @@ class EventsMixin:
     # 生成和结算走打杂 / 生成器模型，只有「她怎么选」用主模型——那是角色性最强的一步。
     # 判定是纯计算，不调模型：所以这四个步骤都写得进日志，也都能单独测。
 
+    def _event_belongs(self, state: WorldState, thread: dict, persona_key: str | None = None) -> bool:
+        key = self._matter_persona_key(state) if persona_key is None else persona_key
+        return not key or not thread.get("persona_key") or thread["persona_key"] == key
+
+    def _event_threads(self, state: WorldState, persona_key: str | None = None) -> list[dict]:
+        return [row for row in state.event_threads if isinstance(row, dict)
+                and self._event_belongs(state, row, persona_key)]
+
+    def _pending_event_help(self, state: WorldState, persona_key: str | None = None) -> dict:
+        info = state.pending_help or {}
+        thread = self._thread_by_id(state, str(info.get("thread_id") or ""))
+        if (info and self._event_belongs(state, info, persona_key)
+                and (thread is None or self._event_belongs(state, thread, persona_key))):
+            return info
+        # Preserve waiting help on its own thread when another character asks.
+        for row in reversed(self._event_threads(state, persona_key)):
+            saved = row.get("pending_help") or {}
+            if row.get("status") == "open" and saved.get("state") in {"active", "idle"}:
+                return saved
+        return {}
+
+    def _set_event_help(self, state: WorldState, info: dict) -> None:
+        previous = state.pending_help or {}
+        old = self._thread_by_id(state, str(previous.get("thread_id") or ""))
+        current = self._pending_event_help(state)
+        if info:
+            if old and previous.get("thread_id") != info.get("thread_id"):
+                old["pending_help"] = copy.deepcopy(previous)
+            state.pending_help = info
+            thread = self._thread_by_id(state, str(info.get("thread_id") or ""))
+        else:
+            thread = self._thread_by_id(state, str(current.get("thread_id") or ""))
+            if current is previous:
+                state.pending_help = {}
+        if thread:
+            thread["pending_help"] = copy.deepcopy(info)
+
+    def _append_event_digest(self, state: WorldState, lines: list[str], *, keep: int = 12) -> None:
+        known = {row["text"] for row in state.event_digest_entries}
+        entries = [*({"text": text} for text in state.event_digest if text not in known),
+                   *state.event_digest_entries]
+        key = self._matter_persona_key(state)
+        entries.extend({"text": text, "persona_key": key or ""} for text in lines if text)
+        state.event_digest_entries = entries[-keep:]
+        state.event_digest = [row["text"] for row in state.event_digest_entries]
+
+    def _event_digest_for(self, state: WorldState, persona_key: str | None = None) -> list[str]:
+        known = {row["text"] for row in state.event_digest_entries}
+        legacy = [text for text in state.event_digest if text not in known]
+        return [*legacy, *(row["text"] for row in state.event_digest_entries
+                          if self._event_belongs(state, row, persona_key))]
+
+    def _consume_event_digest(self, state: WorldState) -> None:
+        state.event_digest_entries = [row for row in state.event_digest_entries
+                                     if not self._event_belongs(state, row)]
+        state.event_digest = [row["text"] for row in state.event_digest_entries]
+
+    def _event_memory_context(self, thread: dict, original: str = "") -> str:
+        return json.dumps({"persona_key": thread.get("persona_key") or "", "event_id": thread.get("id") or "",
+                           "original": original}, ensure_ascii=False)
+
     def abilities_line(self, state: WorldState) -> str:
         """能力值那一行（人话，不是数字）。按需注入：关掉能力值就整段不出现。"""
 
@@ -90,10 +153,10 @@ class EventsMixin:
             + "（这是你平时的手感，用来判断一件事对你难不难；不用说出来）"
         )
 
-    def pending_event_line(self, state: WorldState) -> str:
+    def pending_event_line(self, state: WorldState, persona_key: str | None = None) -> str:
         """心里挂着的事：等待协助、或者手头还有没完的线索。"""
 
-        info = state.pending_help or {}
+        info = self._pending_event_help(state, persona_key)
         stage = str(info.get("state") or "")
         title = str(info.get("title") or "那件事")
         if stage == "active":
@@ -108,7 +171,7 @@ class EventsMixin:
                 f"{title} 这件事还没解决，但你已经不催了。有人提起就接一句，"
                 "没人提就先放着，别反复提。"
             )
-        open_ones = [item for item in open_threads(state.event_threads) if item.get("pending_followup")]
+        open_ones = [item for item in open_threads(self._event_threads(state, persona_key)) if item.get("pending_followup")]
         if open_ones:
             lines = [f"- {item.get('title') or '一件事'}：{item.get('pending_followup')}" for item in open_ones[:2]]
             return "# 手头没完的事\n" + "\n".join(lines)
@@ -369,18 +432,18 @@ class EventsMixin:
                 return item
         return pool[-1][0]
 
-    def _active_thread(self, state: WorldState) -> dict[str, Any] | None:
+    def _active_thread(self, state: WorldState, persona_key: str | None = None) -> dict[str, Any] | None:
         """正在进行中的那件事（同一时间只允许一件）。
 
         优先返回"她正在等群友拿主意"的那条；否则返回最近开的那条未完结线索。
         """
 
-        info = state.pending_help or {}
+        info = self._pending_event_help(state, persona_key)
         if str(info.get("state") or "") in ("active", "idle"):
             found = self._thread_by_id(state, str(info.get("thread_id") or ""))
             if found is not None:
                 return found
-        opened = open_threads(state.event_threads)
+        opened = open_threads(self._event_threads(state, persona_key))
         if not opened:
             return None
         return max(opened, key=lambda item: float(item.get("opened_at") or 0.0))
@@ -450,7 +513,7 @@ class EventsMixin:
             return f"前天 {clock}"
         return f"{moment.strftime('%m-%d')} {clock}"
 
-    def event_journal(self, state: WorldState, now: float | None = None) -> str:
+    def event_journal(self, state: WorldState, now: float | None = None, *, persona_key: str | None = None) -> str:
         """她自己的账（三段），直接进提示词。
 
         - **我正在经历**：当前那一件事的详细处境；
@@ -467,8 +530,8 @@ class EventsMixin:
             return ""
         window = max(0.0, float(getattr(config, "recent_window_hours", 24.0) or 0.0)) * 3600.0
         limit = max(0, int(getattr(config, "recent_max_lines", 8) or 0))
-        threads = [item for item in list(state.event_threads or []) if isinstance(item, dict)]
-        active = self._active_thread(state)
+        threads = self._event_threads(state, persona_key)
+        active = self._active_thread(state, persona_key)
         suspended = active is not None and self._thread_suspended(state, active, moment)
         detailed = active if (active is not None and not suspended) else None
         detailed_id = str((detailed or {}).get("id") or "")
@@ -626,8 +689,9 @@ class EventsMixin:
 
         if not isinstance(thread, dict):
             return False
-        info = state.pending_help or {}
-        if str(info.get("state") or "") in ("active", "idle"):
+        info = self._pending_event_help(state)
+        if (str(info.get("state") or "") in ("active", "idle")
+                and str(info.get("thread_id") or "") == str(thread.get("id") or "")):
             return False  # 正在等群友回话，算"正在经历"
         when = float(thread.get("next_step_at") or 0.0)
         if when <= 0:
@@ -827,6 +891,11 @@ class EventsMixin:
             package.place = place_key
             package.place_name = place_name
             thread = new_thread(package, now=self._event_time(), scope=SCOPE_SESSION)
+            from .life_inference import STATE_LEASE
+            origin = str((STATE_LEASE.get() or {}).get("origin") or state.session_id)
+            thread["session"] = origin
+            thread["persona_key"] = (self._matter_persona_key(state)
+                                     or (await self._journal_persona(origin))[1])
             if source == "roll":
                 state.auto_event_count += 1
                 state.auto_event_failures = 0
@@ -1099,8 +1168,10 @@ class EventsMixin:
         if not lines:
             lines = await self._compose_help_lines(state, package)
         lines = lines[: self._event_say_limit("ask")]
-        state.pending_help = {
+        self._set_event_help(state, {
             "thread_id": thread.get("id"),
+            "persona_key": thread.get("persona_key") or "",
+            "session": outcome.home(),
             "title": package.title,
             "state": "active",
             "asked_at": float(now),
@@ -1110,7 +1181,7 @@ class EventsMixin:
             "suggestions": [],
             # 她当时是怎么问的：等没人接、要写那句自我圆场时得知道上文
             "asked": " / ".join(lines)[:120],
-        }
+        })
         for line in lines:
             outcome.add_speech(line, kind="event")
         await self._log_event(
@@ -1325,10 +1396,7 @@ class EventsMixin:
                 state.mood = self.dynamics.derive_mood(state)
         if settlement.outcome:
             keep = max(1, int(getattr(config, "event_digest_lines", 12) or 12))
-            state.event_digest = [
-                *list(state.event_digest or []),
-                f"{package.title}：{settlement.outcome}",
-            ][-keep:]
+            self._append_event_digest(state, [f"{package.title}：{settlement.outcome}"], keep=keep)
         if settlement.memory or settlement.outcome:
             # 记忆记在**事件发生的地点**，不是她此刻的位置：
             # 否则"在窗边"会把逛街被跟的事记进窗边，以后按地点根本搜不到。
@@ -1342,6 +1410,8 @@ class EventsMixin:
                 node_id=place_key,
                 content=content,
                 memory_type=SCENE,
+                source="life_event",
+                context=self._event_memory_context(thread, content),
                 emotion=state.mood,
                 weight=0.4,
                 affect=state.affect,
@@ -1588,10 +1658,7 @@ class EventsMixin:
         if result:
             # 微事件群里不主动说，但会进"这段时间发生的事"，动作完成续说时顺口带一句
             keep = max(1, int(getattr(self.world.events, "event_digest_lines", 12) or 12))
-            state.event_digest = [
-                *list(state.event_digest or []),
-                f"{package.title}：{result}",
-            ][-keep:]
+            self._append_event_digest(state, [f"{package.title}：{result}"], keep=keep)
         if package.memory or result:
             place_key, place_name = self._event_place(package, state)
             content = str(package.memory or result)[:120]
@@ -1603,6 +1670,8 @@ class EventsMixin:
                 node_id=place_key,
                 content=content,
                 memory_type=SCENE,
+                source="life_event",
+                context=self._event_memory_context(thread, content),
                 emotion=state.mood,
                 weight=0.25,
                 affect=state.affect,

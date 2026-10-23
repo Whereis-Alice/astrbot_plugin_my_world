@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -907,8 +906,8 @@ def parse_suggestions(text: str) -> Suggestions | None:
 
 
 def new_thread_id(now: float | None = None) -> str:
-    stamp = int(float(now if now is not None else time.time()))
-    return f"th{stamp % 1000000}"
+    from uuid import uuid4
+    return "th" + uuid4().hex
 
 
 def new_thread(

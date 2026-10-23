@@ -21277,8 +21277,12 @@ async function openMemoryDetail(memory) {
     ["整理状态", memory.tier === "gist" ? "已整理成要点" : "原文（还没整理）"],
     ["内容", String(memory.content || "")],
   ];
-  if (String(memory.context || "").trim()) {
-    rows.push(["整理前的原文", String(memory.context)]);
+  let original = String(memory.context || "");
+  if (memory.source === "life_event") {
+    try { original = String(JSON.parse(original).original || ""); } catch (_) { original = ""; }
+  }
+  if (original.trim()) {
+    rows.push(["整理前的原文", original]);
   }
   rows.push(
     ["类型 / 作用域", `${memory.type || ""} · ${memory.scope || ""}`],
@@ -21286,7 +21290,7 @@ async function openMemoryDetail(memory) {
     ["相关的人", (memory.related_users || []).join("、") || "无"],
     ["参与者", (memory.participants || []).join("、") || "无"],
     ["情绪 / 权重", `${memory.emotion || "无"} · ${Number(memory.weight || 0).toFixed(2)}`],
-    ["来源", memory.source || "runtime"],
+    ["来源", memory.source === "life_event" ? "生活事件" : memory.source || "runtime"],
     ["写入时间", memoryStamp(memory.created_at)],
     ["整理时间", memory.folded_at ? memoryStamp(memory.folded_at) : "没整理过"],
     [

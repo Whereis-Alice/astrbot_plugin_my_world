@@ -486,6 +486,7 @@ class WorldState:
     """为了事件熬夜到什么时候（世界时间）：这段时间里精力掉得更快。"""
 
     event_digest: list[str] = field(default_factory=list)
+    event_digest_entries: list[dict[str, Any]] = field(default_factory=list)
     """这段时间发生的事（一行一条）；动作完成续说时带出来，然后清空。"""
 
     pending_help: dict[str, Any] = field(default_factory=dict)
@@ -1141,6 +1142,12 @@ class WorldState:
             self.event_digest = [
                 " ".join(str(item).split()) for item in self.event_digest if str(item).strip()
             ][-40:]
+        self.event_digest_entries = [
+            {"text": " ".join(str(row.get("text") or "").split()),
+             "persona_key": str(row.get("persona_key") or "")}
+            for row in (self.event_digest_entries if isinstance(self.event_digest_entries, list) else [])
+            if isinstance(row, dict) and str(row.get("text") or "").strip()
+        ][-40:]
         # 上一轮的口吻：只认白名单，写坏的当没判过
         tone = str(self.last_user_tone or "").strip().lower()
         self.last_user_tone = (

@@ -864,7 +864,7 @@ class ScheduleMixin:
                     if chain_labels:
                         brief.append("这条日程要做的事（按顺序）：" + " → ".join(chain_labels))
                     if brief:
-                        state.event_digest = [*list(state.event_digest or []), *brief][-6:]
+                        self._append_event_digest(state, brief, keep=6)
                     # Once execution begins, never replay external effects after a
                     # cancellation. The original claimed slot remains consumed.
                     state.schedule_delays.pop(schedule.id, None)
@@ -981,7 +981,7 @@ class ScheduleMixin:
             if manual_labels:
                 manual_brief.append("这条日程要做的事（按顺序）：" + " → ".join(manual_labels))
             if manual_brief:
-                state.event_digest = [*list(state.event_digest or []), *manual_brief][-6:]
+                self._append_event_digest(state, manual_brief, keep=6)
             status = await self._run_chain(state, chain, outcome, depth=0, plan_source="manual")
             self._note_schedule_progress(state, manual_labels, status, outcome)
             # 手动跑一次也算"上次执行"：编辑器里试跑之后，提示词里就能看到时间
@@ -1036,7 +1036,7 @@ class ScheduleMixin:
             "skipped": "日程未执行，有步骤跳过",
         }.get(status, "日程已触发，完成情况请查看执行过程")
         note = text + ("：" + " → ".join(labels) if labels else "")
-        state.event_digest = [*list(state.event_digest or []), note][-6:]
+        self._append_event_digest(state, [note], keep=6)
         outcome.notes.append(text)
 
     def expand_chain_for_travel(self, state: WorldState, chain: list[Any]) -> list[Any]:

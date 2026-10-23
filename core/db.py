@@ -565,11 +565,18 @@ class Database(
         due_review_before: float | None = None,
         source_session: str | None = None,
         exclude_source_scoped: bool = False,
+        life_persona_key: str | None = None,
         limit: int = 200,
         order: str = "created_at DESC",
     ) -> list[dict[str, Any]]:
         sql = "SELECT * FROM node_memory WHERE " + LIFE_SQL
         params: list[Any] = []
+        if life_persona_key is not None:
+            # Filter ownership before LIMIT so foreign records cannot starve
+            # the current character's recall or sleep review. Legacy text stays valid.
+            sql += (" AND (source NOT IN ('life_matter','chat_browse','life_event') OR "
+                    "coalesce(CASE WHEN json_valid(context) THEN json_extract(context,'$.persona_key') END,'') IN ('',?))")
+            params.append(life_persona_key)
         if exclude_source_scoped:
             sql += " AND NOT " + SOURCE_SCOPED_SQL
         elif source_session is not None:

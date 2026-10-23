@@ -22,6 +22,7 @@ class RecallMixin:
         import json
         from ..json_actions import extract_json_object
         from ..life_memory import is_life_memory
+        from hashlib import sha256
 
         world, owner = self.world, self.state_key(session_id)
         persona = await self._persona_text(session_id)
@@ -29,8 +30,9 @@ class RecallMixin:
         rerank = self.world.memory.life_rerank and bool(topic)
         items = self.memory.recall(session_id=session_id, persona_id=persona_id, keyword=topic,
                                    strict_keyword=bool(topic), mode="group", limit=12 if rerank else 5,
-                                   include_reading=True, include_private_matters=True)
-        fields = ("content", "type", "source", "session_id", "persona_id", "scope", "node_id", "created_at")
+                                   include_reading=True, include_private_matters=True,
+                                   life_persona_key=sha256(persona.encode("utf-8")).hexdigest()[:24])
+        fields = ("content", "context", "type", "source", "session_id", "persona_id", "scope", "node_id", "created_at")
         snapshots = {}
         allowed_sessions = set(self.group_sessions(session_id))
         for item in items:
@@ -128,7 +130,8 @@ class RecallMixin:
             per_user[key] = per_user.get(key, 0) + 1
         picked: list[dict[str, Any]] = []
         rows = self.memory.due_reviews(
-            session_ids=self.group_sessions(state.session_id), now=now, limit=8
+            session_ids=self.group_sessions(state.session_id), now=now, limit=8,
+            life_persona_key=self._matter_persona_key(state),
         )
         for row in rows:
             user_id = next(

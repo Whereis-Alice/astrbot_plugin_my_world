@@ -231,6 +231,8 @@ class SnapshotMixin:
         if live_card and owner:
             if await self.align_owned_nickname(session_id, live_card):
                 state = await self.load_state(session_id, cold_start=False)
+        _, event_persona = await self._journal_persona(session_id)
+        event_help = self._pending_event_help(state, event_persona)
         return {
             "session_id": session_id,
             "world_time": state.world_time,
@@ -341,19 +343,18 @@ class SnapshotMixin:
                     "next_step_at": item.get("next_step_at"),
                     "updated_at": item.get("updated_at"),
                 }
-                for item in list(state.event_threads or [])[-4:][::-1]
-                if isinstance(item, dict)
+                for item in self._event_threads(state, event_persona)[-4:][::-1]
             ],
             "pending_help": {
-                "state": str((state.pending_help or {}).get("state") or ""),
-                "title": str((state.pending_help or {}).get("title") or ""),
+                "state": str(event_help.get("state") or ""),
+                "title": str(event_help.get("title") or ""),
                 "until": float(
-                    (state.pending_help or {}).get("active_until")
-                    or (state.pending_help or {}).get("idle_until")
+                    event_help.get("active_until")
+                    or event_help.get("idle_until")
                     or 0.0
                 ),
             },
-            "event_digest": list(state.event_digest or []),
+            "event_digest": self._event_digest_for(state, event_persona),
             "events_enabled": bool(getattr(self.world.events, "enabled", True)),
             # 本会话近期消息与话题备忘，编辑器可查看和清空。
             **self._chat_counts(state, session_id),

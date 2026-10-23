@@ -128,8 +128,12 @@ class RecalledMemory:
         suffix = f"（{self.emotion}）" if self.emotion else ""
         detail = ""
         if self.tier == "gist" and self.context:
+            original = self.context
+            if self.source == "life_event":
+                from .context_sources import life_memory_metadata
+                original = str(life_memory_metadata(self.source, self.context).get("original") or "")
             # 要点 + 当时那句原话：她记得住结论，也说得清细节
-            detail = f"｜当时：{_one_line(self.context, 80)}"
+            detail = f"｜当时：{_one_line(original, 80)}" if original else ""
         return f"- {prefix}{self.content}{suffix}{detail}"
 
 
@@ -235,7 +239,7 @@ class MemoryEngine:
 
         conflict = self._find_conflict(
             session_id=session_id, persona_id=persona_id, node_id=node_id, content=text,
-            memory_type=memory_type, scope=scope,
+            memory_type=memory_type, scope=scope, source=source, context=context,
         )
         if conflict is not None:
             if conflict.get("pinned") and not pinned:
@@ -276,7 +280,7 @@ class MemoryEngine:
 
     def _find_conflict(
         self, *, session_id: str, persona_id: str, node_id: str, content: str,
-        memory_type: str, scope: str,
+        memory_type: str, scope: str, source: str = "runtime", context: str = "",
     ) -> dict[str, Any] | None:
         """找出与待写入内容冲突的旧记忆。"""
 
@@ -285,7 +289,13 @@ class MemoryEngine:
             memory_type=memory_type, scope=scope, limit=200,
         )
         normalized = _normalize(content)
+        from .context_sources import life_memory_metadata
+        origin = life_memory_metadata(source, context)
         for item in candidates:
+            prior = life_memory_metadata(str(item.get("source") or ""), item.get("context"))
+            if (origin or prior) and (source, origin.get("persona_key", ""), origin.get("matter_id", "")) != (
+                    item.get("source"), prior.get("persona_key", ""), prior.get("matter_id", "")):
+                continue
             other = _normalize(str(item.get("content", "")))
             if not other:
                 continue
@@ -328,6 +338,7 @@ class MemoryEngine:
         record_hits: bool = True,
         include_reading: bool = False,
         include_private_matters: bool = False,
+        life_persona_key: str | None = None,
     ) -> list[RecalledMemory]:
         """召回记忆。返回按分数降序的结果。
 
@@ -361,13 +372,14 @@ class MemoryEngine:
                 memory_type=memory_type,
                 session_ids=wanted_sessions,
                 text_terms=terms,
+                life_persona_key=life_persona_key,
             )
             # Unknown-persona compatibility stays inside the current life group.
             if not rows and fallback and not persona_id:
                 rows = self._query(
                     session_id, persona_id, SCOPE_GROUP, node_id,
                     nodes=wanted_nodes, memory_type=memory_type,
-                    session_ids=wanted_sessions, text_terms=terms,
+                    session_ids=wanted_sessions, text_terms=terms, life_persona_key=life_persona_key,
                 )
             return [row for row in rows
                     if (include_reading or row.get("source") != "chat_browse")
@@ -493,12 +505,13 @@ class MemoryEngine:
         # Text predicates run before LIMIT, so an older match survives a busy month.
         terms = search_terms(request.query)
         candidates = self._query(request.session, request.persona, mode,
-                                 session_ids=sessions, text_terms=terms[:128]) if terms else []
-        candidates += self._query(request.session, request.persona, mode, session_ids=sessions)
+                                 session_ids=sessions, text_terms=terms[:128], life_persona_key=request.life_persona) if terms else []
+        candidates += self._query(request.session, request.persona, mode, session_ids=sessions,
+                                  life_persona_key=request.life_persona)
         if node_id:
             candidates += [row for row in self.db.query_memories(
                 source_session=request.session, session_ids=sessions, scope=SCOPE_NODE,
-                node_id=node_id, limit=100)
+                node_id=node_id, limit=100, life_persona_key=request.life_persona)
                 if not request.persona or not row.get("persona_id") or row.get("persona_id") == request.persona]
         candidates = _dedupe(candidates)
         semantic: dict[int, float] = {}
@@ -557,6 +570,7 @@ class MemoryEngine:
         memory_type: str = "",
         session_ids: list[str] | None = None,
         text_terms: list[str] | None = None,
+        life_persona_key: str | None = None,
     ) -> list[dict[str, Any]]:
         """按作用域模式取候选记忆。
 
@@ -584,6 +598,7 @@ class MemoryEngine:
                 scope=SCOPE_NODE,
                 memory_type=memory_type or None,
                 text_terms=text_terms,
+                life_persona_key=life_persona_key,
                 limit=200,
             )
             rows.extend(
@@ -603,7 +618,7 @@ class MemoryEngine:
                     self.db.query_memories(
                         source_session=session_id,
                         scope=scope, memory_type=memory_type or None,
-                        text_terms=text_terms, limit=500
+                        text_terms=text_terms, limit=500, life_persona_key=life_persona_key
                     )
                 )
 
@@ -613,7 +628,7 @@ class MemoryEngine:
                 for item in self.db.query_memories(
                     source_session=session_id,
                     session_ids=scoped, memory_type=memory_type or None,
-                    text_terms=text_terms, limit=500
+                    text_terms=text_terms, limit=500, life_persona_key=life_persona_key
                 )
                 if item.get("scope") in (SCOPE_GROUP, SCOPE_GROUP_PERSONA)
             )
@@ -623,7 +638,7 @@ class MemoryEngine:
                 for item in self.db.query_memories(
                     source_session=session_id,
                     persona_id=persona_id, memory_type=memory_type or None,
-                    text_terms=text_terms, limit=500
+                    text_terms=text_terms, limit=500, life_persona_key=life_persona_key
                 )
                 if item.get("scope") in (SCOPE_PERSONA, SCOPE_GROUP_PERSONA)
             )
@@ -631,7 +646,7 @@ class MemoryEngine:
             self.db.query_memories(
                 source_session=session_id,
                 scope=SCOPE_GLOBAL, memory_type=memory_type or None,
-                text_terms=text_terms, limit=200
+                text_terms=text_terms, limit=200, life_persona_key=life_persona_key
             )
         )
         if wanted_nodes:
@@ -728,7 +743,8 @@ class MemoryEngine:
         self.db.fold_memory(int(memory_id), text=text, when=when)
 
     def due_reviews(
-        self, *, session_ids: list[str], now: float | None = None, limit: int = 5
+        self, *, session_ids: list[str], now: float | None = None, limit: int = 5,
+        life_persona_key: str | None = None,
     ) -> list[dict[str, Any]]:
         """到点该"想起来一次"的记忆（间隔重复的回访队列）。"""
 
@@ -740,6 +756,7 @@ class MemoryEngine:
             session_ids=scoped,
             due_review_before=stamp,
             exclude_source_scoped=True,
+            life_persona_key=life_persona_key,
             limit=max(1, int(limit)),
             order="next_review_at ASC",
         )

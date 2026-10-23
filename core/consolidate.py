@@ -167,6 +167,7 @@ class Consolidator:
         *,
         limit: int = 120,
         session_labels: dict[str, str] | None = None,
+        persona_key: str | None = None,
     ) -> list[str]:
         """现有记忆（只给相关的、最近的）：带 id 与**来源会话**，让模型按 id 合并或折叠。"""
 
@@ -174,11 +175,16 @@ class Consolidator:
             session_ids=self._sessions_of(session_id),
             memory_types=["scene", "event", "inner"],
             exclude_source_scoped=True,
+            life_persona_key=persona_key,
             limit=max(1, int(limit)),
         )
         labels = dict(session_labels or {})
         lines: list[str] = []
+        from .context_sources import life_memory_metadata
         for item in rows:
+            owner = life_memory_metadata(str(item.get("source") or ""), item.get("context")).get("persona_key")
+            if persona_key is not None and owner and owner != persona_key:
+                continue
             stamp = self._datetime(float(item.get("created_at") or 0.0)).strftime("%Y-%m-%d %H:%M")
             tier = "要点" if str(item.get("tier")) == "gist" else "原文"
             people = ",".join(str(entry) for entry in (item.get("participants") or []))
@@ -300,7 +306,9 @@ class Consolidator:
                       for row in records if not row.get("is_self")}
             versions = {(sid, uid): self._profile_version(sid, uid) for sid, uid in before}
             stages.append(("profiles", profile_key, system, prompt, versions))
-        old = self.memory_lines(session_id, session_labels=session_labels)
+        from hashlib import sha256
+        old = self.memory_lines(session_id, session_labels=session_labels,
+                                persona_key=sha256(persona_text.encode("utf-8")).hexdigest()[:24])
         old_ids = {int(line.split(" ", 1)[0][1:]) for line in old}
         fields = ("content", "context", "session_id", "persona_id", "scope", "tier", "type", "source", "pinned",
                   "node_id", "created_at", "emotion", "weight", "participants", "related_users", "keywords")
@@ -548,8 +556,13 @@ class Consolidator:
             kept = self.memory.db.memory_by_id(keep) if keep in allowed else None
             if kept is None or kept.get("pinned") or not text:
                 continue
+            from .context_sources import life_memory_metadata
+            def ownership(row):
+                meta = life_memory_metadata(str(row.get("source") or ""), row.get("context"))
+                return row.get("source"), meta.get("persona_key", ""), meta.get("matter_id", "")
             compatible = {value for value in drops if value in allowed and (row := self.memory.db.memory_by_id(value))
-                          and not row.get("pinned") and all(row.get(key) == kept.get(key) for key in ("session_id", "persona_id", "scope", "type", "node_id"))}
+                          and not row.get("pinned") and ownership(row) == ownership(kept)
+                          and all(row.get(key) == kept.get(key) for key in ("session_id", "persona_id", "scope", "type", "node_id"))}
             if drops != compatible:
                 # Reject the whole rewrite: its text may have combined material
                 # from a protected or unrelated record, including the keep row.

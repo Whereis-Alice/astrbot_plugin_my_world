@@ -247,7 +247,7 @@ class EventFlowMixin:
         """
 
         config = self.world.events
-        for thread in open_threads(state.event_threads):
+        for thread in open_threads(self._event_threads(state)):
             if thread_id and str(thread.get("id") or "") != thread_id:
                 continue
             followup = str(thread.get("pending_followup") or "").strip()
@@ -270,6 +270,8 @@ class EventFlowMixin:
                     node_id=str(thread.get("place") or state.node_id),
                     content=f"（{thread.get('title') or '一件事'}）那件事后来没再提",
                     memory_type=SCENE,
+                    source="life_event",
+                    context=self._event_memory_context(thread),
                     emotion=state.mood,
                     weight=0.25,
                     affect=state.affect,
@@ -284,6 +286,7 @@ class EventFlowMixin:
                 continue
             base = event_from_payload(thread.get("root") or {}, source="pool")
             tier = str((base.tier if base else "") or "small")
+            self._apply_thread_target(state, outcome, thread)
             package = await self._generate_event_package(
                 state, node, tier=tier, thread=thread
             )
@@ -444,7 +447,7 @@ class EventFlowMixin:
         """
 
         info = dict((thread or {}).get("decision") or {})
-        raw = str(info.get("send_to") or "").strip()
+        raw = str(info.get("send_to") or (thread or {}).get("session") or "").strip()
         if not raw:
             return
         picked = self.resolve_send_to(state, raw, fallback="")
@@ -504,7 +507,7 @@ class EventFlowMixin:
     ) -> None:
         """等待中的求助：活跃 →（轻提醒）轻等待 →（超时）自己收尾。"""
 
-        info = dict(state.pending_help or {})
+        info = dict(self._pending_event_help(state))
         stage = str(info.get("state") or "")
         if stage not in ("active", "idle"):
             return
@@ -518,7 +521,7 @@ class EventFlowMixin:
             info["idle_until"] = float(info.get("asked_at") or now) + max(
                 1.0, float(getattr(config, "idle_minutes", 60.0) or 60.0)
             ) * 60.0
-            state.pending_help = info
+            self._set_event_help(state, info)
             root = dict((thread or {}).get("root") or {})
             text = ""
             if bool(getattr(config, "remind_when_ignored", True)):
@@ -550,7 +553,7 @@ class EventFlowMixin:
             return
         if float(now) < float(info.get("idle_until") or 0.0):
             return
-        state.pending_help = {}
+        self._set_event_help(state, {})
         if thread is None:
             return
         package = event_from_payload(thread.get("root") or {}, source="pool")
@@ -612,13 +615,15 @@ class EventFlowMixin:
         if self.llm is None:
             return None
         async with self.session_state(ctx.session_id) as state:
-            info = state.pending_help or {}
+            info = self._pending_event_help(state)
             if str(info.get("state") or "") not in ("active", "idle"):
+                return None
+            if str(info.get("session") or state.session_id) != ctx.session_id:
                 return None
             thread = self._thread_by_id(state, str(info.get("thread_id") or ""))
             package = event_from_payload((thread or {}).get("root") or {}, source="pool")
             if thread is None or package is None:
-                state.pending_help = {}
+                self._set_event_help(state, {})
                 return None
             decision = self._cached_decision(thread) or default_decision(package)
             messages = [f"{ctx.user_name or '有人'}：{ctx.text}"]
@@ -626,7 +631,7 @@ class EventFlowMixin:
             if suggestions is None or not suggestions.related:
                 return None
             # 有人对这件事说了话：事件线把这一轮吃掉，她不再走普通回复
-            state.pending_help = {}
+            self._set_event_help(state, {})
             node = self.node(state.node_id) or self.node(self.default_node_id())
             outcome = TickOutcome(session_id=ctx.session_id)
             outcome.place = ctx.session_id

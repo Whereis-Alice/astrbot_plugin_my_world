@@ -1033,7 +1033,7 @@ class TickMixin:
             no_search=after_search,
             event_digest="；".join(
                 str(item)
-                for item in list(state.event_digest or [])[-4:]
+                for item in self._event_digest_for(state)[-4:]
                 if str(item).strip()
             ),
         )
@@ -1041,7 +1041,7 @@ class TickMixin:
             prompt += "\n" + self.prompts.AUTONOMOUS_MANNERS
             prompt += self.expression_contract(state, home, outcome.speech_kind)
         # 用过了就清掉：这段时间发生的事只带出来一次
-        state.event_digest = []
+        self._consume_event_digest(state)
         if outcome.speech_kind != "reply":
             reply = await self.ask_speech(state, home, system_prompt, prompt,
                 rows=self.expression_chat(state, home), images=image_urls)
