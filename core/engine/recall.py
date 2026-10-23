@@ -124,6 +124,7 @@ class RecallMixin:
         ]
         if len(today_rows) >= daily_max:
             return []
+        batch_limit = min(2, daily_max - len(today_rows))
         per_user: dict[str, int] = {}
         for item in today_rows:
             key = str(item.get("user_id") or "")
@@ -154,7 +155,7 @@ class RecallMixin:
                     continue
             picked.append(row)
             per_user[user_id] = per_user.get(user_id, 0) + 1
-            if len(picked) >= 2:
+            if len(picked) >= batch_limit:
                 break
         if not picked:
             return []

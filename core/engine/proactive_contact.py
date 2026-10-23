@@ -9,6 +9,15 @@ CHAT_KINDS = {"participation", "browse_reply", "continuation", "interject"}
 
 
 class ProactiveContactMixin:
+    @staticmethod
+    def _outreach_people(outcome: TickOutcome, target: str) -> set[str]:
+        """Native FriendMessage and legacy private origins identify the direct recipient."""
+        people = set(outcome.contact_people)
+        parts = target.split(":", 2)
+        if len(parts) == 3 and parts[1] in {"FriendMessage", "PrivateMessage"} and parts[2]:
+            people.add(parts[2])
+        return people
+
     def _contact_started(self, ledger: dict, target: str, token: str) -> float:
         started = (ledger.get("started_at") or {}).get(token)
         if started is None:
@@ -38,9 +47,7 @@ class ProactiveContactMixin:
         if kind in LIFE_KINDS:
             return not self.life_share_status(target, token=self._contact_token(outcome, target, "life_shares"))["reason"]
         token = self._contact_token(outcome, target)
-        people = set(outcome.contact_people)
-        if ":PrivateMessage:" in target:
-            people.add(target.rsplit(":", 1)[-1])
+        people = self._outreach_people(outcome, target)
         return not self.contact_status(target, token=token)["reason"] and all(
             not self.contact_status(target, uid, token=token)["reason"] for uid in people)
 
@@ -138,9 +145,7 @@ class ProactiveContactMixin:
                for item in getattr(self, "_contact_pending", {}).values()
                if item["key"] == f"proactive_contacts:{self.state_key(target)}"):
             return None, "正在发送另一条主动联系"
-        people = set(outcome.contact_people)
-        if ":PrivateMessage:" in target:
-            people.add(target.rsplit(":", 1)[-1])
+        people = self._outreach_people(outcome, target)
         status = self.contact_status(target, token=token)
         if status["reason"]:
             return None, status["reason"]
