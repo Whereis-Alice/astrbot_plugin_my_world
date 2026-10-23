@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 from core.context_sources import life_memory_metadata
 from core.engine import TickOutcome
 from core.json_actions import PlannedAction
+from core.state import WorldState
 from tests import test_consolidate as consolidate
 from tests import test_life_audit as audit
 
@@ -105,6 +106,13 @@ class ActivityMemoryContinuityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["source"], "life_matter")
         self.assertEqual(life_memory_metadata(row["source"], row["context"]).get("matter_id"), idea["id"])
         self.assertEqual(life_memory_metadata(row["source"], row["context"]).get("persona_key"), key)
+
+    async def test_detached_state_without_current_character_cannot_expire_tagged_work(self):
+        state = WorldState(S, node_id="study")
+        await self.engine.note_own_topic(state, "想画一幅蓝色风车")
+        state.life_matters[0]["kind"] = "idea"
+        self.engine._decay_own_topics(state, now=state.life_matters[0]["at"] + 31 * 86400)
+        self.assertNotEqual(state.life_matters[0]["status"], "expired")
 
 
 class DreamMemoryContinuityTests(unittest.IsolatedAsyncioTestCase):

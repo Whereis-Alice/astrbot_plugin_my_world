@@ -224,17 +224,19 @@ class AutonomousContinuityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({item["who"] for item in state.own_topics}, {"42", "7"})
 
     async def test_expired_intention_is_remembered_as_unfinished_once(self):
-        state = WorldState(engine.SESSION, node_id="study")
-        await self.engine.note_own_topic(state, "修好旧风车", user_id="42")
-        state.life_matters[0]["kind"] = "idea"
-        now = self.clock.now() + 10 * DAY
-        self.engine._decay_own_topics(state, now=now)
-        self.engine._decay_own_topics(state, now=now + DAY)
+        # The production clock supplies the current character via session_state.
+        # An unleased detached state cannot authorise expiring tagged work.
+        async with self.engine.session_state(engine.SESSION) as state:
+            await self.engine.note_own_topic(state, "修好旧风车", user_id="42")
+            state.life_matters[0]["kind"] = "idea"
+            now = self.clock.now() + 10 * DAY
+            self.engine._decay_own_topics(state, now=now)
+            self.engine._decay_own_topics(state, now=now + DAY)
+            self.assertFalse(state.own_topics)
         rows = self.db.raw.query_memories(session_id=engine.SESSION)
         found = [row for row in rows if "修好旧风车" in row["content"]]
         self.assertEqual(len(found), 1)
         self.assertIn("尚未确认完成", found[0]["content"])
-        self.assertFalse(state.own_topics)
 
     async def test_miss_preview_explains_a_pause_and_does_not_reset_counters(self):
         self.engine.profiles.touch(engine.SESSION, "42", now=self.clock.now())
