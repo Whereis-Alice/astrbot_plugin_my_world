@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from hashlib import sha256
 import time
 from typing import Any
@@ -105,6 +105,18 @@ class SnapshotMixin:
             chain = self._schedule_life_chain(item)
             if not chain and not item.matter_id:
                 continue
+            moments = []
+            if state is not None:
+                delay = self._schedule_delay_record(state, item.id)
+                retry_day = self._previous_schedule_delay(state, item, now)
+                if not delay.get("cancelled") and (delay.get("day") == now.date().isoformat()
+                                                   or retry_day and delay.get("day") == retry_day):
+                    try:
+                        until = float(delay.get("until") or 0)
+                        if until > 0:
+                            moments.append(datetime.fromtimestamp(until, now.tzinfo))
+                    except (OverflowError, OSError, TypeError, ValueError):
+                        pass
             try:
                 hour, minute = (int(part) for part in str(item.time).split(":")[:2])
             except (TypeError, ValueError):
@@ -126,23 +138,25 @@ class SnapshotMixin:
                 weekday = self.WEEKDAY_KEYS[moment.weekday()]
                 if not item.once and item.days and weekday not in item.days:
                     continue
-                minutes = max(0, int(round((moment - now).total_seconds() / 60)))
-                if best is None or minutes < int(best["in_minutes"]):
-                    names = []
-                    for step in chain:
-                        definition = action_map.get(step.type)
-                        names.append(
-                            (definition.name or definition.id) if definition else step.type
-                        )
-                    best = {
-                        "id": item.id,
-                        "time": item.time,
-                        "in_minutes": minutes,
-                        "weekday": WEEKDAY_NAMES[moment.weekday()],
-                        "actions": "接续已有牵挂" if item.matter_id else " → ".join(names),
-                        "auto_travel": bool(item.auto_travel),
-                    }
+                moments.append(moment)
                 break
+            if not moments:
+                continue
+            moment = min(moments)
+            minutes = max(0, int(round((moment - now).total_seconds() / 60)))
+            if best is None or minutes < int(best["in_minutes"]):
+                names = []
+                for step in chain:
+                    definition = action_map.get(step.type)
+                    names.append((definition.name or definition.id) if definition else step.type)
+                best = {
+                    "id": item.id,
+                    "time": moment.strftime("%H:%M"),
+                    "in_minutes": minutes,
+                    "weekday": WEEKDAY_NAMES[moment.weekday()],
+                    "actions": "接续已有牵挂" if item.matter_id else " → ".join(names),
+                    "auto_travel": bool(item.auto_travel),
+                }
         return best
 
     def _budget(self, state: WorldState) -> dict[str, dict[str, int]]:

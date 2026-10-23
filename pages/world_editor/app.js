@@ -14723,11 +14723,24 @@ function showLogDetail(item, event) {
 /* 通讯录：她认识的人（画像 / 关系 / 好感度）                            */
 /* ================================================================== */
 
-function speechDecisionDetail(speech) {
+function thoughtIntentText(row) {
+  const detail = row.detail || {};
+  const speech = detail.speech || {};
+  const choices = {join_chat: "接当前话题", continue_chat: "继续之前的对话", life_share: "分享生活", outreach: "主动找人", listen: "继续旁听"};
+  if (speech.motivation) return String(speech.motivation);
+  if (choices[speech.intent]) return choices[speech.intent];
+  const intent = String(detail.intent || "").trim();
+  if (intent && !(row.browse_session && intent === "安静看看，然后继续自己的生活")) return intent;
+  if (row.browse_session && row.browse_replied) return "已接话；旧记录未保留具体打算";
+  return row.browse_session ? "阅读时未记录具体打算" : "没有留下明确打算";
+}
+
+function speechDecisionDetail(speech, {showMotivation = true} = {}) {
   const triggers = { message: "新消息", browse: "翻消息完成", plan: "计划接话", completion: "动作完成", expression: "生活表达" };
   const intents = { join_chat: "接当前话题", continue_chat: "继续之前的对话", life_share: "分享生活", outreach: "主动找人", listen: "继续旁听" };
   const statuses = { prepared: "待发送", sent: "已发送", partial: "部分发送", not_sent: "未发出", listening: "仅有想法" };
   const box = el("div", "thought-context");
+  if (showMotivation && speech.motivation) box.append(el("p", "thought-quote", `缘由：${speech.motivation}`));
   const badges = el("div", "thought-head");
   const origins = { schedule: "日程", event: "事件", outreach: "主动找人" };
   if (origins[speech.origin]) badges.append(el("span", "thought-chip", origins[speech.origin]));
@@ -16234,7 +16247,7 @@ function renderThoughtsPage() {
   if (!rows.length) {
     if (note) note.textContent = "";
     list.appendChild(
-      el("p", "muted", browsing ? "这会儿还没有阅读感想。她可能尚未浏览，也可能读过后没有特别感受；浏览进度见上方。" : "还没有记录：等她说完一轮话，或者自己做一次决定，这里就会有。"),
+      el("p", "muted", browsing ? "这会儿还没有阅读感想。她可能尚未完成浏览，或这次想法未能记录；具体进度见上方。" : "还没有记录：等她说完一轮话，或者自己做一次决定，这里就会有。"),
     );
     return;
   }
@@ -16261,7 +16274,7 @@ function renderThoughtsPage() {
     );
     if (!hasSnapshot) head.appendChild(el("span", "thought-legacy", "未附状态快照"));
     item.appendChild(head);
-    if (detail.speech) item.appendChild(speechDecisionDetail(detail.speech));
+    if (detail.speech) item.appendChild(speechDecisionDetail(detail.speech, {showMotivation: false}));
 
     // 每条都按同一份详细快照展示；旧记录确实没有的字段会明确写出来。
     const stateText = stateLabelOf(detail.state || "", {}) || "未记录";
@@ -16286,8 +16299,11 @@ function renderThoughtsPage() {
     );
     item.appendChild(thoughtText);
     item.appendChild(
-      el("div", "thought-intent", `打算：${detail.intent || "没有留下明确打算"}`),
+      el("div", "thought-intent", `打算：${thoughtIntentText(row)}`),
     );
+    if (row.browse_session && !detail.speech && detail.browse_reply?.reason) {
+      item.append(el("p", "muted", `接话：${detail.browse_reply.reason}`));
+    }
 
     if (row.browse_session) {
       const evidence = el("details", "thought-browse-sources");

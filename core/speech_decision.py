@@ -36,14 +36,17 @@ def parse_decision(raw: str, targets: dict[str, str], *, default_intent: str = "
         return SpeechDecision(error="续聊需要引用本轮仍可回应的消息")
     if intent == "listen":
         say, reply_to = "", ""
+    motivation = payload.get("motivation") or reasoning.get("intent") or ""
+    motivation = " ".join(motivation.split())[:240] if isinstance(motivation, str) else ""
     return SpeechDecision(" ".join(inner.split()), say, reply_to, intent,
                           who=str(reasoning.get("who") or "")[:100],
-                          motivation=str(reasoning.get("intent") or "")[:240])
+                          motivation=motivation)
 
 
 DECISION_OUTPUT = (
     '\n# 想法与发言\n只输出 JSON：{"inner":"此刻具体的一句心里话",'
     '"intent":"join_chat 或 listen","say":"准备说的一句短话，没有就留空",'
+    '"motivation":"为什么想接话或继续旁听，具体而简短的一句",'
     '"reply_to":"可引用编号或空字符串"}。'
     'inner 必须有内容，是符合人设的短暂感受，不是分析步骤、系统规则或台词复述；'
     '即使没有开口，也保留这次看过消息的真实想法。不要编共同经历或未看到的画面。'

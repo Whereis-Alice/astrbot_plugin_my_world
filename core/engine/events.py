@@ -1665,7 +1665,7 @@ class EventsMixin:
         )
         raw = None
         if bool(getattr(config, "enabled", True)):
-            prompt += "\n# 原有人设（始终优先）\n" + (await self._persona_text(state.session_id))[:6000]
+            prompt += "\n# 原有人设（始终优先）\n" + await self._persona_text(state.session_id)
             prompt += "\n" + await self.task_background(state, task="event", query=package.title + "\n" + package.hook,
                 required=("# 结算依据：当前事件的前因与已发生进展\n" + thread_digest(thread, complete=True)) if thread else "", evidence=True)
             system += ('\n可选字段 life_matter：仅当这次经历确实让她想在以后持续做一件符合人设的小事时，'

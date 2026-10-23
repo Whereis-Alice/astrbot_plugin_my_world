@@ -277,13 +277,10 @@ class ParticipationMixin:
             return None
         outcome = TickOutcome(session_id=session_id, speech_kind="browse_reply" if source == "browse" else "participation", place=session_id)
         async with self.session_state(session_id) as state:
-            gate = self.participation_gate(state, session_id, source=source)
             window = self._participation_window(source)
             rows = self.live_chat(state, session_id, window=window)
             observation = dict(state.participation.get(session_id) or {})
             new = [r for r in rows if int(r.get("seq") or 0) > observation.get("checked_seq", 0)]
-            if gate or not new:
-                return None
             if source == "browse":
                 from hashlib import sha256
                 from ..context_sources import browse_feeling_item
@@ -292,6 +289,17 @@ class ParticipationMixin:
                 request.life_persona = sha256(persona.encode("utf-8")).hexdigest()[:24]
                 if browse_feeling_item(state, request, browse_id) is None:
                     return None
+            gate = self.participation_gate(state, session_id, source=source)
+            if gate or not new:
+                if source == "browse":
+                    reasons = {"paused": "当前会话暂停了主动接话", "disabled": "当前会话未启用翻消息后接话",
+                               "resting": "正在休息或精力不足，暂未进入接话判断", "busy": "手头活动需要先收尾，暂未进入接话判断",
+                               "reply_pending": "正在处理对话回复，暂未进入接话判断"}
+                    status = gate or ("already_considered" if rows else "no_scene")
+                    reason = reasons.get(gate) or ("这段现场已判断过，等待新的消息" if rows
+                                                  else "最近15分钟没有仍可回应的消息，不追答旧聊天")
+                    self.note_browse_reply_gate(state, session_id, browse_id, status, reason)
+                return None
             # Listening is a completed decision too. Persist before inference so a
             # discarded/empty response cannot re-evaluate the same burst forever.
             state.participation[session_id] = {"checked_seq": max(int(r.get("seq") or 0) for r in rows),
@@ -299,12 +307,17 @@ class ParticipationMixin:
             if sample and not self.participation_sample(state, session_id, new):
                 return outcome
             if self.llm is None:
+                if source == "browse":
+                    self.note_browse_reply_gate(state, session_id, browse_id, "unavailable", "没有可用的主模型，未能判断是否接话")
                 return outcome
             self.decision_trace(session_id, "participation", "considering", "近期群聊已聚合，判断是否有话想接",
                                 messages=len(rows))
             self.claim_chat_scene(outcome, session_id, rows, window=window)
             message, reply_to = await self.participation_text(state, session_id,
                 source=source, browse_id=browse_id, outcome=outcome)
+            if source == "browse" and not outcome.speech_decisions:
+                reason = str((state.participation.get(session_id) or {}).get("reason") or "未取得有效的接话决定")
+                self.note_browse_reply_gate(state, session_id, browse_id, "failed", reason)
             if (not message or self.participation_gate(state, session_id, source=source)
                     or self._now() >= outcome.chat_expires_at[session_id]):
                 reason = ("这轮继续旁听" if source == "browse" or self.world.decider.natural_silence

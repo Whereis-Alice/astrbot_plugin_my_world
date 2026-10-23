@@ -213,7 +213,7 @@ class ChatBrowseMixin:
         # same bounded response/quote path as normal participation, with a short
         # look-back after reading. No historical replay, tools or forced speech.
         target = snapshot["browse_session"]
-        if completed and self.speech_allowed(target, "browse_reply"):
+        if completed:
             outcome = await self.maybe_participate(target, source="browse", browse_id=action_id)
             async with self.session_state(session_id) as state:
                 sent = bool(outcome and outcome.delivered_messages.get(target))
@@ -242,9 +242,11 @@ class ChatBrowseMixin:
         expire_feelings(state, now)
         quotes = [row for row in rows if row["seq"] in cited][:2]
         persona_key = hashlib.sha256(persona.encode("utf-8")).hexdigest()[:24]
+        intent = payload.get("intent")
+        intent = " ".join(intent.split())[:120] if isinstance(intent, str) else ""
         state.add_thought(text, source="翻消息时", persona_key=persona_key,
             detail={"env": self._node_name(state.node_id), "state": "browsing",
-            "mood": state.mood, "intent": "安静看看，然后继续自己的生活"})
+            "mood": state.mood, "intent": intent})
         thought = state.thoughts[-1]
         thought.update(at=now, browse_session=sid, browse_id=action["id"], browse_replied=False, expires_at=now + 24 * 3600,
                        browse_sources=[{"seq": row["seq"], "at": row["at"], "name": row["name"], "text": row["text"][:100]} for row in quotes])
@@ -267,3 +269,12 @@ class ChatBrowseMixin:
                                     "source_seqs": cited[:20], "browse_id": action["id"],
                                     "persona_key": persona_key}, ensure_ascii=False))
         return True
+
+    def note_browse_reply_gate(self, state, target: str, browse_id: str, status: str, reason: str) -> None:
+        """Explain an unattempted reply on the reading it belongs to, without inventing a choice."""
+        thought = next((t for t in reversed(state.thoughts) if browse_id
+                        and t.get("browse_id") == browse_id and t.get("browse_session") == target), None)
+        if thought is not None:
+            thought.setdefault("detail", {})["browse_reply"] = {
+                "status": status, "reason": reason, "at": self._now(),
+            }

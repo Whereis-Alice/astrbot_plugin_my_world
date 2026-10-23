@@ -173,6 +173,32 @@ class ChatBrowseBrowserTests(unittest.TestCase):
             self.assertTrue(self.page.locator('#dialog').evaluate('(e)=>{const r=e.getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight+1}'))
             self.host.screenshot(path=str(self.shots/f'browse-settings-{palette}-{width}.png'))
             self.page.locator('#dialog-cancel').click()
+
+    def test_reading_intents_distinguish_real_choice_missing_data_and_skipped_judgement(self):
+        self.page.evaluate("""() => {
+          const read = AstrBotPluginPage.apiGet;
+          AstrBotPluginPage.apiGet=(key,params)=>key==='thoughts'?Promise.resolve({session:params.session,
+          browse:{reply_enabled:true,reply_allowed:true},thoughts:[
+            {at:Date.now()/1000,source:'翻消息时',browse_session:params.session,content:'旧的阅读感想',
+             detail:{intent:'安静看看，然后继续自己的生活'}},
+            {at:Date.now()/1000,source:'翻消息时',browse_session:params.session,content:'想问花的情况',
+             detail:{intent:'安静看看，然后继续自己的生活',speech:{intent:'join_chat',status:'sent',motivation:'想问问花是不是晒得太久。'}}},
+            {at:Date.now()/1000,source:'翻消息时',browse_session:params.session,content:'有点惦记自己的窗边',
+             detail:{intent:'先看看自己的花。',browse_reply:{status:'no_scene',reason:'最近15分钟没有仍可回应的消息'}}},
+            {at:Date.now()/1000,source:'翻消息时',browse_session:params.session,content:'现在并不想插话',
+             detail:{intent:'安静看看，然后继续自己的生活',speech:{intent:'listen',status:'listening',motivation:'他们已经商量好了，先听着。'}}}
+          ]}):read(key,params);
+        }""")
+        self.page.locator('button[data-tab="thoughts"]').click()
+        self.page.get_by_role('tab', name='翻消息时', exact=True).click()
+        expect(self.page.locator('.thought-row')).to_have_count(4)
+        expect(self.page.locator('.thought-row').filter(has_text='旧的阅读感想').locator('.thought-intent')).to_have_text('打算：阅读时未记录具体打算')
+        expect(self.page.locator('.thought-row').filter(has_text='想问花的情况').locator('.thought-intent')).to_have_text('打算：想问问花是不是晒得太久。')
+        expect(self.page.locator('.thought-row').filter(has_text='有点惦记自己的窗边')).to_contain_text('接话：最近15分钟没有仍可回应的消息')
+        expect(self.page.locator('.thought-row').filter(has_text='有点惦记自己的窗边').locator('.thought-intent')).to_have_text('打算：先看看自己的花。')
+        expect(self.page.locator('.thought-row').filter(has_text='现在并不想插话').locator('.thought-intent')).to_have_text('打算：他们已经商量好了，先听着。')
+        expect(self.page.locator('#thoughts-list')).not_to_contain_text('安静看看，然后继续自己的生活')
+        self.assertEqual(self.errors, [])
         self.assertEqual(self.errors, [])
 
     def test_entry_is_available_in_every_life_view_and_restore_only_changes_reading(self):

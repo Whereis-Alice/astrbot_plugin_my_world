@@ -108,6 +108,7 @@ class SpeechDecisionsMixin:
         source = sources.get(trigger, "主动决定")
         trace = {"id": identity, "trace_id": call_context().get("trace_id", ""),
                  "trigger": trigger, "intent": decision.intent, "target": target,
+                 "motivation": decision.motivation,
                  "origin": outcome.speech_kind if outcome is not None else "",
                  "reply_to": decision.reply_to, "browse_id": browse_id,
                  "status": "prepared" if decision.say else "listening", "at": self._now(),

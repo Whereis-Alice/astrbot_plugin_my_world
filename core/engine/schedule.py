@@ -84,6 +84,10 @@ class ScheduleMixin:
 
     def _schedule_life_chain(self, schedule: Any, *, automatic: bool = True) -> list:
         """The same physiological constraints drive the preview and execution."""
+        # A linked appointment resumes the project's own step. A retained chain
+        # is editable configuration, not a second task or a sleep requirement.
+        if schedule.matter_id:
+            return []
         actions = self.world.action_map()
         if automatic and self.world.sleep.mode == "autonomous" and any(
             sleep_action_kind(actions.get(step.type)) == "sleep" for step in schedule.action_chain
@@ -261,7 +265,7 @@ class ScheduleMixin:
         action_map = self.world.action_map()
         filled: list[str] = []
         for schedule in payload.get("schedules") or []:
-            if not isinstance(schedule, dict) or schedule.get("smart"):
+            if not isinstance(schedule, dict) or schedule.get("smart") or schedule.get("matter_id"):
                 # 智能日程到点自己排计划，不需要每步的意图
                 continue
             chain = schedule.get("action_chain") or []
@@ -354,7 +358,7 @@ class ScheduleMixin:
             where=self.node_label(state.node_id),
             state_hint=state.mood or "",
             chat_note=self.chat_note_for(state),
-            persona=_clip_text(await self._persona_text(state.session_id), 800),
+            persona=await self._persona_text(state.session_id),
             steps=steps,
             # 「这条日程是干什么的」+ 完整动作链：只给"这一步是什么动作"，
             # 补出来的意图容易跟日程本来的目的对不上
@@ -719,7 +723,7 @@ class ScheduleMixin:
                                 "note": "自主作息已准备入睡或正在睡眠，自动日程让位；手动试跑仍可执行。",
                             })
                         continue
-                    if self.world.sleep.mode == "autonomous" and any(
+                    if not schedule.matter_id and self.world.sleep.mode == "autonomous" and any(
                         sleep_action_kind(self.world.action_map().get(step.type)) == "sleep" for step in schedule.action_chain
                     ):
                         claimed = await self.db.call("mark_schedule_fired", session_id=session_id,
@@ -752,7 +756,7 @@ class ScheduleMixin:
                         if item != target
                     ]
                     label = schedule.id
-                    if schedule.action_chain:
+                    if not schedule.matter_id and schedule.action_chain:
                         names = [
                             (self.world.action_map()[step.type].name or step.type)
                             if step.type in self.world.action_map()
@@ -817,11 +821,11 @@ class ScheduleMixin:
                     outcome.place = target
                     chain = self._schedule_life_chain(schedule)
                     smart_note = ""
-                    if schedule.smart:
+                    if schedule.smart and not schedule.matter_id:
                         # 智能日程：让大模型给缺意图的步骤补一句（动作链本身不动）
                         chain, smart_note = await self._smart_chain(state, schedule)
                         chain = [step for step in chain if recovery_mode_allows(self.world.action_map().get(step.type), self.world)]
-                    if schedule.auto_travel:
+                    if schedule.auto_travel and not schedule.matter_id:
                         chain = self.expand_chain_for_travel(state, chain)
                     if schedule.matter_id:
                         started = await self.run_matter_appointment(state, schedule, session=target)
