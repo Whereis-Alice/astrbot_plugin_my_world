@@ -149,6 +149,36 @@ class ModelCallsApiTests(unittest.IsolatedAsyncioTestCase):
     asyncSetUp = scope_api.ScopeApiTests.asyncSetUp
     call = scope_api.ScopeApiTests.call
 
+    async def test_real_role_adapters_resolving_one_provider_make_one_failed_call(self):
+        adapter = importlib.import_module(self.module.__name__ + ".adapters.llm").AstrBotLLM
+        self.plugin.llm_provider_id = ""
+        self.plugin.context.get_current_chat_provider_id = AsyncMock(return_value="same-provider")
+        self.plugin.context.llm_generate = AsyncMock(side_effect=RuntimeError("connection timeout"))
+        self.plugin.engine.event_llm = adapter(self.plugin, role="event")
+        self.plugin.engine.helper_llm = adapter(self.plugin, role="helper")
+        result = await self.plugin.engine._ask_event(self.session, "system", "prompt")
+        self.assertIsNone(result)
+        self.plugin.context.llm_generate.assert_awaited_once()
+        rows = (await self.plugin.db.call("model_calls"))["items"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "error")
+
+    async def test_provider_resolution_keeps_role_priority_and_refreshes_session_selection(self):
+        adapter = importlib.import_module(self.module.__name__ + ".adapters.llm").AstrBotLLM
+        self.plugin.llm_provider_id = "global"
+        self.plugin.turn_provider_override = lambda _: "turn-selected"
+        self.plugin.context.get_current_chat_provider_id = AsyncMock(return_value="session-selected")
+        explicit = adapter(self.plugin, provider_id="explicit", role="event")
+        main, helper = adapter(self.plugin), adapter(self.plugin, role="helper")
+        self.assertEqual(await explicit.resolve_provider_id(self.session), "explicit")
+        self.assertEqual(await helper.resolve_provider_id(self.session), "global")
+        self.assertEqual(await main.resolve_provider_id(self.session), "global")
+        self.plugin.llm_provider_id = ""
+        self.assertEqual(await main.resolve_provider_id(self.session), "turn-selected")
+        self.assertEqual(await helper.resolve_provider_id(self.session), "session-selected")
+        self.plugin.context.get_current_chat_provider_id.return_value = "new-session-selection"
+        self.assertEqual(await helper.resolve_provider_id(self.session), "new-session-selection")
+
     async def test_api_uses_explicit_filters_independently_of_edit_scope_and_is_guarded(self):
         await self.plugin.db.call("append_model_call", row(session_id=self.session))
         await self.plugin.db.call("append_model_call", row(session_id="other"))

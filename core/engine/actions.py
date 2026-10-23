@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ..model_calls import model_operation
+from ..llm_fallback import fallback_block_reason
 
 import asyncio
 import math
@@ -1288,10 +1289,11 @@ class ActionsMixin:
     ) -> str | None:
         """纯判断通道（挑一个 / 打分 / 抽字段）：走判断模型，没配就跟随打杂模型。
 
-        判断模型不可用或报错时**自动退回打杂模型**——轻决策不该把主流程拖挂。
+        判断模型不可用时可退回不同的打杂 Provider；明确拒绝或同源回退停止本轮请求。
         """
 
         if self.judge_llm is not None and self.judge_llm is not self.helper_llm:
+            error = ""
             try:
                 reply = await self._background_generate(self.judge_llm,
                     session_id=session_id,
@@ -1302,9 +1304,14 @@ class ActionsMixin:
                 )
                 if getattr(reply, "ok", False) and str(getattr(reply, "text", "") or "").strip():
                     return reply.text
-                self._log("debug", "判断模型没给出内容，这一轮退回打杂模型")
+                error = getattr(reply, "error", "")
             except Exception as exc:
-                self._log("debug", f"判断模型调用失败（{exc}），退回打杂模型")
+                error = exc
+            blocked = await fallback_block_reason(self.judge_llm, self.helper_llm, session_id, error)
+            if blocked:
+                self._log("debug", f"判断模型未完成，{blocked}，停止本轮回退")
+                return None
+            self._log("debug", "判断模型未完成，这一轮退回打杂模型")
         return await self._ask_helper(session_id, system_prompt, prompt,
                                       **({"max_tokens": max_tokens} if max_tokens is not None else {}))
 
@@ -1318,6 +1325,7 @@ class ActionsMixin:
         """
 
         if self.event_llm is not None and self.event_llm is not self.helper_llm:
+            error = ""
             try:
                 reply = await self._background_generate(self.event_llm,
                     session_id=session_id,
@@ -1327,9 +1335,14 @@ class ActionsMixin:
                 )
                 if getattr(reply, "ok", False) and str(getattr(reply, "text", "") or "").strip():
                     return reply.text
-                self._log("debug", "事件模型没给出内容，这一轮退回打杂模型")
+                error = getattr(reply, "error", "")
             except Exception as exc:
-                self._log("debug", f"事件模型调用失败（{exc}），退回打杂模型")
+                error = exc
+            blocked = await fallback_block_reason(self.event_llm, self.helper_llm, session_id, error)
+            if blocked:
+                self._log("debug", f"事件模型未完成，{blocked}，停止本轮回退")
+                return None
+            self._log("debug", "事件模型未完成，这一轮退回打杂模型")
         return await self._ask_helper(session_id, system_prompt, prompt)
 
     async def _ask_consolidate(

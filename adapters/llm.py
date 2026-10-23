@@ -57,18 +57,23 @@ class AstrBotLLM:
         self._sampling_rejected_providers: set[str] = set()
         self._max_tokens_rejected_providers: set[str] = set()
 
-    async def generate(self, *, session_id: str, system_prompt: str, prompt: str,
-                       contexts: list[dict] | None = None, temperature: float | None = None,
-                       max_tokens: int | None = None, image_urls: list[str] | None = None) -> LLMReply:
-        context = self.plugin.context
+    async def resolve_provider_id(self, session_id: str) -> str:
+        """Resolve this role's current provider without generating or caching a turn."""
         provider_id = (self.provider_id or self.plugin.llm_provider_id or "").strip()
         if not provider_id and self.role == "main":
             provider_id = self.plugin.turn_provider_override(session_id)
         if not provider_id:
-            try:
-                provider_id = await context.get_current_chat_provider_id(session_id)
-            except Exception as exc:
-                return LLMReply(ok=False, error=f"没有可用的 LLM Provider: {exc}")
+            provider_id = await self.plugin.context.get_current_chat_provider_id(session_id)
+        return provider_id
+
+    async def generate(self, *, session_id: str, system_prompt: str, prompt: str,
+                       contexts: list[dict] | None = None, temperature: float | None = None,
+                       max_tokens: int | None = None, image_urls: list[str] | None = None) -> LLMReply:
+        context = self.plugin.context
+        try:
+            provider_id = await self.resolve_provider_id(session_id)
+        except Exception as exc:
+            return LLMReply(ok=False, error=f"没有可用的 LLM Provider: {exc}")
         kwargs: dict[str, Any] = {}
         if temperature is not None:
             kwargs["temperature"] = temperature
