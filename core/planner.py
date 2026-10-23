@@ -33,6 +33,7 @@ def create_plan(
     send_to: str = "",
     now: float | None = None,
     tick_seconds: float = 60.0,
+    persona_key: str = "",
 ) -> dict[str, Any] | None:
     """构造计划对象。steps 为空时返回 None。"""
 
@@ -69,6 +70,7 @@ def create_plan(
         return None
     return {
         "id": uuid4().hex,
+        "persona_key": str(persona_key or ""),
         "steps": normalized,
         "current_step": 0,
         "created_at": world_time,

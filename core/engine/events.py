@@ -1195,7 +1195,7 @@ class EventsMixin:
             },
             outcome=outcome,
         )
-        state.add_event("event_help", {"title": package.title})
+        self._note_event(state, "event_help", {"title": package.title})
 
     @model_operation("event", "事件需要向对方求助")
     async def _compose_help_lines(

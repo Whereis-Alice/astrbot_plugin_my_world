@@ -7,11 +7,68 @@ import json
 
 from .. import life_matters as matters
 from ..life_policy import admit_life
-from ..planner import active_plan
+from ..planner import active_plan, advance, same_plan
 from ..recovery import is_sleep_action, restores_energy
 
 
 class LifeControlMixin:
+    def _running_life_belongs(self, state, record: dict) -> bool:
+        """Legacy unmarked work remains compatible; marked work owns one character."""
+        key = self._matter_persona_key(state)
+        if record.get("persona_key") and record["persona_key"] != key:
+            return False
+        item = matters.find(state, str(record.get("matter_id") or ""))
+        return item is None or matters.belongs_to(item, key)
+
+    def _running_action_invalid_reason(self, state, action: dict) -> str:
+        definition = self.world.action_map().get(str(action.get("type") or ""))
+        if not self._running_life_belongs(state, action):
+            return "人设已变化，停止原角色的动作"
+        if definition is None or not definition.enabled or definition.idle:
+            return "动作已删除、停用或改为闲置，停止执行"
+        if action.get("type") == "walk_to" and action.get("target_node") and action["target_node"] not in self.world.node_map():
+            return "移动目的地已删除，停止执行"
+        if definition.id != "sleep" and not definition.available_in(state.node_id):
+            return f"动作的地点限制已变化，在 {state.node_id} 停止执行"
+        return ""
+
+    async def _validate_running_life(self, state, outcome=None) -> None:
+        """Stop invalid work before any new time, completion effects or queued speech."""
+        plan = state.current_plan or {}
+        if plan and not self._running_life_belongs(state, plan):
+            state.current_plan = None
+            if state.state == "drowsy" and not state.current_action:
+                self._cancel_pending_sleep(state, reason="人设已变化，重新评估休息", source="character_change", postpone=False)
+            await self._log_event(state, "skip", {"plan_id": plan.get("id", ""),
+                "note": "人设已变化，停止原角色的排队计划"}, outcome=outcome)
+        action = state.current_action
+        if not action:
+            return
+        definition = self.world.action_map().get(str(action.get("type") or ""))
+        reason = self._running_action_invalid_reason(state, action)
+        if not reason:
+            return
+        # Only already elapsed online ticks are retained. No completion bonus,
+        # model followup, tool replay or newly elapsed recovery is awarded.
+        self.pause_matter_action(state, action)
+        if is_sleep_action(definition):
+            self._finish_sleep_rhythm(state, action, interrupted=True)
+        plan = state.current_plan
+        if plan and action.get("from_plan") and same_plan(action, plan):
+            index = self._running_plan_index(state, plan)
+            if index is None and not action.get("plan_id") and not plan.get("id"):
+                index = int(plan.get("current_step") or 0)
+            if index is not None and index < len(plan.get("steps", [])):
+                if index == int(plan.get("current_step") or 0):
+                    advance(state, status="skipped")
+                else:
+                    plan["steps"][index]["status"] = "skipped"
+            if plan.get("matter_id") and plan.get("matter_id") == action.get("matter_id"):
+                state.current_plan = None
+        state.current_action, state.state = None, "idle"
+        state.pending_arrival = False
+        await self._log_event(state, "skip", {"action": action.get("type"), "note": reason}, outcome=outcome)
+
     def _life_identity(self) -> str:
         from .life_inference import STATE_LEASE
         persona = (STATE_LEASE.get() or {}).get("persona", "")
@@ -54,7 +111,8 @@ class LifeControlMixin:
                 from ..planner import create_plan
                 plan = create_plan(steps=[{"action": action.get("type"), "duration": int(action.get("duration_ticks", 1)) * self.tick_seconds,
                     "intent": action.get("intent", ""), "content": action.get("content", ""), "params": action.get("params", {})}],
-                    world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds, source="life_resume")
+                    world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds, source="life_resume",
+                    persona_key=action.get("persona_key") or self._matter_persona_key(state) or "")
             defs = self.world.action_map()
             pending = list((plan or {}).get("steps", []))[int((plan or {}).get("current_step", 0)):]
             if pending and all((d := defs.get(str(step.get("action") or "")))

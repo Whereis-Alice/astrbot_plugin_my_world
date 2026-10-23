@@ -875,7 +875,7 @@ class ScheduleMixin:
                         state.schedule_last_fired[schedule.id] = self._now()
                     outcome.notes.append(f"日程 {schedule.id} 已触发")
                     self._note_schedule_progress(state, chain_labels, status, outcome)
-                    state.add_event(
+                    self._note_event(state,
                         "schedule",
                         {"id": schedule.id, "note": str(schedule.note or "")},
                     )
@@ -988,7 +988,7 @@ class ScheduleMixin:
             last_map = dict(getattr(state, "schedule_last_fired", None) or {})
             last_map[str(schedule.id)] = float(self._now())
             state.schedule_last_fired = last_map
-            state.add_event(
+            self._note_event(state,
                 "schedule",
                 {"id": schedule.id, "manual": True, "note": str(schedule.note or "")},
             )

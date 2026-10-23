@@ -74,15 +74,18 @@ class LifeContinuityTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_resumed_step_receipt_contains_all_actual_work(self):
         state, item = await self.prepare()
-        self.engine.pause_matter_action(state, state.current_action)
-        state.current_action, state.current_plan, state.state = None, None, "idle"
-        await self.engine._start_matter_step(state, item)
-        self.assertEqual(state.current_action["duration_ticks"], 18)
-        state.current_action["elapsed_ticks"] = 18
-        await self.engine._finish_action(state, self.engine.node("study"), TickOutcome(SESSION), state.current_action, depth=0)
-        self.assertEqual(item["steps"][0]["result"]["minutes"], 20)
-        self.assertEqual(item["worked_minutes"], 20)
-        self.assertTrue(item["needs_review"])
+        await self.engine.save_state(state)
+        async with self.engine.session_state(SESSION) as state:
+            item = next(row for row in state.life_matters if row["id"] == item["id"])
+            self.engine.pause_matter_action(state, state.current_action)
+            state.current_action, state.current_plan, state.state = None, None, "idle"
+            await self.engine._start_matter_step(state, item)
+            self.assertEqual(state.current_action["duration_ticks"], 18)
+            state.current_action["elapsed_ticks"] = 18
+            await self.engine._finish_action(state, self.engine.node("study"), TickOutcome(SESSION), state.current_action, depth=0)
+            self.assertEqual(item["steps"][0]["result"]["minutes"], 20)
+            self.assertEqual(item["worked_minutes"], 20)
+            self.assertTrue(item["needs_review"])
 
     async def test_force_sleep_retains_partial_work(self):
         state, item = await self.prepare()
@@ -196,15 +199,18 @@ class LifeContinuityTests(unittest.IsolatedAsyncioTestCase):
         self.clock._now = datetime(2026, 10, 18, 23, 59).timestamp()
         state, item = await self.prepare()
         state.current_action["elapsed_ticks"] = 0
-        self.clock.advance(60)
-        await self.engine._tick_continuous(state, self.engine.node("study"), TickOutcome(SESSION))
-        self.clock.advance(60)
-        await self.engine._tick_continuous(state, self.engine.node("study"), TickOutcome(SESSION))
-        self.assertEqual(item["work_day"], "2026-10-19")
-        self.assertEqual(item["worked_minutes"], 1)
-        self.assertEqual(item["steps"][0]["worked_minutes"], 2)
-        self.engine.pause_matter_action(state, state.current_action)
-        self.assertEqual(item["worked_minutes"], 1)
+        await self.engine.save_state(state)
+        async with self.engine.session_state(SESSION) as state:
+            item = next(row for row in state.life_matters if row["id"] == item["id"])
+            self.clock.advance(60)
+            await self.engine._tick_continuous(state, self.engine.node("study"), TickOutcome(SESSION))
+            self.clock.advance(60)
+            await self.engine._tick_continuous(state, self.engine.node("study"), TickOutcome(SESSION))
+            self.assertEqual(item["work_day"], "2026-10-19")
+            self.assertEqual(item["worked_minutes"], 1)
+            self.assertEqual(item["steps"][0]["worked_minutes"], 2)
+            self.engine.pause_matter_action(state, state.current_action)
+            self.assertEqual(item["worked_minutes"], 1)
 
     async def test_resuming_paused_project_respects_active_limit(self):
         state, item = await self.prepare(running=False)

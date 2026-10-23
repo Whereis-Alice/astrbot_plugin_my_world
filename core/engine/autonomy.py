@@ -180,12 +180,17 @@ class AutonomyMixin:
     ) -> None:
         """把一份计划挂到状态上并记日志（自主决策与「抵达新地点」共用）。"""
 
+        if not plan.get("persona_key"):
+            plan["persona_key"] = self._matter_persona_key(state) or ""
+        if not self._running_life_belongs(state, plan):
+            return
         for step in plan.get("steps", []):
             if isinstance(step, dict) and not step.get("kind"):
                 step["kind"] = outcome.speech_kind or ("outreach" if plan.get("contact_people") else "life_share")
         state.current_plan = plan
         # 留一份「最近一次生成的计划」：做完之后提示词里还要能提到它
         state.last_plan = {
+            "persona_key": plan.get("persona_key", ""),
             "steps": [
                 {
                     "action": str(step.get("action") or ""),
@@ -200,7 +205,7 @@ class AutonomyMixin:
             "send_to": str(plan.get("send_to") or ""),
         }
         if plan.get("reason"):
-            state.note_reasoning({"intent": str(plan.get("reason"))}, source="plan")
+            state.note_reasoning({"intent": str(plan.get("reason"))}, source="plan", persona_key=plan.get("persona_key", ""))
         # 自主决策时她心里那一句也留下：以前只有 think 动作才写，
         # 模型不主动想，「内心活动」那一栏就长期只有一行旧内容。
         reason = str(plan.get("reason") or "").strip()
@@ -219,7 +224,7 @@ class AutonomyMixin:
             source="自主决定" if inner else "此刻选择",
             intent=reason,
         )
-        state.add_event(
+        self._note_event(state,
             "plan", {"reason": plan.get("reason"), "source": plan.get("source")}
         )
         # 这份计划要说的话落在哪个会话：日志里跟着一起写出来，
@@ -416,6 +421,7 @@ class AutonomyMixin:
                 valid_for=min(configured_valid_for, requested_valid_for),
                 reason=str(plan.get("reason", "")),
                 source="llm",
+                persona_key=self._matter_persona_key(state) or "",
                 send_to=str(plan.get("send_to") or ""),
             )
             if created is not None:

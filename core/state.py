@@ -845,7 +845,7 @@ class WorldState:
                 rows[str(session_id)] = {"text": text, "at": 0.0}
         return state
 
-    def note_reasoning(self, reasoning: dict[str, Any] | None, *, source: str = "", session_id: str = "") -> None:
+    def note_reasoning(self, reasoning: dict[str, Any] | None, *, source: str = "", session_id: str = "", persona_key: str = "") -> None:
         """记下最近一次推理草稿（编辑器「实时状态」会显示它）。"""
 
         if not reasoning:
@@ -855,13 +855,16 @@ class WorldState:
             return
         payload["_source"] = source
         payload["_at"] = int(self.world_time)
+        payload["_persona_key"] = str(persona_key or "")
         if source in {"reply", "reflect"}:
             payload["_session"] = str(session_id or self.session_id)
         self.last_reasoning = payload
 
-    def reasoning_for(self, session_id: str = "") -> dict[str, Any]:
+    def reasoning_for(self, session_id: str = "", *, persona_key: str | None = None) -> dict[str, Any]:
         """Conversation drafts belong to their origin; autonomous thoughts remain shared."""
         reasoning = self.last_reasoning or {}
+        if persona_key is not None and reasoning.get("_persona_key") and reasoning["_persona_key"] != persona_key:
+            return {}
         origin = str(reasoning.get("_session") or "")
         if not origin and reasoning.get("_source") in {"reply", "reflect"}:
             return {}  # A legacy shared save does not prove the actual dialogue origin.
@@ -1222,9 +1225,9 @@ class WorldState:
     def busy_with(self) -> str:
         return str((self.current_action or {}).get("type", ""))
 
-    def add_event(self, kind: str, detail: dict[str, Any], keep: int = 40) -> None:
+    def add_event(self, kind: str, detail: dict[str, Any], keep: int = 40, *, persona_key: str = "") -> None:
         self.recent_events.append(
-            {"kind": kind, "detail": detail, "world_time": self.world_time}
+            {"kind": kind, "detail": detail, "world_time": self.world_time, "persona_key": str(persona_key or "")}
         )
         if len(self.recent_events) > keep:
             self.recent_events = self.recent_events[-keep:]

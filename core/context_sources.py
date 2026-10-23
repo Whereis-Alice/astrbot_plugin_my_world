@@ -207,7 +207,10 @@ def runtime_context(prompts: Any, state: Any, node: Any, request: ContextRequest
     """Build only the plugin's dynamic layer; host history/tools stay untouched."""
     now = prompts._now()
     action = state.current_action or {}
-    if state.state in {"sleeping", "napping"}:
+    foreign_action = bool(action.get("persona_key") and action["persona_key"] != request.life_persona)
+    if foreign_action:
+        activity = "自由活动"
+    elif state.state in {"sleeping", "napping"}:
         activity = "正在睡觉" if state.state == "sleeping" else "正在小睡"
     elif action:
         activity = str(action.get("desc") or action.get("intent") or prompts.action_label(action.get("type")) or "自由活动")
@@ -228,7 +231,7 @@ def runtime_context(prompts: Any, state: Any, node: Any, request: ContextRequest
     planning = request.task == "plan"
     if node is not None:
         candidates.append(ContextItem("world:reachable", "world", prompts.reach_table(node.id), required=planning))
-    in_progress = prompts._in_progress_block(state)
+    in_progress = prompts._in_progress_block(state, persona_key=request.life_persona)
     if in_progress:
         candidates.append(ContextItem("plan:current", "matter", in_progress, continuing=True, required=planning))
     for name, kind in (("weather", "weather"), ("recent_search", "observation"),
@@ -241,6 +244,8 @@ def runtime_context(prompts: Any, state: Any, node: Any, request: ContextRequest
         stamp=lambda at: prompts._memory_stamp(at, now), life_enabled=prompts.world.state_dynamics.own_topic_enabled)
     event_lines = []
     for index, item in enumerate(state.recent_events or []):
+        if item.get("persona_key") and item["persona_key"] != request.life_persona:
+            continue
         if prompts._trivial_event(item):
             continue
         line = prompts._event_line(item)
@@ -256,7 +261,8 @@ def runtime_context(prompts: Any, state: Any, node: Any, request: ContextRequest
     if external:
         # The latest externally-owned state remains authoritative and is not rewritten.
         base.append(external)
-    inner = prompts._inner_voice(state, request.session, dialogue_only=request.task in {"reply", "participation"})
+    inner = prompts._inner_voice(state, request.session, dialogue_only=request.task in {"reply", "participation"},
+                                 persona_key=request.life_persona)
     if inner:
         candidates.append(ContextItem("inner:current", "thought",
             "# 当时的内心活动（主观想法，仅你可见，不直接复述）\n" + inner))

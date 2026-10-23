@@ -60,7 +60,9 @@ class ActivityMemoryContinuityTests(unittest.IsolatedAsyncioTestCase):
         self.persona.text = "另一位完全不同的园艺少女。"
         action["silent_followup"] = True
         async with self.engine.session_state(S) as state:
-            await self.engine._finish_action(state, self.engine.node("study"), TickOutcome(session_id=S), action)
+            # Test late memory ownership independently: execution now correctly
+            # refuses to complete another character's running activity.
+            await self.engine._remember_action(state, self.engine.world.action_map()["read"], action)
         items, _ = await self.engine.lookup_life_memories(S, "", "看书")
         self.assertEqual(items, [])
         self.persona.text = original

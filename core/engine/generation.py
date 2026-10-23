@@ -1317,7 +1317,7 @@ class GenerationMixin:
             self.pause_matter_action(state, action)
             if (state.current_plan or {}).get("matter_id") == action.get("matter_id") and action.get("matter_id"):
                 state.current_plan = None
-            state.add_event("interrupt", {"action": action.get("type")})
+            self._note_event(state, "interrupt", {"action": action.get("type")})
             state.current_action = None
             state.state = STATE_IDLE
             return True

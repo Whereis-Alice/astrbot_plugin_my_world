@@ -28,6 +28,10 @@ from .life_inference import STATE_LEASE
 
 
 class StateStoreMixin:
+    def _note_event(self, state: WorldState, kind: str, detail: dict[str, Any], keep: int = 40) -> None:
+        """Short lived event context retains the same character as its source."""
+        state.add_event(kind, detail, keep, persona_key=self._matter_persona_key(state) or "")
+
     # ================= 状态存取 =================
 
     def lock(self, session_id: str) -> asyncio.Lock:
@@ -125,7 +129,7 @@ class StateStoreMixin:
         else:
             state.state = STATE_AWAKENING
         state.cold_start_done = False
-        state.add_event("cold_start", {"mode": mode, "node": state.node_id})
+        self._note_event(state, "cold_start", {"mode": mode, "node": state.node_id})
         await self._seed_preset_memories(state)
         await self.save_state(state)
         return state
@@ -167,11 +171,12 @@ class StateStoreMixin:
             from ..life_matters import ensure
             migrate_plan(state, now=self._now(), tick_seconds=self.tick_seconds)
             ensure(state, self._now())
-            self._sync_sleep_rhythm_mode(state)
             token = STATE_LEASE.set({"owner": asyncio.current_task(), "state": state,
                                      "lock": self.lock(key), "origin": session_id, "released": False,
                                      "persona": await self._persona_text(session_id)})
             try:
+                await self._validate_running_life(state)
+                self._sync_sleep_rhythm_mode(state)
                 yield state
             finally:
                 try:

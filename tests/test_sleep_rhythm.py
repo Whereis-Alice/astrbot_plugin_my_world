@@ -857,7 +857,9 @@ class SleepRhythmTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_interrupting_a_nap_when_gate_is_disabled_still_records_sleep(self):
         self.engine.world.sleep.applies_to_nap = False
+        self.engine.world.action_map()["nap"].enabled = True
         async with self.engine.session_state(fixture.SESSION) as state:
+            state.node_id = "bedroom"
             self.engine._start_sleep_rhythm(state, "nap", 30)
             state.state = "napping"
             state.current_action = {"type":"nap", "elapsed_ticks":20, "interruptible":True}

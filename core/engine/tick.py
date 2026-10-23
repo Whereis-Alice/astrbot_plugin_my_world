@@ -159,7 +159,7 @@ class TickMixin:
         if self.is_busy(session_id):
             return None
         async with self.session_state(session_id) as state:
-            self.stop_foreign_matter_work(state)
+            await self._validate_running_life(state)
             elapsed = self.reconcile_life_time(state)
             state.world_time += 1
             if (state.current_action or {}).get("offline_recovery_complete"):
@@ -183,7 +183,7 @@ class TickMixin:
         # 自主行为默认落在这一组的代表会话；动作续说会临时改成"她当时说话的地方"
         outcome.speech_home = session_id
         async with self.session_state(session_id) as state:
-            self.stop_foreign_matter_work(state)
+            await self._validate_running_life(state, outcome)
             echo_marker = await self._event_marker(state)
             node = self.node(state.node_id) or self.node(self.default_node_id())
             elapsed_life = self.reconcile_life_time(state)
@@ -219,28 +219,6 @@ class TickMixin:
                 state.energy = max(0.0, float(state.energy) - max(0.0, extra))
             if state.stay_up_until and state.world_time > int(state.stay_up_until):
                 state.stay_up_until = 0
-
-            # 正在做的动作被停用了：立刻停下（否则"停用"看起来没生效）
-            current = state.current_action or {}
-            current_def = self.world.action_map().get(str(current.get("type") or ""))
-            if current and (current_def is None or not current_def.enabled or current_def.idle):
-                action_id = str(current.get("type") or "")
-                self.settle_recovery_progress(state, current)
-                if sleep_action_kind(current_def):
-                    self._finish_sleep_rhythm(state, current, interrupted=True)
-                self.pause_matter_action(state, current)
-                if (state.current_plan or {}).get("matter_id") and (state.current_plan or {}).get("matter_id") == current.get("matter_id"):
-                    state.current_plan = None
-                state.current_action = None
-                state.state = STATE_IDLE
-                await self._log_event(
-                    state,
-                    "skip",
-                    {
-                        "action": action_id,
-                        "note": f"「{current_def.name if current_def else action_id}」已删除或停用，动作中止",
-                    },
-                )
 
             self._tick_idle_life(state)
             # 1) 推进持续动作
@@ -365,11 +343,12 @@ class TickMixin:
                         # 刚回过话说明有人理她，别再触发"太久没人说话，强制找人"
                         continue
                     if plan:
+                        plan["persona_key"] = self._matter_persona_key(state) or ""
                         state.current_plan = plan
                         state.last_forced_plan_at = self._now()
                         state.last_forced_flag = flag
                         self._count_autonomous(state)
-                        state.add_event("extreme", {"flag": flag})
+                        self._note_event(state, "extreme", {"flag": flag})
                         await self._log_event(state, "extreme", {"flag": flag})
                         break
 
@@ -408,24 +387,11 @@ class TickMixin:
     async def _tick_continuous(
         self, state: WorldState, node: NodeDef | None, outcome: TickOutcome
     ) -> None:
+        await self._validate_running_life(state, outcome)
         action = state.current_action
         if not isinstance(action, dict):
             return
         definition = self.world.action_map().get(str(action.get("type") or ""))
-        if (definition and definition.id != "sleep" and definition.scope == "node"
-                and not definition.available_in(state.node_id)):
-            # A map/scope change can invalidate an already-running activity.
-            # Preserve prior effort without completing it in the wrong place.
-            # Existing sleep recovery keeps its own rhythm/fallback semantics.
-            self.pause_matter_action(state, action)
-            if sleep_action_kind(definition):
-                self._finish_sleep_rhythm(state, action, interrupted=True)
-            state.current_action, state.state = None, STATE_IDLE
-            if action.get("from_plan") and state.current_plan and same_plan(action, state.current_plan):
-                advance(state, status="skipped")
-            await self._log_event(state, "skip", {"action": definition.id,
-                "note": f"「{definition.id}」的地点限制已变化，在 {state.node_id} 停止执行"}, outcome=outcome)
-            return
         if not action.pop("offline_tick_settled", False):
             action["elapsed_ticks"] = int(action.get("elapsed_ticks", 0)) + 1
         self.settle_recovery_progress(state, action)
@@ -524,6 +490,9 @@ class TickMixin:
         *,
         depth: int = 0,
     ) -> bool:
+        await self._validate_running_life(state, outcome)
+        if self._running_action_invalid_reason(state, action):
+            return False
         action_id = str(action.get("type", ""))
         from ..models import CHAT_BROWSE_IDS
         if action_id in CHAT_BROWSE_IDS:
@@ -549,7 +518,7 @@ class TickMixin:
                 if not self.world.is_home_zone(target_node):
                     # 出门了：记一笔，久不出去会想出去走走（见 _outdoor_hint）
                     state.last_outdoor_at = self._now()
-                state.add_event("move", {"to": target_node})
+                self._note_event(state, "move", {"to": target_node})
                 # 特地走到一个新地方，落地后就地看看这里能做什么
                 if int(action.get("arrival_decide", 1)):
                     state.pending_arrival = True
@@ -880,7 +849,7 @@ class TickMixin:
         if depth > self.world.limits.max_action_chain_depth:
             outcome.notes.append("动作链超过深度上限，已停止")
             return
-        state.add_event("chain", {"schedule": schedule_id})
+        self._note_event(state, "chain", {"schedule": schedule_id})
         await self._run_chain(state, target.action_chain, outcome, depth=depth)
 
     async def _remember_inner_thought(
@@ -1190,6 +1159,7 @@ class TickMixin:
         *,
         depth: int,
     ) -> None:
+        await self._validate_running_life(state, outcome)
         if depth > self.world.limits.max_action_chain_depth:
             return
         if state.state == STATE_DROWSY:

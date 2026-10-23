@@ -137,7 +137,8 @@ class TurnMixin:
                     or state.session_id != state_key or not self.is_enabled(session_id)):
                 return None
             if parsed.reasoning:
-                state.note_reasoning(parsed.reasoning, source="reflect", session_id=session_id)
+                state.note_reasoning(parsed.reasoning, source="reflect", session_id=session_id,
+                                     persona_key=self._matter_persona_key(state) or "")
             # 复盘里那句「心里冒出来的一两句」也存下来：这样每聊一轮，
             # 「内心活动」都会跟着动，而不是等她自己想起来写 think 动作。
             await self._remember_inner_thought(

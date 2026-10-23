@@ -99,14 +99,19 @@ class LifeRecoveryReviewTests(unittest.IsolatedAsyncioTestCase):
             await self.start(state)
             state.life_updated_at = self.clock.now()
         self.clock.advance(7200)
-        control = copy.deepcopy(await self.get_state())
-        awake_seconds = self.engine.reconcile_life_time(control)
-        await self.engine._tick_continuous(control, self.engine.node(control.node_id), self.outcome())
-        self.engine.dynamics.tick(control, node=self.engine.node(control.node_id), elapsed_seconds=awake_seconds,
-                                  world=self.engine.world, now=self.clock.now())
+        initial = copy.deepcopy(await self.get_state())
+        # Both paths use the actual character lease; an unowned state copy may
+        # not complete a marked action or receive its recovery reward.
+        async with self.engine.session_state(S) as control:
+            awake_seconds = self.engine.reconcile_life_time(control)
+            await self.engine._tick_continuous(control, self.engine.node(control.node_id), self.outcome())
+            self.engine.dynamics.tick(control, node=self.engine.node(control.node_id), elapsed_seconds=awake_seconds,
+                                      world=self.engine.world, now=self.clock.now())
+            expected_energy = control.energy
+        await self.engine.save_state(initial)
         await self.engine._tick_session(S)
         result = await self.get_state()
-        self.assertAlmostEqual(result.energy, control.energy)
+        self.assertAlmostEqual(result.energy, expected_energy)
         self.assertIsNone(result.current_action)
         energy = result.energy
         await self.engine._tick_continuous(result, self.engine.node(result.node_id), self.outcome())

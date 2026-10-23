@@ -166,7 +166,7 @@ class ActionsRunMixin:
         if not call.ok:
             # 工具没跑成 = 挫败感：这条线上一眼看不见，但确实影响她的心情
             self.dynamics.apply_event(state, "tool_failed", now=self._now())
-        state.add_event(
+        self._note_event(state,
             "tool_result",
             {"action": definition.id, "tool": call.tool or name, "ok": bool(call.ok)},
         )
@@ -526,7 +526,7 @@ class ActionsRunMixin:
                 self.pause_matter_action(state, previous)
             if previous and str(previous.get("type") or "") != definition.id:
                 self.dynamics.apply_event(state, "interrupted", now=self._now())
-                state.add_event("interrupt", {"action": previous.get("type")})
+                self._note_event(state, "interrupt", {"action": previous.get("type")})
                 await self._log_event(
                     state,
                     "interrupt",
@@ -548,7 +548,7 @@ class ActionsRunMixin:
                         "计划里那一步不再接着做"
                     )
             state.current_action = payload
-            state.add_event("action_start", {"type": definition.id})
+            self._note_event(state, "action_start", {"type": definition.id})
             await self._log_event(
                 state,
                 "action_start",
@@ -726,7 +726,7 @@ class ActionsRunMixin:
         # 瞬时动作也走这条完成路径（`_finish_action` 是持续 / 工具动作那条），
         # 所以"亲近一下满足欲求"两边都要接上
         await self._satisfy_desire_from_action(state, definition, outcome)
-        state.add_event("action", {"type": definition.id, "visible": definition.visible})
+        self._note_event(state, "action", {"type": definition.id, "visible": definition.visible})
         await self._log_event(
             state,
             "action",
@@ -980,7 +980,7 @@ class ActionsRunMixin:
         self.dynamics.apply_effects(
             state, definition.on_complete.effects, world=self.world, now=self._now()
         )
-        state.add_event("action", {"type": "poke", "visible": bool(outcome.messages)})
+        self._note_event(state, "action", {"type": "poke", "visible": bool(outcome.messages)})
         await self._log_event(
             state,
             "action",
@@ -1132,6 +1132,7 @@ class ActionsRunMixin:
                         valid_for=self.world.limits.plan_valid_duration,
                         reason="日程后续步骤",
                         source="schedule",
+                        persona_key=self._matter_persona_key(state) or "",
                     )
                     if state.current_plan and plan_source == "manual":
                         # 保留日程发言来源，单独标记手动试跑供模式交接识别。

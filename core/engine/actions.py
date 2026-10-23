@@ -482,6 +482,7 @@ class ActionsMixin:
                 valid_for=self.world.limits.plan_valid_duration,
                 reason="同一轮里还没做完的动作",
                 source="pending",
+                persona_key=self._matter_persona_key(state) or "",
             )
         else:
             anchor = self._plan_queue_anchor(state, plan)
@@ -557,6 +558,10 @@ class ActionsMixin:
 
         if depth > self.world.limits.max_action_chain_depth:
             outcome.notes.append("动作链超过深度上限，已停止")
+            return False
+        old_plan = state.current_plan or {}
+        await self._validate_running_life(state, outcome)
+        if from_plan and old_plan and not self._running_life_belongs(state, old_plan):
             return False
         from ..models import CHAT_BROWSE_IDS
         browsing = next((a for a in actions if a.type in CHAT_BROWSE_IDS), None)
@@ -988,6 +993,7 @@ class ActionsMixin:
             valid_for=self.world.limits.plan_valid_duration,
             reason=f"到了{self._node_name(target_node)}之后要做的事",
             source="auto_travel",
+            persona_key=self._matter_persona_key(state) or "",
         )
         if state.current_plan:
             state.current_plan["contact_id"] = outcome.contact_id

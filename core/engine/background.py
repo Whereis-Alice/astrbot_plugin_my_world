@@ -232,5 +232,5 @@ class BackgroundMixin:
         state.awaiting_reply = False
         state.life_recovery = {"at": now, "elapsed_seconds": elapsed, "settled_seconds": gap,
                                "from_tick": old_tick, "note": "离线期间仅结算时间与休息；没有补发消息或虚构事项进展"}
-        state.add_event("offline_recovery", dict(state.life_recovery))
+        self._note_event(state, "offline_recovery", dict(state.life_recovery))
         return remaining

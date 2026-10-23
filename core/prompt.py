@@ -862,6 +862,7 @@ class PromptBuilder:
         profile_text: str = "",
         context_request=None,
         current_input_pending: bool = False,
+        life_persona_key: str | None = None,
     ) -> str:
         if context_request is not None:
             from .context_sources import runtime_context
@@ -890,15 +891,21 @@ class PromptBuilder:
             else NO_MEMORY_TEXT
         )
         current_action = state.current_action or {}
+        foreign_action = bool(current_action.get("persona_key") and life_persona_key is not None
+                              and current_action["persona_key"] != life_persona_key)
+        if foreign_action:
+            current_action = {}
         if current_action:
             action_desc = str(current_action.get("desc") or current_action.get("type", "无"))
+        elif foreign_action:
+            action_desc = "自由活动"
         else:
             from .life import activity_view
 
             action_desc = activity_view(state, self.world)["label"]
-        if state.state == "sleeping":
+        if state.state == "sleeping" and not foreign_action:
             action_desc = "正在睡觉"
-        elif state.state == "napping":
+        elif state.state == "napping" and not foreign_action:
             action_desc = "正在小睡"
 
         active_users = state.recent_active_users(5)
@@ -914,13 +921,15 @@ class PromptBuilder:
         # （那些在聊天记录和「你最近说过的话」里已经有了）
         lines: list[str] = []
         for item in state.recent_events or []:
+            if item.get("persona_key") and life_persona_key is not None and item["persona_key"] != life_persona_key:
+                continue
             if self._trivial_event(item):
                 continue
             line = self._event_line(item)
             if line:
                 lines.append(line)
         event_text = "\n".join(lines[-5:]) or "（没什么特别的事）"
-        thought_text = self._inner_voice(state)
+        thought_text = self._inner_voice(state, persona_key=life_persona_key)
 
         blocks = [
             "# 你的状态\n"
@@ -947,7 +956,7 @@ class PromptBuilder:
         if node is not None:
             # 可达表只跟"她在哪"有关，比状态稳、比记忆易变得多，放时钟后面
             blocks.append(self.reach_table(node.id))
-        in_progress = self._in_progress_block(state)
+        in_progress = self._in_progress_block(state, persona_key=life_persona_key)
         if in_progress:
             blocks.append(in_progress)
         if abilities_line:
@@ -1242,7 +1251,7 @@ class PromptBuilder:
             return f"- 遇到的事：{_short(title, 40)}" if title else ""
         return ""
 
-    def _in_progress_block(self, state: WorldState) -> str:
+    def _in_progress_block(self, state: WorldState, *, persona_key: str | None = None) -> str:
         """她手头的事：正在做什么、计划里还剩什么。
 
         没有这段的话，她跨轮次就像失忆：上一轮安排的事、正要接着做的事都看不到。
@@ -1252,6 +1261,8 @@ class PromptBuilder:
 
         lines: list[str] = []
         action = state.current_action or {}
+        if action.get("persona_key") and persona_key is not None and action["persona_key"] != persona_key:
+            action = {}
         if action:
             total = max(1, int(action.get("duration_ticks", 1) or 1))
             left = max(0, total - int(action.get("elapsed_ticks", 0) or 0))
@@ -1264,6 +1275,8 @@ class PromptBuilder:
             if idle:
                 lines.append(f"- 空闲时的小事：{idle.name or idle.id}。{idle.description}")
         plan = state.current_plan or {}
+        if plan.get("persona_key") and persona_key is not None and plan["persona_key"] != persona_key:
+            plan = {}
         steps = plan.get("steps") or []
         current = int(plan.get("current_step", 0) or 0)
         done = [
@@ -1296,6 +1309,8 @@ class PromptBuilder:
             # 手头没安排时，把"最近一次生成的计划"也带上：她才知道刚才打算过什么，
             # 不至于每轮都从零开始重新想。
             last = state.last_plan if isinstance(state.last_plan, dict) else {}
+            if last.get("persona_key") and persona_key is not None and last["persona_key"] != persona_key:
+                last = {}
             names = [
                 self.action_label(step.get("action"))
                 for step in (last.get("steps") or [])
@@ -1365,11 +1380,12 @@ class PromptBuilder:
         )
 
     @staticmethod
-    def _inner_voice(state: WorldState, session_id: str = "", *, dialogue_only: bool = False) -> str:
+    def _inner_voice(state: WorldState, session_id: str = "", *, dialogue_only: bool = False,
+                     persona_key: str | None = None) -> str:
         """内心活动 = 最近一次推理草稿；模型没写草稿时退回她留下的心里话。"""
 
         from .chat_browse import dialogue_origin, thought_visible
-        reasoning = state.reasoning_for(session_id)
+        reasoning = state.reasoning_for(session_id, persona_key=persona_key)
         if dialogue_only and not (reasoning.get("_session") or reasoning.get("_source") in {"reply", "reflect"}):
             reasoning = {}
         if reasoning:
@@ -1384,6 +1400,7 @@ class PromptBuilder:
             str(item.get("content"))
             for item in state.thoughts
             if item.get("content") and not item.get("browse_session")
+            and (persona_key is None or not item.get("persona_key") or item["persona_key"] == persona_key)
             and thought_visible(item, session_id, 0)
             and (not dialogue_only or dialogue_origin(item))
         ][-3:]
@@ -2545,9 +2562,10 @@ class PromptBuilder:
         一起写在第 3 层里；没人声明时这一层同样逐字不变。
         """
 
+        from hashlib import sha256
+        persona_key = sha256(persona_text.encode("utf-8")).hexdigest()[:24]
         if context_request is not None:
-            from hashlib import sha256
-            context_request.life_persona = sha256(persona_text.encode("utf-8")).hexdigest()[:24]
+            context_request.life_persona = persona_key
         layers = []
         persona = self.persona_layer(persona_text)
         if persona:
@@ -2593,6 +2611,7 @@ class PromptBuilder:
                 chat_images=chat_images,
                 profile_text=profile_text,
                 context_request=context_request,
+                life_persona_key=persona_key,
             )
         )
         layers.append(
@@ -2696,9 +2715,10 @@ class PromptBuilder:
         以「用户消息附加块」的形式交给宿主，尽量少破坏别家插件的前缀缓存。
         """
 
+        from hashlib import sha256
+        persona_key = sha256(persona_text.encode("utf-8")).hexdigest()[:24]
         if context_request is not None:
-            from hashlib import sha256
-            context_request.life_persona = sha256(persona_text.encode("utf-8")).hexdigest()[:24]
+            context_request.life_persona = persona_key
         layers: list[str] = []
         persona = self.persona_layer(persona_text)
         if persona:
@@ -2734,6 +2754,7 @@ class PromptBuilder:
             profile_text=profile_text,
             context_request=context_request,
             current_input_pending=True,
+            life_persona_key=persona_key,
         )
         runtime = f"{runtime}\n\n{self.dialogue_reminder_layer()}"
         if context_request is not None:
@@ -2745,7 +2766,7 @@ class PromptBuilder:
         persona_key = sha256(persona_text.encode("utf-8")).hexdigest()[:24]
         now = self._now()
         sid = current_session or state.session_id
-        inner = self._inner_voice(state, sid, dialogue_only=True)
+        inner = self._inner_voice(state, sid, dialogue_only=True, persona_key=persona_key)
         if inner:
             runtime += "\n\n# 本会话留下的内心活动（只供当前交谈参考，不直接复述）\n" + inner
         feelings = feeling_context(state, sid, now.timestamp() if now else 0, persona_key=persona_key)

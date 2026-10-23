@@ -235,7 +235,7 @@ class SleepMixin:
             "语气迷糊、可以带点起床气，偶尔打错一两个字也正常；"
             "**不要安排任何别的动作**，回完就接着睡，别把话题铺开。"
         )
-        state.add_event("startled", {"by": ctx.user_id, "reason": reason})
+        self._note_event(state, "startled", {"by": ctx.user_id, "reason": reason})
         await self._log_event(
             state,
             "startled",
@@ -380,7 +380,7 @@ class SleepMixin:
         state.current_action = None
         state.state = STATE_DROWSY
         state.pending_arrival = False
-        state.add_event("drowsy", {"action": definition.id})
+        self._note_event(state, "drowsy", {"action": definition.id})
         await self._log_event(
             state,
             "drowsy",
@@ -660,7 +660,7 @@ class SleepMixin:
             state.sleep_delay_reason = str(reason)
         if str(by or ""):
             state.sleep_delay_by = str(by)
-        state.add_event(
+        self._note_event(state,
             "sleep_delay",
             {"minutes": wait, "until": int(state.sleep_delay_until), "reason": str(reason or ""), "by": str(by or "")},
         )
@@ -743,7 +743,7 @@ class SleepMixin:
             )
         # 群名片要立刻从「睡觉中」改回来，所以顺手把冷却清零
         state.last_nickname_update_at = 0.0
-        state.add_event("wake_up", {"by": ctx.user_id})
+        self._note_event(state, "wake_up", {"by": ctx.user_id})
         # 「刚被叫醒」这句提示：接管这一轮会用到，写在状态里统一取
         state.wake_note = self._wake_note_text(ctx)
         state.wake_note_until = int(state.world_time) + 2
