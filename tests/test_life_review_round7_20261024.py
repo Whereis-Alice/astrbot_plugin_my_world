@@ -11,6 +11,7 @@ from core.json_actions import PlannedAction
 from core.context_sources import life_memory_metadata, memory_context_items
 from tests import test_life_audit as audit
 from tests import test_relationship_api as contact_api
+from tests import test_social_directory as directory_api
 
 S, P = audit.S, audit.P
 
@@ -261,6 +262,57 @@ class EmotionContactApiTests(unittest.IsolatedAsyncioTestCase):
         await self.call("profile/grudge", method="POST", session=self.session, user_id="42", action="resolve")
         detail = await self.call("profile/contact", session=self.session, user_id="42")
         self.assertIsNone(detail["data"]["grudge"])
+
+
+class EmotionDirectoryApiTests(unittest.IsolatedAsyncioTestCase):
+    asyncSetUp = directory_api.SocialDirectoryApiTests.asyncSetUp
+    call = directory_api.SocialDirectoryApiTests.call
+    add_session = directory_api.SocialDirectoryApiTests.add_session
+    other = directory_api.SocialDirectoryApiTests.other
+    uid = directory_api.SocialDirectoryApiTests.uid
+
+    async def test_directory_cards_use_the_actual_session_and_current_character_without_writes(self):
+        self.add_session()
+        raw = self.plugin.store.raw_sessions()
+        raw["groups"] = [{"id": "together", "name": "同一个她", "sessions": [self.session, self.other],
+                          "main_session": self.session}]
+        self.plugin.store.save_sessions(raw)
+        engine = self.plugin.engine
+        engine.reload_config()
+        engine._persona_text = AsyncMock(return_value="角色甲")
+        for sid in (self.session, self.other):
+            engine.profiles.touch(sid, self.uid)
+        async with engine.session_state(self.other) as state:
+            engine.note_grudge(state, "角色甲还气着迟到", user_id=self.uid, force=True)
+        before = copy.deepcopy(self.plugin.db.raw.get_state(engine.state_key(self.other)))
+        for persona, expected in (("角色甲", True), ("角色乙", False), ("角色甲", True)):
+            engine._persona_text.return_value = persona
+            for endpoint in ("relationships/person", "relationships"):
+                with self.subTest(persona=persona, endpoint=endpoint):
+                    response = await self.call(endpoint, user_id=self.uid, q=self.uid)
+                    data = response["data"]
+                    person = data["people"][0] if endpoint == "relationships" else data
+                    rows = {row["session"]: row for row in person["sessions"]}
+                    self.assertEqual(rows[self.other]["cold"], expected)
+                    self.assertFalse(rows[self.session]["cold"])
+        self.assertEqual(self.plugin.db.raw.get_state(engine.state_key(self.other)), before)
+
+    async def test_relationship_edit_responses_keep_current_character_emotions(self):
+        engine = self.plugin.engine
+        engine._persona_text = AsyncMock(return_value="角色甲")
+        engine.profiles.touch(self.session, self.uid)
+        await self.call("profile/grudge", method="POST", session=self.session,
+            user_id=self.uid, action="add", reason="角色甲还气着迟到")
+        response = await self.call("relationships/apply", method="POST", user_id=self.uid,
+            affinity=42, relations=["主人"], revision=0)
+        self.assertTrue(response["data"]["person"]["sessions"][0]["cold"])
+        response = await self.call("relationships/baseline", method="POST", user_id=self.uid, revision=1)
+        self.assertTrue(response["data"]["person"]["sessions"][0]["cold"])
+        for persona, expected in (("角色乙", False), ("角色甲", True)):
+            engine._persona_text.return_value = persona
+            response = await self.call("relationships/session", method="POST", session=self.session,
+                user_id=self.uid, affinity=42, relations=["主人"])
+            self.assertEqual(response["data"]["person"]["sessions"][0]["cold"], expected)
 
 
 if __name__ == "__main__":

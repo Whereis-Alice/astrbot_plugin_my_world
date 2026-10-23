@@ -554,10 +554,12 @@ class WebApiMixin(LifeApiMixin):
         guard = self._guard()
         if guard is not None:
             return guard
-        data = SocialDirectory(self.engine).catalog(q=str(request.query.get("q", "")),
+        directory = SocialDirectory(self.engine)
+        data = directory.catalog(q=str(request.query.get("q", "")),
             page=_query_int("page", 1), size=_query_int("size", 24),
             filter_by=str(request.query.get("filter", "all")),
             sort=str(request.query.get("sort", "recent")))
+        await directory.with_emotions(data)
         data["rules"] = self._relationship_rules()
         return json_response(data)
 
@@ -569,7 +571,8 @@ class WebApiMixin(LifeApiMixin):
             uid = qq_id(request.query.get("user_id"))
         except ValueError as exc:
             return error_response(str(exc))
-        data = SocialDirectory(self.engine).person(uid)
+        directory = SocialDirectory(self.engine)
+        data = await directory.with_emotions(directory.person(uid))
         data["rules"] = self._relationship_rules()
         for item in data["sessions"]:
             with self.engine.config_scope(item["session"]):
@@ -582,7 +585,9 @@ class WebApiMixin(LifeApiMixin):
         if guard is not None:
             return guard
         try:
-            return json_response(SocialDirectory(self.engine).apply(payload, only_session=only_session))
+            directory = SocialDirectory(self.engine)
+            data = directory.apply(payload, only_session=only_session)
+            return json_response(await directory.with_emotions(data))
         except ValueError as exc:
             return error_response(str(exc))
 
@@ -610,7 +615,9 @@ class WebApiMixin(LifeApiMixin):
                 self.db.raw.delete_relationship_baseline(uid)
         except ValueError as exc:
             return error_response(str(exc))
-        return json_response({"ok": True, "person": SocialDirectory(self.engine).person(uid)})
+        directory = SocialDirectory(self.engine)
+        data = {"ok": True, "person": directory.person(uid)}
+        return json_response(await directory.with_emotions(data))
 
     def _weaver_service(self):
         return getattr(self.engine, "profile_weaver_service", None)

@@ -193,6 +193,35 @@ class SocialDirectory:
                                "configured": self.engine.session_config(sid) is not None})
         return {"user_id": user_id, "name": name or user_id, "baseline": baseline, "sessions": scopes}
 
+    async def with_emotions(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Resolve current characters for visible cards without mutating their lives."""
+
+        people = data.get("people", [data.get("person", data)])
+        snapshots: dict[str, tuple[WorldState, str] | None] = {}
+        for person in people:
+            for item in person.get("sessions", []):
+                sid = item["session"]
+                with self.engine.config_scope(sid):
+                    if sid not in snapshots:
+                        snapshot = self.db.get_state(self.engine.state_key(sid))
+                        snapshots[sid] = None
+                        if snapshot is not None and snapshot.get("grudges"):
+                            _, persona_key = await self.engine._journal_persona(sid)
+                            snapshots[sid] = (WorldState.from_payload(snapshot, self.engine.state_key(sid)), persona_key)
+                    source = snapshots[sid]
+                    if source is None:
+                        continue
+                    view = self.engine.profiles.view(sid, person["user_id"])
+                    if view is None:
+                        continue
+                    current = self.engine._apply_grudge_coldness(source[0], person["user_id"],
+                        {"affinity": view.affinity, "affinities": list(view.affinities), "negative": view.negative,
+                         "level": {"name": view.level.name, "index": view.level_index}},
+                        session_id=sid, persona_key=source[1])
+                    item["level"] = current["level"]["name"]
+                    item["cold"] = bool(current["level"].get("cold"))
+        return data
+
     def catalog(self, *, q: str = "", page: int = 1, size: int = 24,
                 filter_by: str = "all", sort: str = "recent") -> dict[str, Any]:
         # Index once before reading the visible cards; hidden pages don't incur
