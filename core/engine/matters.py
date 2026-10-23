@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 from datetime import timedelta
+from hashlib import sha256
 from typing import Any
 from uuid import uuid4
 
@@ -22,13 +23,22 @@ from .models import TickOutcome
 
 
 class MattersMixin:
+    def _matter_persona_key(self, state) -> str | None:
+        from .life_inference import STATE_LEASE
+        lease = STATE_LEASE.get()
+        if lease and lease["state"] is state:
+            return sha256(lease["persona"].encode("utf-8")).hexdigest()[:24]
+        return None
+
     def life_choice(self, state) -> dict:
         thread = self._active_thread(state)
-        schedules = [self._next_schedule(sid) for sid in self.group_sessions(state.session_id)]
+        persona_key = self._matter_persona_key(state)
+        schedules = [self._next_schedule(sid, state=state, persona_key=persona_key)
+                     for sid in self.group_sessions(state.session_id)]
         minutes = [row["in_minutes"] for row in schedules if row is not None]
         return choose_life(state, now=self._now(), critical=bool(thread and self._thread_critical(thread)),
                            schedule_minutes=min(minutes) if minutes else None,
-                           sleep_requested=self.world.sleep.mode == "autonomous")
+                           sleep_requested=self.world.sleep.mode == "autonomous", persona_key=persona_key)
 
     def _matter_can_work(self, state) -> bool:
         return state.state == "idle" and self.life_choice(state)["kind"] in {"idle", "matter"}
@@ -37,7 +47,8 @@ class MattersMixin:
         """One suggestion a day; transient failures get a bounded, delayed retry."""
         if (not self.world.limits.life_matter_enabled or not self.world.limits.life_matter_self_start
                 or not self._matter_can_work(state) or state.world_time * self.tick_seconds < 6 * 3600
-                or any(m["status"] in {"active", "working"} for m in state.life_matters)):
+                or any(m["status"] in {"active", "working"}
+                       and matters.belongs_to(m, self._matter_persona_key(state)) for m in state.life_matters)):
             return False
         key = f"life_seed:{self.state_key(state.session_id)}:{self._today_key(self._now())}"
         marker = self.db.raw.kv_get(key)
@@ -67,7 +78,6 @@ class MattersMixin:
             self.db.raw.kv_set(key, {"at": self._now(), "attempts": attempts,
                 "retry_at": self._now() + max(15, self.world.limits.life_matter_interval_minutes) * 60})
         persona = await self._persona_text(session_id)
-        from hashlib import sha256
         persona_key = sha256(persona.encode("utf-8")).hexdigest()[:24]
         # A new day is not a blank life. Keep only her personal projects;
         # conversation promises and another persona's history stay private.
@@ -121,7 +131,8 @@ class MattersMixin:
                 return
             matters.ensure(state, self._now())
             if (not self._matter_can_work(state)
-                    or any(m["status"] in {"active", "working"} for m in state.life_matters)):
+                    or any(m["status"] in {"active", "working"} and matters.belongs_to(m, persona_key)
+                           for m in state.life_matters)):
                 return
             self.db.raw.kv_set(key, {"at": self._now(), "attempts": attempts, "done": True})
             text = " ".join(payload["text"].split())[:160]
@@ -162,10 +173,21 @@ class MattersMixin:
         matters.ensure(state, self._now())
         running = str((state.current_action or {}).get("matter_id") or (state.current_plan or {}).get("matter_id") or "")
         for item in state.life_matters:
+            if not matters.belongs_to(item, self._matter_persona_key(state)):
+                continue
             if item["status"] == "working" and item["id"] != running:
                 item.update(status="active", obstacle="上次的小步被打断，稍后接着做")
                 matters.history(item, "interrupted", item["obstacle"], self._now())
         matters.sync(state)
+
+    def stop_foreign_matter_work(self, state) -> None:
+        """Changing character stops her old timed work, retaining invested time."""
+        key = self._matter_persona_key(state)
+        ids = {(state.current_action or {}).get("matter_id"), (state.current_plan or {}).get("matter_id")}
+        for matter_id in ids - {None, ""}:
+            item = matters.find(state, matter_id)
+            if item and not matters.belongs_to(item, key):
+                self._stop_matter_work(state, matter_id)
 
     def settle_matter_work(self, state, action: dict, *, at: float | None = None) -> float:
         """Settle online ticks once, assigning midnight work to its actual day."""
@@ -231,9 +253,11 @@ class MattersMixin:
                          and m.get("session") == session and m["status"] not in matters.CLOSED), None)
         if existing:
             return existing
-        if sum(m["status"] not in matters.CLOSED | {"paused"} for m in state.life_matters) >= self.world.limits.life_matter_active_max:
+        capacity_key = persona_key or self._matter_persona_key(state)
+        if sum(m["status"] not in matters.CLOSED | {"paused"} and matters.belongs_to(m, capacity_key)
+               for m in state.life_matters) >= self.world.limits.life_matter_active_max:
             return None
-        if sum(m["status"] == "paused" for m in state.life_matters) >= 20:
+        if sum(m["status"] == "paused" and matters.belongs_to(m, capacity_key) for m in state.life_matters) >= 20:
             return None
         item = matters.make(body, now=self._now(), session=session, **kwargs)
         matters.history(item, "created", "记下一件想继续做的事", self._now())
@@ -251,7 +275,9 @@ class MattersMixin:
             if item["status"] in matters.CLOSED:
                 raise ValueError("已经结束的事项不能再次执行，请新建事项")
             if operation in {"resume", "postpone"} and item["status"] == "paused" and sum(
-                m["status"] not in matters.CLOSED | {"paused"} for m in state.life_matters
+                m["status"] not in matters.CLOSED | {"paused"}
+                and matters.belongs_to(m, item.get("persona_key") or self._matter_persona_key(state))
+                for m in state.life_matters
             ) >= self.world.limits.life_matter_active_max:
                 raise ValueError("进行中的生活事项已达上限，请先暂停或结束其他事项")
             item["status"] = {"pause": "paused", "resume": "active", "postpone": "waiting", "abandon": "abandoned"}[operation]
@@ -320,12 +346,15 @@ class MattersMixin:
         world, state_key = self.world, self.state_key(session_id)
         now = self._now()
         async with self.session_state(session_id) as state:
+            self.stop_foreign_matter_work(state)
             self.reconcile_matters(state)
             if not self._matter_can_work(state):
                 return
             day = self._today_key(now)
             eligible = []
             for candidate in state.life_matters:
+                if not matters.belongs_to(candidate, self._matter_persona_key(state)):
+                    continue
                 if candidate["status"] not in {"active", "waiting", "blocked", "working"}:
                     continue
                 if candidate.get("blocker") == "evidence":
@@ -363,6 +392,8 @@ class MattersMixin:
             candidates = self._matter_actions(state)
         # Never wait for inference while holding the life-state lock.
         persona = await self._persona_text(session_id)
+        if not matters.belongs_to(snapshot, sha256(persona.encode("utf-8")).hexdigest()[:24]):
+            return
         if not await self._matter_context_current(session_id, world, state_key, persona, day=day):
             return
         if review:
@@ -446,7 +477,6 @@ class MattersMixin:
         limit = self.world.limits.life_matter_notes_per_day
         if not limit or self.native_turn_busy(session_id):
             return
-        from hashlib import sha256
         world, key = self.world, self.state_key(session_id)
         persona = await self._persona_text(session_id)
         persona_key = sha256(persona.encode("utf-8")).hexdigest()[:24]
@@ -482,6 +512,8 @@ class MattersMixin:
 
     async def _review_matter_stage(self, session_id: str, snapshot: dict, *, world, state_key, persona,
                                    day: str = "", partial: bool = False) -> None:
+        if not matters.belongs_to(snapshot, sha256(persona.encode("utf-8")).hexdigest()[:24]):
+            return
         day = day or self._today_key(self._now())
         with model_context("life_matter", f"核对生活事项 {snapshot['id']} 的实际阶段结果", session_id):
             raw = await self._ask_judge(session_id,
@@ -583,6 +615,8 @@ class MattersMixin:
             matters.sync(state)
 
     async def _start_matter_step(self, state, item: dict) -> None:
+        if not matters.belongs_to(item, self._matter_persona_key(state)):
+            return
         step = next((s for s in item.get("steps", []) if s.get("status") != "done"), None)
         if step is None:
             return

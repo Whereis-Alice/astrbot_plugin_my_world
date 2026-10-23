@@ -141,7 +141,9 @@ class LifeControlMixin:
         if not self.world.limits.life_matter_enabled:
             return False
         item = matters.find(state, schedule.matter_id)
-        if (not item or not matters.visible(item, session) or item["status"] in matters.CLOSED | {"paused"}
+        if (not item or not matters.visible(item, session)
+                or not matters.belongs_to(item, self._matter_persona_key(state))
+                or item["status"] in matters.CLOSED | {"paused"}
                 or item.get("blocker") == "evidence" or float(item.get("resume_at") or 0) > self._now()):
             return False
         if (state.current_action or {}).get("matter_id") == item["id"]:

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from ..recovery import sleep_action_kind
-
 from datetime import date, timedelta
 from hashlib import sha256
 import time
@@ -80,7 +78,7 @@ class SnapshotMixin:
             return f"{hours} 小时 {minutes} 分"
         return f"{minutes} 分钟"
 
-    def _next_schedule(self, session_id: str) -> dict[str, Any] | None:
+    def _next_schedule(self, session_id: str, *, state=None, persona_key: str | None = None) -> dict[str, Any] | None:
         """下一条要触发的日程：时间、还有多少分钟、里面有哪些动作。"""
 
         items = list(getattr(self.schedules, "schedules", None) or [])
@@ -97,8 +95,16 @@ class SnapshotMixin:
                 continue
             if not self.schedule_in_scope(item, session_id):
                 continue
-            if self.world.sleep.mode == "autonomous" and any(sleep_action_kind(self.world.action_map().get(step.type)) == "sleep" for step in item.action_chain):
-                continue  # The scheduler intentionally yields fixed sleep to her own rhythm.
+            if item.matter_id and state is not None:
+                from .. import life_matters as matters
+                matter = matters.find(state, item.matter_id)
+                if (not matter or not matters.visible(matter, session_id)
+                        or not matters.belongs_to(matter, persona_key)
+                        or matter["status"] in matters.CLOSED | {"paused"}):
+                    continue
+            chain = self._schedule_life_chain(item)
+            if not chain and not item.matter_id:
+                continue
             try:
                 hour, minute = (int(part) for part in str(item.time).split(":")[:2])
             except (TypeError, ValueError):
@@ -123,7 +129,7 @@ class SnapshotMixin:
                 minutes = max(0, int(round((moment - now).total_seconds() / 60)))
                 if best is None or minutes < int(best["in_minutes"]):
                     names = []
-                    for step in item.action_chain or []:
+                    for step in chain:
                         definition = action_map.get(step.type)
                         names.append(
                             (definition.name or definition.id) if definition else step.type
@@ -351,7 +357,8 @@ class SnapshotMixin:
             "clock_text": self._clock_text(),
             "world_elapsed_seconds": int(state.world_time * self.tick_seconds),
             "world_elapsed_text": self._duration_text(state.world_time * self.tick_seconds),
-            "next_schedule": self._next_schedule(session_id),
+            "next_schedule": self._next_schedule(session_id, state=state,
+                persona_key=sha256((await self._persona_text(session_id)).encode("utf-8")).hexdigest()[:24]),
             "budget": self._budget(state),
             # 「聊天这条路的情绪额度」用得怎么样了：调情绪量程时看这个最直观
             "chat_mood": {

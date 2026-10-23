@@ -366,6 +366,11 @@ def visible(item: dict, session_id: str, *, autonomy: bool = False) -> bool:
     return not item.get("who") or str(item.get("session") or "") == session_id
 
 
+def belongs_to(item: dict, persona_key: str | None) -> bool:
+    """Keep untagged legacy work; tagged work requires the same character."""
+    return not item.get("persona_key") or item["persona_key"] == persona_key
+
+
 def complete_step(state, matter_id: str, step_id: str, *, now: float,
                   receipt: dict) -> bool:
     item = find(state, matter_id)

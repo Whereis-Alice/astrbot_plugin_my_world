@@ -159,6 +159,7 @@ class TickMixin:
         if self.is_busy(session_id):
             return None
         async with self.session_state(session_id) as state:
+            self.stop_foreign_matter_work(state)
             elapsed = self.reconcile_life_time(state)
             state.world_time += 1
             if (state.current_action or {}).get("offline_recovery_complete"):
@@ -182,6 +183,7 @@ class TickMixin:
         # 自主行为默认落在这一组的代表会话；动作续说会临时改成"她当时说话的地方"
         outcome.speech_home = session_id
         async with self.session_state(session_id) as state:
+            self.stop_foreign_matter_work(state)
             echo_marker = await self._event_marker(state)
             node = self.node(state.node_id) or self.node(self.default_node_id())
             elapsed_life = self.reconcile_life_time(state)

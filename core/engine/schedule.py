@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..recovery import sleep_action_kind
+from ..recovery import recovery_mode_allows, sleep_action_kind
 
 from ..model_calls import model_operation
 
@@ -81,6 +81,16 @@ class ScheduleMixin:
             return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
         except ValueError:
             return None
+
+    def _schedule_life_chain(self, schedule: Any, *, automatic: bool = True) -> list:
+        """The same physiological constraints drive the preview and execution."""
+        actions = self.world.action_map()
+        if automatic and self.world.sleep.mode == "autonomous" and any(
+            sleep_action_kind(actions.get(step.type)) == "sleep" for step in schedule.action_chain
+        ):
+            return []
+        return [step for step in schedule.action_chain
+                if recovery_mode_allows(actions.get(step.type), self.world)]
 
     def _schedule_cursor(self, state: WorldState, now: datetime) -> float:
         """这个会话上次检查到哪一刻（现实时间戳）。"""
@@ -323,7 +333,7 @@ class ScheduleMixin:
         返回 ``(处理后的动作链, 说明文字)``。
         """
 
-        chain = list(schedule.action_chain or [])
+        chain = self._schedule_life_chain(schedule, automatic=False)
         wanted = self._steps_needing_intent(chain)
         if self.llm is None or not wanted:
             return chain, ""
@@ -416,7 +426,8 @@ class ScheduleMixin:
     def _schedule_gate_kind(self, schedule: Any) -> str:
         """这条日程要不要过闸门：``heavy``（睡觉类）/ ``moving``（换地方）/ 空串。"""
 
-        kinds = {str(getattr(step, "type", "") or "") for step in list(schedule.action_chain or [])}
+        kinds = {str(getattr(step, "type", "") or "")
+                 for step in self._schedule_life_chain(schedule, automatic=False)}
         if any(sleep_action_kind(self.world.action_map().get(kind)) for kind in kinds):
             return "heavy"
         if kinds & set(self.GATE_MOVING_ACTIONS):
@@ -684,6 +695,18 @@ class ScheduleMixin:
                     if not self.schedule_in_scope(schedule, session_id):
                         # 这条日程是别的会话 / 别的组的事
                         continue
+                    if schedule.matter_id:
+                        from .. import life_matters as matters
+                        item = matters.find(state, schedule.matter_id)
+                        if item and not matters.belongs_to(item, self._matter_persona_key(state)):
+                            claimed = await self.db.call("mark_schedule_fired", session_id=session_id,
+                                schedule_id=schedule.id, day_key=day_key, slot=slot)
+                            if claimed:
+                                await self._log_event(state, "skip", {
+                                    "action": f"schedule:{schedule.id}",
+                                    "note": "关联事项属于其他人设，保留记录，当前角色不接续。",
+                                })
+                            continue
                     if self.world.sleep.mode == "autonomous" and (
                         state.is_sleeping or state.state == STATE_DROWSY
                         or state.sleep_rhythm.get("decision") == "sleep"
@@ -705,6 +728,15 @@ class ScheduleMixin:
                             await self._log_event(state, "skip", {
                                 "action": f"schedule:{schedule.id}",
                                 "note": "自主作息接管入睡时间，自动跳过含睡整觉的固定日程；可切回固定模式。",
+                            })
+                        continue
+                    if not schedule.matter_id and schedule.action_chain and not self._schedule_life_chain(schedule):
+                        claimed = await self.db.call("mark_schedule_fired", session_id=session_id,
+                            schedule_id=schedule.id, day_key=day_key, slot=slot)
+                        if claimed:
+                            await self._log_event(state, "skip", {
+                                "action": f"schedule:{schedule.id}",
+                                "note": "当前采用活动恢复，无可执行的日程步骤；原日程保留。",
                             })
                         continue
                     # 勾了会话组 = 让她自己挑组里的哪一处说（见 resolve_schedule_target）
@@ -783,11 +815,12 @@ class ScheduleMixin:
                     outcome.locked_targets = locked_targets
                     # 这条日程发生在哪儿：调试回显要跟着它走（不然私聊的日程把回显发进群）
                     outcome.place = target
-                    chain = schedule.action_chain
+                    chain = self._schedule_life_chain(schedule)
                     smart_note = ""
                     if schedule.smart:
                         # 智能日程：让大模型给缺意图的步骤补一句（动作链本身不动）
                         chain, smart_note = await self._smart_chain(state, schedule)
+                        chain = [step for step in chain if recovery_mode_allows(self.world.action_map().get(step.type), self.world)]
                     if schedule.auto_travel:
                         chain = self.expand_chain_for_travel(state, chain)
                     if schedule.matter_id:
@@ -922,15 +955,18 @@ class ScheduleMixin:
                     status="started" if started else "waiting")
                 return {"ok": started, "schedule_id": schedule.id,
                         "note": "按日程接续已有事项" if started else "关联事项尚未准备好，或正在休息；未重复执行动作链"}
+            if schedule.action_chain and not self._schedule_life_chain(schedule, automatic=False):
+                return {"ok": False, "reason": "当前采用活动恢复，这条日程没有可执行的步骤", "schedule_id": schedule.id}
             echo_marker = await self._event_marker(state)
             admission = self.admit_life(state, "schedule", force=force, commit=False)
             if not admission["allow"]:
                 return {"ok": False, "reason": admission["reason"], "schedule_id": schedule.id}
-            chain = schedule.action_chain
+            chain = self._schedule_life_chain(schedule, automatic=False)
             smart_note = ""
             if schedule.smart:
                 # 智能日程手动跑也一样：让大模型给缺意图的步骤补一句
                 chain, smart_note = await self._smart_chain(state, schedule)
+                chain = [step for step in chain if recovery_mode_allows(self.world.action_map().get(step.type), self.world)]
             if schedule.auto_travel:
                 chain = self.expand_chain_for_travel(state, chain)
             # 手动跑一次也把"这条日程是什么 + 动作链"记进她自己的账

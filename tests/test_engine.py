@@ -11133,9 +11133,16 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.store.save_world(raw)
         self.engine.reload_config()
 
-    def schedule_outcome(self, outcomes, schedule_id: str) -> TickOutcome:
-        """从 tick 的返回里挑出这条日程那一份 outcome。"""
+    async def schedule_outcome(self, outcomes, schedule_id: str) -> TickOutcome:
+        """Wait for actual delivery, then select this schedule's outcome."""
 
+        import asyncio
+        delivery = getattr(self.engine, "_schedule_delivery_job", None)
+        if delivery is not None:
+            await asyncio.wait_for(delivery, 5)
+        schedule_job = getattr(self.engine, "_schedule_model_job", None)
+        if schedule_job is not None:
+            outcomes = [*outcomes, *schedule_job.result()]
         return next(
             item
             for item in outcomes
@@ -11154,7 +11161,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         )
         self.stub_landing_choice("2")
         self.clock.set_struct(datetime(2026, 9, 15, 12, 0))
-        outcome = self.schedule_outcome(await self.engine.tick(), "group_only")
+        outcome = await self.schedule_outcome(await self.engine.tick(), "group_only")
 
         # 挑出来的就是第 2 个落点（私聊），不是组代表
         self.assertEqual(outcome.session_id, PRIVATE_SESSION)
@@ -11195,7 +11202,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         outcomes = await self.engine.tick()
         if self.engine._schedule_delivery_job:
             await self.engine._schedule_delivery_job
-        outcome = self.schedule_outcome([*outcomes, *self.engine._schedule_model_job.result()], "only_private")
+        outcome = await self.schedule_outcome([*outcomes, *self.engine._schedule_model_job.result()], "only_private")
 
         self.assertEqual(outcome.session_id, PRIVATE_SESSION)
         self.assertEqual(outcome.broadcast_targets, [])
@@ -11239,7 +11246,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
                 outcomes += self.engine._schedule_model_job.result()
         finally:
             self.engine._run_chain = original
-        outcome = self.schedule_outcome(outcomes, "both_chats")
+        outcome = await self.schedule_outcome(outcomes, "both_chats")
 
         # 一次执行：不是每个落点各跑一遍动作链
         self.assertEqual(len(runs), 1, runs)
@@ -11364,7 +11371,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         outcomes = await self.engine.tick()
         # Slow local I/O may finish after tick's short foreground wait.
         await self.engine._schedule_delivery_job
-        ticked = self.schedule_outcome([*outcomes, *self.engine._schedule_model_job.result()], "same_landing")
+        ticked = await self.schedule_outcome([*outcomes, *self.engine._schedule_model_job.result()], "same_landing")
 
         delivered: list[TickOutcome] = []
         original = self.engine._deliver
@@ -11405,7 +11412,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             action_chain=[{"type": "say", "messages": ["两个落点都要试"]}],
         )
         self.clock.set_struct(datetime(2026, 9, 15, 12, 0))
-        outcome = self.schedule_outcome(await self.engine.tick(), "one_fails")
+        outcome = await self.schedule_outcome(await self.engine.tick(), "one_fails")
 
         # 两个落点都试过了（失败的也留下痕迹），失败不拖累另一个
         self.assertEqual(
@@ -11495,7 +11502,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             action_chain=[{"type": "say", "messages": ["她还在不在"]}],
         )
         self.clock.set_struct(datetime(2026, 9, 15, 12, 0))
-        outcome = self.schedule_outcome(await self.engine.tick(), "pinned_gone")
+        outcome = await self.schedule_outcome(await self.engine.tick(), "pinned_gone")
 
         # 停用的落点收不到：落回执行会话，也没有别的广播目标
         self.assertEqual(outcome.session_id, SESSION)
@@ -11868,6 +11875,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.llm.default_reply = ""
         self.clock.set_struct(datetime(2026, 9, 15, 12, 0))
         await self.engine.tick()
+        import asyncio
+        await asyncio.wait_for(self.engine._schedule_delivery_job, 5)
         self.assertIn("还是按原计划说一句", self.messenger.flat_messages)
 
     async def test_smart_schedule_without_tool_steps_skips_the_call(self):

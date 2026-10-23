@@ -10,6 +10,7 @@ def choose_life(
     critical: bool = False,
     schedule_minutes: int | None = None,
     sleep_requested: bool = True,
+    persona_key: str | None = None,
 ) -> dict:
     choice = {"kind": "idle", "reason": "暂时没有必须开始的事，留一点自由时间", "at": now}
     if critical:
@@ -41,6 +42,7 @@ def choose_life(
             if m.get("status") in {"active", "working", "waiting", "blocked"}
             and m.get("blocker") != "evidence"
             and float(m.get("resume_at") or 0) <= now
+            and (not m.get("persona_key") or m["persona_key"] == persona_key)
         ]
         if candidates:
             choice.update(
