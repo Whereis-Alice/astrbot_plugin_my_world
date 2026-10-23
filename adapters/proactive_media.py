@@ -7,6 +7,8 @@ import time
 from collections import OrderedDict
 from contextlib import asynccontextmanager
 
+from .proactive_images import PreparedImages
+
 
 def part_value(part, name, default=None):
     return part.get(name, default) if isinstance(part, dict) else getattr(part, name, default)
@@ -56,18 +58,20 @@ class ProactiveMedia:
         return None
 
     @asynccontextmanager
-    async def context(self, session_id, rows):
+    async def context(self, session_id, rows, *, images=None):
         # Only the selected conversation is eligible. Two media-bearing messages
         # per decision avoid decoding a full chat archive on each opportunity.
         selected = [row for row in rows if not row.get("is_self")
                     and str(row.get("origin") or session_id) == session_id
                     and (row.get("images") or row.get("has_images"))][-2:]
-        if not selected:
+        extra_images = [ref for ref in images or [] if isinstance(ref, str) and ref.strip()]
+        if not selected and not extra_images:
             yield {"text": "", "images": []}
             return
         from astrbot.api.provider import ProviderRequest
         from ..core.engine.life_inference import released_life_lock
-        images, notes, leases = [], [], []
+        images, notes, leases, consumed = [], [], [], set()
+        prepared = PreparedImages()
         try:
             async with released_life_lock(self.plugin.engine):
                 motion = self._motion(session_id)
@@ -75,6 +79,7 @@ class ProactiveMedia:
                     key = (session_id, str(row.get("message_id") or row.get("event_id") or ""))
                     cached = self.events.get(key)
                     sources = [str(x) for x in row.get("images", []) if isinstance(x, str)][:4]
+                    consumed.update(sources)
                     request = ProviderRequest(prompt=str(row.get("reading_text") or row.get("text") or "看看消息里的图片"),
                                               image_urls=list(sources), contexts=[])
                     if motion and cached and time.monotonic() - cached[0] <= 900:
@@ -95,25 +100,40 @@ class ProactiveMedia:
                         url = part_value(part_value(part, "image_url", {}), "url", "")
                         if isinstance(url, str) and url:
                             refs.append(url)
-                    refs = list(dict.fromkeys(refs))[:8]
+                    refs, failed = await prepared.prepare(list(dict.fromkeys(refs))[:8])
+                    if failed:
+                        texts.append("部分图片未能读取，不能据此推测画面或动作。")
                     vision = getattr(self.plugin, "vision", None)
                     if refs and vision is not None and vision.enabled:
                         try:
-                            captions = await asyncio.wait_for(vision.describe(refs, question=str(row.get("text") or "")), timeout=30)
-                            texts.extend(str(caption)[:500] for caption in captions if caption)
+                            captions = await asyncio.wait_for(vision.describe(refs,
+                                question=str(row.get("text") or ""), cache_sources=prepared.cache_sources(refs)), timeout=30)
+                            usable = [str(caption).strip()[:500] for caption in captions or [] if str(caption or "").strip()]
+                            texts.extend(usable)
+                            if len(usable) < len(refs):
+                                texts.append("部分图片没有取得有效转述，不猜测未看见的画面。")
                         except (asyncio.TimeoutError, Exception):
                             texts.append("图片转述暂时不可用，不猜测未看见的画面。")
                         refs = []
                     if texts or refs:
                         notes.append("消息 " + key[1] + "（" + str(row.get("name") or "群友") + "）的媒体：\n" + "\n".join(texts))
                         images.extend(refs)
+                # Tool-returned images also bypass the native reply preprocessing.
+                # Don't re-add originals that Motion Vision already replaced.
+                extra, failed = await prepared.prepare([ref for ref in extra_images if ref not in consumed])
+                images.extend(extra)
+                if failed:
+                    notes.append("部分工具图片未能读取，不能据此推测画面或动作。")
             yield {"text": "\n\n".join(notes)[:6000], "images": list(dict.fromkeys(images))[:12]}
         finally:
-            for motion, event in leases:
-                try:
-                    await motion.release_media_request(event, None)
-                except Exception:
-                    pass
+            try:
+                for motion, event in leases:
+                    try:
+                        await motion.release_media_request(event, None)
+                    except Exception:
+                        pass
+            finally:
+                prepared.close()
 
     def close(self):
         self.events.clear()

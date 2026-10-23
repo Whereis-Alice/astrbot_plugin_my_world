@@ -3,12 +3,14 @@ import asyncio
 import importlib
 import sys
 import unittest
+from pathlib import Path
 from types import SimpleNamespace, ModuleType
 from unittest.mock import AsyncMock, patch
 
 from tests import test_dialogue_inject as fixture
 
-ProactiveMedia = importlib.import_module(fixture.MODULE.__name__ + ".adapters.proactive_media").ProactiveMedia
+media_module = importlib.import_module(fixture.MODULE.__name__ + ".adapters.proactive_media")
+ProactiveMedia = media_module.ProactiveMedia
 
 
 class ProactiveMediaTests(unittest.IsolatedAsyncioTestCase):
@@ -25,7 +27,11 @@ class ProactiveMediaTests(unittest.IsolatedAsyncioTestCase):
         self.row = {"origin": self.event.unified_msg_origin, "message_id": "4711", "images": ["original.gif"], "text": "图片"}
         provider = ModuleType("astrbot.api.provider")
         provider.ProviderRequest = SimpleNamespace
-        self.patch = patch.dict(sys.modules, {"astrbot.api.provider": provider})
+        image_utils = ModuleType("astrbot.core.utils.media_utils")
+        self.prepare = AsyncMock(side_effect=lambda ref, **kw: "prepared:" + ref)
+        image_utils.prepare_model_image = self.prepare
+        self.patch = patch.dict(sys.modules, {"astrbot.api.provider": provider,
+            "astrbot.core.utils.media_utils": image_utils})
         self.patch.start()
         self.addCleanup(self.patch.stop)
 
@@ -36,7 +42,7 @@ class ProactiveMediaTests(unittest.IsolatedAsyncioTestCase):
             request.extra_user_content_parts = [{"text": "连续两帧"}, {"image_url": {"url": "frame1.png"}}]
         self.motion.handle.side_effect = handle
         async with self.media.context(self.event.unified_msg_origin, [self.row]) as data:
-            self.assertEqual(data["images"], ["frame1.png"])
+            self.assertEqual(data["images"], ["prepared:frame1.png"])
             self.assertIn("连续两帧", data["text"])
             self.assertIn("4711", data["text"])
             self.motion.release_media_request.assert_not_awaited()
@@ -53,7 +59,7 @@ class ProactiveMediaTests(unittest.IsolatedAsyncioTestCase):
     async def test_disabled_plugin_keeps_static_fallback(self):
         self.allowed = []
         async with self.media.context(self.event.unified_msg_origin, [self.row]) as data:
-            self.assertEqual(data["images"], ["original.gif"])
+            self.assertEqual(data["images"], ["prepared:original.gif"])
         self.motion.handle.assert_not_awaited()
 
     async def test_hook_failure_still_releases_lease(self):
@@ -61,6 +67,96 @@ class ProactiveMediaTests(unittest.IsolatedAsyncioTestCase):
         async with self.media.context(self.event.unified_msg_origin, [self.row]) as data:
             self.assertIn("暂时无法解析", data["text"])
         self.motion.release_media_request.assert_awaited_once()
+
+    async def test_missing_or_expired_event_still_prepares_original_images(self):
+        for missing in (False, True):
+            if missing:
+                self.media.events.clear()
+            else:
+                key = next(iter(self.media.events))
+                self.media.events[key] = (-1000, self.media.events[key][1])
+            async with self.media.context(self.event.unified_msg_origin, [self.row]) as data:
+                self.assertEqual(data["images"], ["prepared:original.gif"])
+        self.motion.handle.assert_not_awaited()
+
+    async def test_failed_normalization_drops_only_bad_image_before_captioning(self):
+        self.prepare.side_effect = lambda ref, **kw: None if ref == "original.gif" else "prepared:" + ref
+        self.plugin.vision = SimpleNamespace(enabled=True, describe=AsyncMock(return_value=["一杯茶"]))
+        row = {**self.row, "images": ["original.gif", "tea.png"]}
+        async with self.media.context(self.event.unified_msg_origin, [row]) as data:
+            self.assertEqual(data["images"], [])
+            self.assertIn("未能读取", data["text"])
+            self.assertIn("一杯茶", data["text"])
+        self.assertEqual(self.plugin.vision.describe.call_args.args[0], ["prepared:tea.png"])
+        self.assertEqual(self.plugin.vision.describe.call_args.kwargs["cache_sources"], ["model-image-v1:tea.png"])
+
+    async def test_motion_replacement_is_not_reintroduced_by_extra_images(self):
+        async def handle(event, request):
+            request.image_urls = ["frame.png"]
+        self.motion.handle.side_effect = handle
+        async with self.media.context(self.event.unified_msg_origin, [self.row],
+                images=["original.gif", "tool.gif"]) as data:
+            self.assertEqual(data["images"], ["prepared:frame.png", "prepared:tool.gif"])
+        self.assertEqual([call.args[0] for call in self.prepare.call_args_list], ["frame.png", "tool.gif"])
+
+    async def test_tool_images_are_prepared_even_without_chat_rows(self):
+        async with self.media.context(self.event.unified_msg_origin, [], images=["tool.gif"]) as data:
+            self.assertEqual(data["images"], ["prepared:tool.gif"])
+        self.motion.handle.assert_not_awaited()
+
+    async def test_prepared_files_live_until_model_returns_and_cleanup_on_cancel(self):
+        created = []
+        async def prepare(ref, **kw):
+            path = kw["output_dir"] / "image.png"
+            path.write_bytes(b"synthetic")
+            created.append(path)
+            return str(path)
+        self.prepare.side_effect = prepare
+        with self.assertRaises(asyncio.CancelledError):
+            async with self.media.context(self.event.unified_msg_origin, [self.row]) as data:
+                self.assertTrue(Path(data["images"][0]).is_file())
+                raise asyncio.CancelledError()
+        self.assertTrue(created)
+        self.assertFalse(created[0].parent.exists())
+        self.motion.release_media_request.assert_awaited_once()
+
+    async def test_preprocessing_cancellation_releases_both_workspaces(self):
+        directories = []
+        async def prepare(ref, **kw):
+            directories.append(kw["output_dir"])
+            (kw["output_dir"] / "partial.png").write_bytes(b"synthetic")
+            raise asyncio.CancelledError()
+        self.prepare.side_effect = prepare
+        with self.assertRaises(asyncio.CancelledError):
+            async with self.media.context(self.event.unified_msg_origin, [self.row]):
+                self.fail("cancelled preprocessing must not enter the model")
+        self.assertFalse(directories[0].exists())
+        self.motion.release_media_request.assert_awaited_once()
+
+    async def test_normalization_is_deduplicated_and_bounded(self):
+        refs = ["same.png", "same.png", *[f"image-{i}.gif" for i in range(20)]]
+        async with self.media.context(self.event.unified_msg_origin, [], images=refs) as data:
+            self.assertEqual(len(data["images"]), 12)
+            self.assertEqual(self.prepare.await_count, 12)
+            self.assertIn("未能读取", data["text"])
+
+    async def test_normalization_timeout_does_not_return_the_original(self):
+        self.prepare.side_effect = TimeoutError()
+        async with self.media.context(self.event.unified_msg_origin, [self.row]) as data:
+            self.assertFalse(data["images"])
+            self.assertIn("未能读取", data["text"])
+
+    async def test_exhausted_budget_keeps_successes_without_more_preparation(self):
+        prepared = media_module.PreparedImages()
+        self.addCleanup(prepared.close)
+        images, failed = await prepared.prepare(["first.png"])
+        self.assertEqual(images, ["prepared:first.png"])
+        self.assertFalse(failed)
+        prepared.remaining_seconds = 0
+        images, failed = await prepared.prepare(["first.png", "second.gif"])
+        self.assertEqual(images, ["prepared:first.png"])
+        self.assertTrue(failed)
+        self.prepare.assert_awaited_once()
 
     async def test_model_cancellation_releases_media_and_does_not_touch_live_event(self):
         with self.assertRaises(asyncio.CancelledError):
@@ -74,6 +170,12 @@ class ProactiveMediaTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(data["images"])
             self.assertIn("不猜测", data["text"])
         self.motion.release_media_request.assert_awaited_once()
+
+    async def test_empty_caption_is_reported_as_missing_perception(self):
+        self.plugin.vision = SimpleNamespace(enabled=True, describe=AsyncMock(return_value=[""]))
+        async with self.media.context(self.event.unified_msg_origin, [self.row]) as data:
+            self.assertFalse(data["images"])
+            self.assertIn("没有取得有效转述", data["text"])
 
     async def test_cache_is_bounded_and_cleared_on_close(self):
         for i in range(300):

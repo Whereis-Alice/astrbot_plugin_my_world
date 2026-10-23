@@ -3686,6 +3686,19 @@ class TestCaptionPrompt(unittest.TestCase):
         finally:
             plugin.db.raw.close()
 
+    def test_prepared_image_paths_keep_source_cache_identity(self):
+        plugin, calls = self._vision_plugin()
+        keys = ["model-image-v1:original-animated.gif"]
+        try:
+            first = asyncio.run(plugin.vision.describe(["request-1/prepared.jpg"], cache_sources=keys))
+            again = asyncio.run(plugin.vision.describe(["request-2/prepared.jpg"], cache_sources=keys))
+            self.assertTrue(first[0])
+            self.assertEqual(again, first)
+            self.assertEqual(len(self._image_calls(calls)), 1)
+            self.assertEqual(self._image_calls(calls)[0]["image_urls"], ["request-1/prepared.jpg"])
+        finally:
+            plugin.db.raw.close()
+
     def test_relation_can_be_turned_off(self):
         """关掉关系分析：只给画面/类型/文字，关系交给主模型。"""
 

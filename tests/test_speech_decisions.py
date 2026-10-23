@@ -15,6 +15,25 @@ class SpeechDecisionTests(unittest.IsolatedAsyncioTestCase):
     asyncSetUp = participation.ParticipationTests.asyncSetUp
     chat = participation.ParticipationTests.chat
 
+    async def test_model_receives_only_prepared_media_not_original_tool_images(self):
+        from contextlib import asynccontextmanager
+        from types import SimpleNamespace
+        requests = []
+
+        @asynccontextmanager
+        async def context(target, rows, *, images=None):
+            requests.append(images)
+            yield {"text": "部分图片未能读取", "images": ["prepared.png"]}
+
+        self.engine.media = SimpleNamespace(context=context)
+        self.engine._ask_llm = AsyncMock(return_value='{"inner":"看清了。","say":""}')
+        async with self.engine.session_state(GROUP) as state:
+            await self.engine.ask_speech(state, GROUP, "system", "prompt", rows=[], images=["original.gif"])
+        self.assertEqual(requests, [["original.gif"]])
+        call = self.engine._ask_llm.call_args
+        self.assertEqual(call.kwargs["image_urls"], ["prepared.png"])
+        self.assertIn("部分图片未能读取", call.args[2])
+
     async def test_format_repair_keeps_tool_material_without_replaying_tools(self):
         from core.speech_runtime import SpeechDraft, SPEECH_REQUEST
         await self.chat(message_id='material-source')
