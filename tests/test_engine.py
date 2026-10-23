@@ -12114,6 +12114,36 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("接着你往下说的多半是对你说的", system)
         self.assertNotIn("这不是新的对话输入", system)
 
+    async def test_native_reply_after_life_share_does_not_claim_nobody_responded(self):
+        share = "防静电刷刚扫干净，亚克力底座转头又吸了一层灰。"
+        await self.engine._deliver(TickOutcome(session_id=SESSION, messages=[share]))
+        self.clock.advance(7 * 60)
+        ctx = self.ctx(text="手办展示盒", is_mentioned=True)
+        await self.engine.handle_incoming(ctx)
+        history = [{"role": "assistant", "content": "更早的正常回复"}]
+        plan = await self.engine.handle_reply(ctx, history=history, inject_only=True)
+        self.assertTrue(plan.ok)
+        self.assertIn(share, plan.runtime_part)
+        self.assertIn("手办展示盒", plan.user_prompt)
+        self.assertNotIn("手办展示盒", plan.runtime_part)
+        self.assertNotIn("之后没有人接", plan.runtime_part)
+        self.assertNotIn("这不是新的对话输入", plan.runtime_part)
+        self.assertNotIn("别重新解释同一件事", plan.runtime_part)
+        self.assertIn("本轮新消息另列", plan.runtime_part)
+        self.assertEqual(history, [{"role": "assistant", "content": "更早的正常回复"}])
+        self.assertEqual(self.messenger.sent, [(SESSION, [share])])
+
+    async def test_direct_reply_does_not_infer_addressing_from_prior_group_chatter(self):
+        await self.engine.note_presence(self.ctx(text="大家周末去哪玩", user_id="other", is_mentioned=False))
+        ctx = self.ctx(text="你想去哪", is_mentioned=True)
+        await self.engine.handle_incoming(ctx)
+        plan = await self.engine.handle_reply(ctx, inject_only=True)
+        self.assertTrue(plan.ok)
+        self.assertIn("大家周末去哪玩", plan.runtime_part)
+        self.assertNotIn("他们是在互相说话", plan.runtime_part)
+        self.assertNotIn("不是指你", plan.runtime_part)
+        self.assertIn("本轮新消息另列", plan.runtime_part)
+
     async def test_speech_density_hint_appears_after_talking_a_lot(self):
         state = await self.get_state()
         async with self.engine.session_state(SESSION) as state:

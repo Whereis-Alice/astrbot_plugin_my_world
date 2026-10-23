@@ -286,7 +286,7 @@ def runtime_context(prompts: Any, state: Any, node: Any, request: ContextRequest
         replied_seq=int(watermark.get("seq", state.chat_replied_seq)),
         recent_replies=list(state.recent_replies or []), mine_names=prompts.bot_name_list(state),
         current_session=request.session, session_labels=values.get("session_labels"),
-        image_marks=values.get("chat_images")))
+        image_marks=values.get("chat_images"), current_input_pending=request.task == "reply"))
     if values.get("engagement_hint"):
         base.append(values["engagement_hint"])
     if values.get("other_context"):

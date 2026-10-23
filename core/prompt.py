@@ -861,6 +861,7 @@ class PromptBuilder:
         chat_images: dict[str, str] | None = None,
         profile_text: str = "",
         context_request=None,
+        current_input_pending: bool = False,
     ) -> str:
         if context_request is not None:
             from .context_sources import runtime_context
@@ -1019,6 +1020,7 @@ class PromptBuilder:
                 replied_seq=replied_seq,
                 recent_replies=list(getattr(state, "recent_replies", []) or []),
                 mine_names=self.bot_name_list(state),
+                current_input_pending=current_input_pending,
                 current_session=current_session,
                 session_labels=session_labels,
                 image_marks=chat_images,
@@ -1536,6 +1538,7 @@ class PromptBuilder:
         current_session: str = "",
         session_labels: dict[str, str] | None = None,
         image_marks: dict[str, str] | None = None,
+        current_input_pending: bool = False,
     ) -> list[str]:
         """把群聊背景拆成三块：之前聊过的概览、现在在聊什么、她刚说过的话。
 
@@ -1701,7 +1704,17 @@ class PromptBuilder:
         # 她刚说完没人接的时候，@ 是更早的历史命中——拿它去盖"没人接"，
         # 模型会以为那句话是对她说的，于是追着自己那一句重新解释一遍。
         # 最后一条不是她说的时，mention 仍然优先（那确实是冲她来的）。
-        if last_is_self:
+        if current_input_pending:
+            # Reply preparation deliberately removes the current batch from
+            # this background. Its last speaker cannot establish that nobody
+            # replied or that the new message addresses someone else.
+            address_line = (
+                "这些是本轮之前的聊天背景，本轮新消息另列。"
+                "请结合新消息的 @、引用和语义理解承接关系；"
+                "简短接话也可能是在回应你之前的分享或提出建议。"
+                "不要仅凭这段背景最后是谁说话，判断本轮有没有人接话或在对谁说话。\n"
+            )
+        elif last_is_self:
             address_line = (
                 "这几条的最后一句是**你自己刚说的**，之后没有人接："
                 "这不是新的对话输入，别把它当成有人在跟你说话，"
@@ -2720,6 +2733,7 @@ class PromptBuilder:
             chat_images=chat_images,
             profile_text=profile_text,
             context_request=context_request,
+            current_input_pending=True,
         )
         runtime = f"{runtime}\n\n{self.dialogue_reminder_layer()}"
         if context_request is not None:
