@@ -13,8 +13,9 @@ class ContextMixin:
         if rows is None:
             rows = self.chat_window(state, target)
         rows = self._context_origins(state, rows)
-        if not focus and ":PrivateMessage:" in target:
-            focus = target.rsplit(":", 1)[-1]
+        parts = target.split(":", 2)
+        if not focus and len(parts) == 3 and parts[1] in {"FriendMessage", "PrivateMessage"}:
+            focus = parts[2]
         # An explicit action target is an ID; a nickname in generated text is not.
         return request_for(task=task, session=target, now=self._now(), query=text,
                            rows=rows, focus=focus, persona=persona)

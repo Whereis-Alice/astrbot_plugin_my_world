@@ -186,6 +186,44 @@ class NativePrivateContactReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.engine.profiles.proactive_quota_left(scopes.A, "100", now=self.clock.now()), 2)
         self.assertEqual(self.engine._outreach_ledger(scopes.A)["people"], {})
 
+    async def test_private_expression_includes_recipient_profile_without_chat_history(self):
+        for kind, uid in (("FriendMessage", "42"), ("PrivateMessage", "43"), ("PrivateMessage", "user:44")):
+            with self.subTest(kind=kind, uid=uid):
+                self.configure(f"test:{kind}:{uid}")
+                self.engine.profiles.touch(self.target, uid, name="阿梨", now=self.clock.now())
+                self.engine.profiles.note_fact(self.target, uid, text="在照顾一只叫小雪的猫",
+                    kind="基本信息", evidence="我在照顾小雪")
+                async with self.engine.session_state(self.target) as state:
+                    self.assertEqual(self.engine.chat_window(state, self.target), [])
+                    await self.engine._generate_text_actions(state, self.engine.node(state.node_id),
+                        "主动问候对方近况", session_id=self.target)
+                self.assertTrue("在照顾一只叫小雪的猫" in self.engine.llm.calls[-1]["system_prompt"],
+                    "Actual expression prompt is missing its private recipient's known fact")
+                self.assertEqual(self.messenger.flat_messages, [])
+
+    async def test_explicit_expression_focus_keeps_the_selected_person(self):
+        self.configure()
+        self.engine.profiles.touch(self.target, "chosen", name="小明", now=self.clock.now())
+        self.engine.profiles.note_fact(self.target, "chosen", text="小明正在学习修理风车",
+            kind="基本信息", evidence="我在学习修理风车")
+        self.engine.profiles.note_fact(self.target, "42", text="接收者的另一条私人事实",
+            kind="基本信息", evidence="另一条事实")
+        async with self.engine.session_state(self.target) as state:
+            await self.engine._generate_text_actions(state, self.engine.node(state.node_id),
+                "问问小明近况", session_id=self.target, focus_user="chosen")
+        prompt = self.engine.llm.calls[-1]["system_prompt"]
+        self.assertIn("小明正在学习修理风车", prompt)
+        self.assertNotIn("接收者的另一条私人事实", prompt)
+
+    async def test_group_expression_does_not_infer_person_profile_from_group_id(self):
+        self.configure(scopes.A)
+        self.engine.profiles.note_fact(self.target, "100", text="与群号相同ID的个人事实",
+            kind="基本信息", evidence="个人事实")
+        async with self.engine.session_state(self.target) as state:
+            await self.engine._generate_text_actions(state, self.engine.node(state.node_id),
+                "聊聊今天的生活", session_id=self.target)
+        self.assertNotIn("与群号相同ID的个人事实", self.engine.llm.calls[-1]["system_prompt"])
+
 
 if __name__ == "__main__":
     unittest.main()
