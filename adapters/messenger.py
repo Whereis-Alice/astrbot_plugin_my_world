@@ -15,12 +15,13 @@ from ..core.message_parts import _sendable_images
 from ..core.plugin_compat import group_card_owner
 from ..core.ports import CardResult, PokeResult
 from ..core.speech_policy import segment_allowed, reply_target
+from .group_names import GroupNamesMixin
 
 if TYPE_CHECKING:
     from .. import MyWorldPlugin
 
 
-class AstrBotMessenger:
+class AstrBotMessenger(GroupNamesMixin):
     """MessagePort 实现。"""
 
     # 发送失败后，这个会话多少秒内不再尝试发送。

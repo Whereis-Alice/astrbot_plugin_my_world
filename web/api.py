@@ -2251,6 +2251,7 @@ class WebApiMixin(LifeApiMixin):
         guard = self._guard()
         if guard is not None:
             return guard
+        await self.engine.refresh_session_names()
         # 老版本写下的配置文件里可能缺新增的键（例如心潮回落速度），
         # 直接返回原始 JSON 会让编辑器把它们显示成 0，一保存就把 0 写回磁盘。
         # 这里用校验后的配置补齐已知键，同时保留用户自己加的未知键。

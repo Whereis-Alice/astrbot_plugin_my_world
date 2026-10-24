@@ -6,7 +6,9 @@ from ..model_calls import model_operation
 
 import asyncio
 import time
+import weakref
 from hashlib import sha256
+from functools import wraps
 from typing import Any
 from ..config_scope import session_scoped
 from ..json_actions import parse_action_payload
@@ -39,6 +41,26 @@ from .util import (
 )
 
 
+def reply_work(fn):
+    """Track real preparation separately from speculative incoming registration."""
+    @wraps(fn)
+    async def run(self, ctx, *args, **kwargs):
+        scope = self.merge_scope(ctx.session_id)
+        active = getattr(self, '_active_reply_tasks', None)
+        if active is None:
+            active = self._active_reply_tasks = {}
+        tasks = active.setdefault(scope, set())
+        task = asyncio.current_task()
+        tasks.add(task)
+        try:
+            return await fn(self, ctx, *args, **kwargs)
+        finally:
+            tasks.discard(task)
+            if not tasks:
+                active.pop(scope, None)
+    return run
+
+
 class ReplyMixin:
     # ================= 接管回复（被 @ 时由本插件回复） =================
 
@@ -57,6 +79,7 @@ class ReplyMixin:
         text: str,
         *,
         identity: dict[str, Any] | None = None,
+        expected_event: Any = None,
     ) -> dict[str, Any]:
         """记下"这条消息刚进来"。
 
@@ -91,6 +114,7 @@ class ReplyMixin:
             if event_key:
                 # 有身份：**只按身份**认同一个事件（正文一样也不当同一条）
                 if item_key == event_key:
+                    self._watch_reply_event(scope, item, expected_event)
                     return item
                 continue
             if item_key:
@@ -105,6 +129,7 @@ class ReplyMixin:
             ):
                 break
             if now - float(item.get("at") or 0.0) <= self._merge_window_seconds():
+                self._watch_reply_event(scope, item, expected_event)
                 return item
             break
         seq = int(getattr(self, "_incoming_seq", 0) or 0) + 1
@@ -137,7 +162,32 @@ class ReplyMixin:
         }
         queue.append(record)
         self._pending_replies[scope] = queue[-8:]
+        self._watch_reply_event(scope, record, expected_event)
         return record
+
+    def _watch_reply_event(self, scope: str, record: dict, event: Any) -> None:
+        """Weak observations stay outside serializable message/batch records."""
+        if not hasattr(self, '_pending_reply_events'):
+            self._pending_reply_events = {}
+        live = {id(item) for item in self._pending_replies.get(scope, [])}
+        watches = {key: ref for key, ref in self._pending_reply_events.get(scope, {}).items()
+                   if key in live}
+        if event is not None:
+            try:
+                watches[id(record)] = weakref.ref(event)
+            except TypeError:
+                pass  # Some third-party event wrappers cannot be weakly observed.
+        self._pending_reply_events[scope] = watches
+
+    def _reply_event_open(self, scope: str, record: dict) -> bool:
+        ref = getattr(self, '_pending_reply_events', {}).get(scope, {}).get(id(record))
+        if ref is None:
+            return True
+        event = ref()
+        if event is None:
+            return False
+        stopped = getattr(event, 'is_stopped', None)
+        return not (callable(stopped) and stopped())
 
     def refresh_incoming(
         self,
@@ -526,6 +576,7 @@ class ReplyMixin:
 
     @session_scoped
     @model_operation("chat", "收到消息，准备对话回复")
+    @reply_work
     async def handle_reply(
         self,
         ctx: MessageContext,

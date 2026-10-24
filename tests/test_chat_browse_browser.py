@@ -32,6 +32,44 @@ class ChatBrowseBrowserTests(unittest.TestCase):
         self.page.get_by_role('button', name='手机与电脑', exact=True).click()
         expect(self.page.locator('#dialog-title')).to_have_text('手机与电脑')
 
+    def test_saved_reply_gate_is_displayed_as_history_instead_of_live_progress(self):
+        self.page.evaluate("""() => {
+          const read = AstrBotPluginPage.apiGet;
+          AstrBotPluginPage.apiGet=(key,params)=>key==='thoughts'?Promise.resolve({
+            session:params.session,thoughts:[{at:Date.now()/1000-3600,source:'翻消息时',
+              content:'读过后想继续整理桌子。',browse_session:params.session,
+              detail:{browse_reply:{status:'reply_pending',reason:'正在处理对话回复，暂未进入接话判断'}}}]
+          }):read(key,params);
+        }""")
+        self.page.locator('button[data-tab="thoughts"]').click()
+        self.page.get_by_role('tab', name='翻消息时', exact=True).click()
+        expect(self.page.locator('#thoughts-list')).to_contain_text('本次未进入接话判断：当时有对话等待回复或正在处理')
+        expect(self.page.locator('#thoughts-list')).not_to_contain_text('正在处理对话回复，暂未进入接话判断')
+        self.assertEqual(self.errors, [])
+
+    def test_platform_names_fill_record_selectors_and_manual_notes_still_win(self):
+        self.context.add_init_script(script="""(() => {
+          const read = AstrBotPluginPage.apiGet;
+          AstrBotPluginPage.apiGet=async(key,params)=>{
+            const data=await read(key,params);
+            if(key==='config'){
+              data.sessions.sessions[0].note=localStorage.getItem('qa-session-note')||'';
+              data.session_names={'aiocqhttp:GroupMessage:1001':'真正的群名称'};
+            }
+            if(key==='sessions')data.sessions[0].note=localStorage.getItem('qa-session-note')||'';
+            return data;
+          };
+        })();""")
+        self.host.reload()
+        self.page = self.host.frame(name='editor')
+        for select in ('thought-session', 'memory-session', 'log-session', 'contacts-session'):
+            expect(self.page.locator(f'#{select} option').first).to_have_text('真正的群名称 · 1001')
+        self.page.evaluate("localStorage.setItem('qa-session-note','我写的备注')")
+        self.host.reload()
+        self.page = self.host.frame(name='editor')
+        expect(self.page.locator('#thought-session option').first).to_have_text('我写的备注 · 1001')
+        self.assertEqual(self.errors, [])
+
     def test_devices_source_range_and_budget_save_together(self):
         self.page.evaluate("""() => {
           const post = AstrBotPluginPage.apiPost; window.browseWrites=[];

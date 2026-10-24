@@ -14,6 +14,20 @@ from .models import TickOutcome
 
 
 class ParticipationMixin:
+    # Arrival registration predicts host dispatch, but cannot prove a reply is
+    # running. Match the existing native-turn guard's five-minute orphan bound.
+    REPLY_EXPECTATION_SECONDS = 300
+
+    def pending_reply_busy(self, session_id: str) -> bool:
+        scope = self.merge_scope(session_id)
+        if any(not task.done() for task in getattr(self, '_active_reply_tasks', {}).get(scope, ())):
+            return True
+        now = time.monotonic()
+        return any(not item.get('absorbed') and not item.get('picked')
+                   and self._reply_event_open(scope, item)
+                   and 0 <= now - float(item.get('at') or 0) < self.REPLY_EXPECTATION_SECONDS
+                   for item in self._pending_replies.get(scope, []))
+
     def _participation_window(self, source: str = "message") -> int:
         # Reading itself lasts 3–8 minutes. A three-minute live window would
         # expire every message she picked up before she could finish reading.
@@ -76,8 +90,7 @@ class ParticipationMixin:
         if state.current_plan and (not state.current_action
                 or state.current_plan.get("source") in {"reply", "schedule"}):
             return "busy"
-        if any(not item.get("absorbed") and not item.get("picked")
-               for item in self._pending_replies.get(self.merge_scope(target), [])):
+        if self.pending_reply_busy(target):
             return "reply_pending"
         if self.native_turn_busy(target):
             return "reply_pending"
@@ -294,7 +307,7 @@ class ParticipationMixin:
                 if source == "browse":
                     reasons = {"paused": "当前会话暂停了主动接话", "disabled": "当前会话未启用翻消息后接话",
                                "resting": "正在休息或精力不足，暂未进入接话判断", "busy": "手头活动需要先收尾，暂未进入接话判断",
-                               "reply_pending": "正在处理对话回复，暂未进入接话判断"}
+                               "reply_pending": "本次未进入接话判断：当时有对话等待回复或正在处理"}
                     status = gate or ("already_considered" if rows else "no_scene")
                     reason = reasons.get(gate) or ("这段现场已判断过，等待新的消息" if rows
                                                   else "最近15分钟没有仍可回应的消息，不追答旧聊天")

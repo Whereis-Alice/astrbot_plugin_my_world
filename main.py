@@ -1447,6 +1447,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
             incoming = self.engine.register_incoming(
                 session_id,
                 ctx.text,
+                expected_event=event,
                 identity={
                     **_incoming_identity(event, ctx.raw_text or ctx.text),
                     "model_text": ctx.text,
@@ -2388,6 +2389,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
                     self.engine.register_incoming(
                         session_id,
                         raw_text,
+                        expected_event=event,
                         identity=_incoming_identity(event, raw_text),
                     ),
                 )

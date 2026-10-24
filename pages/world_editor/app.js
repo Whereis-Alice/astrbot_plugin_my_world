@@ -16302,7 +16302,10 @@ function renderThoughtsPage() {
       el("div", "thought-intent", `打算：${thoughtIntentText(row)}`),
     );
     if (row.browse_session && !detail.speech && detail.browse_reply?.reason) {
-      item.append(el("p", "muted", `接话：${detail.browse_reply.reason}`));
+      const reason = detail.browse_reply.status === "reply_pending"
+        ? "本次未进入接话判断：当时有对话等待回复或正在处理"
+        : detail.browse_reply.reason;
+      item.append(el("p", "muted", `接话：${reason}`));
     }
 
     if (row.browse_session) {

@@ -467,6 +467,7 @@ class SnapshotMixin:
 
         if not session_id:
             return {"session": "", "thoughts": []}
+        await self.refresh_session_names()
         try:
             state = await self.load_state(session_id, cold_start=False)
         except Exception:

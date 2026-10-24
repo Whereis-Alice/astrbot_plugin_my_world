@@ -414,6 +414,22 @@ class SessionsMixin:
         info = (getattr(self, "_session_names", None) or {}).get(str(session_id)) or {}
         return " ".join(str(info.get("name") or "").split())
 
+    async def refresh_session_names(self) -> None:
+        """Read optional group metadata outside state locks; adapter owns caching."""
+        fetch = getattr(self.messenger, 'fetch_group_names', None)
+        if not callable(fetch):
+            return
+        sessions = [item.session_id for item in self.sessions.sessions if item.type == 'group']
+        try:
+            names = await fetch(sessions)
+        except Exception:
+            return
+        if isinstance(names, dict):
+            for sid in sessions:
+                name = names.get(sid)
+                if isinstance(name, str):
+                    self.note_session_name(sid, name)
+
     def note_session_name(self, session_id: str, name: str) -> None:
         """把平台给的群名记下来（只在拿到时调）。"""
 
@@ -426,7 +442,7 @@ class SessionsMixin:
     def session_display_name(
         self, session_id: str, state: WorldState | None = None
     ) -> str:
-        """她在提示词里看到的会话名：备注 > 群名 > 最近说话的人 > 只有号码。
+        """她在提示词里看到的会话名：备注 > 群名；私聊再回退到对方昵称。
 
         私聊通常没有群名，就用"最近在这儿跟她说话的那个人"当名字——
         这样通讯录里写的是「私聊 2692047521「主人」」而不是一串数字。
@@ -438,7 +454,9 @@ class SessionsMixin:
         group_name = self.session_group_name(session_id)
         if group_name:
             return group_name
-        if state is not None:
+        session = self.session_config(session_id)
+        private = session.type == 'private' if session is not None else ':PrivateMessage:' in str(session_id)
+        if private and state is not None:
             info = (getattr(state, "session_activity", None) or {}).get(
                 str(session_id)
             ) or {}
