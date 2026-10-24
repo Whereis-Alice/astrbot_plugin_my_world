@@ -409,7 +409,9 @@ class ActionsRunMixin:
                 outcome=outcome,
             )
             return
-        if self.action_quota_left(state, definition) <= 0:
+        resumption = self._planned_life_resumption(state, definition, action) if from_plan else None
+        paid_keys = resumption.get("usage_keys") if resumption else None
+        if self.action_quota_left(state, definition, paid_keys=paid_keys) <= 0:
             # 配额用尽：这一步不做（日志里写清是哪个周期到顶了）
             outcome.notes.append(f"动作 {definition.id} 今天/本周/本月的次数已用完，已跳过")
             await self._log_event(
@@ -422,7 +424,7 @@ class ActionsRunMixin:
                 outcome=outcome,
             )
             return
-        self._count_action_use(state, definition)
+        self._count_action_use(state, definition, paid_keys=paid_keys)
         if self._should_drowse(state, definition, skip_drowsy=skip_drowsy):
             # 睡前先进临睡期：不立刻躺下（见 _enter_drowsy）
             await self._enter_drowsy(state, node, outcome, definition, action, depth)
@@ -444,7 +446,7 @@ class ActionsRunMixin:
             return
 
         if definition.category == "continuous":
-            duration_ticks = self._duration_ticks(definition, action, state)
+            duration_ticks = resumption["ticks"] if resumption else self._duration_ticks(definition, action, state)
             if from_plan and (state.current_plan or {}).get("source") == "life_matter" and definition.id != "walk_to":
                 duration_ticks = max(1, math.ceil(action.duration / self.tick_seconds))
             if duration_ticks <= 0:
@@ -472,6 +474,7 @@ class ActionsRunMixin:
                 "silent_followup": SILENT_FOLLOWUP.get() or bool(from_plan and (state.current_plan or {}).get("silent_followup")),
                 "desc": definition.name or definition.id,
                 "action_name": definition.name or definition.id,
+                "usage_keys": self._usage_keys(),
             }
             if from_plan and isinstance(state.current_plan, dict):
                 # 记下"这一步属于哪份计划的第几步"：计划中途可能被插进新的安排，
@@ -548,6 +551,8 @@ class ActionsRunMixin:
                         "计划里那一步不再接着做"
                     )
             state.current_action = payload
+            if resumption:
+                action.raw.pop("_life_resume", None)
             self._note_event(state, "action_start", {"type": definition.id,
                 "action_name": payload["action_name"]})
             await self._log_event(

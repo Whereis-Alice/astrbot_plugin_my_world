@@ -63,7 +63,7 @@ class LimitsMixin:
             "month": f"m:{now.strftime('%Y-%m')}",
         }
 
-    def action_quota_left(self, state: WorldState, action: ActionDef) -> int:
+    def action_quota_left(self, state: WorldState, action: ActionDef, *, paid_keys: dict | None = None) -> int:
         """这个动作还剩几次可用（没有配额就返回一个很大的数）。"""
 
         quota = getattr(action, "quota", None)
@@ -75,6 +75,8 @@ class LimitsMixin:
             if not limit or limit <= 0:
                 continue
             key = keys.get(period, "")
+            if paid_keys and paid_keys.get(period) == key:
+                continue  # The same activity already paid for this period.
             used = int(table.get(key, 0) or 0)
             left.append(max(0, int(limit) - used))
         return min(left) if left else 10 ** 6
@@ -88,12 +90,14 @@ class LimitsMixin:
             if self.action_quota_left(state, action) <= 0
         }
 
-    def _count_action_use(self, state: WorldState, action: ActionDef) -> None:
+    def _count_action_use(self, state: WorldState, action: ActionDef, *, paid_keys: dict | None = None) -> None:
         """记一次动作使用（只记真正开始执行的那些）。"""
 
         table = dict((state.action_usage or {}).get(action.id) or {})
         keys = self._usage_keys()
-        for key in keys.values():
+        for period, key in keys.items():
+            if paid_keys and paid_keys.get(period) == key:
+                continue
             table[key] = int(table.get(key, 0) or 0) + 1
         # 只留最近的一小段，免得这个字典无限长
         if len(table) > 12:

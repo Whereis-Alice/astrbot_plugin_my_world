@@ -110,28 +110,78 @@ class LifeControlMixin:
         # Only quiet, simulated actions may resume automatically. Tools, commands,
         # speech and expired plans are never replayed after an interruption.
         if not matter_id and not state.life_resume:
-            if not plan and action:
-                from ..planner import create_plan
-                plan = create_plan(steps=[{"action": action.get("type"), "duration": int(action.get("duration_ticks", 1)) * self.tick_seconds,
-                    "intent": action.get("intent", ""), "content": action.get("content", ""), "params": action.get("params", {})}],
-                    world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds, source="life_resume",
-                    persona_key=action.get("persona_key") or self._matter_persona_key(state) or "")
-            defs = self.world.action_map()
-            pending = list((plan or {}).get("steps", []))[int((plan or {}).get("current_step", 0)):]
-            if pending and all((d := defs.get(str(step.get("action") or "")))
-                               and d.llm_level == "template" and d.target_type == "none"
-                               and not is_sleep_action(d) and not restores_energy(d)
-                               and d.id not in {"sleep", "nap", "walk_to", "say", "share", "poke", "browse_phone", "browse_computer"}
-                               and d.on_complete.trigger == "none" for step in pending):
-                saved = copy.deepcopy(plan)
-                if action:
-                    saved["steps"][int(plan.get("current_step", 0))]["duration"] = max(
-                        1, (int(action.get("duration_ticks", 1)) - int(action.get("elapsed_ticks", 0))) * self.tick_seconds)
+            saved = self._bookmark_quiet_life(state, action, plan)
+            if saved:
                 state.life_resume = {"plan": saved, "at": self._now(), "node": state.node_id,
                                      "reason": reason, "source": source, "identity": self._life_identity()}
         state.current_action, state.current_plan, state.state = None, None, "idle"
         state.life_decision = {"kind": source, "reason": reason, "at": self._now(), "matter_id": matter_id}
         matters.sync(state)
+
+    def _quiet_resume_step(self, step: dict) -> bool:
+        definition = self.world.action_map().get(str(step.get("action") or ""))
+        return bool(definition and definition.enabled and definition.llm_level == "template"
+                    and definition.target_type == "none" and not self._action_speaks(definition)
+                    and not step.get("target") and not step.get("interject")
+                    and not is_sleep_action(definition) and not restores_energy(definition)
+                    and definition.id not in {"walk_to", "say", "share", "poke", "think", "browse_phone", "browse_computer"}
+                    and definition.on_complete.trigger == "none")
+
+    def _bookmark_quiet_life(self, state, action: dict, plan: dict | None) -> dict | None:
+        """Keep running work before its untouched tail; a tail is not the running step."""
+        from ..planner import create_plan
+        saved = copy.deepcopy(plan) if plan else None
+        pending = self._plan_remaining_steps(plan)
+        current = max(0, int((plan or {}).get("current_step") or 0))
+        if action:
+            index = self._running_plan_index(state, plan)
+            # Older hand-built archives have no execution/plan linkage.
+            if index is None and "from_plan" not in action and not action.get("plan_id") and pending:
+                if pending[0].get("action") == action.get("type"):
+                    index = current
+            if index is not None and index >= current and index - current < len(pending):
+                running = pending.pop(index - current)
+            else:
+                running = self._step_payload(self._step_to_action({"action": action.get("type"),
+                    "intent": action.get("intent", ""), "content": action.get("content", ""),
+                    "target": action.get("target", ""), "target_node": action.get("target_node", ""),
+                    "params": action.get("params", {})}), session=action.get("session", ""),
+                    kind=action.get("speech_kind", ""))
+            ticks = max(1, int(action.get("duration_ticks", 1)) - int(action.get("elapsed_ticks", 0)))
+            running["duration"] = ticks * self.tick_seconds
+            usage_keys = action.get("usage_keys")
+            running["_life_resume"] = {"ticks": ticks,
+                "usage_keys": dict(usage_keys) if isinstance(usage_keys, dict) else {}}
+            pending.insert(0, running)
+        if not pending or not all(self._quiet_resume_step(step) for step in pending):
+            return None
+        if saved:
+            saved["steps"] = saved["steps"][:current] + pending
+        else:
+            saved = create_plan(steps=pending, world_time=state.world_time, now=self._now(),
+                tick_seconds=self.tick_seconds, source="life_resume",
+                persona_key=action.get("persona_key") or self._matter_persona_key(state) or "")
+            # The normal plan constructor deliberately strips internal receipts.
+            saved["steps"][0]["_life_resume"] = pending[0]["_life_resume"]
+        return saved
+
+    def _planned_life_resumption(self, state, definition, action) -> dict | None:
+        """Only a validated bookmark's actual step may override a new-start duration."""
+        plan = state.current_plan or {}
+        identity = plan.get("_life_resume_identity")
+        if not identity or identity != self._life_identity():
+            return None
+        steps, index = plan.get("steps") or [], max(0, int(plan.get("current_step") or 0))
+        if index >= len(steps):
+            return None
+        step = steps[index]
+        if action.raw is not step or step.get("action") != definition.id or not self._quiet_resume_step(step):
+            return None
+        receipt = step.get("_life_resume")
+        if not isinstance(receipt, dict) or not isinstance(receipt.get("ticks"), int) or receipt["ticks"] <= 0:
+            return None
+        return {"ticks": receipt["ticks"], "usage_keys": receipt.get("usage_keys")
+                if isinstance(receipt.get("usage_keys"), dict) else {}}
 
     def resume_life(self, state) -> bool:
         saved = state.life_resume
@@ -155,6 +205,7 @@ class LifeControlMixin:
                for s in plan.get("steps", [])):
             state.life_resume = {}
             return False
+        plan["_life_resume_identity"] = saved["identity"]
         state.current_plan, state.life_resume = plan, {}
         state.life_decision = {"kind": "continue", "reason": "临时安排已结束，接着做刚才放下的事", "at": self._now()}
         return True
