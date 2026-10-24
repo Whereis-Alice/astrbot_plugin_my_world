@@ -922,7 +922,10 @@ class TickMixin:
         persona_key = str(action.get("persona_key") or self._matter_persona_key(state) or "")
         if not persona_key:
             _, persona_key = await self._journal_persona(state.session_id)
-        label = definition.name or definition.id
+        # `desc` can describe a journey or contain a simulated plan's intent.
+        # New executions store only the definition name; old archives retain
+        # their existing fallback rather than inventing a historical name.
+        label = str(action.get("action_name") or definition.name or definition.id)
         if definition.id == "think":
             content = str(action.get("content", "") or "")
             if content:

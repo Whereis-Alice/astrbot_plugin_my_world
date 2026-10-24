@@ -15,7 +15,6 @@ from ..json_actions import (
     parse_action_payload,
     speakable_messages,
 )
-from ..memory import INNER
 from ..models import (
     ActionDef,
     NodeDef,
@@ -472,6 +471,7 @@ class ActionsRunMixin:
                 "contact_people": sorted(outcome.contact_people),
                 "silent_followup": SILENT_FOLLOWUP.get() or bool(from_plan and (state.current_plan or {}).get("silent_followup")),
                 "desc": definition.name or definition.id,
+                "action_name": definition.name or definition.id,
             }
             if from_plan and isinstance(state.current_plan, dict):
                 # 记下"这一步属于哪份计划的第几步"：计划中途可能被插进新的安排，
@@ -548,7 +548,8 @@ class ActionsRunMixin:
                         "计划里那一步不再接着做"
                     )
             state.current_action = payload
-            self._note_event(state, "action_start", {"type": definition.id})
+            self._note_event(state, "action_start", {"type": definition.id,
+                "action_name": payload["action_name"]})
             await self._log_event(
                 state,
                 "action_start",
@@ -580,6 +581,8 @@ class ActionsRunMixin:
                 outcome.notes.append(f"开始 {definition.id}")
             return
 
+        # Preserve the executed definition independently of generated content.
+        action_name = definition.name or definition.id
         # 瞬时动作
         if definition.id == "recall":
             # 主动回忆：翻记忆 → 带着结果再问她一次（她只需要在续说里讲话）
@@ -699,25 +702,7 @@ class ActionsRunMixin:
                 for text in messages:
                     outcome.add_speech(text, speaker, kind="interject" if action.interject else getattr(messages, "speech_kind", None))
         elif definition.id == "think" and action.content:
-            persona_key = self._matter_persona_key(state) or (await self._journal_persona(state.session_id))[1]
-            await self._remember_inner_thought(
-                state,
-                action.content,
-                source="她想事情",
-                persona_key=persona_key,
-            )
-            self.memory.remember(
-                session_id=state.session_id,
-                persona_id="",
-                persona_key=persona_key,
-                node_id=state.node_id,
-                content=action.content,
-                memory_type=INNER,
-                emotion=state.mood,
-                weight=0.35,
-                affect=state.affect,
-                valence=state.valence,
-            )
+            await self._remember_action(state, definition, {"content": action.content})
         self._apply_life_completion(state, definition)
         self.dynamics.apply_effects(
             state, definition.on_complete.effects, world=self.world, now=self._now()
@@ -727,20 +712,18 @@ class ActionsRunMixin:
         # 瞬时动作也走这条完成路径（`_finish_action` 是持续 / 工具动作那条），
         # 所以"亲近一下满足欲求"两边都要接上
         await self._satisfy_desire_from_action(state, definition, outcome)
-        self._note_event(state, "action", {"type": definition.id, "visible": definition.visible})
+        personal_life = self._is_personal_life_action(definition, action)
+        if personal_life:
+            await self._remember_action(state, definition, {"action_name": action_name})
+        self._note_event(state, "action", {"type": definition.id, "visible": definition.visible,
+            "action_name": action_name})
         await self._log_event(
             state,
             "action",
             {
                 "type": definition.id,
-                "desc": definition.name or definition.id,
-                "diary_life": (
-                    definition.llm_level in {"template", "single"}
-                    and definition.target_type == "none"
-                    and definition.id not in {*self.INNER_ACTIONS, "say", "share", "poke"}
-                    and not action.target
-                    and not action.interject
-                ),
+                "desc": action_name,
+                "diary_life": personal_life,
                 "status": "completed",
                 "visible": bool(definition.visible),
                 "messages": list(messages),
@@ -758,6 +741,14 @@ class ActionsRunMixin:
 
     # 「想事情」这类内容型动作：产出的文字是内心活动，永远不发到群里
     INNER_ACTIONS = ("think",)
+
+    @classmethod
+    def _is_personal_life_action(cls, definition: ActionDef, action: PlannedAction) -> bool:
+        """Diary and memory share the same boundary for instant personal activities."""
+        return (definition.llm_level in {"template", "single"}
+                and definition.target_type == "none"
+                and definition.id not in {*cls.INNER_ACTIONS, "say", "share", "poke"}
+                and not action.target and not action.interject)
 
     def _action_speaks(self, definition: ActionDef) -> bool:
         """这个动作产出的文本要不要发到群里。

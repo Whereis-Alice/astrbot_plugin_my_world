@@ -1218,7 +1218,7 @@ class PromptBuilder:
         if not isinstance(detail, dict):
             return ""
         if kind in ("action", "action_start"):
-            label = self.action_label(detail.get("type"))
+            label = str(detail.get("action_name") or self.action_label(detail.get("type")))
             head = "开始" if kind == "action_start" else "做了"
             return f"- {head}：{label}" if label else ""
         if kind == "move":
