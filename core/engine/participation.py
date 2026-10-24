@@ -28,6 +28,10 @@ class ParticipationMixin:
                    and 0 <= now - float(item.get('at') or 0) < self.REPLY_EXPECTATION_SECONDS
                    for item in self._pending_replies.get(scope, []))
 
+    def reply_busy(self, session_id: str) -> bool:
+        """One conversation priority check from arrival through native sending."""
+        return self.pending_reply_busy(session_id) or self.native_turn_busy(session_id)
+
     def _participation_window(self, source: str = "message") -> int:
         # Reading itself lasts 3–8 minutes. A three-minute live window would
         # expire every message she picked up before she could finish reading.
@@ -90,9 +94,7 @@ class ParticipationMixin:
         if state.current_plan and (not state.current_action
                 or state.current_plan.get("source") in {"reply", "schedule"}):
             return "busy"
-        if self.pending_reply_busy(target):
-            return "reply_pending"
-        if self.native_turn_busy(target):
+        if self.reply_busy(target):
             return "reply_pending"
         return ""
 
@@ -366,7 +368,7 @@ class ParticipationMixin:
     def outreach_gate(self, target: str, *, token: str = "", user_id: str = "") -> str:
         """All autonomous entrances share actual-send cadence and unanswered-person backoff."""
         with self.config_scope(target):
-            if self.native_turn_busy(target):
+            if self.reply_busy(target):
                 return "正在回应别人，先听一会儿"
             ledger = self._outreach_ledger(target)
             last = (ledger.get("sessions") or {}).get(target) or {}

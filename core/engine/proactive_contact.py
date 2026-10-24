@@ -38,11 +38,15 @@ class ProactiveContactMixin:
                 token = outcome.contact_tokens[base] = base + ":" + uuid4().hex
         return token
 
-    def contact_speech_allowed(self, outcome: TickOutcome, target: str, kind: str) -> bool:
+    def contact_speech_allowed(self, outcome: TickOutcome, target: str, kind: str, *, reserved: bool = False) -> bool:
+        """Reservations cover quotas only; reply priority and scene expiry stay live."""
+        if kind != 'reply' and self.reply_busy(target):
+            return False
         if kind in CHAT_KINDS:
-            return (not self.native_turn_busy(target)
-                    and self._now() < outcome.chat_expires_at.get(target, 0))
+            return self._now() < outcome.chat_expires_at.get(target, 0)
         if kind == "reply":
+            return True
+        if reserved:
             return True
         if kind in LIFE_KINDS:
             return not self.life_share_status(target, token=self._contact_token(outcome, target, "life_shares"))["reason"]
@@ -122,7 +126,7 @@ class ProactiveContactMixin:
             same = bool(started and 0 <= self._now() - started <= 120)
             cap = self.world.life_share_daily_max
             left = max(0, cap - len(set(contacts) | active))
-            reason = "正在回应别人，稍后再分享生活" if self.native_turn_busy(target) else ""
+            reason = "正在回应别人，稍后再分享生活" if self.reply_busy(target) else ""
             recent = (self._outreach_ledger(target).get("sessions") or {}).get(target) or {}
             last = float(recent.get("at") or 0)
             if last and not same and self._now() - last < self.world.life_share_min_interval_seconds:

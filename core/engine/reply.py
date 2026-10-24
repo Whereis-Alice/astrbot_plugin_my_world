@@ -294,6 +294,8 @@ class ReplyMixin:
                 break
             if item.get("absorbed") or item.get("picked"):
                 continue
+            if not self._reply_event_open(scope, item):
+                continue
             if str(item.get("session") or "") != origin:
                 continue
             if trigger_user and str(item.get("user_id") or "").strip() != trigger_user:
@@ -311,7 +313,7 @@ class ReplyMixin:
                 # 老路径（两边都没身份）才拿正文兜底
                 item["picked"] = True
                 continue
-            if float(item.get("at") or 0.0) - float(started_at) > window_seconds:
+            if abs(float(item.get("at") or 0.0) - float(started_at)) > window_seconds:
                 continue
             item["picked"] = True  # 只可能被并进一次，别被下一轮又捞出来
             picked.append(item)
@@ -334,6 +336,7 @@ class ReplyMixin:
             for item in queue
             if not item.get("absorbed")
             and not item.get("picked")
+            and self._reply_event_open(self.merge_scope(session_id), item)
             and str(item.get("session") or "") == str(session_id or "")
             and (not user or str(item.get("user_id") or "").strip() == user)
         ]

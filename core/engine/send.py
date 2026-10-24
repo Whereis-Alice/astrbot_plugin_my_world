@@ -327,11 +327,7 @@ class SendMixin:
                 from ..participation import speakable
                 targets = [target, *outcome.broadcast_targets] if not key and include_broadcast else [target]
                 def contact_allowed(sid):
-                    if contact_reserved:
-                        # This delivery already holds its allowance. Rechecking the
-                        # ledger would mistake our own reservation for another contact.
-                        return kind not in CHAT_KINDS or self._now() < outcome.chat_expires_at.get(sid, 0)
-                    return self.contact_speech_allowed(outcome, sid, kind)
+                    return self.contact_speech_allowed(outcome, sid, kind, reserved=contact_reserved)
                 return (images or kind == "reply" or speakable(lines[i])) and any(
                     self.speech_allowed(sid, kind) and (protected or (
                         (not block_contact or kind in CHAT_KINDS) and contact_allowed(sid)))
@@ -477,10 +473,8 @@ class SendMixin:
                     quote_index = next((i for i, kind in enumerate(ordered_kinds)
                                         if kind in CHAT_KINDS), 0)
                     with quote_send(target, view.reply_targets.get(target, ""), quote_index), guard_send(
-                        lambda sid, i: self.speech_allowed(sid, ordered_kinds[i]) and (
-                            ordered_kinds[i] not in CHAT_KINDS
-                            or (not self.native_turn_busy(sid)
-                                and self._now() < view.chat_expires_at.get(sid, float("inf"))))):
+                        lambda sid, i: self.speech_allowed(sid, ordered_kinds[i])
+                            and self.contact_speech_allowed(view, sid, ordered_kinds[i], reserved=receipt is not None)):
                         try:
                             accepted = bool(await self.messenger.send_text(target, target_ordered))
                         except asyncio.CancelledError:
@@ -525,8 +519,13 @@ class SendMixin:
                     self._filter_proactive_speech(view, contact_reserved=receipt is not None)
                     target_images = self._group_images(view)
                 if target_images and not cancelled:
-                    auto_images = autonomous(view.image_kinds.get("", []) or [view.speech_kind])
-                    accepted = await self._send_group_images(target, target_images)
+                    image_kinds = view.image_kinds.get("", []) or [view.speech_kind]
+                    auto_images = autonomous(image_kinds)
+                    from ..speech_policy import guard_send
+                    with guard_send(lambda sid, i: all(self.speech_allowed(sid, kind)
+                        and self.contact_speech_allowed(view, sid, kind, reserved=receipt is not None)
+                        for kind in image_kinds)):
+                        accepted = await self._send_group_images(target, target_images)
                     sent = sent or accepted
                     if accepted:
                         sent_kinds.update(view.image_kinds.get("", []) or [view.speech_kind])

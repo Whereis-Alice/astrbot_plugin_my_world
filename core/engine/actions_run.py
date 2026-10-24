@@ -943,7 +943,8 @@ class ActionsRunMixin:
             try:
                 # 在"她现在说话的地方"戳：私聊里说话就戳私聊，别戳到群里去
                 from ..speech_policy import guard_send
-                with guard_send(lambda sid, i: self.speech_allowed(sid, kind)):
+                with guard_send(lambda sid, i: self.speech_allowed(sid, kind)
+                    and self.contact_speech_allowed(outcome, sid, kind, reserved=receipt is not None)):
                     result = await poker(outcome.home(), target)
                 ok = bool(getattr(result, "ok", result))
                 reason = str(getattr(result, "reason", "") or "")

@@ -895,10 +895,8 @@ class ActionsMixin:
             try:
                 from ..speech_policy import guard_send, quote_send
                 with quote_send(outcome.home(), outcome.reply_targets.get(outcome.home(), "")), guard_send(
-                    lambda sid, i: self.speech_allowed(sid, kind) and (
-                        kind not in {"interject", "participation", "browse_reply", "continuation"}
-                        or (not self.native_turn_busy(sid)
-                            and self._now() < outcome.chat_expires_at.get(sid, float("inf"))))):
+                    lambda sid, i: self.speech_allowed(sid, kind)
+                        and self.contact_speech_allowed(outcome, sid, kind, reserved=receipt is not None)):
                     sent = bool(await self.say_sink(outcome.home(), line))
             except Exception as exc:
                 self._log("debug", f"即时发言失败：{exc}")
