@@ -10,6 +10,23 @@ SILENT_FOLLOWUP = ContextVar("world_silent_followup", default=False)
 SEND_CHECK = ContextVar("world_send_check", default=None)
 REPLY_TARGET = ContextVar("world_reply_target", default=None)
 SPEECH_OUTCOME = ContextVar("world_speech_outcome", default=None)
+PLAN_SPEECH = ContextVar("world_plan_speech", default=None)
+SEND_RECEIPT = ContextVar("world_send_receipt", default=None)
+
+
+@contextmanager
+def watch_send(receipt):
+    token = SEND_RECEIPT.set(receipt)
+    try:
+        yield
+    finally:
+        SEND_RECEIPT.reset(token)
+
+
+async def accept_segment(session_id: str, text: str, index: int):
+    receipt = SEND_RECEIPT.get()
+    if receipt is not None:
+        await receipt(session_id, text, index)
 
 
 @contextmanager
@@ -80,9 +97,12 @@ def speech_origin(source):
                 outcome.contact_people.update(action.get("contact_people") or [])
             outcome.speech_kind = kind
             token = SPEECH_OUTCOME.set(outcome)
+            plan_token = PLAN_SPEECH.set((outcome, plan) if source == "plan"
+                else PLAN_SPEECH.get() if source == "actions" else None)
             try:
                 return await function(self, *args, **kwargs)
             finally:
+                PLAN_SPEECH.reset(plan_token)
                 SPEECH_OUTCOME.reset(token)
                 outcome.speech_kind = previous
 

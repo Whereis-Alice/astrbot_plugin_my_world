@@ -225,7 +225,10 @@ class AutonomyMixin:
             inner or (reason if fallback_allowed else ""),
             source="自主决定" if inner else "此刻选择",
             intent=reason,
+            decision_id=str(plan.get("id") or ""),
         )
+        if plan.get("id") and any(t.get("decision_id") == plan["id"] for t in state.thoughts):
+            plan["thought_id"] = plan["id"]
         self._note_event(state,
             "plan", {"reason": plan.get("reason"), "source": plan.get("source")}
         )

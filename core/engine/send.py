@@ -428,8 +428,8 @@ class SendMixin:
             kind = outcome.live_kinds[index] if index < len(outcome.live_kinds) else outcome.speech_kind
             delivered.setdefault(target, []).append(message)
             identity = outcome.live_ids[index] if index < len(outcome.live_ids) else ""
-            if identity:
-                outcome.delivered_decisions.setdefault(identity, []).append(message)
+            from .speech_receipts import remember_accepted
+            await remember_accepted(self, outcome, target, message, ("live", target, index), identity)
             autonomous_delivered = autonomous_delivered or kind not in autonomous_kinds
             if kind not in autonomous_kinds:
                 autonomous_targets.add(target)
@@ -462,17 +462,31 @@ class SendMixin:
             try:
                 if target_ordered:
                     attempted = True
-                    from collections import defaultdict, deque
-                    from ..speech_policy import guard_send, quote_send
-                    line_kinds = defaultdict(deque)
-                    for i, line in enumerate(view.messages):
-                        values = view.speech_kinds.get("", [])
-                        line_kinds[line].append(values[i] if i < len(values) else view.speech_kind)
-                    ordered_kinds = [line_kinds[line].popleft() if line_kinds[line] else "reply"
-                                     for line in target_ordered]
+                    from ..speech_policy import guard_send, quote_send, watch_send
+                    from .speech_receipts import remember_accepted
+                    entries = [(line, None) for line in echoes] + view.ordered_entries()
+                    entries = [(line, i) for line, i in entries if line and str(line).strip()]
+                    values = view.speech_kinds.get("", [])
+                    ordered_kinds = [values[i] if i is not None and i < len(values)
+                        else view.speech_kind if i is not None else "reply" for _, i in entries]
+                    recorded_indices = set()
+                    from uuid import uuid4
+                    send_identity = uuid4().hex
+
+                    async def received_segment(sid, text, position):
+                        if sid != target or position >= len(entries) or entries[position][0] != text:
+                            return
+                        index = entries[position][1]
+                        if index is None:
+                            return  # Debug echoes are not the character's speech.
+                        ids = view.speech_ids.get("", [])
+                        identity = ids[index] if index < len(ids) else ""
+                        await remember_accepted(self, outcome, target, text,
+                            (send_identity, target, position), identity)
+                        recorded_indices.add(position)
                     quote_index = next((i for i, kind in enumerate(ordered_kinds)
                                         if kind in CHAT_KINDS), 0)
-                    with quote_send(target, view.reply_targets.get(target, ""), quote_index), guard_send(
+                    with watch_send(received_segment), quote_send(target, view.reply_targets.get(target, ""), quote_index), guard_send(
                         lambda sid, i: self.speech_allowed(sid, ordered_kinds[i])
                             and self.contact_speech_allowed(view, sid, ordered_kinds[i], reserved=receipt is not None)):
                         try:
@@ -489,17 +503,23 @@ class SendMixin:
                     receipt_reader = getattr(self.messenger, "take_sent_texts", None)
                     received = receipt_reader(target) if callable(receipt_reader) else (target_ordered if accepted else [])
                     received_counts = Counter(received)
+                    # Older/custom transports expose only a final receipt. Walk
+                    # actual positions so identical echoes cannot acquire speech identity.
+                    actual_positions = set(recorded_indices)
+                    for position, (text, index) in enumerate(entries):
+                        if received_counts[text] <= 0:
+                            continue
+                        received_counts[text] -= 1
+                        if index is not None:
+                            await received_segment(target, text, position)
+                            actual_positions.add(position)
+                    actual_indices = {entries[p][1] for p in actual_positions}
                     actual_messages = []
                     actual_auto_text = False
                     message_kinds = view.speech_kinds.get("", [])
                     for index, message in enumerate(view.messages):
-                        if received_counts[message] > 0:
+                        if index in actual_indices:
                             actual_messages.append(message)
-                            ids = view.speech_ids.get("", [])
-                            if index < len(ids) and any(d["id"] == ids[index] and d["target"] == target
-                                                       for d in outcome.speech_decisions):
-                                outcome.delivered_decisions.setdefault(ids[index], []).append(message)
-                            received_counts[message] -= 1
                             kind = message_kinds[index] if index < len(message_kinds) else view.speech_kind
                             sent_kinds.add(kind)
                             actual_auto_text = actual_auto_text or kind not in autonomous_kinds
@@ -591,13 +611,6 @@ class SendMixin:
                     if target != outcome.session_id:
                         detail.update(session=self.session_label(target, state), note="这一句说给了另一个会话")
                     await self._log_event(state, "bot_message", detail)
-                    for message in messages:
-                        recorded = state.note_chat(user_id="__self__",
-                            name=state.bot_current_nickname or state.bot_base_nickname or "你",
-                            text=message, now=self._now(), keep=self.chat_history_limit(),
-                            is_self=True, origin=target)
-                        state.note_reply(message, session_id=target)
-                        self._tag_chat_origin(state, target, recorded)
         note = getattr(self.messenger, "take_fail_note", None)
         failed_note = note(outcome.session_id) if callable(note) else ""
         if failed_note:

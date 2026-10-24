@@ -139,20 +139,17 @@ class SpeechDecisionsMixin:
         return trace
 
     async def finish_speech_decisions(self, outcome):
-        pending = [d for d in outcome.speech_decisions if d["status"] == "prepared"]
+        pending = [d for d in outcome.speech_decisions if not d.get("finished_at")
+                   and (d["status"] == "prepared" or outcome.delivered_decisions.get(d["id"]))]
         if not pending:
             return
-        async with self.session_state(outcome.session_id) as state:
+        from .speech_receipts import receipt_state, update_thought
+        async with receipt_state(self, outcome.session_id) as state:
             for trace in pending:
                 sent = list(outcome.delivered_decisions.get(trace["id"], []))
                 status = ("sent" if len(sent) == len(trace["drafts"]) else "partial") if sent else "not_sent"
                 trace.update(status=status, sent=sent,
                              finished_at=self._now(), note="；".join(outcome.notes[-3:])[:300])
-                for thought in state.thoughts:
-                    speech = (thought.get("detail") or {}).get("speech") or {}
-                    if speech.get("id") == trace["id"]:
-                        thought["detail"]["speech"] = dict(trace)
-                        if sent:
-                            thought["reply"] = "\n".join(sent)
+                update_thought(state, trace)
                 await self._log_event(state, "speech_result",
                     {k: v for k, v in trace.items() if k != "draft"}, outcome=outcome, silent=True)

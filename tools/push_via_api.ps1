@@ -206,10 +206,26 @@ try {
 
     $validationBranch = "codex/ci-$($commitSha.Substring(0, 12))"
     Write-Host "创建验证分支 $validationBranch → $commitSha"
-    Invoke-GhJson -Endpoint "repos/$Repo/git/refs" -Method POST -Payload @{
-        ref = "refs/heads/$validationBranch"
-        sha = $commitSha
-    } | Out-Null
+    try {
+        Invoke-GhJson -Endpoint "repos/$Repo/git/refs" -Method POST -Payload @{
+            ref = "refs/heads/$validationBranch"
+            sha = $commitSha
+        } | Out-Null
+    } catch {
+        # The server may have created the ref before its response was lost.
+        # Resume only after a read proves this exact ref still has our commit.
+        $creationError = $_
+        try {
+            $existingRef = Invoke-GhJson -Endpoint "repos/$Repo/git/ref/heads/$validationBranch" |
+                ConvertFrom-Json
+        } catch {
+            throw $creationError
+        }
+        if ($existingRef.object.sha -ne $commitSha) {
+            throw "已有验证分支与待发布提交不一致，停止发布；main 未更新。"
+        }
+        Write-Host "验证分支已存在且提交一致，继续等待同一份 CI。"
+    }
     $ciUrl = Wait-ValidationCI -Sha $commitSha -Branch $validationBranch
     $currentMain = (Invoke-GhJson -Endpoint "repos/$Repo/git/ref/heads/main" | ConvertFrom-Json).object.sha
     if ($currentMain -ne $parentSha) {

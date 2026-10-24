@@ -64,7 +64,15 @@ function global:gh {
     if ($endpoint.EndsWith('/git/commits')) { return (@{sha=('c' * 40)} | ConvertTo-Json -Compress) }
     if ($endpoint.EndsWith('/git/refs') -and $method -eq 'POST') {
         $global:validationBranch = $payload.ref.Substring('refs/heads/'.Length)
+        if ($global:mode.StartsWith('ref-created-')) {
+            $global:LASTEXITCODE = 1
+            return 'Reference already exists (HTTP 422), previous response lost'
+        }
         return (@{ref=$payload.ref;object=@{sha=$payload.sha}} | ConvertTo-Json -Depth 3 -Compress)
+    }
+    if ($endpoint.Contains('/git/ref/heads/codex/')) {
+        $sha = if ($global:mode -eq 'ref-created-wrong') { 'd' * 40 } else { 'c' * 40 }
+        return (@{object=@{sha=$sha}} | ConvertTo-Json -Compress)
     }
     if ($endpoint.Contains('/actions/workflows/ci.yml/runs?')) {
         $global:ciReads++
@@ -114,6 +122,18 @@ catch { [Console]::Error.WriteLine($_); exit 1 }
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.main_updates(calls), [])
         self.assertIn("main 未更新", result.stderr)
+
+    def test_lost_create_response_can_resume_only_the_exact_validation_ref(self):
+        result, calls = self.run_publisher("ref-created-exact")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.main_updates(calls)), 1)
+        self.assertTrue(any('/git/ref/heads/codex/' in c['endpoint'] for c in calls))
+
+    def test_existing_validation_ref_for_another_commit_stops_publication(self):
+        result, calls = self.run_publisher("ref-created-wrong")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.main_updates(calls), [])
+        self.assertFalse(any('/actions/workflows/' in c['endpoint'] for c in calls))
 
     def test_cancelled_ci_cannot_update_main(self):
         result, calls = self.run_publisher("cancelled")

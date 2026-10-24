@@ -892,27 +892,43 @@ class ActionsMixin:
                 sent_count += 1
                 continue
             sent = False
+            live_index = len(outcome.live_messages)
+            identity = ids[index] if index < len(ids) else ""
+            accepted_live = False
+
+            async def received_segment(sid, text, position):
+                nonlocal accepted_live
+                if sid != outcome.home() or text != line or position != 0:
+                    return
+                if not accepted_live:
+                    outcome.live_messages.append(line)
+                    outcome.live_kinds.append(kind)
+                    outcome.live_origins.append(sid)
+                    outcome.live_ids.append(identity)
+                    accepted_live = True
+                from .speech_receipts import remember_accepted
+                await remember_accepted(self, outcome, sid, line, ("live", sid, live_index), identity)
+
             try:
-                from ..speech_policy import guard_send, quote_send
-                with quote_send(outcome.home(), outcome.reply_targets.get(outcome.home(), "")), guard_send(
+                from ..speech_policy import guard_send, quote_send, watch_send
+                with watch_send(received_segment), quote_send(outcome.home(), outcome.reply_targets.get(outcome.home(), "")), guard_send(
                     lambda sid, i: self.speech_allowed(sid, kind)
                         and self.contact_speech_allowed(outcome, sid, kind, reserved=receipt is not None)):
                     sent = bool(await self.say_sink(outcome.home(), line))
+                if sent or accepted_live:
+                    await received_segment(outcome.home(), line, 0)
+                    sent = True
             except Exception as exc:
                 self._log("debug", f"即时发言失败：{exc}")
-                sent = False
+                sent = accepted_live
             finally:
-                self._finish_contact(receipt, sent)
+                self._finish_contact(receipt, sent or accepted_live)
             if not sent:
                 # 发不出去（会话没配 / 平台在冷却里）：从这里开始都留到收尾一起发，别丢
                 break
             if receipt is None:
                 self.note_visible_speech(outcome.home())
             outcome.reply_targets.pop(outcome.home(), None)
-            outcome.live_messages.append(line)
-            outcome.live_kinds.append(kind)
-            outcome.live_origins.append(outcome.home())
-            outcome.live_ids.append(ids[index] if index < len(ids) else "")
             sent_count += 1
         if sent_count >= len(lines):
             return

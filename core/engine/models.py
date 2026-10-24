@@ -137,6 +137,8 @@ class TickOutcome:
     speech_ids: dict[str, list[str]] = field(default_factory=dict)
     live_ids: list[str] = field(default_factory=list)
     delivered_decisions: dict[str, list[str]] = field(default_factory=dict)
+    remembered_speech: set[tuple] = field(default_factory=set)
+    speech_receipt_batch: str = field(default_factory=lambda: uuid4().hex)
     """Messages accepted by the platform, used to distinguish thinking from speaking."""
 
     def add_speech(self, text: str, session_id: str = "", *, kind: str | None = None) -> None:
@@ -161,12 +163,17 @@ class TickOutcome:
         ids.extend([""] * max(0, len(bucket) - len(ids)))
         decision_id = ""
         for decision in reversed(self.speech_decisions):
+            if decision.get("thought_id"):
+                continue  # Plan receipts grow from each actual queued occurrence.
             if decision["target"] == (target or self.home()) and body in decision["drafts"]:
                 assigned = decision.setdefault("assigned", [])
                 if assigned.count(body) < decision["drafts"].count(body):
                     assigned.append(body)
                     decision_id = decision["id"]
                     break
+        if not decision_id:
+            from .speech_receipts import bind_plan_speech
+            decision_id = bind_plan_speech(self, body, target or self.home())
         ids.append(decision_id)
         if not target or target == str(self.session_id):
             self.messages.append(body)
@@ -198,8 +205,12 @@ class TickOutcome:
     def ordered_messages(self) -> list[str]:
         """正式回复 + 调试回显，按实际发生的先后排好。"""
 
+        return [line for line, _ in self.ordered_entries()]
+
+    def ordered_entries(self) -> list[tuple[str, int | None]]:
+        """Keep exact speech positions even when an echo has identical text."""
         if not self.debug_messages:
-            return list(self.messages)
+            return [(line, i) for i, line in enumerate(self.messages)]
         buckets: dict[int, list[str]] = {}
         for index, line in enumerate(self.debug_messages):
             position = (
@@ -208,11 +219,11 @@ class TickOutcome:
                 else len(self.messages)
             )
             buckets.setdefault(min(position, len(self.messages)), []).append(line)
-        result: list[str] = []
+        result = []
         for slot in range(len(self.messages) + 1):
-            result.extend(buckets.get(slot, []))
+            result.extend((line, None) for line in buckets.get(slot, []))
             if slot < len(self.messages):
-                result.append(self.messages[slot])
+                result.append((self.messages[slot], slot))
         return result
 
 

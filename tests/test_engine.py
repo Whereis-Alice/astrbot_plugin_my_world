@@ -2101,7 +2101,9 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             action_chain=[{"type": "say", "messages": ["只给那边的"]}],
         )
         self.clock.set_struct(datetime(2026, 9, 15, 12, 0))
-        await self.engine.tick()
+        # The life clock intentionally returns before slow scheduled delivery;
+        # assert its completed result rather than the runner's CPU speed.
+        await self.finish_schedule_tick()
         self.assertEqual(self.messenger.flat_messages.count("只给那边的"), 1)
         self.assertEqual([item for item, _msgs in self.messenger.sent], [OTHER_SESSION])
 

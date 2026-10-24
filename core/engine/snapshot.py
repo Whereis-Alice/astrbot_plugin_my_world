@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .speech_receipts import scoped_thought
+
 from datetime import date, datetime, timedelta
 from hashlib import sha256
 import time
@@ -308,7 +310,7 @@ class SnapshotMixin:
             "current_plan": state.current_plan,
             "last_reasoning": state.reasoning_for(session_id),
             "thoughts": [
-                item for item in state.thoughts
+                scoped_thought(item, session_id) for item in state.thoughts
                 if thought_visible(
                     item, session_id, self._now(), fallback_session=state.session_id
                 )
@@ -483,6 +485,8 @@ class SnapshotMixin:
                 continue
             node_id = str(item.get("node_id") or "")
             node = self.node(node_id)
+            from .speech_receipts import scoped_plan_speech
+            thought_detail, thought_reply = scoped_plan_speech(item, session_id)
             rows.append(
                 {
                     "content": content,
@@ -495,9 +499,9 @@ class SnapshotMixin:
                     "source": str(item.get("source") or ""),
                     "target": str(item.get("target") or ""),
                     "quote": str(item.get("quote") or ""),
-                    "reply": str(item.get("reply") or ""),
+                    "reply": thought_reply,
                     "decision_id": str(item.get("decision_id") or ""),
-                    "detail": dict(item.get("detail") or {}),
+                    "detail": thought_detail,
                     "browse_session": str(item.get("browse_session") or ""),
                     "browse_label": self.session_label(item["browse_session"], state) if item.get("browse_session") else "",
                     "browse_sources": list(item.get("browse_sources") or []),

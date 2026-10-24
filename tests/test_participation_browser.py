@@ -11,6 +11,27 @@ class ParticipationBrowserTests(unittest.TestCase):
     tearDownClass = classmethod(generation.GenerationBrowserTests.tearDownClass.__func__)
     setUp = generation.GenerationBrowserTests.setUp
 
+    def test_autonomous_thought_shows_its_actual_speech_in_the_existing_card(self):
+        self.page.evaluate("""() => {
+          const select=document.getElementById('thought-session');
+          select.innerHTML='<option value="aiocqhttp:GroupMessage:1001">测试群</option>';
+          select.value='aiocqhttp:GroupMessage:1001';
+          const read=AstrBotPluginPage.apiGet;
+          AstrBotPluginPage.apiGet=(key,params)=>key==='thoughts'?Promise.resolve({
+            session:'aiocqhttp:GroupMessage:1001',thoughts:[{
+              content:'真是的，拿着我的照片瞎扯什么啊……',source:'自主决定',
+              at:Date.now()/1000,node_name:'艾拉的房间',reply:'大半夜的，都去休息吧。',
+              detail:{intent:'说一句，然后去充电。',speech:{trigger:'plan',status:'sent',
+                target:'aiocqhttp:GroupMessage:1001',sent:['大半夜的，都去休息吧。']}}
+            }]}):read(key,params);
+        }""")
+        self.page.locator('button[data-tab="thoughts"]').click()
+        expect(self.page.locator('#thoughts-list')).to_contain_text('真是的，拿着我的照片瞎扯什么啊……')
+        expect(self.page.locator('#thoughts-list')).to_contain_text('大半夜的，都去休息吧。')
+        self.host.set_viewport_size({'width':390,'height':844})
+        self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'))
+        self.assertEqual(self.errors, [])
+
     def test_conversation_settings_explain_listening_and_unanswered_contact(self):
         self.page.locator('button[data-tab="settings"]').click()
         self.page.locator('#settings-tabs').get_by_text('自主发言', exact=True).click()

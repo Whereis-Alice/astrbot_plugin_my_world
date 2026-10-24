@@ -14,7 +14,7 @@ from astrbot.api.message_components import Image, Plain, Reply
 from ..core.message_parts import _sendable_images
 from ..core.plugin_compat import group_card_owner
 from ..core.ports import CardResult, PokeResult
-from ..core.speech_policy import segment_allowed, reply_target
+from ..core.speech_policy import segment_allowed, reply_target, accept_segment
 from .group_names import GroupNamesMixin
 
 if TYPE_CHECKING:
@@ -112,6 +112,14 @@ class AstrBotMessenger(GroupNamesMixin):
                 self.mark_failed(session_id, exc)
                 failed = True
                 break
+            # A follow-up may arrive during the typing wait. Make each accepted
+            # segment visible to the world before waiting for the next one.
+            try:
+                await accept_segment(session_id, str(text), index)
+            except Exception as exc:
+                # Receipt persistence must not turn accepted text into a send
+                # failure or cause the caller to replay it. Final delivery retries it.
+                self.plugin.logger.warning(f"[my_world] 保存发送回执失败：{exc}")
             if index == len(texts) - 1:
                 break  # 最后一条不用再等
             delay = self.plugin.typing_delay_for(text)
