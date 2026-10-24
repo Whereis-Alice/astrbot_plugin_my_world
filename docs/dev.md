@@ -107,5 +107,8 @@ python -m pytest tests/test_life_workspace_browser.py tests/test_visual_workspac
 pwsh tools/push_via_api.ps1 -Repo Whereis-Alice/astrbot_plugin_my_world
 ```
 
-它按 blob → tree → commit → ref 的顺序推当前 HEAD 的内容，认证走本机已登录的 `gh`。
-推送前校验本地提交包含远端历史；更新分支时使用非强制方式，远端并发更新会被拒绝。
+发布前先在本地完成完整测试、Ruff和必要的固定源码联测。脚本按 blob → tree → commit 的顺序上传当前HEAD，认证走本机已登录的 `gh`；先创建 `codex/ci-*` 验证分支，等待该分支、同一个提交的 `ci.yml` 完整成功，再更新main。测试失败、取消、等待超时或main在验证期间被别人更新，均停止晋级，保留验证分支便于查看；不删除失败记录或关闭通知。
+
+等待CI默认最多30分钟，可用 `-CiTimeoutMinutes` 在1–60分钟内调整。脚本校验本地提交包含远端历史，并使用非强制更新；验证成功后直接晋级已经通过的API提交，不重新建一个未经验证的提交。main更新仍触发现有完整CI，保留仓库原有检查规则。
+
+脚本用于已有main的仓库；读取main失败时直接停止，不把网络或权限错误当成空仓库，也不通过Contents API在验证前初始化main。

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -10746,6 +10747,16 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             if done():
                 return
 
+    async def finish_schedule_tick(self) -> None:
+        """Finish the clock's jobs, then retry an appointment deferred by busy life work."""
+        await self.engine.tick()
+        pending = [self.engine._schedule_delivery_job, *tuple(getattr(self.engine, "_life_delivery_jobs", ()))]
+        await asyncio.wait_for(asyncio.gather(*pending), timeout=5)
+        rows = await self.engine.run_schedules()
+        for outcome in rows:
+            await self.engine._deliver(outcome)
+        self.engine._record_tick(rows)
+
     def add_schedule(self, **overrides) -> None:
         item = {
             "id": "morning_news",
@@ -11609,7 +11620,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.add_schedule(id="sing_now", time="12:00", action_chain=[{"type": "sing"}])
         self.llm.replies = ['{"actions":[{"type":"say","messages":["哼两句~"]}]}']
         self.clock.set_struct(datetime(2026, 9, 15, 12, 0))
-        await self.engine.tick()
+        await self.finish_schedule_tick()
         self.assertIn("哼两句~", self.messenger.flat_messages)
 
     async def test_single_action_falls_back_when_no_model_is_left(self):
@@ -11623,7 +11634,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(setattr, self.engine, "llm", self.llm)
         self.add_schedule(id="sing_now", time="12:00", action_chain=[{"type": "sing"}])
         self.clock.set_struct(datetime(2026, 9, 15, 12, 0))
-        await self.engine.tick()
+        await self.finish_schedule_tick()
         self.assertTrue(
             any("哼歌" in line for line in self.messenger.flat_messages),
             self.messenger.flat_messages,
@@ -11656,10 +11667,9 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         )
         self.llm.replies = ['{"actions":[{"type":"say","messages":["早～"]}]}']
         self.clock.set_struct(datetime(2026, 9, 15, 12, 0))
-        await self.engine.tick()
-        # Slow hosts return the tick before the independent schedule collector.
-        await self.engine._schedule_delivery_job
+        await self.finish_schedule_tick()
         self.assertIn("早～", self.messenger.flat_messages)
+        self.assertEqual(self.messenger.flat_messages.count("早～"), 1)
 
     async def test_inner_action_still_stays_quiet(self):
         """「想事情」这类内心活动不受上一条影响，仍然不发到群里。"""
@@ -11670,7 +11680,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             action_chain=[{"type": "think", "content": "有点困了"}],
         )
         self.clock.set_struct(datetime(2026, 9, 15, 12, 0))
-        await self.engine.tick()
+        await self.finish_schedule_tick()
         self.assertNotIn("有点困了", self.messenger.flat_messages)
         state = await self.get_state()
         self.assertTrue(any(item.get("content") == "有点困了" for item in state.thoughts))
@@ -11696,7 +11706,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.engine.reload_config()
         self.add_schedule(id="hi", time="12:00", action_chain=[{"type": "wave_hi"}])
         self.clock.set_struct(datetime(2026, 9, 15, 12, 0))
-        await self.engine.tick()
+        await self.finish_schedule_tick()
         self.assertIn("（小鲸鱼朝群里招了招手）", self.messenger.flat_messages)
 
     async def test_empty_template_action_stays_silent(self):
@@ -11708,7 +11718,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             action_chain=[{"type": "walk_to", "target_node": "lobby"}],
         )
         self.clock.set_struct(datetime(2026, 9, 15, 12, 0))
-        await self.engine.tick()
+        await self.finish_schedule_tick()
         self.assertEqual(self.messenger.flat_messages, [])
 
     # ---------------- 日程里的工具 / 指令步骤：意图从哪来 ----------------
