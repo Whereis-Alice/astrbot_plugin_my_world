@@ -735,7 +735,7 @@ class ActionsRunMixin:
                 "type": definition.id,
                 "desc": definition.name or definition.id,
                 "diary_life": (
-                    definition.llm_level == "template"
+                    definition.llm_level in {"template", "single"}
                     and definition.target_type == "none"
                     and definition.id not in {*self.INNER_ACTIONS, "say", "share", "poke"}
                     and not action.target
@@ -774,12 +774,10 @@ class ActionsRunMixin:
         """
 
         from ..models import CHAT_BROWSE_IDS
-        if definition.id in CHAT_BROWSE_IDS:
+        if definition.id in CHAT_BROWSE_IDS or definition.id in self.INNER_ACTIONS:
             return False
         if definition.visible:
             return True
-        if definition.id in self.INNER_ACTIONS:
-            return False
         if definition.llm_level == "template":
             return bool(str(definition.template or "").strip())
         if definition.llm_level == "single":
