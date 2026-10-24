@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -21,6 +22,7 @@ from ..world_calendar import (
 
 SAFE_DIARY_EVENTS = frozenset(
     {
+        "action",
         "action_start",
         "action_done",
         "move",
@@ -105,6 +107,38 @@ def _diary_event_detail(event_type: str, detail: Any) -> str:
     if not parts and event_type == "schedule":
         return "日程已触发"
     return "；".join(parts)
+
+
+def _diary_practice_events(state, day: str, persona_key: str) -> list[dict[str, Any]]:
+    """Read only attributed online effort; plans and anonymous old totals are not evidence."""
+    result = []
+    for record in state.life_interests.values():
+        owners = record.get("personas") if isinstance(record, dict) else None
+        owner = owners.get(persona_key) if isinstance(owners, dict) and persona_key else None
+        if not isinstance(owner, dict):
+            continue
+        episodes = owner.get("episodes")
+        for episode in episodes if isinstance(episodes, list) else []:
+            if not isinstance(episode, dict) or episode.get("day") != day:
+                continue
+            try:
+                minutes, at = float(episode.get("minutes") or 0), float(episode.get("at") or 0)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not math.isfinite(minutes) or not math.isfinite(at) or minutes <= 0 or at <= 0:
+                continue
+            label = _clip(episode.get("label") or owner.get("label"), 180)
+            if not label:
+                continue
+            result.append({
+                "at": at,
+                "type": "life_practice",
+                "detail": _diary_event_detail("life_practice", {
+                    "desc": label, "minutes": round(minutes, 2),
+                    "time": _clip(episode.get("period"), 20), "status": "实际投入",
+                }),
+            })
+    return result
 
 
 class CalendarDiaryMixin:
@@ -454,6 +488,7 @@ class CalendarDiaryMixin:
             sorted(SAFE_DIARY_EVENTS),
             300,
             persona_key,
+            diary_actions_only=True,
         )
         schedules = []
         safe_events = []
@@ -464,6 +499,7 @@ class CalendarDiaryMixin:
             if summary:
                 safe_events.append(
                     {
+                        "at": item.get("created_at", 0),
                         "type": _clip(item.get("event_type"), 40),
                         "detail": summary,
                     }
@@ -524,9 +560,12 @@ class CalendarDiaryMixin:
         # developments.  Only fold neighbours: A → B → A can be a real
         # correction followed by a later change, and a global de-duplication
         # would move that last A before B in the diary evidence.
+        safe_events.extend(_diary_practice_events(state, day, persona_key))
+        safe_events.sort(key=lambda item: item["at"])
         diary_events: list[dict] = []
         previous_key = ""
-        for item in safe_events:
+        for timed_event in safe_events[-300:]:
+            item = {key: value for key, value in timed_event.items() if key != "at"}
             key = json.dumps(item, ensure_ascii=False, sort_keys=True)
             if diary_events and key == previous_key:
                 prior = diary_events[-1]
@@ -634,7 +673,10 @@ class CalendarDiaryMixin:
             "你是角色生活日记的整理器。只根据给出的日程、生活事件、事项和独处内心，"
             "用角色第一人称写一篇约200到600字的日记。不要读取或想象聊天、图片、"
             "用户隐私和其他会话。日程是原计划，不代表已经完成；日历只提供文化背景，"
-            "不能据此声称角色参加了节庆。不要把模拟活动说成现实操作，不要捏造用户"
+            "不能据此声称角色参加了节庆。不要把模拟活动说成现实操作。"
+            "action_start 只表示开始，action_done 和标为 completed 的 action 才表示完成；"
+            "life_practice 是同一活动的实际在线投入时长，不是额外完成一次活动；中断的练习也可有投入，"
+            "不能据此声称完成作品。不要把开始、投入与完成累计成多次活动。不要捏造用户"
             "回应。明确区分现实公共日历、原作设定和原创设定。"
             "只输出 JSON：{\"title\":\"\",\"mood\":\"\",\"content\":\"\"}。"
         )

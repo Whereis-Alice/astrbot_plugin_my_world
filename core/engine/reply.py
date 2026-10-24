@@ -618,9 +618,12 @@ class ReplyMixin:
         texts = [self._record_text(record) for record in batch]
         async with self.session_state(ctx.session_id) as state:
             query_records = [*self.chat_context_for_reply(state, ctx, exclude_entries=self.reply_batch_entries(batch)), *batch]
-        if self.world.memory.automatic_recall != "manual" and self.world.memory.recall_max_chars > 0:
+        if (self.world.memory.semantic_enabled and self.world.memory.automatic_recall != "manual"
+                and self.world.memory.recall_max_chars > 0):
+            life_persona = (await self._journal_persona(ctx.session_id))[1]
             for query in self.memory.participant_queries(query_records, ctx.session_id).values():
-                await self.memory.semantic.prepare(ctx.session_id, ctx.persona_id, query, automatic=True)
+                await self.memory.semantic.prepare(ctx.session_id, ctx.persona_id, query, automatic=True,
+                                                   life_persona_key=life_persona)
         # 这一轮实际回了哪几条：等真的发出去了再拿去推水位线
         self._remember_replied_batch(batch)
         # handle_incoming 攒下的临时提示（冷启动这类它自己算不出来的）：这一轮用完就丢

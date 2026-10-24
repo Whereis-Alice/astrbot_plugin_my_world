@@ -2033,7 +2033,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             action_chain=[{"type": "say", "messages": ["记得吃饭"]}],
         )
         self.clock.set_struct(datetime(2026, 9, 15, 12, 0))
-        await self.engine.tick()
+        await self.finish_schedule_tick()
         sent = [session for session, _msgs in self.messenger.sent]
         self.assertEqual(self.messenger.flat_messages.count("记得吃饭"), 1)
         self.assertIn(PRIVATE_SESSION, sent)
@@ -2067,7 +2067,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             action_chain=[{"type": "say", "messages": ["给这一组的"]}],
         )
         self.clock.set_struct(datetime(2026, 9, 15, 12, 0))
-        await self.engine.tick()
+        await self.finish_schedule_tick()
         self.assertEqual(self.messenger.flat_messages.count("给这一组的"), 1)
         self.assertEqual([item for item, _msgs in self.messenger.sent], [SESSION])
 
@@ -2082,7 +2082,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             action_chain=[{"type": "say", "messages": ["只给私聊的"]}],
         )
         self.clock.set_struct(datetime(2026, 9, 15, 12, 0))
-        await self.engine.tick()
+        await self.finish_schedule_tick()
         self.assertEqual(self.messenger.flat_messages.count("只给私聊的"), 1)
         self.assertEqual(
             [item for item, _msgs in self.messenger.sent], [PRIVATE_SESSION]
@@ -2940,6 +2940,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_delay_window_keeps_a_drowsy_girl_from_sleeping_it_off(self):
         """半睡档：延迟窗口里她可以困得迷迷糊糊，但不许真的睡过去。"""
 
+        from tests.schedule_delivery import settled_clock_delivery
+
         self.engine.decider.rng = _NoLlmDraw()
         self.clock.set_struct(datetime(2026, 9, 10, 2, 0))
         await self.set_state(node_id="bedroom", energy=0.2, loneliness=0.2, boredom=0.2)
@@ -2952,6 +2954,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             held.drowsy_started_at = self.clock.now() - 6 * 60
             held.last_user_activity_at = self.clock.now() - 6 * 60
         await self.engine.tick()
+        await settled_clock_delivery(self.engine)
         state = await self.get_state()
         self.assertEqual(state.state, STATE_DROWSY)
         self.assertIsNone(state.current_action)
@@ -2962,6 +2965,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             held.drowsy_started_at = self.clock.now() - 6 * 60
             held.last_user_activity_at = self.clock.now() - 6 * 60
         await self.engine.tick()
+        await settled_clock_delivery(self.engine)
         state = await self.get_state()
         self.assertEqual((state.current_action or {}).get("type"), "sleep")
 
@@ -10749,13 +10753,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def finish_schedule_tick(self) -> None:
         """Finish the clock's jobs, then retry an appointment deferred by busy life work."""
-        await self.engine.tick()
-        pending = [self.engine._schedule_delivery_job, *tuple(getattr(self.engine, "_life_delivery_jobs", ()))]
-        await asyncio.wait_for(asyncio.gather(*pending), timeout=5)
-        rows = await self.engine.run_schedules()
-        for outcome in rows:
-            await self.engine._deliver(outcome)
-        self.engine._record_tick(rows)
+        from tests.schedule_delivery import settled_schedule_outcomes
+        await settled_schedule_outcomes(self.engine, await self.engine.tick())
 
     def add_schedule(self, **overrides) -> None:
         item = {
@@ -11147,19 +11146,11 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def schedule_outcome(self, outcomes, schedule_id: str) -> TickOutcome:
         """Wait for actual delivery, then select this schedule's outcome."""
-
-        import asyncio
-        delivery = getattr(self.engine, "_schedule_delivery_job", None)
-        if delivery is not None:
-            await asyncio.wait_for(delivery, 5)
-        schedule_job = getattr(self.engine, "_schedule_model_job", None)
-        if schedule_job is not None:
-            outcomes = [*outcomes, *schedule_job.result()]
-        return next(
-            item
-            for item in outcomes
-            if any(f"日程 {schedule_id}" in note for note in item.notes)
-        )
+        from tests.schedule_delivery import settled_schedule_outcomes
+        for item in await settled_schedule_outcomes(self.engine, outcomes):
+            if any(f"日程 {schedule_id}" in note for note in item.notes):
+                return item
+        self.fail(f"生活时钟与到期扫描完成后，日程 {schedule_id} 仍没有执行结果")
 
     async def test_schedule_landing_with_only_a_group_sends_to_exactly_one_chat(self):
         """日程只勾了会话组：落点是她挑的那一个会话，只发一处（不是一次发一片）。"""
@@ -11624,7 +11615,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("哼两句~", self.messenger.flat_messages)
 
     async def test_single_action_falls_back_when_no_model_is_left(self):
-        """没配模型（或发言额度用完）时，退化成一句动作文案，不至于什么都不发。"""
+        """未配模型时保留动作文案；生成器返回空不在这个兼容分支处理。"""
 
         raw = self.store.raw_world()
         raw["bot_name"] = "小鲸鱼"

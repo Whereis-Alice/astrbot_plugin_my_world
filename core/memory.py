@@ -401,7 +401,8 @@ class MemoryEngine:
                     and (include_private_matters or row.get("source") != "life_matter"
                          or not (row.get("participants") or row.get("related_users")))]
 
-        semantic = self.semantic.cached(session_id, persona_id, keyword, mode=mode, automatic=automatic) if config and config.semantic_enabled and keyword else {}
+        semantic = self.semantic.cached(session_id, persona_id, keyword, mode=mode, automatic=automatic,
+                                        life_persona_key=life_persona_key) if config and config.semantic_enabled and keyword else {}
         semantic = {mid: score for mid, score in semantic.items() if score >= config.semantic_min_similarity}
         candidates = query(terms)
         if semantic:
@@ -533,7 +534,8 @@ class MemoryEngine:
         if config.semantic_enabled:
             queries = [request.query, *self.participant_queries(records or [], request.session).values()]
             for query in queries:
-                for mid, score in self.semantic.cached(request.session, request.persona, query, automatic=True).items():
+                for mid, score in self.semantic.cached(request.session, request.persona, query, automatic=True,
+                                                       life_persona_key=request.life_persona).items():
                     if score >= config.semantic_min_similarity:
                         semantic[mid] = max(score, semantic.get(mid, 0))
         by_key, materials = {}, []
@@ -571,7 +573,8 @@ class MemoryEngine:
             materials.append(ContextItem(key, "memory" if related or topic else "experience", detail,
                 at=recalled.created_at, people=people,
                 session=recalled.session_id if recalled.source_scoped else "",
-                priority=semantic.get(recalled.id, 0) * 3 + (0.2 if row.get("pinned") else 0),
+                priority=(base if related or topic or semantic.get(recalled.id, 0) else 0)
+                + semantic.get(recalled.id, 0) * 3 + (0.2 if row.get("pinned") else 0),
                 source=recalled.source, match_text=content))
         selected = select_context(request, materials, budget=min(config.recall_max_chars, request.budget // 2),
                                   channel="memories", max_items=limit)

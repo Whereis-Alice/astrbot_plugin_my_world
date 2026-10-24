@@ -31,7 +31,8 @@ class ContextMixin:
         persona = await self._persona_text(request.session)
         request.life_persona = sha256(persona.encode("utf-8")).hexdigest()[:24]
         if self.world.memory.semantic_enabled and request.task not in {"sleep", "diary", "review", "generation"}:
-            await self.memory.semantic.prepare(request.session, request.persona, request.query, automatic=True)
+            await self.memory.semantic.prepare(request.session, request.persona, request.query, automatic=True,
+                                               life_persona_key=request.life_persona)
 
     def context_memories(self, state, request: ContextRequest, rows: list[dict] | None = None):
         if self.world.limits.max_think_memory <= 0:

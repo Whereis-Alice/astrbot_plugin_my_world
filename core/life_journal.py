@@ -233,6 +233,7 @@ class JournalStoreMixin:
         event_types: Iterable[str] | None = None,
         limit: int = 800,
         persona_key: str = "",
+        diary_actions_only: bool = False,
     ) -> list[dict[str, Any]]:
         sessions = sorted({str(item) for item in session_ids if str(item)})
         if not sessions:
@@ -250,6 +251,12 @@ class JournalStoreMixin:
         if persona_key:
             sql += " AND persona_id=?"
             params.append(str(persona_key))
+        if diary_actions_only:
+            # Filter before LIMIT: chat actions must not crowd out quiet life.
+            sql += (
+                " AND (event_type!='action' OR CASE WHEN json_valid(detail) "
+                "THEN json_extract(detail, '$.diary_life')=1 ELSE 0 END)"
+            )
         sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
         params.append(max(1, min(2000, int(limit))))
         rows = self._query(sql, params)

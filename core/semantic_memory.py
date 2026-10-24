@@ -18,11 +18,25 @@ def revision(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def valid_vector(vector) -> bool:
+    if not isinstance(vector, list) or not 0 < len(vector) <= 16384:
+        return False
+    try:
+        return all(isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) for x in vector)
+    except (ValueError, OverflowError):
+        return False
+
+
 def cosine(a: list, b: list) -> float:
-    if len(a) != len(b) or not a:
+    if not valid_vector(a) or not valid_vector(b) or len(a) != len(b):
         return 0
+    # Scale first: finite provider values can still overflow squared norms.
+    scale_a, scale_b = max(map(abs, a)), max(map(abs, b))
+    if not scale_a or not scale_b:
+        return 0
+    a, b = [x / scale_a for x in a], [x / scale_b for x in b]
     divisor = math.sqrt(sum(x*x for x in a) * sum(x*x for x in b))
-    return sum(x*y for x, y in zip(a, b)) / divisor if divisor else 0
+    return max(-1.0, min(1.0, sum(x*y for x, y in zip(a, b)) / divisor)) if divisor else 0
 
 
 class SemanticMemory:
@@ -43,18 +57,20 @@ class SemanticMemory:
             return "provider:" + str(info.get("fingerprint") or config.semantic_provider_id)
         return config.semantic_endpoint + "|" + config.semantic_model
 
-    def _key(self, session: str, persona: str, query: str, mode: str = "", *, automatic: bool = False) -> tuple:
+    def _key(self, session: str, persona: str, query: str, mode: str = "", *, automatic: bool = False,
+             life_persona_key: str | None = None) -> tuple:
         config = self.memory.world.memory
-        return session, persona, revision(query), self.model_identity(), mode or self.memory.world.memory_scope_mode, config.automatic_recall if automatic else "explicit"
+        return session, persona, revision(query), self.model_identity(), mode or self.memory.world.memory_scope_mode, config.automatic_recall if automatic else "explicit", life_persona_key
 
-    def cached(self, session: str, persona: str, query: str, *, mode: str = "", automatic: bool = False) -> dict[int, float]:
+    def cached(self, session: str, persona: str, query: str, *, mode: str = "", automatic: bool = False,
+               life_persona_key: str | None = None) -> dict[int, float]:
         now = time.time()
         for old, at in list(self.score_times.items()):
             if now - at > 300:
                 self.scores.pop(old, None)
                 self.score_versions.pop(old, None)
                 self.score_times.pop(old, None)
-        key = self._key(session, persona, query, mode, automatic=automatic)
+        key = self._key(session, persona, query, mode, automatic=automatic, life_persona_key=life_persona_key)
         scores = self.scores.get(key, {})
         if not scores or time.time() - self.score_times.get(key, 0) > 300:
             return {}
@@ -90,9 +106,8 @@ class SemanticMemory:
             else:
                 data = await asyncio.to_thread(request)
                 values = [item["embedding"] for item in sorted(data["data"], key=lambda item: item["index"])]
-            if len(values) != len(texts) or not values or not values[0] or any(
-                    not isinstance(vector, list) or len(vector) != len(values[0]) or len(vector) > 16384
-                    or any(not isinstance(x, (int, float)) or not math.isfinite(x) for x in vector) for vector in values):
+            if len(values) != len(texts) or not values or any(
+                    not valid_vector(vector) or len(vector) != len(values[0]) for vector in values):
                 raise ValueError("嵌入响应格式无效")
             if isinstance(data.get("usage"), dict):
                 data["usage"] = {**data["usage"], "output_tokens": 0}
@@ -117,7 +132,8 @@ class SemanticMemory:
                 pass  # A ledger storage failure must not discard facts or disable lexical recall.
         return values
 
-    async def prepare(self, session: str, persona: str, query: str, *, mode: str = "", automatic: bool = False) -> None:
+    async def prepare(self, session: str, persona: str, query: str, *, mode: str = "", automatic: bool = False,
+                      life_persona_key: str | None = None) -> None:
         config = self.memory.world.memory
         if not config.semantic_enabled or not query.strip() or time.time() < self.retry_at:
             return
@@ -130,9 +146,7 @@ class SemanticMemory:
             return
         if automatic and (config.automatic_recall == "manual" or config.recall_max_chars == 0):
             return
-        key = self._key(session, persona, query, mode, automatic=automatic)
-        if self.cached(session, persona, query, mode=mode, automatic=automatic):
-            return
+        key = self._key(session, persona, query, mode, automatic=automatic, life_persona_key=life_persona_key)
         scope = key[:2]
         lock = self.locks.setdefault(scope, asyncio.Lock())
         if lock.locked():
@@ -141,7 +155,7 @@ class SemanticMemory:
             try:
                 # Apply the exact same privacy rules BEFORE sending any text to an embedding provider.
                 candidates = await asyncio.to_thread(self.memory._query, session, persona, mode or self.memory.world.memory_scope_mode,
-                    session_ids=self.memory.sessions(session))
+                    session_ids=self.memory.sessions(session), life_persona_key=life_persona_key)
                 if not candidates:
                     return
                 model_key = revision(self.model_identity())
@@ -157,6 +171,10 @@ class SemanticMemory:
                         (model_key, *batch))})
                 versions = {row["id"]: revision(row["content"]) for row in candidates}
                 missing = [row for row in candidates if known.get(row["id"]) != versions[row["id"]]]
+                if (not missing and versions == self.score_versions.get(key)
+                        and self.cached(session, persona, query, mode=mode, automatic=automatic,
+                                        life_persona_key=life_persona_key)):
+                    return
                 # Bounded rebuild each call; lexical recall continues during a larger rebuild.
                 missing = missing[:32]
                 with model_context("embedding", "按当前会话范围召回记忆并补充可重建的语义索引", session):
@@ -180,7 +198,18 @@ class SemanticMemory:
                         (model_key, *batch))
                     for row in rows:
                         if row["revision"] == versions[row["memory_id"]]:
-                            scores[row["memory_id"]] = cosine(query_vector, json.loads(row["vector"]))
+                            try:
+                                vector = json.loads(row["vector"])
+                            except (ValueError, TypeError):
+                                vector = None
+                            if not valid_vector(vector) or len(vector) != len(query_vector):
+                                # Only this rebuildable cache row is invalid; keep
+                                # other semantic candidates and rebuild it next time.
+                                self.memory.db._execute(
+                                    "DELETE FROM memory_vector WHERE memory_id=? AND model_key=? AND revision=?",
+                                    (row["memory_id"], model_key, row["revision"]))
+                                continue
+                            scores[row["memory_id"]] = cosine(query_vector, vector)
                 self.scores.pop(key, None)
                 self.scores[key] = scores
                 self.scores = dict(list(self.scores.items())[-16:])

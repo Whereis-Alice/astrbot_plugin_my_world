@@ -554,6 +554,7 @@ class ActionsRunMixin:
                 "action_start",
                 {
                     "type": definition.id,
+                    "desc": (definition.name or definition.id) if definition.id == "life_simulation" else payload["desc"],
                     "duration_ticks": duration_ticks,
                     "target_node": payload.get("target_node") or "",
                     "params": dict(action.params or {}),
@@ -732,6 +733,15 @@ class ActionsRunMixin:
             "action",
             {
                 "type": definition.id,
+                "desc": definition.name or definition.id,
+                "diary_life": (
+                    definition.llm_level == "template"
+                    and definition.target_type == "none"
+                    and definition.id not in {*self.INNER_ACTIONS, "say", "share", "poke"}
+                    and not action.target
+                    and not action.interject
+                ),
+                "status": "completed",
                 "visible": bool(definition.visible),
                 "messages": list(messages),
                 "content": action.content,
@@ -829,9 +839,11 @@ class ActionsRunMixin:
                 session_id=session_id,
                 focus_user=action.target,
             )
-            if generated:
-                return generated
-        # 没配模型、发言额度用完、或者它没说出什么：退化成一句动作文案
+            # Empty output can be a deliberate listening decision, exhausted
+            # budget or failed generation. Preserve it, including speech kind;
+            # narration must not turn any of these into an unchosen message.
+            return generated
+        # 没配模型时保留既有动作文案；已调用生成器则尊重其空结果。
         label = definition.name or definition.id
         target_name = self._target_name(state, action.target)
         if action.target and target_name:

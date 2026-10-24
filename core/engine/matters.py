@@ -698,7 +698,7 @@ class MattersMixin:
                                 and row.get("day") == day and row.get("period") == period and row.get("node") == node_id), None)
                 if episode is None:
                     episode = {"practice_id": action["practice_id"], "day": day, "period": period,
-                               "node": node_id, "action": definition.id, "minutes": 0}
+                               "node": node_id, "action": definition.id, "label": definition.name or definition.id, "minutes": 0}
                     episodes.append(episode)
                 episode.update(at=stop, minutes=episode["minutes"] + (stop - start) / 60)
                 record["days"] = sorted(set(record.get("days", [])) | {day})[-30:]

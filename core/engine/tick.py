@@ -635,6 +635,8 @@ class TickMixin:
             "action_done",
             {
                 "type": action_id,
+                "desc": ((definition.name if definition else "") or action_id) if action_id == "life_simulation"
+                else action.get("desc") or (definition.name if definition else "") or action_id,
                 "elapsed_ticks": int(action.get("elapsed_ticks", 0)),
                 "tool_result": _clip_text(action.get("tool_result"), 200),
             },
