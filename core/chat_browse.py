@@ -117,6 +117,8 @@ def reading_people(rows: list[dict], lookup, *, max_people: int = 6, max_chars: 
 def dialogue_origin(item: dict) -> str | None:
     if item.get("dialogue_session"):
         return str(item["dialogue_session"])
+    if item.get("browse_session"):
+        return str(item["browse_session"])  # Accepted speech does not erase a reading's proven origin.
     if item.get("source") == "聊完一轮" or item.get("quote") or item.get("reply"):
         return None  # Legacy conversation content with no provable source.
     return ""

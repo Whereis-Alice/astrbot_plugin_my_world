@@ -50,6 +50,18 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
             thought_visible(tagged, G, self.clock.now(), fallback_session=S)
         )
 
+    def test_reading_source_survives_reply_fields_without_weakening_expiry_or_scope(self):
+        sent = {"source": "翻消息时", "browse_session": P, "reply": "接上的话",
+                "quote": "阅读的消息", "expires_at": self.clock.now() + 60}
+        self.assertTrue(thought_visible(sent, P, self.clock.now()))
+        self.assertTrue(thought_visible(sent, P, self.clock.now(), fallback_session=S, history=True))
+        for other in (S, G):
+            self.assertFalse(thought_visible(sent, other, self.clock.now(), fallback_session=S, history=True))
+        sent["expires_at"] = self.clock.now()
+        self.assertFalse(thought_visible(sent, P, self.clock.now()))
+        self.assertTrue(thought_visible(sent, P, self.clock.now(), history=True))
+        self.assertFalse(thought_visible({**sent, "dialogue_session": G}, P, self.clock.now(), history=True))
+
     async def prepare(self, source=S, message_id="", **config):
         self.configure(**config)
         async with self.engine.session_state(S) as state:
@@ -514,7 +526,29 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.messenger.sent, [(P, ["那就把花放在窗边试试。"])])
         self.assertEqual(state.thoughts[-1]["browse_session"], P)
         self.assertTrue(state.thoughts[-1]["browse_replied"])
+        rows = (await self.engine.thoughts_payload(P))["thoughts"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["reply"], "那就把花放在窗边试试。")
+        self.assertIn(rows[0]["content"], feeling_context(state, P, self.clock.now()))
         self.assertEqual((await self.engine.thoughts_payload(S))["thoughts"], [])
+
+    async def test_sent_group_reading_keeps_its_historical_receipt_and_can_be_cleared(self):
+        self.add_group(sessions=[S, G, P])
+        action = await self.prepare(source=G, reply_enabled=True)
+        state = await self.complete(action, decision='{"say":"那就把花放在窗边试试。"}')
+        self.assertEqual(self.messenger.sent, [(G, ["那就把花放在窗边试试。"])])
+        self.assertEqual(len((await self.engine.thoughts_payload(G))["thoughts"]), 1)
+        self.clock.advance(86401)
+        self.assertEqual(feeling_context(state, G, self.clock.now()), "")
+        rows = (await self.engine.thoughts_payload(G))["thoughts"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["reply"], "那就把花放在窗边试试。")
+        self.assertTrue(rows[0]["browse_replied"])
+        self.assertEqual(rows[0]["detail"]["speech"]["status"], "sent")
+        for other in (S, P):
+            self.assertEqual((await self.engine.thoughts_payload(other))["thoughts"], [])
+        self.assertEqual(await self.engine.clear_thoughts(G, "browse"), 1)
+        self.assertEqual((await self.engine.thoughts_payload(G))["thoughts"], [])
 
     async def test_browse_permission_does_not_grant_speech_in_other_shared_sessions(self):
         self.add_group(sessions=[S, P])
