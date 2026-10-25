@@ -92,30 +92,33 @@ class AstrBotLLM:
         trace_id = call_context().get("trace_id") or uuid4().hex
         from ..core.speech_runtime import SPEECH_REQUEST
         speech = SPEECH_REQUEST.get()
-        agent, toolset = None, None
-        if (self.role == "main" and speech and speech.get("allow_tools")
-                and self.plugin.engine.world.decider.proactive_tools
-                and callable(getattr(context, "tool_loop_agent", None))):
-            try:
-                from .proactive_agent import ProactiveAgent
-                agent = ProactiveAgent(self.plugin, speech)
-                toolset = await agent.prepare()
-            except Exception as exc:
-                self.plugin.logger.debug(f"[my_world] 主动工具条件不具备，使用文字判断：{type(exc).__name__}")
+        agent, toolset, native = None, None, None
 
         async def invoke(**options):
             nonlocal attempt
             attempt += 1
             return await tracked_generate(self.plugin, session_id=session_id, role=self.role,
                 trace_id=trace_id, attempt=attempt, retry_reason=retry_reason,
-                invoke=(lambda **kw: agent.invoke(toolset, **kw)) if toolset else None,
+                invoke=(lambda **kw: agent.invoke(toolset, runner_options=native.runner_options if native else None, **kw)) if toolset else native.invoke if native else None,
                 coverage="agent_final" if toolset else "direct", **options)
 
         options = dict(chat_provider_id=provider_id, prompt=prompt, system_prompt=system_prompt,
                        contexts=list(contexts) if contexts else None, image_urls=images or None, **kwargs)
         adapted: set[str] = set()
+        response = None
         token = self.plugin.set_self_initiated()
         try:
+            if self.role == "main" and speech and callable(getattr(context, "tool_loop_agent", None)):
+                try:
+                    from .proactive_context import ProactiveContext
+                    native = ProactiveContext(self.plugin, speech)
+                    options = await native.prepare(options)
+                    if speech.get("allow_tools") and self.plugin.engine.world.decider.proactive_tools:
+                        from .proactive_agent import ProactiveAgent
+                        agent = ProactiveAgent(self.plugin, speech)
+                        toolset = await agent.prepare(event=native.event)
+                except Exception as exc:
+                    return LLMReply(ok=False, error=f"主动上下文准备失败：{type(exc).__name__}: {exc}")
             while True:
                 try:
                     response = await invoke(**options)
@@ -143,12 +146,20 @@ class AstrBotLLM:
                     elif kind == "images":
                         options["image_urls"] = None
                         retry_reason = "图片格式不兼容，退回纯文字"
+                    elif native:
+                        # Never silently discard the native history that the
+                        # user explicitly expects proactive replies to use.
+                        return LLMReply(ok=False, error=str(exc))
                     else:
                         options["contexts"] = None
                         retry_reason = "历史上下文格式不兼容，去除历史后重试"
                     self.plugin.logger.warning(f"[my_world] {retry_reason}")
         finally:
-            self.plugin.reset_self_initiated(token)
+            try:
+                if native is not None:
+                    await native.close(retain=getattr(getattr(response, "completion_text", None), "images", ()))
+            finally:
+                self.plugin.reset_self_initiated(token)
         if response is None or getattr(response, "role", "") == "err":
             return LLMReply(ok=False, error=str(getattr(response, "completion_text", "") or "Provider 返回错误响应"))
         if self.role == "main":

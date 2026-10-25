@@ -863,6 +863,15 @@ class ActionsMixin:
         return str(getattr(definition, "llm_level", "")) in ("tool", "command")
 
     async def _flush_say(self, outcome: TickOutcome) -> None:
+        self._filter_proactive_speech(outcome)
+        prepare = getattr(self.messenger, "proactive_delivery", None)
+        if callable(prepare) and outcome.messages and not outcome.broadcast_targets:
+            async with prepare(outcome.home(), outcome, instant=True):
+                await self._flush_prepared_say(outcome)
+        else:
+            await self._flush_prepared_say(outcome)
+
+    async def _flush_prepared_say(self, outcome: TickOutcome) -> None:
         """慢动作开始前，把她已经说出口的话**当场发出去**。
 
         没有这一步，「坐好等我两分钟～」会等整段检索（含读正文、补查）跑完，
@@ -908,16 +917,24 @@ class ActionsMixin:
                     accepted_live = True
                 from .speech_receipts import remember_accepted
                 await remember_accepted(self, outcome, sid, line, ("live", sid, live_index), identity, kind=kind)
+                notify = getattr(self.messenger, "proactive_accepted", None)
+                if callable(notify):
+                    await notify(sid, line, 0)
 
             try:
-                from ..speech_policy import guard_send, quote_send, watch_send
-                with watch_send(received_segment), quote_send(outcome.home(), outcome.reply_targets.get(outcome.home(), "")), guard_send(
+                from ..speech_policy import guard_send, quote_send, watch_send, contact_send
+                from contextlib import nullcontext
+                prepare_segment = getattr(self.messenger, "proactive_segment", None)
+                wire = prepare_segment(outcome.home(), index) if callable(prepare_segment) else nullcontext()
+                contacted = any(k == "outreach" and sid == outcome.home()
+                    for k, sid in zip(outcome.live_kinds, outcome.live_origins))
+                with wire, contact_send(outcome.home(), outcome.contact_people, 0 if kind == "outreach" and not contacted else -1), watch_send(received_segment), quote_send(outcome.home(), outcome.reply_targets.get(outcome.home(), "")), guard_send(
                     lambda sid, i: self.speech_allowed(sid, kind)
                         and self.contact_speech_allowed(outcome, sid, kind, reserved=receipt is not None)):
                     sent = bool(await self.say_sink(outcome.home(), line))
-                if sent or accepted_live:
-                    await received_segment(outcome.home(), line, 0)
-                    sent = True
+                    if sent or accepted_live:
+                        await received_segment(outcome.home(), line, 0)
+                        sent = True
             except Exception as exc:
                 self._log("debug", f"即时发言失败：{exc}")
                 sent = accepted_live

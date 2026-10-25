@@ -421,6 +421,14 @@ class SendMixin:
         cancelled = False
         # Reserve only while sending, and count only platform-accepted content.
         async def send_target(target, view, echoes=()):
+            prepare = getattr(self.messenger, "proactive_delivery", None)
+            if callable(prepare):
+                async with prepare(target, view, echo_count=len(echoes)):
+                    await send_target_ready(target, view, echoes)
+            else:
+                await send_target_ready(target, view, echoes)
+
+        async def send_target_ready(target, view, echoes=()):
             nonlocal sent, attempted, autonomous_delivered, interject_delivered, cancelled
             self._filter_proactive_speech(view)
             if not self.speech_allowed(target, view.speech_kind):
@@ -444,7 +452,7 @@ class SendMixin:
             try:
                 if target_ordered:
                     attempted = True
-                    from ..speech_policy import guard_send, quote_send, watch_send
+                    from ..speech_policy import guard_send, quote_send, watch_send, contact_send
                     from .speech_receipts import remember_accepted
                     entries = [(line, None) for line in echoes] + view.ordered_entries()
                     entries = [(line, i) for line, i in entries if line and str(line).strip()]
@@ -466,9 +474,15 @@ class SendMixin:
                         recorded_indices.add(position)
                         await remember_accepted(self, outcome, target, text,
                             (send_identity, target, position), identity, kind=ordered_kinds[position])
+                        notify = getattr(self.messenger, "proactive_accepted", None)
+                        if callable(notify):
+                            await notify(target, text, position)
                     quote_index = next((i for i, kind in enumerate(ordered_kinds)
                                         if kind in CHAT_KINDS), 0)
-                    with watch_send(received_segment), quote_send(target, view.reply_targets.get(target, ""), quote_index), guard_send(
+                    contact_index = next((i for i, kind in enumerate(ordered_kinds) if kind == "outreach"), -1)
+                    if any(kind == "outreach" and sid == target for kind, sid in zip(outcome.live_kinds, outcome.live_origins)):
+                        contact_index = -1
+                    with contact_send(target, view.contact_people, contact_index), watch_send(received_segment), quote_send(target, view.reply_targets.get(target, ""), quote_index), guard_send(
                         lambda sid, i: self.speech_allowed(sid, ordered_kinds[i])
                             and self.contact_speech_allowed(view, sid, ordered_kinds[i], reserved=receipt is not None)):
                         try:

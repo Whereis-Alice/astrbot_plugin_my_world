@@ -187,9 +187,20 @@ class AutonomyMixin:
             plan["persona_key"] = self._matter_persona_key(state) or ""
         if not self._running_life_belongs(state, plan):
             return
+        prepared_for = str(plan.get("native_context_target") or "")
         for step in plan.get("steps", []):
             if isinstance(step, dict) and not step.get("kind"):
                 step["kind"] = outcome.speech_kind or ("outreach" if plan.get("contact_people") else "life_share")
+            if isinstance(step, dict):
+                from ..speech_policy import activity_speech_kind
+                step["kind"] = activity_speech_kind(step.get("kind"), self.world.action_map().get(step.get("action")))
+                target = str(step.get("session") or plan.get("send_to") or outcome.home())
+                if (prepared_for and target != prepared_for and step.get("action") in {"say", "share"}
+                        and step.get("messages")):
+                    # Choosing another room is allowed, but its public wording
+                    # must be regenerated with that room's own native context.
+                    step["messages"] = []
+                    step["intent"] = str(step.get("intent") or plan.get("reason") or "")
         state.current_plan = plan
         # 留一份「最近一次生成的计划」：做完之后提示词里还要能提到它
         state.last_plan = {
@@ -402,12 +413,18 @@ class AutonomyMixin:
             + self.prompts.AUTONOMOUS_MANNERS
             + "只输出 JSON。"
         )
-        reply = await self._ask_llm(state.session_id, system_prompt, prompt)
+        if quiet:
+            reply = await self._ask_llm(state.session_id, system_prompt, prompt)
+        else:
+            reply = await self.ask_speech(state, request.session, system_prompt, prompt,
+                rows=self.context_chat(state, request), allow_tools=False)
         self.record_context_selection(request)
         outcome.llm_calls += 1
         self._count_llm_plan(state)
         if reply is None:
             return None
+        if getattr(reply, "native_event", None) is not None:
+            outcome.native_events[request.session] = reply.native_event
         plan, _warnings = parse_plan_payload(
             reply,
             available_actions=self._parseable_action_ids(
@@ -437,6 +454,8 @@ class AutonomyMixin:
                 send_to=str(plan.get("send_to") or ""),
             )
             if created is not None:
+                if getattr(reply, "native_event", None) is not None:
+                    created["native_context_target"] = request.session
                 created["inner"] = str(plan.get("inner") or "")
                 # 留下模型原话，日志页里能看到"她为什么这么安排"
                 created["raw"] = _clip_text(reply, 240)

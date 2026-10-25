@@ -5,10 +5,11 @@ SPEECH_REQUEST = ContextVar("world_speech_request", default=None)
 
 
 class SpeechDraft(str):
-    def __new__(cls, text, *, images=(), tools=()):
+    def __new__(cls, text, *, images=(), tools=(), native_event=None):
         value = super().__new__(cls, text)
         value.images = list(images)
         value.tools = list(tools)
+        value.native_event = native_event
         return value
 
 
