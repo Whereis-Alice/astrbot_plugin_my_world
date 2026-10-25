@@ -595,6 +595,9 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
             except (asyncio.CancelledError, Exception):
                 pass
         await self._close_response_tasks()
+        extraction = getattr(getattr(self, 'profile_weaver_service', None), 'extraction_queue', None)
+        if extraction is not None:
+            await extraction.close()
         await self.engine.close_background()
         media = getattr(self, "proactive_media", None)
         if media is not None:
@@ -1479,7 +1482,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
             return
         # 只有"宿主这一轮"里心迹画像才会注入；我们自己发起的那些调用（自主决策、
         # 复盘）走的是另一条路，那边不跳，画像照旧全给。所以这里用完就复位。
-        self.engine.weaver_injecting = profile_weaver_active(self.context)
+        self.engine.weaver_injecting = profile_weaver_active(self.context, event)
         try:
             plan = await self.engine.handle_reply(
                 ctx,
@@ -1752,11 +1755,12 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
         service = getattr(self, "profile_weaver_service", None)
         if (
             service is not None
+            and not profile_weaver_active(self.context, event)
             and not bool(getattr(event, "_profileweaver_llm_tool_used", False))
             and not bool(getattr(event, "_profileweaver_auto_extract_running", False))
         ):
             try:
-                await service.maybe_extract(event, response)
+                service.extraction_queue.schedule(event, response)
             except Exception as exc:
                 self.logger.debug(f"[my_world] 自动画像提取失败：{exc}")
         if not isinstance(turn, dict):
