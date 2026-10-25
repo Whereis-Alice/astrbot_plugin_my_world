@@ -1541,6 +1541,20 @@ class DeciderConfig(Permissive):
     """同一生活每小时新消息观察次数上限；只是模型判断预算，不是发言目标。"""
     participation_relation_weight: float = Field(default=1, ge=0, le=2)
     """好感对相关话题观察优先级的影响；0 关闭，不改变权限或强制开口。"""
+    media_only_participation: Literal["contextual", "normal", "directed"] = "contextual"
+    """无正文图片与表情的自主接话：结合当前对话、普通观察或仅明确回应她；不拦正常唤醒。"""
+    continuation_interval_seconds: int = Field(default=20, ge=5, le=600)
+    """续聊优先观察间隔；同时从最近一次实际发言后留白，不是定时发言。"""
+    continuation_priority_turns: int = Field(default=2, ge=0, le=20)
+    """统计窗口内可优先续聊的完整回合数；之后恢复普通观察节奏，0 关闭优先。"""
+    continuation_window_seconds: int = Field(default=600, ge=120, le=3600)
+    """续聊回合统计窗口，也用于机器人互聊回合；不扩大消息可回应时效。"""
+    peer_bot_ids: list[str] = Field(default_factory=list, max_length=200)
+    """明确配置的其他机器人账号，支持平台名:账号；留空不按昵称猜机器人。"""
+    peer_chat_max_turns: int = Field(default=2, ge=0, le=20)
+    """只有其他机器人接话时，最多连续自主回应几回合；0 关闭互聊保护。"""
+    peer_chat_pause_seconds: int = Field(default=300, ge=0, le=3600)
+    """机器人连续互聊后留白；新的非机器人发言解除，不拦正常唤醒回复。"""
     natural_silence: bool = False
     """旧配置兼容字段；自主接话始终允许旁听，直接对话继续走原生回复。"""
     proactive_tools: bool = True
@@ -3458,6 +3472,13 @@ FIELD_LABELS: dict[str, str] = {
     "decider.interject_cooldown_minutes": "插话后至少安静几分钟",
     "decider.min_messages_to_interject": "群里至少聊几条她才插嘴",
     "decider.message_driven": "新消息到来后自然接话",
+    "decider.media_only_participation": "无文字图片与表情接话",
+    "decider.continuation_interval_seconds": "续聊观察间隔（秒）",
+    "decider.continuation_priority_turns": "续聊优先回合数",
+    "decider.continuation_window_seconds": "续聊统计窗口（秒）",
+    "decider.peer_bot_ids": "其他机器人账号（可选）",
+    "decider.peer_chat_max_turns": "机器人之间最多连续接话",
+    "decider.peer_chat_pause_seconds": "机器人互聊后留白（秒）",
     "decider.live_window_seconds": "群聊现场窗口（秒）",
     "decider.settle_seconds": "等待群友连发结束（秒）",
     "decider.evaluation_cooldown_seconds": "两次接话判断间隔（秒）",

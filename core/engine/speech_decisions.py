@@ -30,7 +30,13 @@ class SpeechDecisionsMixin:
         if kind not in CHAT_KINDS and self.speech_allowed(target, kind):
             allowed.append("outreach" if kind == "outreach" else "life_share")
         chat = self.expression_chat(state, target)
-        if chat and kind != "reply" and self.speech_allowed(target, "continuation"):
+        from ..participation_opportunity import media_scene_allowed
+        if chat and not media_scene_allowed(rows=[r for r in state.recent_chat
+            if self._chat_origin(r, state) == target], new=chat, now=self._now(),
+            mode=self.world.decider.media_only_participation):
+            chat = []
+        if (chat and kind != "reply" and self.speech_allowed(target, "continuation")
+                and not self.peer_chat_pause(target)):
             allowed.append("continue_chat")
             if kind in CHAT_KINDS:
                 allowed.append("join_chat")
@@ -52,7 +58,8 @@ class SpeechDecisionsMixin:
                 "reasoning.inner 必须有一句符合人设的真实心里话（不是分析步骤）。intent 只能选 "
                 + "、".join(allowed) + "。" + "".join(descriptions.get(kind, "") for kind in allowed)
                 + "没有想说的内容可以 listen；观察机会不是发言任务。"
-                "问题已解决、明确结束或换题时不追答；不把生活分享伪装成续聊。listen 不发言。\n"
+                "问题已解决、明确结束或换题时不追答；不把生活分享伪装成续聊。"
+                "对方引用或附和不要求再接一句；没有新的内容、问题或情绪变化时自然收尾，不发收尾占位台词。listen 不发言。\n"
                 + json.dumps(scene, ensure_ascii=False))
 
     async def note_expression(self, state, outcome, raw, lines, *, target, trigger):

@@ -11,6 +11,55 @@ class ParticipationBrowserTests(unittest.TestCase):
     tearDownClass = classmethod(generation.GenerationBrowserTests.tearDownClass.__func__)
     setUp = generation.GenerationBrowserTests.setUp
 
+    def test_cadence_media_and_peer_controls_save_and_fit_the_existing_settings(self):
+        self.page.locator('button[data-tab="settings"]').click()
+        self.page.locator('#settings-tabs').get_by_text('自主发言', exact=True).click()
+        self.page.get_by_text('续聊节奏与机器人互聊', exact=True).click()
+        self.page.evaluate("""() => {
+          const post=AstrBotPluginPage.apiPost;window.cadenceWrites=[];
+          AstrBotPluginPage.apiPost=(key,data)=>{
+            if(key==='config/world')cadenceWrites.push(structuredClone(data.world));
+            return post(key,data);
+          };
+        }""")
+        values = [
+            ('续聊观察间隔（秒）','30'), ('续聊优先回合数','3'),
+            ('续聊统计窗口（秒）','900'), ('机器人之间最多连续接话','2'),
+            ('机器人互聊后留白（秒）','360'),
+        ]
+        for label,value in values:
+            field=self.page.get_by_text(label,exact=True).locator('xpath=ancestor::label[1]').locator('input')
+            field.fill(value)
+            field.dispatch_event('change')
+        peers=self.page.get_by_text('其他机器人账号（可选）',exact=True).locator('xpath=ancestor::label[1]').locator('textarea')
+        peers.fill('10000001\n10000001\naiocqhttp:10000002')
+        peers.dispatch_event('change')
+        media=self.page.get_by_text('无文字图片与表情接话',exact=True).locator('xpath=ancestor::label[1]').locator('select')
+        media.select_option('directed')
+        self.page.locator('#save').click()
+        self.page.wait_for_function('cadenceWrites.length===1')
+        config=self.page.evaluate('cadenceWrites[0].decider')
+        self.assertEqual(config['continuation_interval_seconds'],30)
+        self.assertEqual(config['continuation_priority_turns'],3)
+        self.assertEqual(config['continuation_window_seconds'],900)
+        self.assertEqual(config['peer_chat_max_turns'],2)
+        self.assertEqual(config['peer_chat_pause_seconds'],360)
+        self.assertEqual(config['peer_bot_ids'],['10000001','aiocqhttp:10000002'])
+        self.assertEqual(config['media_only_participation'],'directed')
+        self.page.locator('button[data-tab="life"]').click()
+        self.page.locator('button[data-tab="settings"]').click()
+        self.page.locator('#settings-tabs').get_by_text('自主发言', exact=True).click()
+        self.page.get_by_text('续聊节奏与机器人互聊', exact=True).click()
+        for label,value in values:
+            expect(self.page.get_by_text(label,exact=True).locator('xpath=ancestor::label[1]').locator('input')).to_have_value(value)
+        for width,height,palette in [(1440,1000,'cloud'),(1440,1000,'nocturne'),(390,844,'nocturne')]:
+            self.host.set_viewport_size({'width':width,'height':height})
+            self.page.evaluate("p=>{document.documentElement.dataset.palette=p;document.documentElement.dataset.theme=p==='cloud'?'light':'dark'}",palette)
+            self.page.get_by_text('续聊观察间隔（秒）',exact=True).scroll_into_view_if_needed()
+            self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'))
+            self.host.screenshot(path=str(self.shots/f'cadence-{palette}-{width}.png'),animations='disabled')
+        self.assertEqual(self.errors,[])
+
     def test_autonomous_thought_shows_its_actual_speech_in_the_existing_card(self):
         self.page.evaluate("""() => {
           const select=document.getElementById('thought-session');

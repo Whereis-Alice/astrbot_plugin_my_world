@@ -409,6 +409,8 @@ class RelationsMixin:
             self._tag_chat_origin(state, ctx.session_id, recorded, original_text=ctx.text)
             # 意图路由放行时交过来的事前判定：按事件身份盖到这一批对应的留档上
             self._stamp_router_view(state, ctx, recorded)
+            if recorded is not None:
+                self.note_peer_chat_input(ctx.session_id, recorded)
         state.last_user_activity_at = self._now()
         self.note_contact_response(state, ctx)
 

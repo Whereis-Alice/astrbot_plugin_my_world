@@ -429,7 +429,7 @@ class SendMixin:
             delivered.setdefault(target, []).append(message)
             identity = outcome.live_ids[index] if index < len(outcome.live_ids) else ""
             from .speech_receipts import remember_accepted
-            await remember_accepted(self, outcome, target, message, ("live", target, index), identity)
+            await remember_accepted(self, outcome, target, message, ("live", target, index), identity, kind=kind)
             autonomous_delivered = autonomous_delivered or kind not in autonomous_kinds
             if kind not in autonomous_kinds:
                 autonomous_targets.add(target)
@@ -482,7 +482,7 @@ class SendMixin:
                         ids = view.speech_ids.get("", [])
                         identity = ids[index] if index < len(ids) else ""
                         await remember_accepted(self, outcome, target, text,
-                            (send_identity, target, position), identity)
+                            (send_identity, target, position), identity, kind=ordered_kinds[position])
                         recorded_indices.add(position)
                     quote_index = next((i for i, kind in enumerate(ordered_kinds)
                                         if kind in CHAT_KINDS), 0)
@@ -548,6 +548,8 @@ class SendMixin:
                         accepted = await self._send_group_images(target, target_images)
                     sent = sent or accepted
                     if accepted:
+                        for kind in image_kinds:
+                            self.note_peer_chat_receipt(outcome, target, kind)
                         sent_kinds.update(view.image_kinds.get("", []) or [view.speech_kind])
                         delivered_images[target] = delivered_images.get(target, 0) + len(target_images)
                         autonomous_delivered = autonomous_delivered or auto_images
