@@ -71,14 +71,6 @@ def isolated_event(original, context, target):
     allowed = context.get_config(target).get("plugin_set", ["*"])
     if "*" not in allowed:
         event.plugins_name = list(allowed)
-    # Do not reuse a completed native request/checkpoint or cleanup commands.
-    for name in ("_extras", "_extra", "extra"):
-        extras = getattr(event, name, None)
-        if isinstance(extras, dict):
-            for key in list(extras):
-                if (key in {"provider_request", "llm_checkpoint_id", "selected_model", "_clean_ltm_session", "_clean_group_context_session"}
-                        or key.startswith("my_world_")):
-                    extras.pop(key, None)
     event.set_extra("my_world_proactive", True)
 
     async def no_send(*args, **kwargs):

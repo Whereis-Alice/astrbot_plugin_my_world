@@ -125,6 +125,16 @@ class SpeechDecisionsMixin:
         finally:
             SPEECH_REQUEST.reset(token)
 
+    async def ask_speech_decision(self, state, target, system, prompt, *, targets, allowed,
+                                  recorded_inner="", **kwargs):
+        """Keep transport failures attached to this attempt, including format repair."""
+        from ..llm_attempt import capture_attempt
+        from ..speech_decision import parse_decision
+        with capture_attempt(target) as attempt:
+            raw = await self.ask_speech(state, target, system, prompt, **kwargs)
+        return raw, parse_decision(raw or "", targets, allowed=allowed,
+                                   recorded_inner=recorded_inner, generation_error=attempt.error)
+
     async def _ask_speech_media(self, state, target, system, prompt, *, rows, images=None):
         media = getattr(self, "media", None)
         if media is None:

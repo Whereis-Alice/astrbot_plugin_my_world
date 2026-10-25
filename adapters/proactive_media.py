@@ -2,27 +2,17 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import time
 from collections import OrderedDict
 from contextlib import asynccontextmanager
 
 from .proactive_images import PreparedImages
+from .event_snapshot import snapshot_event
 from ..core.media_provenance import image_origin_labels
 
 
 def part_value(part, name, default=None):
     return part.get(name, default) if isinstance(part, dict) else getattr(part, name, default)
-
-
-def snapshot_event(event):
-    snapshot = copy.copy(event)
-    snapshot.message_obj = copy.deepcopy(event.message_obj)
-    # Leave transport handles attached, isolate mutable request state.
-    for name in ("_extras", "_extra", "extra"):
-        if isinstance(getattr(event, name, None), dict):
-            setattr(snapshot, name, copy.deepcopy(getattr(event, name)))
-    return snapshot
 
 
 class ProactiveMedia:

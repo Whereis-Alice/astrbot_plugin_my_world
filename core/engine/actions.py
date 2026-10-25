@@ -1314,7 +1314,9 @@ class ActionsMixin:
     async def _ask_helper(
         self, session_id: str, system_prompt: str, prompt: str, *, max_tokens: int | None = None
     ) -> str | None:
+        from ..llm_attempt import record_attempt
         if self.helper_llm is None:
+            record_attempt(session_id, "没有可用的打杂模型")
             return None
         try:
             reply = await self._background_generate(self.helper_llm,
@@ -1325,8 +1327,11 @@ class ActionsMixin:
                 **({"max_tokens": max_tokens} if max_tokens is not None else {}),
             )
         except Exception as exc:
-            self._log("debug", f"参数补全调用失败：{exc}")
+            error = record_attempt(session_id, f"{type(exc).__name__}: {exc}")
+            self._log("debug", f"参数补全调用失败：{error}")
             return None
+        record_attempt(session_id, "" if getattr(reply, "ok", False)
+                       else getattr(reply, "error", "") or "模型没有返回内容")
         return reply.text if getattr(reply, "ok", False) else None
 
     async def _ask_judge(

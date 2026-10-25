@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 
 from .proactive_context import isolated_event, source_event
+from .event_snapshot import snapshot_request
 from .proactive_hooks import fire_hook as _fire_hook
 
 WIRE = ContextVar("my_world_proactive_wire", default=None)
@@ -69,7 +70,7 @@ async def delivery(plugin, target, view, *, echo_count=0, instant=False):
         event = isolated_event(public_original, plugin.context, target)
         request = original.get_extra("provider_request")
         if request is not None:
-            event.set_extra("provider_request", copy.deepcopy(request))
+            event.set_extra("provider_request", snapshot_request(request))
         # A life share addresses the room, not the sender of its last message.
         if ":GroupMessage:" in target and kind not in {"participation", "browse_reply", "continuation", "interject"}:
             sender = getattr(event.message_obj, "sender", None)

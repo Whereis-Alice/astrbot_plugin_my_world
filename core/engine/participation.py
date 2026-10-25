@@ -360,23 +360,21 @@ class ParticipationMixin:
             system += ("\n本轮是短暂等待后的阅读机会：后来的消息只供理解当前话题。"
                        "想接话时必须引用 can_reply=true 的原消息；话题已收尾时选择 listen。")
         self.record_context_selection(request)
-        raw = await self.ask_speech(state, target, system, prompt, rows=rows, live_window=self._participation_window(source))
-        original_draft = raw
-        from ..speech_decision import parse_decision
         feeling = next((item for item in reversed(state.thoughts)
                         if source == "browse" and browse_id and item.get("browse_id") == browse_id), None)
         recorded_inner = feeling["content"][:240] if feeling else ""
         allowed = ("continue_chat", "listen") if reply_seqs is not None else ("join_chat", "continue_chat", "listen")
-        decision = parse_decision(raw or "", targets, allowed=allowed,
-                                  recorded_inner=recorded_inner)
-        if decision.error and raw:
+        raw, decision = await self.ask_speech_decision(state, target, system, prompt, rows=rows,
+            live_window=self._participation_window(source), targets=targets, allowed=allowed,
+            recorded_inner=recorded_inner)
+        original_draft = raw
+        if decision.error and str(raw or "").strip():
             # One bounded repair under the same background budget. Never invent
             # thoughts from the draft and never replay a failed provider call.
-            raw = await self.ask_speech(state, target, system, prompt + "\n上轮结果未通过校验："
+            raw, decision = await self.ask_speech_decision(state, target, system, prompt + "\n上轮结果未通过校验："
                 + decision.error + "。请重新给出完整 JSON，补上真实想法，并保留本轮发言选择。"
-                + "\n上轮草稿（只修复格式，不添加新事实）：" + str(raw)[:5000], rows=rows, allow_tools=False)
-            decision = parse_decision(raw or "", targets, allowed=allowed,
-                                      recorded_inner=recorded_inner)
+                + "\n上轮草稿（只修复格式，不添加新事实）：" + str(raw)[:5000], rows=rows, allow_tools=False,
+                targets=targets, allowed=allowed, recorded_inner=recorded_inner)
         if decision.error:
             self.decision_trace(target, "participation", "failed", decision.error)
             state.participation[target] = {**state.participation.get(target, {}),

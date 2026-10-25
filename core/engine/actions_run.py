@@ -1378,6 +1378,8 @@ class ActionsRunMixin:
         image_urls: list[str] | None = None,
     ) -> str | None:
         def note(ok: bool, error: str = "") -> None:
+            from ..llm_attempt import record_attempt
+            error = record_attempt(session_id, error)
             self._last_llm[session_id] = {
                 "at": self._now(),
                 "ok": bool(ok),
@@ -1396,8 +1398,8 @@ class ActionsRunMixin:
                 image_urls=list(image_urls) if image_urls else None,
             )
         except Exception as exc:
-            self._log("warning", f"LLM 调用失败: {exc}")
             note(False, f"{type(exc).__name__}: {exc}")
+            self._log("warning", "LLM 调用失败: " + self._last_llm[session_id]["error"])
             return None
         if reply is None or not getattr(reply, "ok", True):
             note(False, getattr(reply, "error", "") or "模型没有返回内容")

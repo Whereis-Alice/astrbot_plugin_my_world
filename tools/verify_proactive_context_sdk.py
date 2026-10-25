@@ -72,6 +72,15 @@ async def check():
     message.sender = MessageMember(user_id="alice", nickname="Alice")
     event = Event("最近群友的话", message, PlatformMetadata(name="synthetic", description="test", id="test", support_proactive_message=False), "room")
     target = event.unified_msg_origin
+    from astrbot.api import FunctionTool
+    from astrbot.api.provider import ProviderRequest
+    pending = asyncio.get_running_loop().create_future()
+    live_tool = FunctionTool(name="runtime_binding", description="synthetic live tool", parameters={})
+    live_tool._runtime_owner = types.SimpleNamespace(pending=pending)
+    old_request = ProviderRequest(func_tool=ToolSet([live_tool]))
+    event.set_extra("provider_request", old_request)
+    event.set_extra("plugin_runtime_handle", pending)
+    event.set_extra("plugin_facts", {"items": ["本轮已有资料"]})
     engine = types.SimpleNamespace(native_turn_busy=lambda _: False)
     plugin = types.SimpleNamespace(context=context, engine=engine, logger=logging.getLogger("test"),
         last_event=lambda sid: event if sid == target else None, _host_persona_prompt=AsyncMock(return_value=persona["prompt"]),
@@ -102,8 +111,12 @@ async def check():
     assert len(model.requests) == 1
     serialized = json.dumps(model.requests, ensure_ascii=False, default=lambda obj: obj.model_dump() if hasattr(obj, "model_dump") else str(obj))
     assert "世界书注入" in serialized and "后台主动任务" in serialized and "之前的回应" in serialized
-    assert event.get_extra("provider_request") is None
+    assert event.get_extra("provider_request") is old_request
+    assert native.event.get_extra("plugin_runtime_handle") is None
+    assert native.event.get_extra("plugin_facts") == {"items": ["本轮已有资料"]}
+    assert not pending.done()
     assert conversation.history == json.dumps(history)
+    native.event.get_extra("provider_request").func_tool = ToolSet([live_tool])
     view = models.TickOutcome(target, speech_kind="life_share", native_events={target: native.event})
     view.add_speech("公开台词")
     with patch.object(delivery, "fire_hook", hook):
@@ -113,6 +126,9 @@ async def check():
             assert delivery.prepared_chain(target, view.messages[0], 0) is None
             await delivery.accepted(plugin, target, view.messages[0], 1)
             await delivery.accepted(plugin, target, view.messages[0], 1)
+            public_request = delivery.WIRE.get()[(target, 1)]["event"].get_extra("provider_request")
+            assert public_request.func_tool.tools[0] is live_tool
+            assert public_request.func_tool.tools is not native.event.get_extra("provider_request").func_tool.tools
     messenger = importlib.import_module(package.__name__ + ".adapters.messenger").AstrBotMessenger(plugin)
     policy = importlib.import_module(package.__name__ + ".core.speech_policy")
     from astrbot.core.message.components import At
@@ -197,7 +213,8 @@ async def check():
         await native_video.close()
     print(json.dumps({"passed": True, "native_history": True, "temporary_injection": True,
         "public_hooks": True, "accepted_only_history": True, "source_isolation": True,
-        "image_source_binding": True, "video_request_hook_source": True}))
+        "image_source_binding": True, "video_request_hook_source": True,
+        "runtime_snapshot": True, "live_tool_binding": True}))
 
 
 if __name__ == "__main__":

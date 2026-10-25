@@ -20,8 +20,13 @@ class SpeechDecision:
 
 def parse_decision(raw: str, targets: dict[str, str], *, default_intent: str = "join_chat",
                    allowed: tuple[str, ...] = ("join_chat", "listen"),
-                   recorded_inner: str = "") -> SpeechDecision:
+                   recorded_inner: str = "", generation_error: str = "") -> SpeechDecision:
     """Reuse a validated reading thought; a speech choice still requires valid JSON."""
+    if generation_error:
+        from .model_call_runtime import safe_error
+        return SpeechDecision(error="发言判断未完成：" + safe_error(generation_error))
+    if not str(raw or "").strip():
+        return SpeechDecision(error="模型返回空内容，未取得发言决定")
     payload = extract_json_object(strip_reasoning(str(raw or "")))
     if not isinstance(payload, dict):
         return SpeechDecision(error="没有返回完整的想法与发言决定")
