@@ -64,6 +64,8 @@ class TickOutcome:
     """Validated destination-local platform message IDs, never part of spoken text."""
     chat_expires_at: dict[str, float] = field(default_factory=dict)
     """A queued interjection cannot outlive the conversation it was written for."""
+    chat_media_scenes: dict[str, dict] = field(default_factory=dict)
+    """Observed media evidence, retained for policy checks at actual sending."""
 
     def take_messages(self) -> list[str]:
         """取走"还没发出去"的几句话（调用方负责真的发出去）。"""
@@ -127,6 +129,8 @@ class TickOutcome:
 
     speech_kinds: dict[str, list[str]] = field(default_factory=dict)
     image_kinds: dict[str, list[str]] = field(default_factory=dict)
+    image_ids: dict[str, list[str]] = field(default_factory=dict)
+    image_notes: dict[str, dict[str, str]] = field(default_factory=dict)
     live_kinds: list[str] = field(default_factory=list)
     live_origins: list[str] = field(default_factory=list)
     contact_id: str = field(default_factory=lambda: uuid4().hex)
@@ -137,6 +141,8 @@ class TickOutcome:
     speech_ids: dict[str, list[str]] = field(default_factory=dict)
     live_ids: list[str] = field(default_factory=list)
     delivered_decisions: dict[str, list[str]] = field(default_factory=dict)
+    delivered_image_decisions: dict[str, list[str]] = field(default_factory=dict)
+    accepted_speech_at: dict[str, float] = field(default_factory=dict)
     remembered_speech: set[tuple] = field(default_factory=set)
     speech_receipt_batch: str = field(default_factory=lambda: uuid4().hex)
     """Messages accepted by the platform, used to distinguish thinking from speaking."""
@@ -180,27 +186,29 @@ class TickOutcome:
             return
         self.routed.setdefault(target, []).append(body)
 
-    def add_images(self, images: list[str], session_id: str = "") -> None:
+    def add_images(self, images: list[str], session_id: str = "", *, decision_id: str = "",
+                   kind: str | None = None) -> None:
         """按会话分开记图片（和 ``add_speech`` 配套）。"""
 
         target = str(session_id or "").strip()
+        if session_id is None:
+            return
         for item in images or []:
             ref = str(item or "").strip()
             if not ref:
                 continue
-            if not target or target == str(self.session_id):
-                if ref not in self.images:
-                    kinds = self.image_kinds.setdefault("", [])
-                    kinds.extend([self.speech_kind] * max(0, len(self.images) - len(kinds)))
-                    kinds.append(self.speech_kind)
-                    self.images.append(ref)
+            key = "" if not target or target == str(self.session_id) else target
+            bucket = self.images if not key else self.routed_images.setdefault(target, [])
+            if ref in bucket:
                 continue
-            bucket = self.routed_images.setdefault(target, [])
-            if ref not in bucket:
-                kinds = self.image_kinds.setdefault(target, [])
-                kinds.extend([self.speech_kind] * max(0, len(bucket) - len(kinds)))
-                kinds.append(self.speech_kind)
-                bucket.append(ref)
+            kinds = self.image_kinds.setdefault(key, [])
+            kinds.extend([self.speech_kind] * max(0, len(bucket) - len(kinds)))
+            kinds.append(self.speech_kind if kind is None else kind)
+            ids = self.image_ids.setdefault(key, [])
+            ids.extend([""] * max(0, len(bucket) - len(ids)))
+            from .speech_receipts import bind_plan_speech
+            ids.append(decision_id or bind_plan_speech(self, ref, target or self.home(), image=True))
+            bucket.append(ref)
 
     def ordered_messages(self) -> list[str]:
         """正式回复 + 调试回显，按实际发生的先后排好。"""

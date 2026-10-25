@@ -43,6 +43,11 @@ class ProactiveContactMixin:
         if kind != 'reply' and self.reply_busy(target):
             return False
         if kind in CHAT_KINDS:
+            if not self.queued_chat_media_allowed(outcome, target):
+                note = "图片接话策略已变化或关联对话已过期，本轮未发送"
+                if note not in outcome.notes:
+                    outcome.notes.append(note)
+                return False
             if self.peer_chat_pause(target, token=outcome.speech_receipt_batch):
                 note = "刚与其他机器人连续聊过，先留白；有人带来新发言时再看"
                 if note not in outcome.notes:

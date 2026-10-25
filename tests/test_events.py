@@ -1330,6 +1330,10 @@ class EventEngineTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(rows, "出图动作应该真的被执行")
         self.assertIn("打不开的盒子", str(rows[0]["detail"].get("intent") or ""))
         self.assertIn("桌上多了个盒子", str(rows[0]["detail"].get("intent") or ""))
+        state = await self.get_state()
+        self.assertFalse(any(item.get("is_self") and item.get("has_images") for item in state.recent_chat))
+        await self.engine._deliver(outcome)
+        self.assertEqual(self.messenger.sent_images, [(SESSION, ["https://img/room.png"])])
         # 她发出去的图也要进自己的聊天记录：下一轮有人引用那张图，她才认得出
         state = await self.get_state()
         own = [

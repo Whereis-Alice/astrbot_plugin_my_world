@@ -83,10 +83,26 @@ class ParticipationMixin:
         # expire every message she picked up before she could finish reading.
         return 900 if source in {"browse", "completion"} else self.world.decider.live_window_seconds
 
-    def claim_chat_scene(self, outcome, target: str, rows: list[dict], *, window: int | None = None) -> None:
+    def claim_chat_scene(self, outcome, target: str, rows: list[dict], *, window: int | None = None,
+                         state=None, media_rows=None) -> None:
         outcome.chat_claims[target] = [str(row["seq"]) for row in rows]
         outcome.chat_expires_at[target] = max(float(row.get("at") or 0) for row in rows) + (
             self.world.decider.live_window_seconds if window is None else window)
+        from copy import deepcopy
+        history = [r for r in state.recent_chat if self._chat_origin(r, state) == target] if state else rows
+        outcome.chat_media_scenes[target] = deepcopy({"rows": history,
+            "new": rows if media_rows is None else media_rows})
+
+    def queued_chat_media_allowed(self, outcome, target: str) -> bool:
+        started = outcome.accepted_speech_at.get(target)
+        if started is not None and 0 <= self._now() - started <= 120:
+            return True
+        scene = outcome.chat_media_scenes.get(target)
+        if scene is None:
+            return True  # Legacy/custom outcomes have no captured media evidence.
+        from ..participation_opportunity import media_scene_allowed
+        with self.config_scope(target):
+            return media_scene_allowed(**scene, now=self._now(), mode=self.world.decider.media_only_participation)
 
     def chat_media_allowed(self, state, target: str, rows: list[dict]) -> bool:
         """Use the actual destination's current policy before and after inference."""
@@ -490,7 +506,7 @@ class ParticipationMixin:
                 observation["attempts"].append(now)
             self.decision_trace(session_id, "participation", "considering", "近期群聊已聚合，判断是否有话想接",
                                 messages=len(rows))
-            self.claim_chat_scene(outcome, session_id, rows, window=window)
+            self.claim_chat_scene(outcome, session_id, rows, window=window, state=state, media_rows=new)
             try:
                 message, reply_to = await self.participation_text(state, session_id,
                     source=source, browse_id=browse_id, outcome=outcome)

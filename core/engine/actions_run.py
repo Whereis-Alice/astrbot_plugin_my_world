@@ -229,13 +229,8 @@ class ActionsRunMixin:
             images.extend(getattr(call, "image_urls", None) or [])
             attachments = list(getattr(call, "attachments", None) or [])
             landing = self._image_home(outcome, action)
-            self._attach_images(outcome, attachments, session_id=landing)
-            if attachments:
-                self._note_own_image(
-                    state,
-                    str(action.get("intent") or action.get("content") or definition.name),
-                    landing,
-                )
+            self._attach_images(outcome, attachments, session_id=landing,
+                label=str(action.get("intent") or action.get("content") or definition.name))
             await self._log_tool_outcome(
                 state, definition, picked, call, outcome=outcome
             )
@@ -664,7 +659,7 @@ class ActionsRunMixin:
                 outcome.notes.append("刚才的话题已不在现场，这轮不再补插话")
                 messages = []
             else:
-                self.claim_chat_scene(outcome, outcome.home(), rows)
+                self.claim_chat_scene(outcome, outcome.home(), rows, state=state)
                 message, reply_to = await self.participation_text(state, outcome.home(), source="plan", outcome=outcome)
                 messages = [message] if message else []
                 if reply_to:

@@ -9,7 +9,15 @@ from ..speech_policy import PLAN_SPEECH
 from .life_inference import STATE_LEASE
 
 
-def bind_plan_speech(outcome, body, target):
+def image_receipt_ref(ref):
+    """Keep receipt identity without persisting large generated image payloads."""
+    from hashlib import sha256
+    from ..state import _chat_image_refs
+    refs = _chat_image_refs([ref])
+    return refs[0] if refs and not ref.startswith("base64://") else "sha256:" + sha256(ref.encode()).hexdigest()
+
+
+def bind_plan_speech(outcome, body, target, *, image=False):
     context = PLAN_SPEECH.get()
     if not context or context[0] is not outcome:
         return ""
@@ -25,8 +33,15 @@ def bind_plan_speech(outcome, body, target):
             "motivation": str(plan.get("reason") or ""), "status": "prepared",
             "at": plan.get("created_ts", 0), "drafts": [], "sent": []}
         outcome.speech_decisions.append(trace)
-    trace["drafts"].append(body)
+    trace.setdefault("draft_images" if image else "drafts", []).append(image_receipt_ref(body) if image else body)
     return trace["id"]
+
+
+def delivery_status(trace):
+    if not trace.get("sent") and not trace.get("sent_images"):
+        return "not_sent"
+    return "sent" if (len(trace.get("sent", [])) == len(trace.get("drafts", []))
+        and len(trace.get("sent_images", [])) == len(trace.get("draft_images", []))) else "partial"
 
 
 @asynccontextmanager
@@ -63,6 +78,7 @@ def update_thought(state, trace):
 async def remember_accepted(engine, outcome, target, text, key, identity="", *, kind=None):
     if key in outcome.remembered_speech:
         return
+    outcome.accepted_speech_at.setdefault(target, engine._now())
     async with receipt_state(engine, outcome.session_id) as state:
         recorded = state.note_chat(user_id="__self__",
             name=state.bot_current_nickname or state.bot_base_nickname or "你",
@@ -78,11 +94,57 @@ async def remember_accepted(engine, outcome, target, text, key, identity="", *, 
                       and r["target"] == target), None)
         if trace is not None:
             sent = [*outcome.delivered_decisions.get(identity, []), text]
-            trace.update(sent=sent, status="sent" if len(sent) == len(trace["drafts"]) else "partial")
+            trace.update(sent=sent)
+            trace["status"] = delivery_status(trace)
             update_thought(state, trace)
         engine.note_peer_chat_receipt(outcome, target, kind or outcome.speech_kind)
     if trace is not None:
         outcome.delivered_decisions[identity] = sent
+    outcome.remembered_speech.add(key)
+
+
+async def remember_accepted_images(engine, outcome, target, images, key, identities, kinds):
+    """Remember only platform-accepted references; never invent a caption or speech."""
+    if not images or key in outcome.remembered_speech:
+        return
+    outcome.accepted_speech_at.setdefault(target, engine._now())
+    traces = []
+    for identity in dict.fromkeys(identities):
+        trace = next((r for r in outcome.speech_decisions if r["id"] == identity
+                      and r["target"] == target), None)
+        if trace is None:
+            continue
+        sent = [*outcome.delivered_image_decisions.get(identity, []),
+                *(image_receipt_ref(ref) for ref, owner in zip(images, identities) if owner == identity)]
+        trace.update(sent_images=sent)
+        trace["status"] = delivery_status(trace)
+        traces.append(trace)
+        outcome.delivered_image_decisions[identity] = sent
+    for kind in set(kinds):
+        engine.note_peer_chat_receipt(outcome, target, kind)
+
+    async def persist():
+        async with receipt_state(engine, outcome.session_id) as state:
+            notes = list(dict.fromkeys(outcome.image_notes.get(target, {}).get(ref, "") for ref in images))
+            note = "、".join(value for value in notes if value)[:120]
+            caption = f"［我发了{'一' if len(images) == 1 else len(images)}张图片：{note}］" if note else ""
+            recorded = state.note_chat(user_id="__self__",
+                name=state.bot_current_nickname or state.bot_base_nickname or "你",
+                text=caption, images=images, has_images=True, raw_text="", now=engine._now(), keep=engine.chat_history_limit(),
+                is_self=True, origin=target, event_id=f"speech:{outcome.speech_receipt_batch}:{key}")
+            if recorded is not None:
+                recorded["speech_turn"] = outcome.speech_receipt_batch
+                recorded["speech_kind"] = kinds[0]
+                recorded["image_count"] = len(images)
+            engine._tag_chat_origin(state, target, recorded)
+            for trace in traces:
+                update_thought(state, trace)
+
+    try:
+        await persist()
+    except Exception:
+        # One persistence retry uses the same receipt identity and never sends again.
+        await persist()
     outcome.remembered_speech.add(key)
 
 
@@ -93,8 +155,11 @@ def scoped_plan_speech(item, session):
     if rows:
         sent = [line for row in rows for line in row.get("sent", [])]
         drafts = [line for row in rows for line in row.get("drafts", [])]
-        status = ("sent" if len(sent) == len(drafts) else "partial") if sent else rows[-1]["status"]
-        detail["speech"] = {**rows[-1], "sent": sent, "drafts": drafts, "status": status}
+        images = [ref for row in rows for ref in row.get("sent_images", [])]
+        draft_images = [ref for row in rows for ref in row.get("draft_images", [])]
+        speech = {**rows[-1], "sent": sent, "drafts": drafts, "sent_images": images, "draft_images": draft_images}
+        speech["status"] = delivery_status(speech) if sent or images else rows[-1]["status"]
+        detail["speech"] = speech
         reply = "\n".join(sent)
     return detail, reply
 

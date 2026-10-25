@@ -112,13 +112,8 @@ class SearchMixin:
                 # 落点跟着这一步的正文走，别一律塞回这一拍的会话
                 attachments = list(getattr(call, "attachments", None) or [])
                 landing = self._image_home(outcome, action)
-                self._attach_images(outcome, attachments, session_id=landing)
-                if attachments:
-                    self._note_own_image(
-                        state,
-                        str(action.get("intent") or action.get("content") or definition.name),
-                        landing,
-                    )
+                self._attach_images(outcome, attachments, session_id=landing,
+                    label=str(action.get("intent") or action.get("content") or definition.name))
                 await self._log_tool_outcome(
                     state, definition, name, call, outcome=outcome
                 )

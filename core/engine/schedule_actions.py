@@ -94,13 +94,8 @@ class ScheduleActionsMixin:
             images = list(getattr(call, "image_urls", None) or [])
             # 指令生成出来的图（多张也算）贴着正文一起发，别只交回给她自己看
             attachments = list(getattr(call, "attachments", None) or [])
-            self._attach_images(outcome, attachments, session_id=landing)
-            if attachments:
-                self._note_own_image(
-                    state,
-                    intent or definition.name or definition.id,
-                    landing,
-                )
+            self._attach_images(outcome, attachments, session_id=landing,
+                label=intent or definition.name or definition.id)
             await self._log_event(
                 state,
                 "command_result",

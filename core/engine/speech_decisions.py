@@ -93,11 +93,11 @@ class SpeechDecisionsMixin:
         await self.remember_speech_decision(state, target, decision, trigger=trigger, outcome=outcome,
                                            drafts=lines if decision.say else [], raw=raw)
         if decision.intent == "continue_chat":
-            self.claim_chat_scene(outcome, target, rows, window=900)
+            self.claim_chat_scene(outcome, target, rows, window=900, state=state)
             outcome.reply_targets[target] = decision.reply_to
             return "continuation"
         if decision.intent == "join_chat":
-            self.claim_chat_scene(outcome, target, rows, window=900)
+            self.claim_chat_scene(outcome, target, rows, window=900, state=state)
             if decision.reply_to:
                 outcome.reply_targets[target] = decision.reply_to
             return "continuation"
@@ -159,6 +159,10 @@ class SpeechDecisionsMixin:
             trace["reply_preview"] = {"text": str(referenced.get("text") or "")[:500],
                 "name": str(referenced.get("user_name") or referenced.get("name") or "")[:80]}
         trace["tools"] = list(getattr(raw, "tools", []))
+        from .speech_receipts import image_receipt_ref
+        images = list(dict.fromkeys(str(ref).strip() for ref in getattr(raw, "images", [])
+                                   if str(ref).strip())) if decision.say else []
+        trace["draft_images"] = [image_receipt_ref(ref) for ref in images]
         # Browsing already has a grounded thought. Keep the speech decision on
         # that same record rather than generating another reading impression.
         thought = next((item for item in reversed(state.thoughts)
@@ -175,24 +179,29 @@ class SpeechDecisionsMixin:
         await self._log_event(state, "speech_decision", {k: v for k, v in trace.items() if k != "draft"},
                               outcome=outcome, silent=True)
         if outcome is not None and decision.say:
-            outcome.add_images(list(getattr(raw, "images", [])), target)
+            kind = "continuation" if (decision.intent in {"join_chat", "continue_chat"}
+                and outcome.speech_kind not in CHAT_KINDS) else outcome.speech_kind
+            outcome.add_images(images, target, decision_id=identity, kind=kind)
         return trace
 
     async def finish_speech_decisions(self, outcome):
         pending = [d for d in outcome.speech_decisions if not d.get("finished_at")
-                   and (d["status"] == "prepared" or outcome.delivered_decisions.get(d["id"]))]
+                   and (d["status"] == "prepared" or outcome.delivered_decisions.get(d["id"])
+                        or outcome.delivered_image_decisions.get(d["id"]))]
         if not pending:
             return
-        from .speech_receipts import receipt_state, update_thought
+        from .speech_receipts import receipt_state, update_thought, delivery_status
         async with receipt_state(self, outcome.session_id) as state:
             for trace in pending:
                 sent = list(outcome.delivered_decisions.get(trace["id"], []))
-                status = ("sent" if len(sent) == len(trace["drafts"]) else "partial") if sent else "not_sent"
-                trace.update(status=status, sent=sent,
+                images = list(outcome.delivered_image_decisions.get(trace["id"], []))
+                trace.update(sent=sent, sent_images=images)
+                status = delivery_status(trace)
+                trace.update(status=status,
                              finished_at=self._now(), note="；".join(outcome.notes[-3:])[:300])
                 if trace.get("participation_request"):
                     self.finish_participation_observation(state, trace["target"], trace["participation_request"],
-                        "joined" if sent else "not_sent", "已接上当前话题" if sent else "接话未发出，等待新的现场")
+                        "joined" if sent or images else "not_sent", "已接上当前话题" if sent or images else "接话未发出，等待新的现场")
                 update_thought(state, trace)
                 await self._log_event(state, "speech_result",
                     {k: v for k, v in trace.items() if k != "draft"}, outcome=outcome, silent=True)

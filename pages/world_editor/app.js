@@ -14755,6 +14755,7 @@ function speechDecisionDetail(speech, {showMotivation = true} = {}) {
   else if (speech.reply_to) box.append(el("span", "muted", "引用消息未留存正文"));
   if (speech.drafts?.length) box.append(el("p", "thought-quote", `想说：${speech.drafts.join("\n")}`));
   if (speech.sent?.length) box.append(el("p", "thought-reply", `已发出：${speech.sent.join("\n")}`));
+  if (speech.sent_images?.length) box.append(el("p", "thought-reply", `已发出图片：${speech.sent_images.length} 张`));
   for (const tool of speech.tools || []) box.append(el("span", "thought-chip", `${tool.name} · ${tool.status === "completed" ? "已完成" : "未完成"}`));
   if (speech.note) box.append(el("span", "thought-quote", speech.note));
   const links = el("div", "row");

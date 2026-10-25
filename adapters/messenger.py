@@ -34,6 +34,7 @@ class AstrBotMessenger(GroupNamesMixin):
         self._blocked_until: dict[str, float] = {}
         self._fail_notes: dict[str, str] = {}
         self._sent_texts: ContextVar[list[str] | None] = ContextVar("my_world_sent_texts", default=None)
+        self._sent_images: ContextVar[list[str] | None] = ContextVar("my_world_sent_images", default=None)
 
     def take_sent_texts(self, session_id: str) -> list[str]:
         """Accepted segments from this task's last send, including partial delivery."""
@@ -41,6 +42,12 @@ class AstrBotMessenger(GroupNamesMixin):
         texts = self._sent_texts.get() or []
         self._sent_texts.set(None)
         return list(texts)
+
+    def take_sent_images(self, session_id: str) -> list[str]:
+        """This task's last accepted image group, after transport filtering."""
+        refs = self._sent_images.get() or []
+        self._sent_images.set(None)
+        return list(refs)
 
     # ---------------- 失败冷却（不重试） ----------------
 
@@ -137,6 +144,7 @@ class AstrBotMessenger(GroupNamesMixin):
         地址可以是 http、file://、base64://，AstrBot 发送时会自己转成平台要的格式。
         """
 
+        self._sent_images.set([])
         refs = _sendable_images(images)
         if not refs:
             return False
@@ -153,6 +161,7 @@ class AstrBotMessenger(GroupNamesMixin):
             self.mark_failed(session_id, exc)
             return False
         if result:
+            self._sent_images.set(list(refs))
             self.mark_sent(session_id)
         return bool(result)
 

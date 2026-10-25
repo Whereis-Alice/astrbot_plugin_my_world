@@ -159,6 +159,7 @@ class SendMixin:
         images: list[Any] | None,
         *,
         session_id: str = "",
+        label: str = "",
     ) -> None:
         """把工具 / 指令返回的图片挂到这一轮的结果上（去重、限量）。
 
@@ -177,39 +178,18 @@ class SendMixin:
         refs = [item for item in refs if item]
         if not refs:
             return
-        if target and target != str(outcome.session_id or ""):
-            outcome.add_images(refs, target)
-            return
-        for ref in refs:
-            if ref not in outcome.images:
-                outcome.images.append(ref)
+        outcome.add_images(refs, target)
+        if label:
+            notes = outcome.image_notes.setdefault(target, {})
+            for ref in refs:
+                notes.setdefault(ref, " ".join(str(label).split())[:40])
         if len(outcome.images) > MAX_GROUP_IMAGES:
             outcome.notes.append(
                 f"这一轮生成的图片太多（{len(outcome.images)} 张），只贴前 {MAX_GROUP_IMAGES} 张"
             )
             del outcome.images[MAX_GROUP_IMAGES:]
-
-    def _note_own_image(
-        self, state: WorldState, label: str, session_id: str = ""
-    ) -> None:
-        """她发出去的图片也要进"她自己的聊天记录"。
-
-        不然下一轮有人引用那张图，她只会看到"对方引用了某某发的［图片］"，
-        既不知道那图是自己发的、也想不起来自己刚发过照片。
-        """
-
-        note = " ".join(str(label or "").split())[:40]
-        text = f"［我发了一张图片：{note}］" if note else "［我发了一张图片］"
-        recorded = state.note_chat(
-            user_id="__self__",
-            name=state.bot_current_nickname or state.bot_base_nickname or "你",
-            text=text,
-            now=self._now(),
-            keep=self.chat_history_limit(),
-            is_self=True,
-            origin=session_id or state.session_id,
-        )
-        self._tag_chat_origin(state, session_id or state.session_id, recorded)
+            outcome.image_kinds[""] = outcome.image_kinds.get("", [])[:MAX_GROUP_IMAGES]
+            outcome.image_ids[""] = outcome.image_ids.get("", [])[:MAX_GROUP_IMAGES]
 
     def _tag_chat_origin(
         self,
@@ -337,9 +317,9 @@ class SendMixin:
                 outcome.debug_positions = [sum(mask[:int(pos)]) for pos in outcome.debug_positions]
             removed += len(mask) - sum(mask)
             metadata[key] = [kinds[i] if i < len(kinds) else outcome.speech_kind for i, ok in enumerate(mask) if ok]
-            if not images:
-                ids = outcome.speech_ids.get(key, [])
-                outcome.speech_ids[key] = [ids[i] if i < len(ids) else "" for i, ok in enumerate(mask) if ok]
+            identities = outcome.image_ids if images else outcome.speech_ids
+            ids = identities.get(key, [])
+            identities[key] = [ids[i] if i < len(ids) else "" for i, ok in enumerate(mask) if ok]
             return [line for line, ok in zip(lines, mask) if ok]
 
         outcome.messages = keep(outcome.messages, "", outcome.speech_kinds)
@@ -545,13 +525,28 @@ class SendMixin:
                     with guard_send(lambda sid, i: all(self.speech_allowed(sid, kind)
                         and self.contact_speech_allowed(view, sid, kind, reserved=receipt is not None)
                         for kind in image_kinds)):
-                        accepted = await self._send_group_images(target, target_images)
+                        try:
+                            accepted = await self._send_group_images(target, target_images)
+                        except asyncio.CancelledError:
+                            cancelled, accepted = True, False
+                            outcome.notes.append("图片发送中断，保留平台已接收的部分")
                     sent = sent or accepted
-                    if accepted:
-                        for kind in image_kinds:
-                            self.note_peer_chat_receipt(outcome, target, kind)
-                        sent_kinds.update(view.image_kinds.get("", []) or [view.speech_kind])
-                        delivered_images[target] = delivered_images.get(target, 0) + len(target_images)
+                    reader = getattr(self.messenger, "take_sent_images", None)
+                    received = reader(target) if callable(reader) else (target_images if accepted else [])
+                    actual_images = [ref for ref in target_images if ref in received]
+                    if actual_images:
+                        indices = [view.images.index(ref) for ref in actual_images]
+                        values, ids = view.image_kinds.get("", []), view.image_ids.get("", [])
+                        actual_kinds = [values[i] if i < len(values) else view.speech_kind for i in indices]
+                        identities = [ids[i] if i < len(ids) else "" for i in indices]
+                        # Acceptance counts even if later local persistence fails.
+                        sent_kinds.update(actual_kinds)
+                        delivered_images[target] = delivered_images.get(target, 0) + len(actual_images)
+                        from .speech_receipts import remember_accepted_images
+                        from uuid import uuid4
+                        await remember_accepted_images(self, outcome, target, actual_images,
+                            ("images", uuid4().hex, target), identities, actual_kinds)
+                        auto_images = autonomous(actual_kinds)
                         autonomous_delivered = autonomous_delivered or auto_images
                         if auto_images:
                             autonomous_targets.add(target)
@@ -571,7 +566,8 @@ class SendMixin:
                 routed={}, routed_images={}, notes=[], broadcast_targets=[],
                 speech_kinds={"": list(outcome.speech_kinds.get("", []))},
                 speech_ids={"": list(outcome.speech_ids.get("", []))},
-                image_kinds={"": list(outcome.image_kinds.get("", []))})
+                image_kinds={"": list(outcome.image_kinds.get("", []))},
+                image_ids={"": list(outcome.image_ids.get("", []))})
             await send_target(target, view, pending)
         for target in dict.fromkeys([*routed, *routed_images]):
             if cancelled:
@@ -581,7 +577,8 @@ class SendMixin:
                 routed={}, routed_images={}, notes=[], broadcast_targets=[], debug_messages=[], debug_positions=[],
                 speech_kinds={"": list(outcome.speech_kinds.get(target, []))},
                 speech_ids={"": list(outcome.speech_ids.get(target, []))},
-                image_kinds={"": list(outcome.image_kinds.get(target, []))})
+                image_kinds={"": list(outcome.image_kinds.get(target, []))},
+                image_ids={"": list(outcome.image_ids.get(target, []))})
             await send_target(target, view)
         outcome.delivered_messages.update(delivered)
         if delivered or delivered_images:
@@ -609,7 +606,7 @@ class SendMixin:
                               "style_cell": state.last_style_cell, "say_limit": int(state.last_say_limit or 0)}
                     detail["decisions"] = [{k: row.get(k) for k in ("id", "trace_id", "trigger", "origin", "intent", "reply_to")}
                         for row in outcome.speech_decisions if row["target"] == target
-                        and outcome.delivered_decisions.get(row["id"])]
+                        and (outcome.delivered_decisions.get(row["id"]) or outcome.delivered_image_decisions.get(row["id"]))]
                     if target != outcome.session_id:
                         detail.update(session=self.session_label(target, state), note="这一句说给了另一个会话")
                     await self._log_event(state, "bot_message", detail)

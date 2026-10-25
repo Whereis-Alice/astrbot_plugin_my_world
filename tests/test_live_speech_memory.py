@@ -81,6 +81,55 @@ class LiveSpeechMemoryTests(unittest.IsolatedAsyncioTestCase):
         state = await self.engine.load_state(contact.GROUP, cold_start=False)
         self.assertFalse([row for row in state.recent_chat if row.get('is_self')])
 
+    async def test_real_image_receipt_is_known_to_a_followup_reply(self):
+        await self.real_transport()
+        outcome = HostTickOutcome(contact.GROUP, speech_kind='life_share')
+        self.engine._attach_images(outcome, ['https://example.com/flower.png'],
+            session_id=contact.GROUP, label='窗台上的花')
+        await self.engine._deliver(outcome)
+        state = await self.engine.load_state(contact.GROUP, cold_start=False)
+        own = [r for r in state.recent_chat if r.get('is_self')]
+        self.assertEqual(len(own), 1)
+        self.assertEqual(own[0]['images'], ['https://example.com/flower.png'])
+        self.assertIn('窗台上的花', await self.reply_prompt())
+
+    async def test_real_transport_drops_invalid_image_before_recording(self):
+        await self.real_transport()
+        outcome = HostTickOutcome(contact.GROUP, speech_kind='life_share',
+            images=['unusable-image', 'https://example.com/flower.png'])
+        await self.engine._deliver(outcome)
+        state = await self.engine.load_state(contact.GROUP, cold_start=False)
+        own = [r for r in state.recent_chat if r.get('is_self')]
+        self.assertEqual(own[0]['image_count'], 1)
+        self.assertEqual(own[0]['images'], ['https://example.com/flower.png'])
+        self.assertNotIn('unusable-image', str(own))
+
+    async def test_real_rejected_image_does_not_create_an_own_memory(self):
+        await self.real_transport(accepted=False)
+        outcome = HostTickOutcome(contact.GROUP, speech_kind='life_share')
+        self.engine._attach_images(outcome, ['https://example.com/flower.png'],
+            session_id=contact.GROUP, label='还未发出的图片')
+        await self.engine._deliver(outcome)
+        state = await self.engine.load_state(contact.GROUP, cold_start=False)
+        self.assertFalse(any(r.get('is_self') for r in state.recent_chat))
+
+    async def test_plan_image_receipt_updates_the_original_thought(self):
+        await self.real_transport()
+        outcome = await self.prepare_plan(['给你看看。'])
+        trace = outcome.speech_decisions[0]
+        plan = {'id': trace['plan_id'], 'thought_id': trace['thought_id'], 'created_ts': trace['at']}
+        policy = importlib.import_module(host.MODULE.__name__ + '.core.speech_policy')
+        token = policy.PLAN_SPEECH.set((outcome, plan))
+        try:
+            self.engine._attach_images(outcome, ['https://example.com/flower.png'], session_id=contact.GROUP)
+        finally:
+            policy.PLAN_SPEECH.reset(token)
+        await self.engine._deliver(outcome)
+        thought = (await self.engine.thoughts_payload(contact.GROUP))['thoughts'][0]
+        self.assertEqual(thought['detail']['speech']['sent_images'], ['https://example.com/flower.png'])
+        self.assertEqual(thought['detail']['speech']['status'], 'sent')
+        self.assertEqual(thought['reply'], '给你看看。')
+
     async def prepare_plan(self, lines, *, targets=None):
         outcome = HostTickOutcome(contact.GROUP, speech_kind='life_share')
         async with self.engine.session_state(contact.GROUP) as state:
