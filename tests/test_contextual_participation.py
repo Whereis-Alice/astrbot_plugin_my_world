@@ -210,6 +210,70 @@ class DispatchTests(unittest.IsolatedAsyncioTestCase):
         state = await self.engine.load_state(GROUP, cold_start=False)
         self.assertEqual(state.participation[GROUP]["decision"], "idle")
 
+    async def test_reply_that_starts_while_waiting_for_a_worker_keeps_the_scene(self):
+        await self.queued_reply_scene(expires=False)
+
+    async def test_scene_that_expires_after_worker_admission_is_not_retried(self):
+        await self.queued_reply_scene(expires=True)
+
+    async def queued_reply_scene(self, *, expires):
+        self.engine.world.decider.settle_seconds = 0
+        await self.chat("周末一起去看风车", message_id="worker-wait")
+        blocked, release_worker, release_reply = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        async def occupy_worker():
+            blocked.set()
+            await release_worker.wait()
+
+        blocker = self.engine.queue_background("test_busy_worker", occupy_worker)
+        owner = asyncio.create_task(release_reply.wait())
+        try:
+            await asyncio.wait_for(blocked.wait(), 2)
+            self.engine.queue_participation(GROUP)
+            key = self.engine.state_key(GROUP)
+            settler = self.engine._participation_settlers[key]
+            async with asyncio.timeout(3):
+                while "participation:" + key not in self.engine._background_jobs:
+                    await asyncio.sleep(.01)
+            worker = self.engine._background_jobs["participation:" + key]
+            event = DispatchEvent()
+            self.engine.register_incoming(GROUP, "直接回复", expected_event=event, expected_owner=owner)
+            release_worker.set()
+            await asyncio.wait_for(blocker, 3)
+            await asyncio.wait_for(asyncio.shield(worker), 3)
+            await asyncio.sleep(.1)  # allow the collector to handle the unadmitted scene
+            self.assertEqual(self.llm.calls, [])
+            state = await self.engine.load_state(GROUP, cold_start=False)
+            self.assertEqual(state.participation[GROUP]["decision"], "waiting")
+            self.assertFalse(state.participation[GROUP].get("checked_seq"))
+            self.assertFalse(state.participation[GROUP].get("attempts"))
+            if expires:
+                self.clock.advance(181)
+            release_reply.set()
+            await owner
+            await asyncio.wait_for(asyncio.shield(settler), 7)
+            self.assertEqual(len(self.llm.calls), 0 if expires else 1)
+            if expires:
+                state = await self.engine.load_state(GROUP, cold_start=False)
+                self.assertEqual(state.participation[GROUP]["decision"], "idle")
+        finally:
+            release_worker.set()
+            release_reply.set()
+            owner.cancel()
+            await asyncio.gather(owner, return_exceptions=True)
+
+    async def test_short_statement_reaches_real_judgement_and_can_still_listen(self):
+        del self.engine.participation_sample
+        self.llm.replies = ['{"inner":"他说累了，先听听有没有后话。","intent":"listen"}']
+        await self.chat("累", message_id="short-statement")
+        await self.engine.maybe_participate(GROUP, sample=True)
+        self.assertEqual(len(self.llm.calls), 1)
+        self.assertRegex(self.llm.calls[0]["prompt"], r'"text"\s*:\s*"累"')
+        state = await self.engine.load_state(GROUP, cold_start=False)
+        self.assertEqual(state.participation[GROUP]["decision"], "listening")
+        self.assertEqual(state.thoughts[-1]["content"], "他说累了，先听听有没有后话。")
+        self.assertEqual(self.messenger.sent, [])
+
 
 class OpportunityTests(unittest.TestCase):
     def choice(self, **overrides):
@@ -254,6 +318,14 @@ class OpportunityTests(unittest.TestCase):
     def test_acknowledgement_does_not_turn_into_a_delayed_reply_obligation(self):
         self.assertFalse(self.choice(new=[{"text": "嗯嗯"}], observation={}).ready)
         self.assertTrue(self.choice(new=[{"text": "", "has_images": True}], observation={}).ready)
+
+    def test_short_statements_and_emoji_are_not_filtered_by_search_tokenization(self):
+        for text in ("累", "饿了", "怕", "🤕", "？"):
+            with self.subTest(text=text):
+                self.assertTrue(self.choice(new=[{"text": text}], observation={}).ready)
+        for text in ("", "   ", "嗯嗯", "好的", "哈哈", "ok"):
+            with self.subTest(text=text):
+                self.assertFalse(self.choice(new=[{"text": text}], observation={}).ready)
 
 
 if __name__ == "__main__":

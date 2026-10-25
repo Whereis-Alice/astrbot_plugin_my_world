@@ -1553,7 +1553,7 @@ class DeciderConfig(Permissive):
     """真正的群聊现场窗口；与长期上下文保留时长分开。"""
     settle_seconds: float = Field(default=4, ge=1, le=10)
     evaluation_cooldown_seconds: int = Field(default=60, ge=15, le=600)
-    """旧配置兼容字段；现场判断已由消息聚合、采样与模型预算管理，不再读取此间隔。"""
+    """旧配置兼容字段；现场判断已由消息聚合、观察调度与模型预算管理，不再读取此间隔。"""
     min_speech_gap_seconds: int = Field(default=90, ge=0, le=3600)
     """主动找人与最近一次实际发言的最短间隔；生活分享另设留白，现场接话不受限。"""
     person_retry_hours: float = Field(default=6, ge=0, le=72)
