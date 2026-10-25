@@ -354,7 +354,7 @@ class ActionsRunMixin:
         speech_kind = "interject" if action.interject and definition.id in {"say", "share"} else outcome.speech_kind
         if definition.id == "poke" and speech_kind in {"", "life_share"}:
             speech_kind = "outreach"
-        can_speak = any((self.can_express(state, sid, speech_kind) if definition.id in {"say", "share"}
+        can_speak = any((self.can_express(state, sid, speech_kind, token=outcome.speech_receipt_batch) if definition.id in {"say", "share"}
                          else self.speech_allowed(sid, speech_kind)) for sid in speech_targets)
         if (definition.id in {"say", "share", "poke"} or definition.llm_level in {"tool", "command"}) and not can_speak:
             reason = "生活分享未获全局授权" if outcome.speech_kind in {"", "life_share"} else "自主发言未获授权"
@@ -1248,7 +1248,8 @@ class ActionsRunMixin:
             + "\n只输出 JSON：" + output_shape
         )
         if active_expression:
-            prompt += self.expression_contract(state, current, speech_outcome.speech_kind)
+            prompt += self.expression_contract(state, current, speech_outcome.speech_kind,
+                                              token=speech_outcome.speech_receipt_batch)
             reply = await self.ask_speech(state, current, system_prompt, prompt, rows=self.expression_chat(state, current))
         else:
             reply = await self._ask_llm(current, system_prompt, prompt)

@@ -718,7 +718,8 @@ class TickMixin:
             want_followup = False
             outcome.notes.append(f"动作 {action_id} 的结果只用于事件判断，不作续说")
         followup_spoke = False
-        if want_followup and not self.can_express(state, outcome.home(), outcome.speech_kind):
+        if want_followup and not self.can_express(state, outcome.home(), outcome.speech_kind,
+                                                 token=outcome.speech_receipt_batch):
             want_followup = False
             note = ("生活分享未获全局授权，动作照常完成，不作自主续说"
                     if outcome.speech_kind == "life_share"
@@ -1019,7 +1020,8 @@ class TickMixin:
         )
         if outcome.speech_kind != "reply":
             prompt += "\n" + self.prompts.AUTONOMOUS_MANNERS
-            prompt += self.expression_contract(state, home, outcome.speech_kind)
+            prompt += self.expression_contract(state, home, outcome.speech_kind,
+                                              token=outcome.speech_receipt_batch)
         # 用过了就清掉：这段时间发生的事只带出来一次
         self._consume_event_digest(state)
         if outcome.speech_kind != "reply":

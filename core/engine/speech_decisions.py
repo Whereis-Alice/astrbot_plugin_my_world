@@ -25,27 +25,24 @@ def traced_delivery(function):
 
 
 class SpeechDecisionsMixin:
-    def expression_options(self, state, target, kind):
+    def expression_options(self, state, target, kind, *, token=""):
         allowed = ["listen"]
         if kind not in CHAT_KINDS and self.speech_allowed(target, kind):
             allowed.append("outreach" if kind == "outreach" else "life_share")
         chat = self.expression_chat(state, target)
-        from ..participation_opportunity import media_scene_allowed
-        if chat and not media_scene_allowed(rows=[r for r in state.recent_chat
-            if self._chat_origin(r, state) == target], new=chat, now=self._now(),
-            mode=self.world.decider.media_only_participation):
+        if chat and not self.chat_media_allowed(state, target, chat):
             chat = []
         if (chat and kind != "reply" and self.speech_allowed(target, "continuation")
-                and not self.peer_chat_pause(target)):
+                and not self.peer_chat_pause(target, token=token)):
             allowed.append("continue_chat")
             if kind in CHAT_KINDS:
                 allowed.append("join_chat")
         targets = {f"c{i}": str(row["message_id"]) for i, row in enumerate(chat, 1) if row.get("message_id")}
         return allowed, chat, targets
 
-    def expression_contract(self, state, target, kind):
+    def expression_contract(self, state, target, kind, *, token=""):
         import json
-        allowed, rows, targets = self.expression_options(state, target, kind)
+        allowed, rows, targets = self.expression_options(state, target, kind, token=token)
         scene = [{"ref": ref, "text": next(str(r.get("text") or "")[:500] for r in rows
                   if str(r.get("message_id")) == mid)} for ref, mid in targets.items()]
         descriptions = {
@@ -67,7 +64,8 @@ class SpeechDecisionsMixin:
         from ..speech_decision import parse_decision
         from ..json_actions import extract_json_object, strip_reasoning
         import json
-        allowed, rows, targets = self.expression_options(state, target, outcome.speech_kind)
+        allowed, rows, targets = self.expression_options(state, target, outcome.speech_kind,
+                                                        token=outcome.speech_receipt_batch)
         payload = extract_json_object(strip_reasoning(raw)) or {}
         if not isinstance(payload, dict):
             return None
@@ -128,10 +126,16 @@ class SpeechDecisionsMixin:
     def expression_chat(self, state, target):
         return self.live_chat(state, target, window=900)
 
-    def can_express(self, state, target, kind):
-        return self.speech_allowed(target, kind) or (
-            kind in {"", "life_share"} and self.speech_allowed(target, "participation")
-            and bool(self.expression_chat(state, target)))
+    def can_express(self, state, target, kind, *, token=""):
+        permitted = self.speech_allowed(target, kind)
+        if kind not in CHAT_KINDS and permitted:
+            return True
+        if kind in CHAT_KINDS and not permitted:
+            return False
+        if kind not in CHAT_KINDS | {"", "life_share"}:
+            return False
+        allowed, _, _ = self.expression_options(state, target, kind, token=token)
+        return any(intent != "listen" for intent in allowed)
 
     async def remember_speech_decision(self, state, target, decision, *, trigger,
                                        outcome=None, browse_id="", drafts=None, raw=None):

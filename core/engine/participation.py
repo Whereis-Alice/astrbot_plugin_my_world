@@ -88,6 +88,14 @@ class ParticipationMixin:
         outcome.chat_expires_at[target] = max(float(row.get("at") or 0) for row in rows) + (
             self.world.decider.live_window_seconds if window is None else window)
 
+    def chat_media_allowed(self, state, target: str, rows: list[dict]) -> bool:
+        """Use the actual destination's current policy before and after inference."""
+        from ..participation_opportunity import media_scene_allowed
+        with self.config_scope(target):
+            return media_scene_allowed(rows=[r for r in state.recent_chat
+                if self._chat_origin(r, state) == target], new=rows, now=self._now(),
+                mode=self.world.decider.media_only_participation)
+
     def conversation_scene_hint(self, state, target: str) -> str:
         rows = [row for row in state.recent_chat if self._chat_origin(row, state) == target
                 and self._now() - float(row.get("at") or 0) <= self.world.decider.live_window_seconds][-8:]
@@ -455,10 +463,7 @@ class ParticipationMixin:
                     # background worker, after the settler's initial gate check.
                     self.note_participation_waiting(state, session_id, gate)
                 return None
-            from ..participation_opportunity import media_scene_allowed
-            if not media_scene_allowed(rows=[r for r in state.recent_chat
-                if self._chat_origin(r, state) == session_id], new=new, now=self._now(),
-                mode=self.world.decider.media_only_participation):
+            if not self.chat_media_allowed(state, session_id, new):
                 reason = "只有图片或表情，尚无与她相接的当前对话；先看不接话（未进入模型判断）"
                 observation.update(decision="observing", reason=reason)
                 state.participation[session_id] = observation
@@ -501,6 +506,7 @@ class ParticipationMixin:
                 reason = str((state.participation.get(session_id) or {}).get("reason") or "未取得有效的接话决定")
                 self.note_browse_reply_gate(state, session_id, browse_id, "failed", reason)
             if (not message or self.participation_gate(state, session_id, source=source)
+                    or not self.chat_media_allowed(state, session_id, new)
                     or self._now() >= outcome.chat_expires_at[session_id]):
                 reason = "这轮继续旁听" if not message else "现场与权限已变化，本轮取消发送"
                 if outcome.speech_decisions:
