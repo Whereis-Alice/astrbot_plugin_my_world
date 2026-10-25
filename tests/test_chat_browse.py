@@ -92,7 +92,7 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(rows), 20)
         self.assertLessEqual(sum(len(row["text"]) for row in rows), 3000)
         self.assertEqual(rows[-1]["seq"], state.chat_seq)
-        self.assertEqual(set(rows[0]), {"seq", "at", "name", "self", "text"})
+        self.assertEqual(set(rows[0]), {"seq", "at", "user_id", "name", "self", "text"})
         self.note(state, "内部记录", internal=True)
         self.note(state, "别的会话", origin=G)
         self.note(state, "只有她的自言自语", is_self=True)

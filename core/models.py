@@ -2354,6 +2354,10 @@ class ChatBrowseConfig(Permissive):
     enabled: bool = False
     reply_enabled: bool = False
     """浏览后可判断是否接话；短暂回看近期话题，遵守自主发言总白名单。"""
+    reply_wait_seconds: int = Field(default=120, ge=0, le=300)
+    """遇短暂回复/活动占用时最多等多久；0 不等待，不重跑阅读模型。"""
+    relationship_context: bool = True
+    """阅读时参考来源会话实际作者的已有关系与兴趣简述，不提取新画像。"""
     phone: bool = False
     computer_nodes: list[str] = Field(default_factory=list, max_length=100)
     sessions: list[str] = Field(default_factory=list, max_length=100)

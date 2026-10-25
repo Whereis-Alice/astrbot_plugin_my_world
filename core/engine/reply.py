@@ -195,10 +195,11 @@ class ReplyMixin:
                     if not owners[scope]:
                         owners.pop(scope, None)
                     record['dispatch_done'] = True
-                    # Revisit the current scene, not the original reply draft.
+                    # Wake existing opportunities without creating an ambient
+                    # message opportunity from a deferred reading.
                     target = str(record.get('session') or '')
-                    if target in getattr(self, '_participation_pending', {}).get(scope, {}):
-                        self.queue_participation(target)
+                    from .participation_queue import wake
+                    wake(self, target)
 
             owner.add_done_callback(finished)
 

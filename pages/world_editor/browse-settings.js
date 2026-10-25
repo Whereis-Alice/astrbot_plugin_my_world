@@ -11,7 +11,8 @@ export function openBrowseSettings({world, sessions = [], scopeLabel = "全局�
 
 export function browseSettings({world, sessions = [], el, body}) {
   const draft = {enabled: false, phone: false, computer_nodes: [], sessions: [], cooldown_minutes: 120,
-    daily_max: 3, ...READING, remember_meaningful: true, reply_enabled: false, ...world.chat_browse};
+    daily_max: 3, ...READING, remember_meaningful: true, reply_enabled: false,
+    reply_wait_seconds: 120, relationship_context: true, ...world.chat_browse};
   const readers = [], inputs = {};
   const panel = el("div", "browse-settings");
   const intro = el("div", "browse-intro");
@@ -71,9 +72,13 @@ export function browseSettings({world, sessions = [], el, body}) {
   const reply = el("section", "browse-reply");
   reply.append(el("h3", "", "看完，也可以接一句"));
   toggle(reply, "reply_enabled", "浏览后允许她判断是否接话");
+  numbers(reply, [["reply_wait_seconds", "短暂忙碌最多等待（秒）", 0, 300, "秒"]]);
   reply.append(el("p", "muted", "默认关闭。每次成功浏览都会在「内心活动 → 翻消息时」留下一点想法。开启后由她自己决定是否接话，可以选择回应哪条消息，也可以看完继续生活；只接来源会话里仍在进行的话题。发言还需在全局主动发言白名单中获准，群聊和私聊均可。"));
+  reply.append(el("p", "muted", "遇到正在回复或活动收尾时，短暂等待后重新看现场；原消息已回应、已判断、话题结束或等待超时就放下。设为 0 不等待；等待不重读、不强制发言。"));
   content.append(reply);
   const memory = el("div", "browse-memory");
+  toggle(memory, "relationship_context", "阅读时参考已有关系与兴趣简述");
+  memory.append(el("p", "muted", "只参考来源会话实际作者的已有资料，最多 6 人、1,200 字；画像总开关关闭时不加入。不会额外提取画像或改变好感度。"));
   toggle(memory, "remember_meaningful", "有持续意义的感受可留下生活记忆");
   memory.append(el("p", "muted", "普通感想保留 24 小时；有意义的感受保留来源，不成为群聊摘要。共享生活组共用次数与冷却，每次阅读仍服从后台预算。读取量越大，单次模型输入消耗越多。"));
   content.append(memory); panel.append(content); body.append(panel);

@@ -7,7 +7,7 @@ import json
 import math
 from uuid import uuid4
 
-from ..chat_browse import expire_feelings, feeling_error, feeling_prompt, reading_text, reading_view
+from ..chat_browse import expire_feelings, feeling_error, feeling_prompt, reading_people, reading_text, reading_view
 from ..config_scope import session_scoped
 from ..json_actions import extract_json_object
 from ..model_calls import model_context
@@ -172,9 +172,14 @@ class ChatBrowseMixin:
             action["inference_started"] = True
             snapshot = copy.deepcopy(action)
             persona = await self._persona_text(session_id)
+            source = action["browse_session"]
+            with self.config_scope(source):
+                people = (reading_people(action["browse_rows"],
+                    lambda uid: self.reading_person(source, uid))
+                    if self.world.chat_browse.relationship_context and self.profiles.enabled() else [])
             prompt = json.dumps({"persona": persona, "activity": action["desc"],
                 "place": self._node_name(state.node_id), "mood": state.mood, "energy": state.energy,
-                "messages": action["browse_rows"]}, ensure_ascii=False)
+                "source_session": source, "people": people, "messages": action["browse_rows"]}, ensure_ascii=False)
         # Outside the state lock: ordinary chat and the basic clock keep working.
         try:
             with model_context("chat_browse", "日常翻阅近期消息，只产生内心感受", snapshot["browse_session"]):
@@ -219,12 +224,18 @@ class ChatBrowseMixin:
         # look-back after reading. No historical replay, tools or forced speech.
         target = snapshot["browse_session"]
         if completed:
-            outcome = await self.maybe_participate(target, source="browse", browse_id=action_id)
+            from ..browse_reply import BrowseReply, RETRYABLE, reply_status
+            from .participation_queue import queue_browse
             async with self.session_state(session_id) as state:
-                sent = bool(outcome and outcome.delivered_messages.get(target))
-                for thought in state.thoughts:
-                    if thought.get("browse_id") == action_id:
-                        thought["browse_replied"] = sent
+                ticket = BrowseReply.capture(self, state, target, action_id)
+            await self.maybe_participate(target, source="browse", browse_id=action_id, browse_ticket=ticket)
+            async with self.session_state(session_id) as state:
+                if reply_status(state, ticket) in RETRYABLE and queue_browse(self, ticket):
+                    self.note_browse_reply_gate(state, target, action_id, "waiting",
+                        f"先等当前回复或活动收尾，最多 {ticket.wait_seconds} 秒；原消息已回应或话题结束就放下")
+                    thought = next((row for row in reversed(state.thoughts) if row.get("browse_id") == action_id), None)
+                    if thought is not None:
+                        thought["detail"]["browse_reply"]["until"] = ticket.deadline
 
     def _apply_browse_feeling(self, state, action: dict, payload: dict, *, persona: str = "") -> bool:
         now, sid = self._now(), action["browse_session"]

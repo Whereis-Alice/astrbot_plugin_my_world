@@ -73,6 +73,8 @@ def update_thought(state, trace):
             thought["detail"]["speech"] = dict(trace)
             if trace["sent"]:
                 thought["reply"] = "\n".join(trace["sent"])
+            if thought.get("browse_id") and thought["browse_id"] == trace.get("browse_id"):
+                thought["browse_replied"] = bool(trace["sent"] or trace.get("sent_images"))
 
 
 def accept_receipt(engine, outcome, target, key, **payload):
