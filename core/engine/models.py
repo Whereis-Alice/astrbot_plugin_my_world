@@ -66,6 +66,8 @@ class TickOutcome:
     """A queued interjection cannot outlive the conversation it was written for."""
     chat_media_scenes: dict[str, dict] = field(default_factory=dict)
     """Observed media evidence, retained for policy checks at actual sending."""
+    chat_state_keys: dict[str, str] = field(default_factory=dict)
+    chat_replied_seq: dict[str, int] = field(default_factory=dict)
 
     def take_messages(self) -> list[str]:
         """取走"还没发出去"的几句话（调用方负责真的发出去）。"""
@@ -143,6 +145,8 @@ class TickOutcome:
     delivered_decisions: dict[str, list[str]] = field(default_factory=dict)
     delivered_image_decisions: dict[str, list[str]] = field(default_factory=dict)
     accepted_speech_at: dict[str, float] = field(default_factory=dict)
+    accepted_receipts: dict[tuple, dict[str, Any]] = field(default_factory=dict)
+    """Acceptance remains true even while its local persistence needs retrying."""
     remembered_speech: set[tuple] = field(default_factory=set)
     speech_receipt_batch: str = field(default_factory=lambda: uuid4().hex)
     """Messages accepted by the platform, used to distinguish thinking from speaking."""

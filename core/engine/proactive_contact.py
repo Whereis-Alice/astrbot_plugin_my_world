@@ -43,6 +43,11 @@ class ProactiveContactMixin:
         if kind != 'reply' and self.reply_busy(target):
             return False
         if kind in CHAT_KINDS:
+            if not self.queued_chat_pending(outcome, target):
+                note = "本轮接话对应的消息已被回应，取消旧的排队内容"
+                if note not in outcome.notes:
+                    outcome.notes.append(note)
+                return False
             if not self.queued_chat_media_allowed(outcome, target):
                 note = "图片接话策略已变化或关联对话已过期，本轮未发送"
                 if note not in outcome.notes:

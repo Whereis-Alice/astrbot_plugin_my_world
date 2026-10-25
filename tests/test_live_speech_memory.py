@@ -4,7 +4,7 @@ import importlib
 import logging
 import types
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from tests import test_dialogue_inject as host
 from tests import test_participation as contact
@@ -294,6 +294,178 @@ class LiveSpeechMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row['reply'], '只发送一次。')
         state = await self.engine.load_state(contact.GROUP, cold_start=False)
         self.assertEqual([r['text'] for r in state.recent_chat if r.get('is_self')], ['只发送一次。'])
+
+    async def test_repeated_storage_failures_do_not_turn_accepted_text_into_unsent(self):
+        await self.real_transport()
+        outcome = await self.prepare_plan(['已经说过的话。'])
+        save = self.engine.save_state
+        failures = 0
+
+        async def fail_twice(state):
+            nonlocal failures
+            if failures < 2:
+                failures += 1
+                raise OSError('temporary storage error')
+            await save(state)
+
+        self.engine.save_state = fail_twice
+        await self.engine._deliver(outcome)
+        self.assertEqual(len(self.transported), 1)
+        thought = (await self.engine.thoughts_payload(contact.GROUP))['thoughts'][0]
+        self.assertEqual(thought['detail']['speech']['status'], 'sent')
+        self.assertEqual(thought['reply'], '已经说过的话。')
+        self.assertEqual(self.engine.life_share_status(contact.GROUP)['left'], 5)
+        state = await self.engine.load_state(contact.GROUP, cold_start=False)
+        self.assertEqual([r['text'] for r in state.recent_chat if r.get('is_self')], ['已经说过的话。'])
+
+    async def test_save_cancellation_keeps_the_real_accepted_segment(self):
+        await self.real_transport()
+        outcome = await self.prepare_plan(['已经发送。', '尚未发送。'])
+        save = self.engine.save_state
+        cancelled = False
+
+        async def cancel_once(state):
+            nonlocal cancelled
+            if not cancelled:
+                cancelled = True
+                raise asyncio.CancelledError()
+            await save(state)
+
+        self.engine.save_state = cancel_once
+        with self.assertRaises(asyncio.CancelledError):
+            await self.engine._deliver(outcome)
+        thought = (await self.engine.thoughts_payload(contact.GROUP))['thoughts'][0]
+        self.assertEqual(thought['reply'], '已经发送。')
+        self.assertEqual(thought['detail']['speech']['status'], 'partial')
+        self.assertEqual(len(self.transported), 1)
+        self.assertEqual(self.engine.life_share_status(contact.GROUP)['left'], 5)
+
+    async def test_late_storage_recovery_restores_history_without_another_send(self):
+        await self.real_transport()
+        outcome = await self.prepare_plan(['这是我已经说过的。'])
+        save = self.engine.save_state
+        failures = 0
+
+        async def fail_four_times(state):
+            nonlocal failures
+            if failures < 4:
+                failures += 1
+                raise OSError('temporary storage error')
+            await save(state)
+
+        self.engine.save_state = fail_four_times
+        await self.engine._deliver(outcome)
+        await self.engine.finish_speech_decisions(outcome)
+        state = await self.engine.load_state(contact.GROUP, cold_start=False)
+        self.assertEqual([r['text'] for r in state.recent_chat if r.get('is_self')], ['这是我已经说过的。'])
+        self.assertEqual(len(self.transported), 1)
+        self.assertEqual(outcome.speech_decisions[0]['sent'], ['这是我已经说过的。'])
+        self.assertEqual(self.engine.life_share_status(contact.GROUP)['left'], 5)
+
+    async def test_late_image_storage_recovery_keeps_original_receipt_and_thought(self):
+        await self.real_transport()
+        outcome = HostTickOutcome(contact.GROUP, speech_kind='life_share')
+        Decision = importlib.import_module(host.MODULE.__name__ + '.core.speech_decision').SpeechDecision
+        Draft = importlib.import_module(host.MODULE.__name__ + '.core.speech_runtime').SpeechDraft
+        ref = 'https://example.com/windmill.png'
+        async with self.engine.session_state(contact.GROUP) as state:
+            await self.engine.remember_speech_decision(state, contact.GROUP,
+                Decision(inner='把刚拍的风车给他看。', say='给你看看。', intent='life_share'),
+                trigger='completion', outcome=outcome, drafts=[], raw=Draft('', images=[ref]))
+        self.engine._attach_images(outcome, [ref], session_id=contact.GROUP, label='风车')
+        save = self.engine.save_state
+        stamp = self.clock.now()
+        failures = 0
+
+        async def fail_four_times(state):
+            nonlocal failures
+            if failures < 4:
+                failures += 1
+                self.clock.advance(15)
+                raise OSError('temporary storage error')
+            await save(state)
+
+        self.engine.save_state = fail_four_times
+        # Image receipts have no text adapter's final-receipt retry. The third
+        # failure reaches final state saving and remains visible to the caller;
+        # finalization must still recover the already accepted image history.
+        with self.assertRaises(OSError):
+            await self.engine._deliver(outcome)
+        await self.engine.finish_speech_decisions(outcome)
+        state = await self.engine.load_state(contact.GROUP, cold_start=False)
+        own = [r for r in state.recent_chat if r.get('is_self')]
+        self.assertEqual(len(own), 1)
+        self.assertEqual(own[0]['images'], [ref])
+        self.assertEqual(own[0]['at'], stamp)
+        self.assertIn('风车', own[0]['text'])
+        thought = (await self.engine.thoughts_payload(contact.GROUP))['thoughts'][0]
+        self.assertEqual(thought['detail']['speech']['sent_images'], [ref])
+        self.assertEqual(thought['detail']['speech']['status'], 'sent')
+        self.assertFalse(thought['reply'])
+        self.assertEqual(len(self.transported), 1)
+        self.assertEqual(self.engine.life_share_status(contact.GROUP)['left'], 5)
+
+    async def test_receipt_retry_preserves_acceptance_time(self):
+        await self.real_transport()
+        outcome = await self.prepare_plan(['我刚拍了照片。'])
+        save = self.engine.save_state
+        stamp = self.clock.now()
+        failed = False
+
+        async def fail_once(state):
+            nonlocal failed
+            if not failed:
+                failed = True
+                self.clock.advance(60)
+                raise OSError('temporary storage error')
+            await save(state)
+
+        self.engine.save_state = fail_once
+        await self.engine._deliver(outcome)
+        state = await self.engine.load_state(contact.GROUP, cold_start=False)
+        self.assertEqual([r['at'] for r in state.recent_chat if r.get('is_self')], [stamp])
+        self.assertEqual(len(self.transported), 1)
+
+    async def test_completed_native_reply_cancels_a_queued_tail_and_records_why(self):
+        await self.real_transport(delay=60)
+        row = await contact.ParticipationTests.chat(self, '那张照片能给我看看吗？', message_id='photo-request')
+        outcome = HostTickOutcome(contact.GROUP, speech_kind='participation')
+        Decision = importlib.import_module(host.MODULE.__name__ + '.core.speech_decision').SpeechDecision
+        lines = ['等下找给你。', '我再去收藏夹找找。']
+        async with self.engine.session_state(contact.GROUP) as state:
+            await self.engine.remember_speech_decision(state, contact.GROUP,
+                Decision(inner='他还惦记那张照片。', say='\n'.join(lines), intent='join_chat'),
+                trigger='message', outcome=outcome, drafts=lines)
+            self.engine.claim_chat_scene(outcome, contact.GROUP, [row], state=state)
+        for line in lines:
+            outcome.add_speech(line)
+        entered, release = asyncio.Event(), asyncio.Event()
+        sleep = asyncio.sleep
+
+        async def controlled_sleep(delay, *args, **kwargs):
+            if delay == 60:
+                entered.set()
+                await release.wait()
+            else:
+                await sleep(delay, *args, **kwargs)
+
+        with patch.object(asyncio, 'sleep', controlled_sleep):
+            task = asyncio.create_task(self.engine._deliver(outcome))
+            try:
+                await asyncio.wait_for(entered.wait(), 3)
+                await self.engine._deliver(HostTickOutcome(contact.GROUP,
+                    messages=['刚才已经发给你了。'], speech_kind='reply'))
+                await self.engine.mark_reply_batch_replied(contact.GROUP, batch=[row])
+                release.set()
+                await asyncio.wait_for(task, 3)
+            finally:
+                release.set()
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        self.assertEqual(len(self.transported), 2)
+        self.assertEqual(outcome.speech_decisions[0]['sent'], lines[:1])
+        self.assertEqual(outcome.speech_decisions[0]['status'], 'partial')
+        self.assertTrue(any('已被回应' in note for note in outcome.notes), outcome.notes)
 
     async def test_cancelled_instant_speech_retains_receipt_and_contact_count(self):
         await self.real_transport()

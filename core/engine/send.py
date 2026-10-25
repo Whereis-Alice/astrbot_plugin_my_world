@@ -375,6 +375,8 @@ class SendMixin:
             if m and str(m).strip()
         ]
         state = await self.load_state(outcome.session_id, cold_start=False)
+        for target in outcome.chat_claims:
+            self.note_chat_scene_progress(state, target)
         # 事件里的发言（求助 / 事件结果）不算"她主动找人聊天"：
         # 不走无人回应保护，也不会把她的冷却期拖长。
         kinds = {outcome.speech_kind, *outcome.live_kinds}
@@ -461,9 +463,9 @@ class SendMixin:
                             return  # Debug echoes are not the character's speech.
                         ids = view.speech_ids.get("", [])
                         identity = ids[index] if index < len(ids) else ""
+                        recorded_indices.add(position)
                         await remember_accepted(self, outcome, target, text,
                             (send_identity, target, position), identity, kind=ordered_kinds[position])
-                        recorded_indices.add(position)
                     quote_index = next((i for i, kind in enumerate(ordered_kinds)
                                         if kind in CHAT_KINDS), 0)
                     with watch_send(received_segment), quote_send(target, view.reply_targets.get(target, ""), quote_index), guard_send(
@@ -491,8 +493,12 @@ class SendMixin:
                             continue
                         received_counts[text] -= 1
                         if index is not None:
-                            await received_segment(target, text, position)
                             actual_positions.add(position)
+                            try:
+                                await received_segment(target, text, position)
+                            except Exception as exc:
+                                outcome.notes.append(f"已发送，回执保存暂时失败：{type(exc).__name__}")
+                                self._log("warning", f"保存已接受发言失败：{exc}")
                     actual_indices = {entries[p][1] for p in actual_positions}
                     actual_messages = []
                     actual_auto_text = False
@@ -557,6 +563,7 @@ class SendMixin:
                 self._log("warning", f"发到 {target} 失败：{exc}")
             finally:
                 self._finish_contact(receipt, sent_kinds)
+                outcome.notes.extend(note for note in view.notes if note not in outcome.notes)
 
         for target in broadcast_targets:
             if cancelled:

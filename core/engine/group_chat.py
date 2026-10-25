@@ -48,11 +48,13 @@ class GroupChatMixin:
         if target == str(state.session_id):
             state.chat_replied_until = float(until)
             state.chat_replied_seq = int(seq)
+            self.note_chat_scene_progress(state, target)
             return
         state.chat_watermarks = {
             **(getattr(state, "chat_watermarks", None) or {}),
             target: {"until": float(until), "seq": int(seq)},
         }
+        self.note_chat_scene_progress(state, target)
 
     def chat_context(
         self, state: WorldState, session_id: str = ""

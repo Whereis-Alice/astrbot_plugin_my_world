@@ -185,6 +185,8 @@ class SpeechDecisionsMixin:
         return trace
 
     async def finish_speech_decisions(self, outcome):
+        from .speech_receipts import remember_pending_receipts
+        await remember_pending_receipts(self, outcome)
         pending = [d for d in outcome.speech_decisions if not d.get("finished_at")
                    and (d["status"] == "prepared" or outcome.delivered_decisions.get(d["id"])
                         or outcome.delivered_image_decisions.get(d["id"]))]

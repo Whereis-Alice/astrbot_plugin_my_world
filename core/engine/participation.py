@@ -92,6 +92,33 @@ class ParticipationMixin:
         history = [r for r in state.recent_chat if self._chat_origin(r, state) == target] if state else rows
         outcome.chat_media_scenes[target] = deepcopy({"rows": history,
             "new": rows if media_rows is None else media_rows})
+        outcome.chat_state_keys[target] = state.session_id if state else self.state_key(target)
+        if state is not None:
+            outcome.chat_replied_seq[target] = self._watermark(state, target)[1]
+        from weakref import WeakValueDictionary
+        if not hasattr(self, "_queued_chat_outcomes"):
+            self._queued_chat_outcomes = WeakValueDictionary()
+        self._queued_chat_outcomes[outcome.speech_receipt_batch] = outcome
+
+    def note_chat_scene_progress(self, state, target: str) -> None:
+        """Completed real replies invalidate only pending scenes from this life."""
+        for outcome in list(getattr(self, "_queued_chat_outcomes", {}).values()):
+            if outcome.chat_state_keys.get(target) == state.session_id:
+                outcome.chat_replied_seq[target] = max(outcome.chat_replied_seq.get(target, 0),
+                                                       self._watermark(state, target)[1])
+
+    def queued_chat_pending(self, outcome, target: str) -> bool:
+        claims = outcome.chat_claims.get(target, [])
+        if not claims:
+            return True
+        replied = outcome.chat_replied_seq.get(target, 0)
+        quoted = outcome.reply_targets.get(target)
+        if quoted:
+            scene = outcome.chat_media_scenes.get(target, {})
+            referenced = next((r for r in scene.get("rows", []) if str(r.get("message_id") or "") == quoted), None)
+            if referenced is not None and int(referenced.get("seq") or 0) <= replied:
+                return False
+        return any(int(seq) > replied for seq in claims)
 
     def queued_chat_media_allowed(self, outcome, target: str) -> bool:
         started = outcome.accepted_speech_at.get(target)
