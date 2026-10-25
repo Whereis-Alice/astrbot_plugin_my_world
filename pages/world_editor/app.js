@@ -4793,7 +4793,7 @@ function contactSessionLabel(session) {
   return `${name || "群聊"} · ${number}`;
 }
 
-function renderSessionSelects() {
+function renderSessionSelects({ labelsOnly = false } = {}) {
   const options = scopeOptions();
   [
     "status-session",
@@ -4807,6 +4807,21 @@ function renderSessionSelects() {
   ].forEach((id) => {
     const select = $(id);
     if (!select) return;
+    if (labelsOnly) {
+      // Metadata refresh must not change the loaded contact scope or remove a
+      // selected historical session that is absent from current configuration.
+      const labels = new Map(options.map(item => [item.value, item.label]));
+      for (const item of select.options) {
+        if (id === "contacts-session" && ui.config.session_names?.[item.value]) {
+          const session = ui.sessions.find(row => row.session_id === item.value) || {session_id: item.value};
+          item.textContent = contactSessionLabel(session);
+        } else if (labels.has(item.value)) {
+          item.textContent = labels.get(item.value);
+        }
+      }
+      if (id === "contacts-session") select.title = select.selectedOptions[0]?.textContent || "";
+      return;
+    }
     const previous = select.value;
     select.innerHTML = "";
     if (!options.length) {
@@ -21543,6 +21558,11 @@ const contactWorkbench = createContactWorkbench({
   state: ui, root: $("tab-contacts"), apiGet,
   loadMeta: loadContactsMeta, renderList: renderContactsList,
   renderPlaces: renderContactPlaces, renderDetail: renderContactDetail, el,
+  updateSessionNames: names => {
+    if (!Object.keys(names).length) return;
+    ui.config.session_names = { ...ui.config.session_names, ...names };
+    renderSessionSelects({ labelsOnly: true });
+  },
 });
 
 const relationshipsPage = createRelationshipsPage({

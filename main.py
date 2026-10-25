@@ -35,6 +35,7 @@ from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.message_components import Image, Plain, Reply
 from astrbot.api.star import Context, Star, register
+from .core.media_provenance import has_videos, video_note, native_image_note
 
 try:
     from astrbot.api import ToolSet
@@ -146,6 +147,7 @@ from .adapters.session_utils import _swap_event_session as _swap_event_session
 from .adapters.tools import MAX_RESULT_CHARS as MAX_RESULT_CHARS
 from .adapters.tools import _exception_where as _exception_where
 from .adapters.tools import _result_text as _result_text
+from .adapters.reply_images import prepare_reply_images
 from .adapters.vision import (
     _caption_prefix as _caption_prefix,
     _clean_forward_summary as _clean_forward_summary,
@@ -836,6 +838,8 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
             # 纯语音消息：正文是空的，不说明一下她会以为自己收到了一条空白消息。
             # 内容转写要靠 AstrBot 那边装语音转文字的能力，这里只把"发生了什么"讲清楚。
             notes.append("这是一段语音消息，你听不到里面的内容")
+        if note := video_note(event):
+            notes.append(note)
         if not notes:
             return text
         return f"{text}\n［{'；'.join(notes)}］".strip()
@@ -982,85 +986,10 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
         sources: list[str],
         extra: list[str] | None = None,
         excluded: set[str] | None = None,
+        native: bool = False,
     ) -> tuple[list[str], dict[str, str], list[str]]:
-        """这一轮直接交给模型看的图、它们的编号（``图1``/``图2``…），以及要转成文字的那几张。
-
-        **规则**：发送范围（这次真的会进提示词的聊天记录）里**最近的 ``image_max`` 张图**
-        都交给主模型看——不管它是这一条消息带的、还是前面几条带的，按时间序编号 图1/图2/…，
-        和附件顺序一一对应；比它们更旧、但仍在发送范围内的图只以文字转述出现
-        （被压成概览的老图压根不在这个范围里，不用管）。
-
-        - 主模型看不见图时：这几张全部转述成文字（一次打包），不附图；
-        - **没配转述模型**时：主模型看不看得见都照样附图（否则这些图就彻底没了）；
-        - 已经转述过的图这次被附上了：它的转述不再渲染出来（见
-          ``engine.attach_image_captions`` 与 ``prompt._render_rows``）。
-
-        转述只发生一次：本来就要交给主模型看的图不会再转述一遍（白花钱）。
-
-        ``extra`` 是别的插件往这一轮请求里加的图（``req.image_urls``）：和这一条消息
-        自己带的图一样对待，去重之后一起编号——那是别人已经认可的"要给模型看"的图，
-        丢掉就等于这一轮少看了一张。
-        """
-
-        excluded = excluded or set()
-        session_id = event.unified_msg_origin
-        context = self.engine.world.context
-        cap = max(1, int(context.image_max))
-        vision = getattr(self, "vision", None)
-        captioned = bool(vision is not None and vision.enabled)
-        mode = str(getattr(context, "chat_image_inline", "auto") or "auto").lower()
-        inline = await self._chat_images_inline(session_id)
-        pending = await self.engine.take_pending_images(session_id)
-        # 按时间排好（先来的在前）：被搭话的那几条消息里的图排前面，最新那张在最后
-        own = list(
-            dict.fromkeys(
-                [
-                    str(ref).strip()
-                    for ref in [*pending, *sources, *list(extra or [])]
-                    if str(ref).strip() and str(ref).strip() not in excluded
-                ]
-            )
-        )
-        # 「发送范围里」的图 = 这次真的会进提示词的聊天记录里的图（被压成概览的早就不在这里了，
-        # 那种不用管）。取其中**最近的 ``image_max`` 张**交给主模型看，**不管它是这一条消息带的
-        # 还是前面几条带的**——编号按时间序 图1/图2/…，和附件顺序一一对应。
-        window = await self.engine.chat_images_for_reply(session_id, PENDING_IMAGE_KEEP)
-        all_urls = list(
-            dict.fromkeys(
-                [
-                    *[
-                        str(item.get("url") or "").strip()
-                        for item in window
-                        if str(item.get("url") or "").strip() and str(item.get("url") or "").strip() not in excluded
-                    ],
-                    *own,
-                ]
-            )
-        )
-        # 附件 = 这些图里**最近的 cap 张**（`all_urls` 已经是时间序），编号按同一顺序：
-        # 第 i 张就是 图i，和附件顺序一一对应。
-        # 显式关掉（``never``）就一张都不附；检测不出主模型能不能看图、又没配转述模型时，
-        # 照样附过去（否则这些图就彻底没人看了）
-        attach = bool(inline) or (not captioned and mode != "never")
-        refs: list[str] = list(all_urls[-cap:]) if attach else []
-        marks: dict[str, str] = {
-            url: f"图{index}" for index, url in enumerate(refs, start=1)
-        }
-        notes: list[str] = []
-        if captioned:
-            dropped = [
-                url for url in all_urls if url and url not in set(refs)
-            ]
-            notes = await self._caption_old_images(event, dropped, sources=sources)
-        if not refs:
-            return [], {}, notes
-        detail = f"把 {len(refs)} 张图交给多模态主模型"
-        if marks:
-            detail += f"（聊天记录里的 {len(marks)} 张已编号）"
-        await self.engine.note_vision(
-            session_id, ok=True, images=len(refs), detail=detail
-        )
-        return refs, marks, notes
+        """Delegate legacy image selection and actual native attachment numbering."""
+        return await prepare_reply_images(self, event, sources, extra=extra, excluded=excluded, native=native)
 
     async def _caption_old_images(
         self,
@@ -1362,8 +1291,11 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
         # `req.image_urls` 里可能还有别的插件加进来的图（引用图片提取、视觉插件…）：
         # 一起算进去，否则那些图在她这一轮会凭空消失
         image_urls, image_marks, image_notes = await self._reply_images(
-            event, sources, extra=list(getattr(req, "image_urls", None) or []), excluded=media_refs
+            event, sources, extra=list(getattr(req, "image_urls", None) or []), excluded=media_refs,
+            native=self.reply_mode != "takeover",
         )
+        if self.reply_mode != "takeover":
+            _append_extra_text(req, native_image_note(event, image_marks))
         user_text = await self._annotate_message(
             event,
             user_text,
@@ -1379,6 +1311,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
             user_name=event.get_sender_name(),
             text=user_text,
             has_images=bool(_image_components(event)),
+            has_videos=has_videos(event),
             raw_text=raw_text,
             message_id=str(identity.get("message_id") or ""),
             event_id=str(identity.get("event_id") or ""),
@@ -2351,6 +2284,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
             text=text,
             is_wake=bool(event.is_wake_up()),
             has_images=bool(_image_components(event)),
+            has_videos=has_videos(event),
             raw_text=event.get_message_str() or "",
             is_mentioned=_is_at_bot(event) or bool(event.is_private_chat()),
             is_private=bool(event.is_private_chat()),
@@ -2423,6 +2357,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
                 text=text,
                 raw_text=raw_text,
                 has_images=bool(_image_components(event)),
+                has_videos=has_videos(event),
                 message_id=str(identity.get("message_id") or ""),
                 event_id=str(identity.get("event_id") or ""),
                 is_wake=bool(event.is_wake_up()),

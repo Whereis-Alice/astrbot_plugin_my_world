@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import copy
+import asyncio
+import time
 import json
 import inspect
 from dataclasses import fields
@@ -116,7 +118,10 @@ class ProactiveContext:
     async def prepare(self, options):
         from astrbot.api.provider import ProviderRequest
         from astrbot.core.agent.message import TextPart
-        original = source_event(self.plugin, self.target, self.speech.get("rows", []))
+        original = self.speech.get('media_event')
+        if original is not None and str(original.unified_msg_origin) != self.target:
+            raise RuntimeError('媒体源事件不属于目标会话')
+        original = original or source_event(self.plugin, self.target, self.speech.get("rows", []))
         if original is None:
             raise RuntimeError("目标会话没有原生事件，暂不生成主动发言")
         context = self.plugin.context
@@ -138,6 +143,8 @@ class ProactiveContext:
             contexts=copy.deepcopy(json.loads(conversation.history or "[]")), conversation=conversation,
             session_id=self.target, image_urls=list(options.get("image_urls") or []), extra_user_content_parts=[task])
         self.event.set_extra("provider_request", request)
+        if self.speech.get('media_event') is not None:
+            await self._collect_video(request)
         prepared = {}
         try:
             from astrbot.core.astr_main_agent import build_main_agent
@@ -189,11 +196,72 @@ class ProactiveContext:
                 if failed:
                     request.extra_user_content_parts.append(TextPart(text="部分图片暂不可读，不能猜测画面。").mark_as_temp())
         persona = await self.plugin._host_persona_prompt(self.event, request, self.target)
+        await self._bind_image_sources(request, prepared)
         request.system_prompt = options["system_prompt"] + "\n\n" + _drop_persona_instructions(request.system_prompt, persona)
         self.event.set_extra("provider_request", request)
         return {**options, "prompt": request.prompt, "system_prompt": request.system_prompt,
             "contexts": request.contexts, "image_urls": request.image_urls or None,
             "audio_urls": request.audio_urls or None, "extra_user_content_parts": request.extra_user_content_parts}
+
+    async def _collect_video(self, request):
+        """Explicit native requests skip attachment collection; preserve video inputs."""
+        from ..core.media_provenance import video_components
+        from astrbot.core.agent.message import TextPart
+        try:
+            from astrbot.core.astr_main_agent import _append_video_attachment
+        except ImportError:
+            return  # Request hooks still receive the actual Video event.
+        deadline = time.monotonic() + 20
+        for video, quoted in video_components(self.event):
+            before = len(request.extra_user_content_parts)
+            try:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('video preparation budget')
+                await asyncio.wait_for(_append_video_attachment(request, video, quoted=quoted), timeout=remaining)
+            except Exception:
+                request.extra_user_content_parts.append(TextPart(text='这条视频附件暂不可读取，不猜测视频内容。'))
+            for part in request.extra_user_content_parts[before:]:
+                part.mark_as_temp()
+
+    async def _bind_image_sources(self, request, prepared):
+        """Keep each observed image beside its source, even if another image failed."""
+        from astrbot.core.agent.message import TextPart, ImageURLPart
+        from astrbot.api.message_components import Image
+        labels = {}
+        for item in self.speech.get('image_contexts', []):
+            source = item['url']
+            cached = prepared.get(source)
+            if cached is None and self.legacy_images is not None:
+                cached = self.legacy_images.cache.get(source)
+            target = (cached.get('path') if isinstance(cached, dict)
+                      else cached[0] if isinstance(cached, tuple) and len(cached) == 4
+                      else cached if isinstance(cached, str) else source)
+            if not target:
+                continue
+            labels[target] = item['text']
+        unbound = []
+        deadline = time.monotonic() + 20
+        for ref in request.image_urls or []:
+            label = labels.get(ref)
+            if not label:
+                unbound.append(ref)
+                continue
+            request.extra_user_content_parts.append(TextPart(text=label + '（以下图片只对应这一来源，引用图与当前新图分开理解；内部身份不照读给群友）').mark_as_temp())
+            try:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('image source binding budget')
+                encoded = await asyncio.wait_for(Image(file=ref).convert_to_base64(), timeout=min(10, remaining))
+                if not encoded:
+                    raise ValueError('empty image')
+            except Exception:
+                request.extra_user_content_parts.append(TextPart(text='这张图片本轮无法读取，不推测画面。').mark_as_temp())
+                continue
+            mime = 'image/png' if encoded.startswith('iVBORw') else 'image/jpeg'
+            url = encoded if encoded.startswith('data:') else f'data:{mime};base64,{encoded}'
+            request.extra_user_content_parts.append(ImageURLPart(image_url=ImageURLPart.ImageURL(url=url)).mark_as_temp())
+        request.image_urls = unbound
 
     async def invoke(self, **options):
         # The SDK helper carries temporary ContentParts and uses native context

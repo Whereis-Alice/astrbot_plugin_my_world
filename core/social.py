@@ -193,6 +193,17 @@ class SocialDirectory:
                                "configured": self.engine.session_config(sid) is not None})
         return {"user_id": user_id, "name": name or user_id, "baseline": baseline, "sessions": scopes}
 
+    async def prepare_payload(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Refresh names for visible sessions before rendering their read-only state."""
+        people = data.get("people", [data.get("person", data)])
+        sessions = list(dict.fromkeys(item["session"] for person in people
+                                    for item in person.get("sessions", [])))
+        await self.engine.refresh_session_names(sessions)
+        for person in people:
+            for item in person.get("sessions", []):
+                item["label"] = self._label(item["session"])
+        return await self.with_emotions(data)
+
     async def with_emotions(self, data: dict[str, Any]) -> dict[str, Any]:
         """Resolve current characters for visible cards without mutating their lives."""
 

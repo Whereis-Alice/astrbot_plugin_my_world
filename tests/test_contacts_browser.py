@@ -18,6 +18,7 @@ CONTACTS_BRIDGE = r"""
   window.contactCalls = [];
   window.contactWrites = [];
   window.contactHistory = [];
+  window.contactSessionNames = null;
   const detail = async (params) => {
     const data = await original.apiGet('profile/contact', params);
     data.user_id = params.user_id;
@@ -56,6 +57,7 @@ CONTACTS_BRIDGE = r"""
       }
       if (endpoint === 'profile/contacts') {
         const data = await original.apiGet(endpoint, params);
+        if (window.contactSessionNames) data.session_names = clone(window.contactSessionNames);
         const first = data.people[0];
         data.people = Array.from({length: 66}, (_, i) => ({...clone(first),
           user_id: `${10001 + i}`, name: `朋友 ${10001 + i}`, last_seen_at: 1792230000 - i,
@@ -149,6 +151,29 @@ class ContactsBrowserTests(unittest.TestCase):
             expect(self.page.locator('[data-user="10001"]')).to_be_focused()
         self.host.set_viewport_size({"width": 1827, "height": 870})
         self.host.screenshot(path=str(self.shots / "contacts-desktop.png"))
+        self.assertEqual(self.errors, [])
+
+    def test_reload_recovers_group_names_without_switching_current_session(self):
+        picker = self.page.locator('#contacts-session')
+        picker.select_option('aiocqhttp:GroupMessage:2002')
+        self.page.evaluate("contactSessionNames = {'aiocqhttp:GroupMessage:2002': '最新群名称', 'aiocqhttp:GroupMessage:3003': '补取到的群名'}")
+        self.page.evaluate("document.querySelector('#contacts-refresh').click()")
+        expect(picker).to_have_value('aiocqhttp:GroupMessage:2002')
+        expect(picker).to_have_attribute('title', '最新群名称 · 2002')
+        expect(picker.locator('[value="aiocqhttp:GroupMessage:3003"]')).to_have_text('补取到的群名 · 3003')
+        expect(picker.locator('[value="aiocqhttp:GroupMessage:1001"]')).to_have_text('日常聊天 · 1001')
+        self.assertEqual(self.errors, [])
+
+    def test_name_refresh_keeps_selected_unconfigured_session_and_its_dossier(self):
+        picker = self.page.locator('#contacts-session')
+        picker.evaluate("node => node.add(new Option('历史群', 'aiocqhttp:GroupMessage:5005', true, true))")
+        self.page.evaluate("contactSessionNames = {'aiocqhttp:GroupMessage:5005': '历史群的新名字'}")
+        self.page.locator('#contacts-refresh').click()
+        expect(picker).to_have_value('aiocqhttp:GroupMessage:5005')
+        expect(picker).to_have_attribute('title', '历史群的新名字 · 5005')
+        expect(self.page.locator('.contact-card')).to_have_count(66)
+        self.open_person()
+        self.assertEqual(self.page.evaluate('contactCalls.at(-1).session'), 'aiocqhttp:GroupMessage:5005')
         self.assertEqual(self.errors, [])
 
     def test_directory_reads_only_on_demand_and_dossier_traps_focus(self):

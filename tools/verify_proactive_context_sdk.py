@@ -5,6 +5,9 @@ import json
 import logging
 import sys
 import types
+import tempfile
+import copy
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -124,8 +127,77 @@ async def check():
     assert saved == history + [{"role": "assistant", "content": "改写后的公开台词"}]
     assert event.get_sender_id() == "alice"
     assert calls.count("OnLLMRequestEvent") == 1
+    from PIL import Image as PILImage
+    from astrbot.core.agent.message import ImageURLPart
+    from astrbot.core.message.components import Video
+    with tempfile.TemporaryDirectory(prefix='my-world-sdk-media-') as folder:
+        folder = Path(folder)
+        first, second, missing = folder / 'first.png', folder / 'second.png', folder / 'missing.png'
+        PILImage.new('RGB', (32, 32), 'red').save(first)
+        PILImage.new('RGB', (32, 32), 'blue').save(second)
+        paths = [str(missing), str(first), str(second)]
+        native_media = module.ProactiveContext(plugin, {'target': target, 'rows': [],
+            'image_contexts': [{'url': path, 'text': name} for path, name in zip(paths, ['不可读来源', '来源消息a', '引用消息b'])]})
+        with patch.object(module, 'fire_hook', hook):
+            media_options = await native_media.prepare({'chat_provider_id': 'synthetic', 'prompt': '看正确的图片',
+                                                       'system_prompt': '插件人设', 'image_urls': paths})
+        parts = media_options['extra_user_content_parts']
+        labelled = [i for i, part in enumerate(parts) if isinstance(part, TextPart)
+                    and ('来源消息a' in part.text or '引用消息b' in part.text)]
+        assert len(labelled) == 2
+        assert all(isinstance(parts[i + 1], ImageURLPart) and parts[i + 1]._no_save for i in labelled)
+        assert parts[labelled[0] + 1].image_url.url != parts[labelled[1] + 1].image_url.url
+        assert not media_options['image_urls']
+        await native_media.invoke(**media_options)
+        assert '来源消息a' in json.dumps(model.requests[-1], ensure_ascii=False,
+            default=lambda part: part.model_dump() if hasattr(part, 'model_dump') else str(part))
+        await native_media.close()
+        video_path = folder / 'synthetic-attachment.mp4'
+        video_path.write_bytes(b'synthetic attachment; no decoding or real provider')
+        video_message = copy.deepcopy(message)
+        video_message.message = [Video(file=str(video_path))]
+        video_event = Event('［视频］', video_message, event.platform_meta, 'room')
+        native_video = module.ProactiveContext(plugin, {'target': target, 'rows': [], 'media_event': video_event})
+        seen_video = []
+
+        async def video_hook(plugin, actual, name, *args, **kwargs):
+            if name == 'OnLLMRequestEvent':
+                seen_video.append(any(isinstance(part, Video) for part in actual.message_obj.message))
+                args[0].extra_user_content_parts.append(TextPart(text='普通视频插件收到正确视频源事件').mark_as_temp())
+            return False
+
+        with patch.object(module, 'fire_hook', video_hook):
+            video_options = await native_video.prepare({'chat_provider_id': 'synthetic', 'prompt': '视频后的现场接话',
+                                                       'system_prompt': '插件人设'})
+        assert seen_video == [True]
+        await native_video.invoke(**video_options)
+        assert '普通视频插件收到正确视频源事件' in json.dumps(model.requests[-1], ensure_ascii=False,
+            default=lambda part: part.model_dump() if hasattr(part, 'model_dump') else str(part))
+        assert event.message_obj.message == []
+        reply_message = copy.deepcopy(message)
+        reply_message.message_id = 'actual-reply'
+        reply_message.sender = MessageMember(user_id='bob', nickname='Bob')
+        reply_event = Event('视频后另一位群友的话', reply_message, event.platform_meta, 'room')
+        engine.media = types.SimpleNamespace(events={(target, 'actual-reply'): (time.monotonic(), reply_event)})
+        public = models.TickOutcome(target, speech_kind='participation', native_events={target: native_video.event})
+        public.add_speech('对这位群友接话')
+        public.reply_targets[target] = 'actual-reply'
+        addressed = []
+
+        async def public_hook(plugin, actual, name, *args, **kwargs):
+            if name == 'OnLLMResponseEvent':
+                addressed.append(actual.get_sender_id())
+            return False
+
+        with patch.object(delivery, 'fire_hook', public_hook):
+            async with delivery.delivery(plugin, target, public):
+                assert addressed == ['bob']
+                outgoing = delivery.WIRE.get()[(target, 0)]['event']
+                assert outgoing.get_extra('provider_request').conversation.cid == 'cid'
+        await native_video.close()
     print(json.dumps({"passed": True, "native_history": True, "temporary_injection": True,
-        "public_hooks": True, "accepted_only_history": True, "source_isolation": True}))
+        "public_hooks": True, "accepted_only_history": True, "source_isolation": True,
+        "image_source_binding": True, "video_request_hook_source": True}))
 
 
 if __name__ == "__main__":

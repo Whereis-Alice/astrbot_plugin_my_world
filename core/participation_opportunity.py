@@ -17,7 +17,7 @@ _ACKNOWLEDGEMENTS = {"嗯", "嗯嗯", "好", "好的", "哈哈", "哈哈哈", "�
 def attention_text(row: dict) -> str:
     """Quoted text/vision annotations are context, not the author's new contribution."""
     text = chat_core_text(str(row.get("reading_text", row.get("text", "")) or "")).strip()
-    if re.fullmatch(r"(?:\s*[\[［「](?:图片|图像|动画表情|表情包|表情|image)(?:[:：][^\]］」]*)?[\]］」]\s*)+", text, re.I):
+    if re.fullmatch(r"(?:\s*[\[［「](?:图片|图像|动画表情|表情包|表情|视频|image|video)(?:[:：][^\]］」]*)?[\]］」]\s*)+", text, re.I):
         return ""
     return text
 
@@ -25,12 +25,12 @@ def attention_text(row: dict) -> str:
 def media_scene_allowed(*, rows: list[dict], new: list[dict], now: float,
                         mode: str = "contextual") -> bool:
     """A bare image alone is not a summons or evidence of topic relevance."""
-    if not any(row.get("has_images") or row.get("images") for row in new):
+    if not any(row.get("has_images") or row.get("images") or row.get("has_videos") for row in new):
         return True
     turns = visible_turns(rows, now)
     own_ids = {mid for t in turns for mid in t["message_ids"]}
     for row in new:
-        media = row.get("has_images") or row.get("images")
+        media = row.get("has_images") or row.get("images") or row.get("has_videos")
         explicit = (row.get("addressing") == "me" or
                     str((row.get("reply_to") or {}).get("message_id") or "") in own_ids)
         text = attention_text(row)
