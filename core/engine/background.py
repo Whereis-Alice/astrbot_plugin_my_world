@@ -11,6 +11,7 @@ from contextvars import ContextVar
 from typing import Any
 
 from ..llm_usage import collect_llm_usage
+from ..background_budget import BackgroundReservation
 from ..model_calls import call_context
 from ..model_call_runtime import safe_error
 from .life_inference import LIFE_WORK, released_life_lock, validate_life_preparation
@@ -139,20 +140,20 @@ class BackgroundMixin:
                 and getattr(channel, "role", "") == "main" and callable(getattr(context, "tool_loop_agent", None))):
             reserve *= self.world.decider.proactive_tool_steps + 1
         day = self._today_key(now)
-        admitted = False
-        usage = None
         try:
-            budget = await self.db.call("reserve_background", day, calls=self.world.limits.background_daily_calls,
-                                        tokens=self.world.limits.background_daily_tokens, reserve=reserve)
-            if not budget["allowed"]:
-                return LLMReply(ok=False, error=budget["reason"])
-            admitted = True
-            with collect_llm_usage(propagate=True) as usage:
-                # Tick never spends a full provider timeout holding a character lock.
-                timeout = min(2, self.world.limits.background_llm_timeout_seconds) if CRITICAL_TICK.get() and not LIFE_WORK.get() else self.world.limits.background_llm_timeout_seconds
-                async with released_life_lock(self):
-                    async with asyncio.timeout(timeout):
-                        reply = await channel.generate(**kwargs)
+            async with BackgroundReservation(self.db, day,
+                    calls=self.world.limits.background_daily_calls,
+                    tokens=self.world.limits.background_daily_tokens, reserve=reserve) as budget:
+                if not budget.allowed:
+                    return LLMReply(ok=False, error=budget.reason)
+                with collect_llm_usage(propagate=True) as usage:
+                    budget.usage = usage
+                    # Tick never spends a full provider timeout holding a character lock.
+                    timeout = min(2, self.world.limits.background_llm_timeout_seconds) if CRITICAL_TICK.get() and not LIFE_WORK.get() else self.world.limits.background_llm_timeout_seconds
+                    async with released_life_lock(self):
+                        async with asyncio.timeout(timeout):
+                            budget.started = True
+                            reply = await channel.generate(**kwargs)
             if reply is None or not getattr(reply, "ok", True):
                 raise RuntimeError(str(getattr(reply, "error", "") or "后台模型未返回有效内容")[:500])
             failures.pop(failure_key, None)
@@ -166,9 +167,6 @@ class BackgroundMixin:
             raise
         finally:
             self._background_active -= 1
-            if admitted:
-                measured = usage.total if usage and usage.responses and usage.reported_responses == usage.responses and not usage.incomplete else None
-                await self.db.call("settle_background", day, reserve=reserve, measured=measured)
 
     def reconcile_life_time(self, state) -> float:
         """Reconcile elapsed needs/rest; never execute tools, messages or projects offline."""

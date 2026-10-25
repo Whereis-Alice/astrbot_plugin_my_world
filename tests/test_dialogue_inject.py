@@ -130,6 +130,69 @@ class DialogueInjectTests(unittest.TestCase):
         plugin.engine.reload_config()
         return plugin, context
 
+    def test_running_native_reply_stays_busy_after_five_minutes(self):
+        session = 'aiocqhttp:GroupMessage:inject-long-native'
+        plugin, _context = self._plugin(session)
+
+        async def scenario():
+            entered, release = asyncio.Event(), asyncio.Event()
+
+            async def native_pipeline():
+                await plugin.on_llm_request(Event('在吗', session=session), Request('在吗'))
+                entered.set()
+                await release.wait()
+
+            pipeline = asyncio.create_task(native_pipeline())
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                self.assertTrue(plugin.engine.reply_busy(session))
+                started = plugin.engine._now()
+                plugin.engine._now = lambda: started + 301
+                self.assertTrue(plugin.engine.reply_busy(session), 'a live host reply is not an orphan')
+                other = 'aiocqhttp:GroupMessage:unrelated'
+                self.assertFalse(plugin.engine.reply_busy(other))
+                other_turn = {'session_id': other, 'started_at': started + 301}
+                plugin.engine.begin_native_turn(other_turn)
+                self.assertTrue(plugin.engine.reply_busy(session), 'registering another turn retains live owners')
+                plugin.engine.end_native_turn(other_turn)
+            finally:
+                release.set()
+                await pipeline
+            self.assertFalse(plugin.engine._participation_native_turns)
+            self.assertFalse(plugin.engine._participation_native_owners)
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            plugin.db.raw.close()
+
+    def test_cancelled_native_pipeline_releases_priority_without_sent_hook(self):
+        session = 'aiocqhttp:GroupMessage:inject-cancel-native'
+        plugin, _context = self._plugin(session)
+
+        async def scenario():
+            entered = asyncio.Event()
+
+            async def native_pipeline():
+                await plugin.on_llm_request(Event('在吗', session=session), Request('在吗'))
+                entered.set()
+                await asyncio.Event().wait()
+
+            pipeline = asyncio.create_task(native_pipeline())
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                self.assertTrue(plugin.engine.reply_busy(session))
+            finally:
+                pipeline.cancel()
+                await asyncio.gather(pipeline, return_exceptions=True)
+            self.assertFalse(plugin.engine.reply_busy(session), 'an ended pipeline must not block life')
+            self.assertFalse(plugin.engine._participation_native_turns)
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            plugin.db.raw.close()
+
     def test_inject_keeps_native_request_and_tools_untouched(self):
         session = "aiocqhttp:GroupMessage:inject-keep"
         plugin, context = self._plugin(session)

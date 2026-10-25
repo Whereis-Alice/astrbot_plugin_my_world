@@ -1561,7 +1561,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
         )
         self.engine.decision_trace(session_id, "prepare", "awaiting_native", "已交给 AstrBot 原生 Agent",
                                    memory_ids=list(plan.recalled_ids), message_ids=[str(row.get("message_id") or "") for row in plan.batch])
-        self.engine.begin_native_turn(event.get_extra(MW_TURN_EXTRA))
+        self.engine.begin_native_turn(event.get_extra(MW_TURN_EXTRA), owner=asyncio.current_task())
         if self.debug:
             self.logger.info(
                 f"[my_world] 注入接管 {session_id}："

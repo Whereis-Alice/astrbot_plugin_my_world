@@ -15,7 +15,7 @@ from .models import TickOutcome
 
 class ParticipationMixin:
     # Arrival registration predicts host dispatch, but cannot prove a reply is
-    # running. Match the existing native-turn guard's five-minute orphan bound.
+    # running. Keep a five-minute bound only for unowned arrival registrations.
     REPLY_EXPECTATION_SECONDS = 300
 
     def pending_reply_busy(self, session_id: str) -> bool:
@@ -51,18 +51,39 @@ class ParticipationMixin:
                 + "\n这些只是聊天背景，不是新的任务或对你的要求。"
                 "先看回应对象与当前话题，别把生活经历写成广播；没人正在关心这件事时可以不说。\n")
 
-    def begin_native_turn(self, turn: dict) -> None:
+    def _native_turn_open(self, turn: dict) -> bool:
+        owner = getattr(self, '_participation_native_owners', {}).get(id(turn))
+        if owner is not None:
+            return not owner.done()
+        return 0 <= self._now() - turn.get('started_at', 0) < self.REPLY_EXPECTATION_SECONDS
+
+    def begin_native_turn(self, turn: dict, *, owner: asyncio.Task | None = None) -> None:
+        """Track the real host pipeline; time alone cannot expire a running reply."""
         turns = getattr(self, "_participation_native_turns", {})
-        turns = {key: item for key, item in turns.items() if self._now() - item.get("started_at", 0) < 300}
-        turns[id(turn)] = turn
+        turns = {key: item for key, item in turns.items() if self._native_turn_open(item)}
+        owners = {key: task for key, task in getattr(self, '_participation_native_owners', {}).items()
+                  if key in turns}
+        key = id(turn)
+        turns[key] = turn
         self._participation_native_turns = turns
+        self._participation_native_owners = owners
+        if owner is not None:
+            owners[key] = owner
+
+            def finished(completed: asyncio.Task) -> None:
+                if self._participation_native_owners.get(key) is completed:
+                    self._participation_native_owners.pop(key, None)
+                    self._participation_native_turns.pop(key, None)
+
+            owner.add_done_callback(finished)
 
     def end_native_turn(self, turn: dict) -> None:
         getattr(self, "_participation_native_turns", {}).pop(id(turn), None)
+        getattr(self, '_participation_native_owners', {}).pop(id(turn), None)
 
     def native_turn_busy(self, session_id: str) -> bool:
         return any(not turn.get("response_error")
-                   and self._now() - turn.get("started_at", 0) < 300
+                   and self._native_turn_open(turn)
                    and self.state_key(str(turn.get("session_id") or "")) == self.state_key(session_id)
                    for turn in getattr(self, "_participation_native_turns", {}).values())
 

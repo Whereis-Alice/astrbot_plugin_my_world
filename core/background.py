@@ -43,6 +43,16 @@ class BackgroundStoreMixin:
             self._execute("UPDATE kv SET value=? WHERE key=?", (json.dumps(item), key))
             return item
 
+    def release_background(self, day: str, *, reserve: int) -> dict[str, Any]:
+        """Withdraw one admitted request known never to have entered its model channel."""
+        key = 'background_budget:' + day
+        with self.atomic():
+            item = self._load_background(day)
+            item['calls'] = max(0, item['calls'] - 1)
+            item['reserved'] = max(0, item['reserved'] - reserve)
+            self._execute('UPDATE kv SET value=? WHERE key=?', (json.dumps(item), key))
+            return item
+
     def background_status(self, day: str) -> dict[str, Any]:
         """Read the durable budget without reserving another model call."""
 
