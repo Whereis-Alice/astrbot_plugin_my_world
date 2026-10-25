@@ -3,6 +3,7 @@
 import asyncio
 import json
 import unittest
+from hashlib import sha256
 from unittest.mock import AsyncMock
 
 from tests import test_engine as fixture
@@ -16,6 +17,7 @@ class BackgroundIdentityTests(unittest.IsolatedAsyncioTestCase):
     add_group = fixture.EngineTestCase.add_group
 
     async def pending_result(self, kind, change):
+        self.requested_persona = self.persona.text
         async with self.engine.session_state(SESSION) as state:
             state.world_time, state.state, state.energy = 600, "idle", .9
         self.engine.profiles.touch(SESSION, "42", "小明")
@@ -51,6 +53,11 @@ class BackgroundIdentityTests(unittest.IsolatedAsyncioTestCase):
         after = await self.engine.load_state(SESSION, cold_start=False)
         return before, after, affinity, result
 
+    def seed_marker(self):
+        key = f"life_seed:{SESSION}:{self.engine._today_key(self.clock.now())}"
+        owner = sha256(self.requested_persona.encode()).hexdigest()[:24]
+        return self.db.raw.kv_get(key)["personas"][owner]
+
     def assert_discarded(self, before, after, affinity, result):
         self.assertIsNone(result)
         self.assertEqual(after.thoughts, before.thoughts)
@@ -79,7 +86,7 @@ class BackgroundIdentityTests(unittest.IsolatedAsyncioTestCase):
         async def change():
             self.persona.text = "你是一个严谨克制的学者。"
         self.assert_discarded(*await self.pending_result("seed", change))
-        marker = self.db.raw.kv_get(f"life_seed:{SESSION}:{self.engine._today_key(self.clock.now())}")
+        marker = self.seed_marker()
         self.assertFalse(marker.get("done"), "discarded inference must remain eligible for a delayed retry")
         self.clock.advance(max(15, self.engine.world.limits.life_matter_interval_minutes) * 60)
         self.engine._ask_judge = AsyncMock(return_value='{"text":"研究书中的论证"}')
@@ -92,7 +99,7 @@ class BackgroundIdentityTests(unittest.IsolatedAsyncioTestCase):
         async def change():
             self.engine.session_config(SESSION).enabled = False
         self.assert_discarded(*await self.pending_result("seed", change))
-        marker = self.db.raw.kv_get(f"life_seed:{SESSION}:{self.engine._today_key(self.clock.now())}")
+        marker = self.seed_marker()
         self.assertFalse(marker.get("done"))
 
     async def test_self_start_cannot_apply_after_world_reloads(self):

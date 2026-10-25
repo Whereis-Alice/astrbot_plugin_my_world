@@ -49,15 +49,33 @@ class MattersMixin:
     def _matter_can_work(self, state) -> bool:
         return state.state == "idle" and self.life_choice(state)["kind"] in {"idle", "matter"}
 
+    def _life_seed_marker(self, key: str, persona_key: str | None):
+        """Adopt an old daily marker once, without making it block other personas."""
+        record = self.db.raw.kv_get(key)
+        if not record:
+            return None
+        if isinstance(record, dict) and isinstance(record.get("personas"), dict):
+            return record["personas"].get(persona_key or "")
+        if persona_key is not None:
+            self.db.raw.kv_set(key, {"personas": {persona_key: record}})
+        return record
+
+    def _save_life_seed_marker(self, key: str, persona_key: str, marker: dict) -> None:
+        record = self.db.raw.kv_get(key) or {}
+        owners = record.get("personas") if isinstance(record, dict) else None
+        if not isinstance(owners, dict):
+            owners = {}
+        self.db.raw.kv_set(key, {"personas": {**owners, persona_key: marker}})
+
     def life_seed_due(self, state: WorldState) -> bool:
-        """One suggestion a day; transient failures get a bounded, delayed retry."""
+        """One suggestion per persona per day; failures get a bounded, delayed retry."""
         if (not self.world.limits.life_matter_enabled or not self.world.limits.life_matter_self_start
                 or not self._matter_can_work(state) or state.world_time * self.tick_seconds < 6 * 3600
                 or any(m["status"] in {"active", "working"}
                        and matters.belongs_to(m, self._matter_persona_key(state)) for m in state.life_matters)):
             return False
         key = f"life_seed:{self.state_key(state.session_id)}:{self._today_key(self._now())}"
-        marker = self.db.raw.kv_get(key)
+        marker = self._life_seed_marker(key, self._matter_persona_key(state))
         if not marker:
             return True
         # A legacy marker already consumed this day's suggestion.
@@ -71,26 +89,27 @@ class MattersMixin:
             return
         world = self.world
         state_key = self.state_key(session_id)
-        day = self._today_key(self._now())
-        key = f"life_seed:{state_key}:{day}"
         async with self.session_state(session_id) as state:
+            from .life_inference import STATE_LEASE
+            persona = STATE_LEASE.get()["persona"]
+            persona_key = sha256(persona.encode("utf-8")).hexdigest()[:24]
+            day = self._today_key(self._now())
+            key = f"life_seed:{state_key}:{day}"
             matters.ensure(state, self._now())
             if not self.life_seed_due(state):
                 return
             candidates = self._matter_actions(state)
-            interests = matters.stable_interests(state, now=self._now(), persona_key=self._matter_persona_key(state))
-            marker = self.db.raw.kv_get(key) or {}
+            interests = matters.stable_interests(state, now=self._now(), persona_key=persona_key)
+            marker = self._life_seed_marker(key, persona_key) or {}
             attempts = int(marker.get("attempts") or 0) + 1
-            self.db.raw.kv_set(key, {"at": self._now(), "attempts": attempts,
+            self._save_life_seed_marker(key, persona_key, {"at": self._now(), "attempts": attempts,
                 "retry_at": self._now() + max(15, self.world.limits.life_matter_interval_minutes) * 60})
-        persona = await self._persona_text(session_id)
-        persona_key = sha256(persona.encode("utf-8")).hexdigest()[:24]
-        # A new day is not a blank life. Keep only her personal projects;
-        # conversation promises and another persona's history stay private.
-        recent = [m for m in state.life_matters if not m.get("who") and m.get("kind") != "promise"
-                  and (not m.get("persona_key") or m["persona_key"] == persona_key)
-                  and (m["status"] not in matters.CLOSED
-                       or self._now() - float(m.get("updated_at") or m.get("at") or 0) <= 30 * 86400)]
+            # Freeze projects together with the persona and interests. A new
+            # day is not a blank life; private promises stay out of this prompt.
+            recent = copy.deepcopy([m for m in state.life_matters if not m.get("who") and m.get("kind") != "promise"
+                      and (not m.get("persona_key") or m["persona_key"] == persona_key)
+                      and (m["status"] not in matters.CLOSED
+                           or self._now() - float(m.get("updated_at") or m.get("at") or 0) <= 30 * 86400)])
         closed = sorted((m for m in recent if m["status"] in matters.CLOSED),
                         key=lambda m: float(m.get("updated_at") or m.get("at") or 0))[-12:]
         previous = []
@@ -124,7 +143,7 @@ class MattersMixin:
         payload = extract_json_object(raw or "") or {}
         if "text" not in payload or not isinstance(payload["text"], str):
             # Backoff begins when the request returns, even after a slow failure.
-            self.db.raw.kv_set(key, {"at": self._now(), "attempts": attempts,
+            self._save_life_seed_marker(key, persona_key, {"at": self._now(), "attempts": attempts,
                 "retry_at": self._now() + max(15, world.limits.life_matter_interval_minutes) * 60})
             return  # Unavailable/malformed is different from a valid "no new idea".
         if self.world is not world or self.state_key(session_id) != state_key or not self.is_enabled(session_id):
@@ -140,7 +159,7 @@ class MattersMixin:
                     or any(m["status"] in {"active", "working"} and matters.belongs_to(m, persona_key)
                            for m in state.life_matters)):
                 return
-            self.db.raw.kv_set(key, {"at": self._now(), "attempts": attempts, "done": True})
+            self._save_life_seed_marker(key, persona_key, {"at": self._now(), "attempts": attempts, "done": True})
             text = " ".join(payload["text"].split())[:160]
             # Exact repeats are a valid "no new idea", not a second project.
             # Avoid semantic fuzzy merging: similar goals can have different meanings.
@@ -152,7 +171,6 @@ class MattersMixin:
                    and (m["status"] not in matters.CLOSED
                         or self._now() - float(m.get("updated_at") or m.get("at") or 0) <= 30 * 86400)):
                 return
-            _, persona_key = await self._journal_persona(session_id)
             self.add_life_matter(state, text, session=session_id,
                                  motivation=str(payload.get("motivation") or ""),
                                  persona_key=persona_key)

@@ -28,6 +28,7 @@ class ExtractionQueueTests(unittest.IsolatedAsyncioTestCase):
             proactive_extraction_enabled=True, session_based=True,
             event_session=lambda event: event.unified_msg_origin,
             is_profile_candidate_message=lambda _event, _text: True,
+            prepare_extraction=Mock(return_value=None),
             maybe_extract=AsyncMock(), debug=Mock())
         queue = ProfileExtractionQueue(service, timeout=timeout, max_pending=max_pending)
         self.addAsyncCleanup(queue.close)

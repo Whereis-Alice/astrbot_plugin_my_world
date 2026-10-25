@@ -55,8 +55,12 @@ class ProfileExtractionQueue:
             try:
                 async with asyncio.timeout(self.timeout):
                     async with lock:
-                        async with self._slots:
-                            if not self._closed:
+                        # Preserve one user's write order, but other users' slow
+                        # model calls must not hold up zero-token local facts.
+                        if not self._closed and self.service.prepare_extraction(snapshot, observed) is None:
+                            async with self._slots:
+                                if self._closed:
+                                    return
                                 await self.service.maybe_extract(snapshot, observed)
             except asyncio.CancelledError:
                 raise

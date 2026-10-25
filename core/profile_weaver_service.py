@@ -1573,8 +1573,8 @@ class ProfileWeaverService:
             ),
         )
 
-    async def maybe_extract(self, event: Any, response: Any = None) -> bool:
-        """低开销自动抽取：明确的简单自述走本地，其余才交给一次短工具循环。"""
+    def prepare_extraction(self, event: Any, response: Any = None) -> bool | None:
+        """处理无需模型的提取；None 表示仍需要模型，False 表示不应提取。"""
 
         if (
             not self.proactive_extraction_enabled
@@ -1592,6 +1592,13 @@ class ProfileWeaverService:
             return False
         if self.maybe_extract_local(event):
             return True
+        return None
+
+    async def maybe_extract(self, event: Any, response: Any = None) -> bool:
+        """低开销自动抽取：明确的简单自述走本地，其余才交给一次短工具循环。"""
+        prepared = self.prepare_extraction(event, response)
+        if prepared is not None:
+            return prepared
         if self.auto_extract_tools is None:
             return False
         provider_id = await self._resolve_chat_provider_id(event)
@@ -1605,7 +1612,7 @@ class ProfileWeaverService:
             setattr(event, "_profileweaver_auto_extract_running", True)
             prompt = (
                 "只根据当前用户这条消息，决定是否需要调用画像工具。\n"
-                f"当前消息：{message}\n"
+                f"当前消息：{str(getattr(event, 'message_str', '') or '').strip()}\n"
                 "没有明确、稳定、适合长期记忆的信息时，直接回复 NOOP。"
             )
             await tracked_generate(self.plugin, invoke=tool_loop, session_id=self.event_session(event),
