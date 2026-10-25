@@ -39,17 +39,16 @@ _MULTI_IMAGE_RULE = (
 def _split_multi_caption(text: str, count: int) -> list[str]:
     """把「图1：… 图2：…」拆成逐图结果；对不上就返回空列表（调用方退回逐张）。"""
 
-    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
-    if len(lines) < count:
-        return []
-    picked: list[str] = []
-    for index, line in enumerate(lines[:count], start=1):
-        for prefix in (f"图{index}：", f"图{index}:", f"{index}：", f"{index}.", f"{index})", f"{index}）"):
-            if line.startswith(prefix):
-                line = line[len(prefix) :].strip()
-                break
-        picked.append(line)
-    return picked if all(picked) else []
+    picked = {}
+    for line in str(text or "").splitlines():
+        match = re.match(r'^\s*(?:图\s*)?(\d+)\s*[：:.．)）]\s*(.*?)\s*$', line)
+        if not match:
+            continue
+        index, body = int(match[1]), match[2].strip()
+        if not 1 <= index <= count or index in picked or not body:
+            return []
+        picked[index] = body
+    return [picked[i] for i in range(1, count + 1)] if len(picked) == count else []
 
 # 「与话题的关系」之后的内容是会过期的：换个话题再说同一张图，这半句就不对了。
 # 命中缓存时只复用前面的画面/类型描述，关系交回主模型判断。
@@ -121,11 +120,11 @@ def _image_fingerprint(source: str) -> str:
         digest = hashlib.sha1(
             urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, parsed.query, "")).encode("utf-8", "ignore")
         ).hexdigest()
-        # Do not reuse older URL cache rows that discarded content parameters.
-        return f"img:url2:{digest}"
+        # Old batch captions could be cached against the wrong image.
+        return f"img:caption3:url:{digest}"
     else:
         digest = hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()
-    return f"img:{digest}"
+    return f"img:caption3:{digest}"
 
 
 class AstrBotVision:

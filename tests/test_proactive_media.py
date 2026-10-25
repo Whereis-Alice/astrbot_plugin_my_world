@@ -49,6 +49,30 @@ class ProactiveMediaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.event._extras["original"]["value"], 1)
         self.motion.release_media_request.assert_awaited_once()
 
+    async def test_latest_video_does_not_borrow_an_older_messages_image(self):
+        video = {"origin": self.row["origin"], "message_id": "video-2", "has_videos": True, "text": "视频"}
+        async with self.media.context(self.row["origin"], [self.row, video]) as data:
+            self.assertEqual(data['images'], [])
+            self.assertIn('video-2', data['text'])
+            self.assertIn('视频', data['text'])
+        self.motion.handle.assert_not_awaited()
+
+    async def test_each_prepared_image_retains_its_own_message_identity(self):
+        self.plugin.context.get_all_stars = lambda: []
+        other = {**self.row, "message_id": "other-image", "images": ["other.png"]}
+        async with self.media.context(self.row['origin'], [self.row, other]) as data:
+            self.assertEqual(data['images'], ['prepared:original.gif', 'prepared:other.png'])
+            self.assertIn('4711', data['image_contexts'][0]['text'])
+            self.assertNotIn('other-image', data['image_contexts'][0]['text'])
+            self.assertIn('other-image', data['image_contexts'][1]['text'])
+
+    async def test_video_snapshot_is_used_only_from_the_exact_selected_message(self):
+        video = {**self.row, 'images': [], 'has_videos': True}
+        async with self.media.context(self.row['origin'], [video]) as data:
+            self.assertEqual(data['media_event'].unified_msg_origin, self.row['origin'])
+            self.assertEqual(data['images'], [])
+        self.motion.handle.assert_not_awaited()
+
     async def test_other_conversation_and_own_messages_are_excluded(self):
         async with self.media.context("test:GroupMessage:b", [self.row]) as data:
             self.assertEqual(data, {"images": [], "text": ""})

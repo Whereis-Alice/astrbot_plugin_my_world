@@ -57,7 +57,16 @@ async def delivery(plugin, target, view, *, echo_count=0, instant=False):
             identities.append(identity)
             positions[index + 1] = len(messages)
             continue
-        event = isolated_event(original, plugin.context, target)
+        public_original = original
+        if kind in {"participation", "browse_reply", "continuation", "interject"}:
+            reply_id = view.reply_targets.get(target, '')
+            if reply_id:
+                referenced = source_event(plugin, target, [{'message_id': reply_id, 'origin': target}])
+                if str(getattr(getattr(referenced, 'message_obj', None), 'message_id', '') or '') == reply_id:
+                    public_original = referenced
+        # Request hooks may need a video's event; response hooks address the
+        # actual message being answered and keep the inference conversation.
+        event = isolated_event(public_original, plugin.context, target)
         request = original.get_extra("provider_request")
         if request is not None:
             event.set_extra("provider_request", copy.deepcopy(request))

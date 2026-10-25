@@ -35,6 +35,7 @@ from astrbot.api import AstrBotConfig
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.message_components import Image, Plain, Reply
 from astrbot.api.star import Context, Star, register
+from .core.media_provenance import has_videos, video_note, native_image_note
 
 try:
     from astrbot.api import ToolSet
@@ -836,6 +837,8 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
             # 纯语音消息：正文是空的，不说明一下她会以为自己收到了一条空白消息。
             # 内容转写要靠 AstrBot 那边装语音转文字的能力，这里只把"发生了什么"讲清楚。
             notes.append("这是一段语音消息，你听不到里面的内容")
+        if note := video_note(event):
+            notes.append(note)
         if not notes:
             return text
         return f"{text}\n［{'；'.join(notes)}］".strip()
@@ -982,6 +985,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
         sources: list[str],
         extra: list[str] | None = None,
         excluded: set[str] | None = None,
+        native: bool = False,
     ) -> tuple[list[str], dict[str, str], list[str]]:
         """这一轮直接交给模型看的图、它们的编号（``图1``/``图2``…），以及要转成文字的那几张。
 
@@ -1000,9 +1004,19 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
         ``extra`` 是别的插件往这一轮请求里加的图（``req.image_urls``）：和这一条消息
         自己带的图一样对待，去重之后一起编号——那是别人已经认可的"要给模型看"的图，
         丢掉就等于这一轮少看了一张。
+
+        ``native``：注入模式只对 AstrBot 实际保留的附件编号，图片准备和转述
+        继续由宿主与媒体插件处理；不把旧版挑选但未附上的历史图标成实际附件。
         """
 
         excluded = excluded or set()
+        if native:
+            # Inject mode retains the host's actual image inputs. The legacy
+            # history-image selection below is not delivered by this route.
+            actual = list(dict.fromkeys(str(ref).strip() for ref in extra or [] if str(ref).strip()))
+            marks = {ref: f"图{index}" for index, ref in enumerate(actual, 1) if ref not in excluded}
+            await self.engine.take_pending_images(event.unified_msg_origin)
+            return [ref for ref in actual if ref not in excluded], marks, []
         session_id = event.unified_msg_origin
         context = self.engine.world.context
         cap = max(1, int(context.image_max))
@@ -1362,8 +1376,11 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
         # `req.image_urls` 里可能还有别的插件加进来的图（引用图片提取、视觉插件…）：
         # 一起算进去，否则那些图在她这一轮会凭空消失
         image_urls, image_marks, image_notes = await self._reply_images(
-            event, sources, extra=list(getattr(req, "image_urls", None) or []), excluded=media_refs
+            event, sources, extra=list(getattr(req, "image_urls", None) or []), excluded=media_refs,
+            native=self.reply_mode != "takeover",
         )
+        if self.reply_mode != "takeover":
+            _append_extra_text(req, native_image_note(event, image_marks))
         user_text = await self._annotate_message(
             event,
             user_text,
@@ -1379,6 +1396,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
             user_name=event.get_sender_name(),
             text=user_text,
             has_images=bool(_image_components(event)),
+            has_videos=has_videos(event),
             raw_text=raw_text,
             message_id=str(identity.get("message_id") or ""),
             event_id=str(identity.get("event_id") or ""),
@@ -2351,6 +2369,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
             text=text,
             is_wake=bool(event.is_wake_up()),
             has_images=bool(_image_components(event)),
+            has_videos=has_videos(event),
             raw_text=event.get_message_str() or "",
             is_mentioned=_is_at_bot(event) or bool(event.is_private_chat()),
             is_private=bool(event.is_private_chat()),
@@ -2423,6 +2442,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
                 text=text,
                 raw_text=raw_text,
                 has_images=bool(_image_components(event)),
+                has_videos=has_videos(event),
                 message_id=str(identity.get("message_id") or ""),
                 event_id=str(identity.get("event_id") or ""),
                 is_wake=bool(event.is_wake_up()),

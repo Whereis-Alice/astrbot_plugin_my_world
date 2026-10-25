@@ -160,3 +160,26 @@ class SessionNamesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data['thoughts'][0]['browse_label'], '群 100「新群名称」')
         bot.call_action.assert_awaited_once()
 
+    async def test_relationship_page_reads_names_without_visiting_another_page_first(self):
+        self.plugin.engine.profiles.touch(self.session, '42')
+        bot = self.platform([{'group_id': 100, 'group_name': '当前真实群名'}])
+        result = await self.call('relationships')
+        self.assertEqual(result['data']['people'][0]['sessions'][0]['label'], '群 100「当前真实群名」')
+        bot.call_action.assert_awaited_once()
+
+    async def test_relationship_detail_resolves_historical_unconfigured_group(self):
+        historical = 'test:GroupMessage:200'
+        self.plugin.engine.profiles.touch(historical, '42')
+        bot = self.platform([{'group_id': 200, 'group_name': '曾经聊天的群'}])
+        result = await self.call('relationships/person', user_id='42')
+        self.assertEqual(result['data']['sessions'][0]['label'], '群 200「曾经聊天的群」')
+        self.assertIsNone(self.plugin.engine.session_config(historical))
+        bot.call_action.assert_awaited_once()
+
+    async def test_contacts_read_returns_recovered_group_names_for_selector(self):
+        self.assertEqual((await self.call('config'))['data']['session_names'], {})
+        bot = self.platform([{'group_id': 100, 'group_name': '现在获取到了群名'}])
+        result = await self.call('profile/contacts', session=self.session)
+        self.assertEqual(result['data']['session_names'], {self.session: '现在获取到了群名'})
+        bot.call_action.assert_awaited_once()
+

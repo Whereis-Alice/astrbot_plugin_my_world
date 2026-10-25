@@ -559,7 +559,7 @@ class WebApiMixin(LifeApiMixin):
             page=_query_int("page", 1), size=_query_int("size", 24),
             filter_by=str(request.query.get("filter", "all")),
             sort=str(request.query.get("sort", "recent")))
-        await directory.with_emotions(data)
+        await directory.prepare_payload(data)
         data["rules"] = self._relationship_rules()
         return json_response(data)
 
@@ -572,7 +572,7 @@ class WebApiMixin(LifeApiMixin):
         except ValueError as exc:
             return error_response(str(exc))
         directory = SocialDirectory(self.engine)
-        data = await directory.with_emotions(directory.person(uid))
+        data = await directory.prepare_payload(directory.person(uid))
         data["rules"] = self._relationship_rules()
         for item in data["sessions"]:
             with self.engine.config_scope(item["session"]):
@@ -587,7 +587,7 @@ class WebApiMixin(LifeApiMixin):
         try:
             directory = SocialDirectory(self.engine)
             data = directory.apply(payload, only_session=only_session)
-            return json_response(await directory.with_emotions(data))
+            return json_response(await directory.prepare_payload(data))
         except ValueError as exc:
             return error_response(str(exc))
 
@@ -617,7 +617,7 @@ class WebApiMixin(LifeApiMixin):
             return error_response(str(exc))
         directory = SocialDirectory(self.engine)
         data = {"ok": True, "person": directory.person(uid)}
-        return json_response(await directory.with_emotions(data))
+        return json_response(await directory.prepare_payload(data))
 
     def _weaver_service(self):
         return getattr(self.engine, "profile_weaver_service", None)
@@ -1280,6 +1280,7 @@ class WebApiMixin(LifeApiMixin):
         session_id = self._profile_scope(request.query.get("session", ""))
         if not session_id:
             return error_response("缺少 session 参数")
+        await self.engine.refresh_session_names([session_id])
         store = getattr(self.engine, "profiles", None)
         if store is None:
             return json_response({"people": [], "enabled": False})
@@ -1365,6 +1366,11 @@ class WebApiMixin(LifeApiMixin):
         return json_response(
             {
                 "people": people,
+                "session_names": {
+                    sid: name for sid in dict.fromkeys([session_id, *(
+                        item.session_id for item in self.engine.sessions.sessions)])
+                    if (name := self.engine.session_group_name(sid))
+                },
                 "enabled": bool(self.engine.world.profile.enabled),
                 "consolidate_enabled": bool(
                     self.engine.world.profile.consolidate_enabled

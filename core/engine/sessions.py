@@ -414,12 +414,14 @@ class SessionsMixin:
         info = (getattr(self, "_session_names", None) or {}).get(str(session_id)) or {}
         return " ".join(str(info.get("name") or "").split())
 
-    async def refresh_session_names(self) -> None:
+    async def refresh_session_names(self, session_ids: list[str] | None = None) -> None:
         """Read optional group metadata outside state locks; adapter owns caching."""
         fetch = getattr(self.messenger, 'fetch_group_names', None)
         if not callable(fetch):
             return
         sessions = [item.session_id for item in self.sessions.sessions if item.type == 'group']
+        # Relationship records can outlive a removed session configuration.
+        sessions = list(dict.fromkeys([*sessions, *(session_ids or [])]))
         try:
             names = await fetch(sessions)
         except Exception:

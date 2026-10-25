@@ -1339,6 +1339,7 @@ class WorldState:
         images: Any = None,
         raw_text: str | None = None,
         has_images: bool = False,
+        has_videos: bool = False,
         origin: str = "",
         at: Any = None,
         reply_to: Any = None,
@@ -1365,8 +1366,8 @@ class WorldState:
         """
 
         clean = (text or "").strip()
-        if not clean and (has_images or images):
-            clean = "「图片」"
+        if not clean and (has_images or images or has_videos):
+            clean = "「视频」" if has_videos else "「图片」"
             if raw_text is None:
                 raw_text = ""
         if not clean:
@@ -1465,9 +1466,11 @@ class WorldState:
             item["images"] = refs
         if has_images or refs:
             item["has_images"] = True
+        if has_videos:
+            item["has_videos"] = True
         if raw_text is not None:
             reading = str(raw_text).strip()[:_CHAT_TEXT_CHARS]
-            if reading != kept or has_images or refs:
+            if reading != kept or has_images or refs or has_videos:
                 # Keep only the actual message text for quiet reading, never vision annotations.
                 item["reading_text"] = reading
         # 事件身份留一份：渲染和「这轮要回的那批」排除历史里的同一条时按它认，

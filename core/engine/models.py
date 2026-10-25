@@ -280,6 +280,8 @@ class MessageContext:
     多模态主模型看，并在记录里标上「图1 / 图2」方便对照。
     """
 
+    has_videos: bool = False
+    """消息或引用中附有视频；没有解析内容时也保留媒体存在的事实。"""
     image_marks: dict[str, str] = field(default_factory=dict)
     """这一轮真的附给主模型的聊天记录图片：``地址 -> 图N``（提示词里标「（见图N）」）。"""
 

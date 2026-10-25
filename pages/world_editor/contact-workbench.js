@@ -1,6 +1,6 @@
 /** Card directory and an on-demand reading drawer. Requests retain their origin. */
 export function createContactWorkbench({ state, root, apiGet, loadMeta,
-  renderList, renderPlaces, renderDetail, el }) {
+  renderList, renderPlaces, renderDetail, updateSessionNames, el }) {
   let listRevision = 0, detailRevision = 0, loadedSession = null, opener = null;
   const $ = id => document.getElementById(id);
   const session = () => $("contacts-session")?.value || "";
@@ -94,6 +94,7 @@ export function createContactWorkbench({ state, root, apiGet, loadMeta,
     try {
       const [, data] = await Promise.all([loadMeta(), apiGet("profile/contacts", { session: scope })]);
       if (request !== listRevision || scope !== session()) return;
+      updateSessionNames?.(data.session_names || {});
       loadedSession = scope;
       state.contacts = data.people || [];
       $("contacts-note").textContent = `关系与好感按会话独立保存 · ${data.weaver_session_based === false ? "结构化资料全局共享" : "结构化资料按会话隔离"} · 睡眠整理${data.consolidate_enabled ? "已开启" : "未开启"}`;

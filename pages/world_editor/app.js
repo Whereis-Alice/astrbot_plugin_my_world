@@ -21543,6 +21543,10 @@ const contactWorkbench = createContactWorkbench({
   state: ui, root: $("tab-contacts"), apiGet,
   loadMeta: loadContactsMeta, renderList: renderContactsList,
   renderPlaces: renderContactPlaces, renderDetail: renderContactDetail, el,
+  updateSessionNames: names => {
+    ui.config.session_names = { ...ui.config.session_names, ...names };
+    renderSessionSelects();
+  },
 });
 
 const relationshipsPage = createRelationshipsPage({
