@@ -1451,6 +1451,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
                 session_id,
                 ctx.text,
                 expected_event=event,
+                expected_owner=asyncio.current_task(),
                 identity={
                     **_incoming_identity(event, ctx.raw_text or ctx.text),
                     "model_text": ctx.text,
@@ -2382,6 +2383,10 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
         if _is_command_event(event):
             # 指令不进她的上下文：不登记待回、不留档、不进记忆，也不该由她回话
             return
+        if event.get_extra("helper_tools_wake_block_llm_request", False):
+            # Explicit helper_tools suppression must not be bypassed later by
+            # message-driven or browse-driven autonomous replies.
+            return
         # 「连发合并」要在这里就登记：落到 on_llm_request 那一钩时，同一会话的
         # 上一条回复可能还占着管线（AstrBot 里那条管线是串行的），等她登记时
         # 早就过了安静期，两条消息就各回一次了。
@@ -2394,6 +2399,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
                         session_id,
                         raw_text,
                         expected_event=event,
+                        expected_owner=asyncio.current_task(),
                         identity=_incoming_identity(event, raw_text),
                     ),
                 )

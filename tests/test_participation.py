@@ -75,7 +75,7 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
                     request = self.engine.context_request(state, GROUP, task="participation")
                     system, _, _ = self.engine.participation_prompt(
                         state, GROUP, "喜欢风车", source=source, request=request)
-                    effective = configured or source in {"browse", "completion"}
+                    effective = True
                     self.assertIn("自然沉默：" + ("开启" if effective else "关闭"), system)
                     self.assertEqual(request.trace["natural_silence"], effective)
                     self.assertEqual(request.trace["silence_policy"], {
@@ -104,8 +104,8 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.engine.contact_status(GROUP)["left"], 6)
         self.assertEqual(state.participation[GROUP]["decision"], "joined")
         self.assertEqual(self.engine.live_chat(state), [])
-        self.assertIn("请生成本轮接话", self.llm.calls[0]["prompt"])
-        self.assertIn("自然沉默：关闭", self.llm.calls[0]["system_prompt"])
+        self.assertIn("没有人要求你必须回复", self.llm.calls[0]["prompt"])
+        self.assertIn("自然沉默：开启", self.llm.calls[0]["system_prompt"])
         self.assertIn("你喜欢风车", self.llm.calls[0]["system_prompt"])
 
     async def test_empty_actions_listens_without_retrying_the_same_burst(self):
@@ -141,12 +141,12 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
                 self.engine.world.decider.natural_silence = enabled
                 request = self.engine.context_request(state, GROUP, task="participation", rows=state.recent_chat)
                 system, prompt, _ = self.engine.participation_prompt(state, GROUP, "风车少女", request=request)
-                self.assertIs(request.trace["natural_silence"], enabled)
-                self.assertEqual("没有人要求你必须回复" in prompt, enabled)
-                self.assertEqual("没话想说时可以继续听" in system, enabled)
+                self.assertIs(request.trace["natural_silence"], True)
+                self.assertIn("没有人要求你必须回复", prompt)
+                self.assertIn("没话想说时可以继续听", system)
                 self.llm.replies = ['{"inner":"这件事让我有点在意。","say":"风吹起来一定很好看。","reply_to":""}']
                 await self.engine.run_eval(GROUP, [{"user_text": "周末去看风车吧"}], variant="participation")
-                self.assertIn("自然沉默：" + ("开启" if enabled else "关闭"), self.llm.calls[-1]["system_prompt"])
+                self.assertIn("自然沉默：开启", self.llm.calls[-1]["system_prompt"])
         self.assertEqual(self.messenger.sent, [])
 
     async def test_silence_markers_and_fenced_json_never_leak(self):
@@ -280,6 +280,7 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(state.awaiting_reply)
         self.assertEqual(self.engine.contact_status(GROUP)["left"], 6)
         self.assertEqual(self.engine._watermark(state, GROUP), (0, 0))
+        self.assertEqual(state.participation[GROUP]["decision"], "not_sent")
 
     async def test_new_message_during_inference_discards_old_speech(self):
         await self.burst()
@@ -296,6 +297,66 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         release.set()
         self.assertIsNone(await asyncio.wait_for(job, 5))
         self.assertEqual(self.messenger.sent, [])
+        state = await self.engine.load_state(GROUP, cold_start=False)
+        self.assertEqual(state.participation[GROUP]["decision"], "cancelled")
+
+    async def test_cancelled_inference_clears_considering_without_inventing_a_thought(self):
+        await self.burst()
+        entered, release = asyncio.Event(), asyncio.Event()
+        original = self.llm.generate
+
+        async def delayed(**kwargs):
+            entered.set()
+            await release.wait()
+            return await original(**kwargs)
+
+        self.llm.generate = delayed
+        job = asyncio.create_task(self.engine.maybe_participate(GROUP))
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            job.cancel()
+            result = await asyncio.gather(job, return_exceptions=True)
+            self.assertIsInstance(result[0], asyncio.CancelledError)
+            state = await self.engine.load_state(GROUP, cold_start=False)
+            self.assertEqual(state.participation[GROUP]["decision"], "cancelled")
+            self.assertFalse(state.thoughts)
+            self.assertFalse(self.messenger.sent)
+        finally:
+            release.set()
+            job.cancel()
+            await asyncio.gather(job, return_exceptions=True)
+
+    async def test_late_cancel_does_not_replace_a_newer_observation_result(self):
+        self.engine.world.limits.background_concurrency = 2
+        await self.burst()
+        entered, release = asyncio.Event(), asyncio.Event()
+        original = self.llm.generate
+        calls = 0
+
+        async def delayed(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                entered.set()
+                await release.wait()
+            return await original(**kwargs)
+
+        self.llm.generate = delayed
+        self.llm.replies = [SAY, SAY]
+        job = asyncio.create_task(self.engine.maybe_participate(GROUP))
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            await self.chat("下雨就去室内看模型")
+            await self.engine.maybe_participate(GROUP)
+            release.set()
+            self.assertIsNone(await asyncio.wait_for(job, 5))
+            state = await self.engine.load_state(GROUP, cold_start=False)
+            self.assertEqual(state.participation[GROUP]["decision"], "joined")
+            self.assertEqual(len(self.messenger.sent), 1)
+        finally:
+            release.set()
+            job.cancel()
+            await asyncio.gather(job, return_exceptions=True)
 
     async def test_last_burst_during_inference_is_reconsidered_without_another_message(self):
         # Skip wall-clock delays; production bounds are validated by config.
@@ -363,14 +424,15 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("私密图纸", str(self.llm.calls))
         self.assertEqual(reply_target(GROUP), "")
 
-    async def test_sampling_a_quiet_burst_does_not_retry_it(self):
+    async def test_deferred_burst_is_not_claimed_as_a_model_decision(self):
         self.engine.participation_sample = lambda *args: False
         await self.burst()
         await self.engine.maybe_participate(GROUP, sample=True)
         await self.engine.maybe_participate(GROUP, sample=True)
         self.assertEqual(self.llm.calls, [])
         state = await self.engine.load_state(GROUP, cold_start=False)
-        self.assertGreater(state.participation[GROUP]["checked_seq"], 0)
+        self.assertEqual(state.participation[GROUP].get("checked_seq", 0), 0)
+        self.assertEqual(state.participation[GROUP]["decision"], "deferred")
 
     async def test_disabling_live_participation_also_blocks_prepared_delivery(self):
         row = await self.chat()
@@ -405,17 +467,14 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
     async def test_observation_opportunities_follow_degree_bursts_and_recent_own_speech(self):
         state = await self.engine.load_state(GROUP, cold_start=False)
         sample = ParticipationMixin.participation_sample
-        with patch("core.engine.participation.random.random", return_value=.2):
-            self.assertFalse(sample(self.engine, state, GROUP, [{}]))
-            self.assertTrue(sample(self.engine, state, GROUP, [{}, {}]))
-            self.engine.world.decider.participation_level = "quiet"
-            self.assertFalse(sample(self.engine, state, GROUP, [{}, {}]))
-            self.engine.world.decider.participation_level = "lively"
-            self.assertTrue(sample(self.engine, state, GROUP, [{}]))
-            self.engine.world.decider.participation_level = "natural"
-            state.recent_chat = [{"origin": GROUP, "is_self": True, "at": self.clock.now()}] * 2
-            self.assertFalse(sample(self.engine, state, GROUP, [{}, {}]))
-            self.assertTrue(sample(self.engine, state, GROUP, [{"addressing": "me"}]))
+        state.participation[GROUP] = {"evaluated_at": self.clock.now() - 300}
+        row = {"text": "新电脑到了", "user_id": "alice"}
+        self.assertFalse(sample(self.engine, state, GROUP, [row]))
+        self.engine.world.decider.participation_level = "lively"
+        self.assertTrue(sample(self.engine, state, GROUP, [row]))
+        self.engine.world.decider.participation_level = "quiet"
+        self.assertFalse(sample(self.engine, state, GROUP, [row]))
+        self.assertTrue(sample(self.engine, state, GROUP, [{**row, "addressing": "me"}]))
 
     async def test_debug_echo_does_not_steal_selected_message_quote(self):
         row = await self.chat(message_id="older")

@@ -5228,7 +5228,8 @@ function renderChatContext(data) {
   const count = Number(data?.chat_history_count || 0);
   head.appendChild(el("span", "chat-context-count", `本会话 · 记住 ${count} 条消息`));
   const participation = data.participation || {};
-  head.appendChild(el("span", "conversation-state", participation.decision === "joined" ? "接上了话题" : "安静听着"));
+  const participationLabels = {joined: "接上了话题", listening: "继续旁听", deferred: "等待合适的现场", waiting: "等待当前对话或活动结束", considering: "正在考虑接话", failed: "接话判断未完成", cancelled: "接话已取消", not_sent: "接话未发出"};
+  head.appendChild(el("span", "conversation-state", participationLabels[participation.decision] || "安静听着"));
   box.appendChild(head);
   box.appendChild(el("p", "conversation-note", String(data.chat_note || "").trim() || (count ? "近期的话还留在上下文里，暂时没有整理成话题备忘。" : "这里还很安静。有人说起感兴趣的事，她会先听，再决定要不要接一句。")));
   const stats = el("div", "conversation-stats");
@@ -5537,7 +5538,8 @@ function renderStatusSections(data, stateLabel) {
   const interject = data.interject || {};
   if (data.participation?.decision) {
     statusLine(runtimeBox, "群聊参与",
-      data.participation.decision === "joined" ? "接上了刚才的话题" : "听过近期群聊，继续旁听");
+      data.participation.decision === "joined" ? "接上了刚才的话题" :
+      data.participation.reason || ({listening: "听过近期群聊，继续旁听", considering: "正在考虑是否接话", failed: "接话判断未完成"}[data.participation.decision] || "等待合适的现场"));
   }
   const interjectParts = Object.keys(interject).map(
     (key) => `${interjectLabels[key] || key} ${interject[key]}`,
@@ -14738,7 +14740,7 @@ function thoughtIntentText(row) {
 function speechDecisionDetail(speech, {showMotivation = true} = {}) {
   const triggers = { message: "新消息", browse: "翻消息完成", plan: "计划接话", completion: "动作完成", expression: "生活表达" };
   const intents = { join_chat: "接当前话题", continue_chat: "继续之前的对话", life_share: "分享生活", outreach: "主动找人", listen: "继续旁听" };
-  const statuses = { prepared: "待发送", sent: "已发送", partial: "部分发送", not_sent: "未发出", listening: "仅有想法" };
+  const statuses = { prepared: "待发送", sent: "已发送", partial: "部分发送", not_sent: "未发出", listening: "仅有想法", failed: "决定未通过校验" };
   const box = el("div", "thought-context");
   if (showMotivation && speech.motivation) box.append(el("p", "thought-quote", `缘由：${speech.motivation}`));
   const badges = el("div", "thought-head");
@@ -17128,14 +17130,14 @@ function renderProactiveAccess(fields) {
 
 function consolidateProactiveSettings(form, main) {
   const titles = ["自主决策", "群聊参与与分寸", "主动找人的保护", "说话频率与预算"];
-  const common = new Set(["日程到点也发言", "事件发生时发言", "新消息到来后自然接话", "参与程度", "自然沉默", "睡前让她自己决定要不要说晚安", "睡醒让她自己决定要不要说早安", "想他想得不行就主动找他"]);
-  const advanced = settingsSection("自主发言细节", "接话的频率与自然沉默在上方统一设置。这里集中调整主动找人、生活分享和后台模型预算；找人的等待与额度不会挡住现场接话。");
+  const common = new Set(["日程到点也发言", "事件发生时发言", "新消息到来后自然接话", "参与程度", "每小时最多观察次数", "好感对观察的影响", "睡前让她自己决定要不要说晚安", "睡醒让她自己决定要不要说早安", "想他想得不行就主动找他"]);
+  const advanced = settingsSection("自主发言细节", "观察节奏、预算与关系权重在上方设置；这里调整主动工具、找人保护及生活预算。观察不会要求角色开口。");
   advanced._fields.classList.add("proactive-advanced-groups");
   for (const title of titles) {
     const source = [...form.children].find(s => s.dataset.sectionTitle === title);
     if (!source) continue;
     for (const field of [...source._fields.children]) if (common.has(fieldLabelOf(field))) main._fields.append(field);
-    if (title === "群聊参与与分寸" || !source._fields.children.length) { source.remove(); continue; }
+    if (!source._fields.children.length) { source.remove(); continue; }
     const group = el("details", "proactive-detail full");
     group.append(el("summary", "", title));
     const note = source.querySelector(":scope > .section-note"); if (note) group.append(note);
@@ -17170,7 +17172,7 @@ function consolidateProactiveSettings(form, main) {
       { type: "number", min, max, hint })));
   }
   for (const [title, labels] of [
-    ["现场接话", ["新消息到来后自然接话", "参与程度", "自然沉默"]],
+    ["现场接话", ["新消息到来后自然接话", "参与程度", "每小时最多观察次数", "好感对观察的影响"]],
     ["生活的表达", ["日程到点也发言", "事件发生时发言", "睡前让她自己决定要不要说晚安", "睡醒让她自己决定要不要说早安", "想他想得不行就主动找他"]],
   ]) {
     const group = el("div", "proactive-controls full");
@@ -17180,7 +17182,7 @@ function consolidateProactiveSettings(form, main) {
       const field = [...main._fields.children].find(f => fieldLabelOf(f) === label);
       if (field) fields.append(field);
     }
-    if (title === "现场接话") fields.append(el("p", "hint-line full", "自然沉默控制新消息和计划接话；浏览后始终可以自主决定是否开口。直接找她聊天走正常回复。"));
+    if (title === "现场接话") fields.append(el("p", "hint-line full", "高好感提高其相关话题的观察优先级，角色仍可旁听；不会要求发满次数。直接找她聊天走正常回复。"));
     if (title === "生活的表达") {
       for (const [key, label, fallback, max, hint] of [
         ["life_share_daily_max", "每天最多分享生活", 6, 1000, "普通分享、日程与事件共用生活额度，独立于主动找人；同一生活组共用，发送成功才计数。0 为暂停。"],
@@ -18321,29 +18323,28 @@ function renderSettings() {
   );
   form.appendChild(engagement);
 
-  /* --- 现场参与：频率与是否允许自然沉默分别控制 --- */
+  /* --- 现场参与：观察节奏与关系权重，不要求开口 --- */
   world.decider = world.decider || {};
-  const interject = settingsSection("群聊参与与分寸", "先听懂现场，再顺着话题接一句。自然沉默默认关闭。",
-    "连发会先聚合；近期说得多就少打扰。接话不占主动找人额度，也不再等待固定的插话冷却。睡眠、不可中断的忙碌和正在回复时仍会先让开。");
+  const interject = settingsSection("群聊参与与分寸", "先听懂现场，再由她决定是否接话。直接找她聊天照常回复。",
+    "连发会先聚合；相关话题、真实续聊与好感高的人优先留意，最近发言按完整回合留白。观察预算不是发言次数目标；忙碌结束只看仍在进行的现场。");
   interject._fields.appendChild(checkboxField(
     "新消息到来后自然接话", world.decider.message_driven !== false && world.decider.enabled !== false,
     (value) => { world.decider.message_driven = value; world.decider.enabled = value; },
-    { hint: "白名单内的群聊生效。可选中现场的一条消息引用回应；是否允许没话想说时旁听，由「自然沉默」控制。" },
+    { hint: "白名单内的群聊生效。每次判断保留内心活动，可接话或旁听；引用只选本会话的真实消息。" },
   ));
   interject._fields.appendChild(selectField("参与程度", world.decider.participation_level || "natural", [
     { key: "quiet", label: "安静 · 偶尔接一句" },
     { key: "natural", label: "自然 · 随话题参与" },
     { key: "lively", label: "活跃 · 多留意群聊" },
   ], value => (world.decider.participation_level = value), {
-    hint: "只控制留意群聊的频率，近期说得多时少留意一些。进入接话请求后，按「自然沉默」决定是否允许主观放下。",
+    hint: "控制普通观察节奏，相关话题与续聊优先；不会按固定概率抽签，也不会要求她一定开口。",
   }));
-  const naturalSilence = checkboxField(
-    "自然沉默", world.decider.natural_silence === true,
-    value => (world.decider.natural_silence = value),
-    { hint: "默认关闭，新消息与计划接话直接生成回应；开启后允许选择不说。翻消息后始终由她决定是否接话。直接找她聊天不受此开关影响。" },
-  );
-  naturalSilence.querySelector("input").setAttribute("aria-label", "自然沉默");
-  interject._fields.appendChild(naturalSilence);
+  interject._fields.appendChild(inputField("每小时最多观察次数", world.decider.participation_hourly_max ?? 12,
+    value => (world.decider.participation_hourly_max = Math.max(1, Math.min(120, Number(value) || 12))),
+    {type: "number", min: 1, max: 120, step: 1, hint: "同一生活的新消息判断共用上限；只是模型调用预算，不是每小时要说几次。翻消息仍先保留感想，后台总预算继续生效。"}));
+  interject._fields.appendChild(inputField("好感对观察的影响", world.decider.participation_relation_weight ?? 1,
+    value => (world.decider.participation_relation_weight = Math.max(0, Math.min(2, Number(value) || 0))),
+    {type: "number", min: 0, max: 2, step: 0.1, hint: "0 关闭，1 默认，2 更重视亲近的人。只提高其相关话题的观察优先级，不强行插话，也不扩大白名单。"}));
   interject._fields.appendChild(checkboxField("主动接话可使用工具", world.decider.proactive_tools !== false,
     value => (world.decider.proactive_tools = value), {hint: "使用 AstrBot 工具循环，仍遵守人设、插件启用和地点工具权限；工具产出的图片在内心记录后随接话发送。"}));
   interject._fields.appendChild(textareaField("主动工具范围（可选）", (world.decider.proactive_tool_names || []).join("\n"),

@@ -43,6 +43,9 @@ class TurnMixin:
                 origin=session_id,
             )
             state.note_reply(clean, session_id=session_id)
+            if recorded is not None:
+                from uuid import uuid4
+                recorded["speech_turn"] = uuid4().hex
             self._tag_chat_origin(state, session_id, recorded, original_text=clean)
             self._count_passive_reply(state)
             self.note_visible_speech(session_id)

@@ -80,6 +80,7 @@ class ReplyMixin:
         *,
         identity: dict[str, Any] | None = None,
         expected_event: Any = None,
+        expected_owner: asyncio.Task | None = None,
     ) -> dict[str, Any]:
         """记下"这条消息刚进来"。
 
@@ -114,7 +115,7 @@ class ReplyMixin:
             if event_key:
                 # 有身份：**只按身份**认同一个事件（正文一样也不当同一条）
                 if item_key == event_key:
-                    self._watch_reply_event(scope, item, expected_event)
+                    self._watch_reply_event(scope, item, expected_event, expected_owner)
                     return item
                 continue
             if item_key:
@@ -129,7 +130,7 @@ class ReplyMixin:
             ):
                 break
             if now - float(item.get("at") or 0.0) <= self._merge_window_seconds():
-                self._watch_reply_event(scope, item, expected_event)
+                self._watch_reply_event(scope, item, expected_event, expected_owner)
                 return item
             break
         seq = int(getattr(self, "_incoming_seq", 0) or 0) + 1
@@ -162,10 +163,11 @@ class ReplyMixin:
         }
         queue.append(record)
         self._pending_replies[scope] = queue[-8:]
-        self._watch_reply_event(scope, record, expected_event)
+        self._watch_reply_event(scope, record, expected_event, expected_owner)
         return record
 
-    def _watch_reply_event(self, scope: str, record: dict, event: Any) -> None:
+    def _watch_reply_event(self, scope: str, record: dict, event: Any,
+                           owner: asyncio.Task | None = None) -> None:
         """Weak observations stay outside serializable message/batch records."""
         if not hasattr(self, '_pending_reply_events'):
             self._pending_reply_events = {}
@@ -178,8 +180,32 @@ class ReplyMixin:
             except TypeError:
                 pass  # Some third-party event wrappers cannot be weakly observed.
         self._pending_reply_events[scope] = watches
+        owners = getattr(self, '_pending_reply_owners', None)
+        if owners is None:
+            owners = self._pending_reply_owners = {}
+        owners[scope] = {key: task for key, task in owners.get(scope, {}).items() if key in live}
+        key = id(record)
+        if owner is not None and owners[scope].get(key) is not owner:
+            owners[scope][key] = owner
+            record.pop('dispatch_done', None)
+
+            def finished(completed: asyncio.Task) -> None:
+                if owners.get(scope, {}).get(key) is completed:
+                    owners[scope].pop(key, None)
+                    if not owners[scope]:
+                        owners.pop(scope, None)
+                    record['dispatch_done'] = True
+                    # Revisit the current scene, not the original reply draft.
+                    target = str(record.get('session') or '')
+                    if target in getattr(self, '_participation_pending', {}).get(scope, {}):
+                        self.queue_participation(target)
+
+            owner.add_done_callback(finished)
 
     def _reply_event_open(self, scope: str, record: dict) -> bool:
+        owner = getattr(self, '_pending_reply_owners', {}).get(scope, {}).get(id(record))
+        if record.get('dispatch_done') or (owner is not None and owner.done()):
+            return False
         ref = getattr(self, '_pending_reply_events', {}).get(scope, {}).get(id(record))
         if ref is None:
             return True
@@ -1046,6 +1072,8 @@ class ReplyMixin:
                     origin=ctx.session_id,
                 )
                 state.note_reply(message, session_id=ctx.session_id)
+                if recorded is not None:
+                    recorded["speech_turn"] = outcome.speech_receipt_batch
                 # 这句话是在哪个会话里说的：留档只有一份，来源要标出来。
                 # 用 note_chat 的返回值定位那一条（重复没记时是 None → 什么都不改）
                 self._tag_chat_origin(state, ctx.session_id, recorded)

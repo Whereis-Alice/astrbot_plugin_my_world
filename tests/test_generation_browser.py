@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import http.server
 import json
+import os
 import re
+from pathlib import Path
 import threading
 import unittest
 
@@ -108,7 +110,7 @@ class GenerationBrowserTests(unittest.TestCase):
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
         cls.url = f"http://127.0.0.1:{cls.server.server_port}/index.html"
-        cls.shots = PLUGIN_DIR / ".pytest_cache" / "generation-ui"
+        cls.shots = Path(os.environ.get("MY_WORLD_TEST_ARTIFACTS", PLUGIN_DIR / ".pytest_cache")) / "generation-ui"
         cls.shots.mkdir(parents=True, exist_ok=True)
 
     @classmethod

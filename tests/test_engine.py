@@ -3222,6 +3222,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_extreme_reach_out_is_rate_limited(self):
         """极端保护必须受限：不能每个 tick 都触发一次主动找人。"""
 
+        from tests.schedule_delivery import settled_clock_delivery
+
         await self.set_state(
             loneliness=0.95,
             node_id="lobby",
@@ -3230,13 +3232,48 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         )
         for _ in range(10):
             await self.engine.tick()
+            await settled_clock_delivery(self.engine)
         self.assertEqual(len(self.messenger.sent), 1)
 
         # 隔了足够久之后才允许再来一次
         self.clock.advance(4000)
         await self.engine.tick()  # 这一 tick 生成计划
+        await settled_clock_delivery(self.engine)
         await self.engine.tick()  # 这一 tick 执行计划
+        await settled_clock_delivery(self.engine)
         self.assertEqual(len(self.messenger.sent), 2)
+
+    async def test_extreme_reach_out_delivers_once_after_slow_model_finishes(self):
+        """时钟返回后慢模型仍在后台，完成后发送一次，不漏发或重发。"""
+        from unittest.mock import patch
+        from tests.schedule_delivery import settled_clock_delivery
+
+        await self.set_state(loneliness=0.95, node_id="lobby", world_time=5000,
+                             high_loneliness_since=1)
+        await self.engine.tick()
+        await settled_clock_delivery(self.engine)
+        started, release = asyncio.Event(), asyncio.Event()
+        generate = self.llm.generate
+
+        async def slow_model(**kwargs):
+            started.set()
+            await release.wait()
+            return await generate(**kwargs)
+
+        with patch.object(self.llm, "generate", side_effect=slow_model):
+            try:
+                await self.engine.tick()
+                await asyncio.wait_for(started.wait(), timeout=5)
+                self.assertEqual(len(self.messenger.sent), 0)
+                self.assertTrue(any(not task.done() for task in self.engine._life_delivery_jobs))
+            finally:
+                release.set()
+            await settled_clock_delivery(self.engine)
+        self.assertEqual(len(self.messenger.sent), 1)
+        for _ in range(3):
+            await self.engine.tick()
+            await settled_clock_delivery(self.engine)
+        self.assertEqual(len(self.messenger.sent), 1)
 
     # ---------------- 工具型动作 ----------------
 

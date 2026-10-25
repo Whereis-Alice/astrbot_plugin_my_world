@@ -14,11 +14,27 @@ class ParticipationHooksMixin:
         text = str(event.get_message_str() or "")
         if _is_command(text) or _is_command_event(event):
             return False
-        return bool(event.is_wake_up() or _is_at_bot(event) or event.is_private_chat())
+        if event.get_extra("helper_tools_wake_block_llm_request", False):
+            return False
+        # is_wake_up also means an ALL/GROUP listener matched. AstrBot's
+        # native dispatch flag covers real @, wake prefixes and bot quotes.
+        if _is_at_bot(event) or event.is_private_chat():
+            return True
+        if getattr(event, "is_at_or_wake_command", False) or getattr(event, "call_llm", False):
+            return True
+        if event.get_extra("provider_request", None) is not None:
+            return True
+        # Explicit router handoff owns the event even on older wrappers.
+        if event.get_extra("intent_router_no_at", False):
+            return True
+        # Old third-party wrappers may not expose the native flag at all.
+        return not hasattr(event, "is_at_or_wake_command") and bool(event.is_wake_up())
 
     def _queue_ambient_participation(self, event: AstrMessageEvent) -> None:
         """A stopped router event also owns its decision to remain silent."""
         if not self.enabled or self.retired or self.in_self_initiated_call():
+            return
+        if event.is_stopped() or event.get_extra("helper_tools_wake_block_llm_request", False):
             return
         if _is_command_event(event) or self._should_expect_reply(event):
             return

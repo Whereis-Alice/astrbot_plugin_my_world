@@ -1536,9 +1536,13 @@ class DeciderConfig(Permissive):
     message_driven: bool = True
     """群聊新消息聚合后，允许结合人设和现场自然接话。"""
     participation_level: Literal["quiet", "natural", "lively"] = "natural"
-    """聚合消息的观察机会；近期自己说得多时柔性降低。"""
+    """观察节奏；相关话题、真实续聊和亲近参与者优先，按完整回合留白。"""
+    participation_hourly_max: int = Field(default=12, ge=1, le=120)
+    """同一生活每小时新消息观察次数上限；只是模型判断预算，不是发言目标。"""
+    participation_relation_weight: float = Field(default=1, ge=0, le=2)
+    """好感对相关话题观察优先级的影响；0 关闭，不改变权限或强制开口。"""
     natural_silence: bool = False
-    """接话时允许因没有想说的内容而继续旁听；默认直接生成回应，仍核验现场与权限。"""
+    """旧配置兼容字段；自主接话始终允许旁听，直接对话继续走原生回复。"""
     proactive_tools: bool = True
     """主动接话可通过宿主工具循环查询资料；遵守人设和当前地点工具权限。"""
     proactive_tool_names: list[str] = Field(default_factory=list, max_length=200)

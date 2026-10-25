@@ -601,7 +601,7 @@ class SendMixin:
                                 until=max(previous, max(float(row.get("at") or 0) for row in observed)),
                                 seq=max(seq, max(int(row["seq"]) for row in observed)))
                         state.participation[target] = {**state.participation.get(target, {}),
-                                                       "decision": "joined", "sent_at": self._now()}
+                                                       "decision": "joined", "reason": "已接上当前话题", "sent_at": self._now()}
                     messages = delivered.get(target, [])
                     detail = {"messages": messages, "images": delivered_images.get(target, 0),
                               "style_cell": state.last_style_cell, "say_limit": int(state.last_say_limit or 0)}

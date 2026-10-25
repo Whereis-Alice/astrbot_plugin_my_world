@@ -70,6 +70,8 @@ async def remember_accepted(engine, outcome, target, text, key, identity=""):
             is_self=True, origin=target,
             event_id=f"speech:{outcome.speech_receipt_batch}:{key}")
         state.note_reply(text, session_id=target)
+        if recorded is not None:
+            recorded["speech_turn"] = outcome.speech_receipt_batch
         engine._tag_chat_origin(state, target, recorded)
         trace = next((r for r in outcome.speech_decisions if r["id"] == identity
                       and r["target"] == target), None)

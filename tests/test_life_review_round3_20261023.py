@@ -186,7 +186,7 @@ class ReadingIntentTests(unittest.IsolatedAsyncioTestCase):
         raw.setdefault("decider", {})["natural_silence"] = False
         self.store.save_world(raw)
         action = await self.prepare(reply_enabled=True, message_id="flower")
-        with patch("core.engine.participation.random.random", side_effect=AssertionError("reading reply must not sample")):
+        with patch.object(self.engine, "participation_sample", side_effect=AssertionError("reading reply must not use message observation scheduling")):
             state = await self.complete(action, decision='{"intent":"join_chat","say":"那盆花怎么样了？"}')
         thought = next(t for t in state.thoughts if t.get("browse_id") == action["id"])
         self.assertEqual(thought["detail"]["speech"]["status"], "sent")

@@ -30,10 +30,13 @@ def parse_decision(raw: str, targets: dict[str, str], *, default_intent: str = "
         return SpeechDecision(error="缺少有效的简短内心活动")
     say, reply_to = parse_participation(raw, targets)
     intent = payload.get("intent") or (default_intent if say else "listen")
+    # Normalize only inside a protocol that permits a grounded continuation.
+    if intent == "join_chat" and "join_chat" not in allowed and "continue_chat" in allowed:
+        intent = "continue_chat"
     if intent not in allowed:
-        return SpeechDecision(error="发言意图不在本轮允许范围")
+        return SpeechDecision(inner=" ".join(inner.split()), error="发言意图不在本轮允许范围")
     if intent == "continue_chat" and not reply_to:
-        return SpeechDecision(error="续聊需要引用本轮仍可回应的消息")
+        return SpeechDecision(inner=" ".join(inner.split()), error="续聊需要引用本轮仍可回应的消息")
     if intent == "listen":
         say, reply_to = "", ""
     motivation = payload.get("motivation") or reasoning.get("intent") or ""

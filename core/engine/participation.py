@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-import random
 
 from ..config_scope import session_scoped
 from ..model_calls import model_operation
@@ -23,9 +22,11 @@ class ParticipationMixin:
         if any(not task.done() for task in getattr(self, '_active_reply_tasks', {}).get(scope, ())):
             return True
         now = time.monotonic()
+        owners = getattr(self, '_pending_reply_owners', {}).get(scope, {})
         return any(not item.get('absorbed') and not item.get('picked')
                    and self._reply_event_open(scope, item)
-                   and 0 <= now - float(item.get('at') or 0) < self.REPLY_EXPECTATION_SECONDS
+                   and (id(item) in owners or
+                        0 <= now - float(item.get('at') or 0) < self.REPLY_EXPECTATION_SECONDS)
                    for item in self._pending_replies.get(scope, []))
 
     def reply_busy(self, session_id: str) -> bool:
@@ -168,7 +169,9 @@ class ParticipationMixin:
                            "问题是否已解决。回看范围只代表还可以考虑，不代表现在应该回复。"
                            "接较早的话时选择引用，话题已结束或问题已解决时不追答。")
         configured_silence = bool(self.world.decider.natural_silence)
-        natural_silence = source in {"browse", "completion"} or configured_silence
+        # An autonomous opportunity invites a thought, never orders speech.
+        # The host's direct-reply path is unaffected.
+        natural_silence = True
         result = build_participation_prompt(persona=persona, life=life, rows=rows,
             now=self._now(), live_window=self._participation_window(source), style=style,
             background=background, natural_silence=natural_silence)
@@ -179,18 +182,34 @@ class ParticipationMixin:
         }
         return result
 
-    def participation_sample(self, state, target, new) -> bool:
-        """Spectre-style opportunity sampling per burst, softened by recent speech."""
-        p = {"quiet": .08, "natural": .18, "lively": .35}[self.world.decider.participation_level]
-        recent = [r for r in state.recent_chat if self._chat_origin(r, state) == target
-                  and self._now() - float(r.get("at") or 0) <= 120]
-        own = sum(bool(r.get("is_self")) for r in recent)
-        p /= 1 + own
-        # Explicit continuation gets a full read; messages addressed to other
-        # people still go through the ordinary sampling/read-air decision.
-        if any(r.get("addressing") == "me" for r in new):
-            return True
-        return random.random() < 1 - (1 - p) ** min(len(new), 8)
+    def participation_sample(self, state, target, new, persona: str = "") -> bool:
+        """Compatibility name: deterministic attention, not a random speech gate."""
+        from ..participation_opportunity import assess_opportunity
+        observation = state.participation.setdefault(target, {})
+        attempts = [at for item in state.participation.values() for at in item.get("attempts", [])]
+        affinities = {}
+        if self.profiles.enabled():
+            for uid in dict.fromkeys(str(row.get("user_id") or "") for row in new):
+                if uid:
+                    person = self.profiles.profile(target, uid)
+                    if person:
+                        high = max(1., float(self.world.profile.affinity_max))
+                        affinities[uid] = float(person.get("affinity") or 0) / high
+        rows = [row for row in state.recent_chat if self._chat_origin(row, state) == target]
+        choice = assess_opportunity(now=self._now(), rows=rows, new=new, observation=observation,
+            attempts=attempts, persona=persona, affinities=affinities,
+            level=self.world.decider.participation_level,
+            hourly_max=self.world.decider.participation_hourly_max,
+            relation_weight=self.world.decider.participation_relation_weight)
+        observation["opportunity"] = choice.payload()
+        return choice.ready
+
+    @staticmethod
+    def finish_participation_observation(state, target: str, request_id: str, status: str, reason: str) -> None:
+        """A late cancellation or receipt must never finish a newer observation."""
+        observation = state.participation.get(target) or {}
+        if observation.get("request_id") == request_id and observation.get("decision") == "considering":
+            observation.update(decision=status, reason=reason)
 
     async def participation_text(self, state, target, *, source="message", browse_id="", outcome=None) -> tuple[str, str]:
         if self.llm is None:
@@ -222,14 +241,14 @@ class ParticipationMixin:
             payload = extract_json_object(raw)
             payload["inner"] = feeling["content"][:240]
             raw = json.dumps(payload, ensure_ascii=False)
-        decision = parse_decision(raw or "", targets)
+        decision = parse_decision(raw or "", targets, allowed=("join_chat", "continue_chat", "listen"))
         if decision.error and raw and not feeling:
             # One bounded repair under the same background budget. Never invent
             # thoughts from the draft and never replay a failed provider call.
             raw = await self.ask_speech(state, target, system, prompt + "\n上轮结果未通过校验："
                 + decision.error + "。请重新给出完整 JSON，补上真实想法，并保留本轮发言选择。"
                 + "\n上轮草稿（只修复格式，不添加新事实）：" + str(raw)[:5000], rows=rows, allow_tools=False)
-            decision = parse_decision(raw or "", targets)
+            decision = parse_decision(raw or "", targets, allowed=("join_chat", "continue_chat", "listen"))
         if decision.error:
             self.decision_trace(target, "participation", "failed", decision.error)
             state.participation[target] = {**state.participation.get(target, {}),
@@ -253,7 +272,7 @@ class ParticipationMixin:
         pending = getattr(self, "_participation_pending", None)
         if pending is None:
             pending = self._participation_pending = {}
-        pending[key] = (session_id, time.monotonic())
+        pending.setdefault(key, {})[session_id] = time.monotonic()
         settlers = getattr(self, "_participation_settlers", None)
         if settlers is None:
             settlers = self._participation_settlers = {}
@@ -262,13 +281,18 @@ class ParticipationMixin:
 
         async def settle():
             started = time.monotonic()
-            while True:
-                target, arrived = pending[key]
+            retry_at = {}
+            while pending.get(key):
+                # One life has one worker, but every actual session keeps its
+                # own burst. A hot group cannot overwrite a quieter one.
+                target = min(pending[key], key=lambda sid: (retry_at.get(sid, 0), pending[key][sid]))
+                arrived = pending[key][target]
                 with self.config_scope(target):
                     delay = min(self.world.decider.settle_seconds - (time.monotonic() - arrived),
                                 12 - (time.monotonic() - started))
+                delay = max(delay, retry_at.get(target, 0) - time.monotonic())
                 if delay > 0:
-                    await asyncio.sleep(delay)
+                    await asyncio.sleep(min(delay, 5))
                     continue
                 active = getattr(self, "_background_jobs", {}).get("participation:" + key)
                 if active and not active.done():
@@ -281,17 +305,39 @@ class ParticipationMixin:
                     async with self.session_state(target) as state:
                         observation = state.participation.get(target) or {}
                         rows = self.live_chat(state, target)
-                        if (self.participation_gate(state, target)
-                                or not any(int(row.get("seq") or 0) > observation.get("checked_seq", 0)
-                                           for row in rows)):
-                            return
-                considered = pending[key]
+                        gate = self.participation_gate(state, target)
+                        fresh = any(int(row.get("seq") or 0) > observation.get("checked_seq", 0) for row in rows)
+                        if not fresh or gate in {"paused", "disabled", "message_driven_disabled"}:
+                            if observation.get("decision") in {"waiting", "deferred"}:
+                                observation.update(decision="idle", reason="现场已结束，等待新的消息" if not fresh
+                                                   else "当前自主接话已暂停")
+                            pending[key].pop(target, None)
+                            retry_at.pop(target, None)
+                            continue
+                        if gate:
+                            observation = state.participation.setdefault(target, {})
+                            observation.update(decision="waiting", reason={
+                                "reply_pending": "正在回应对话，结束后只看最新现场",
+                                "busy": "先完成手头活动，再看仍在进行的现场",
+                                "resting": "正在休息，暂未判断是否接话",
+                            }.get(gate, gate))
+                            retry_at[target] = time.monotonic() + 5
+                            continue
+                considered = arrived
                 task = self.queue_background("participation:" + key, lambda: self.maybe_participate(target, sample=True))
                 if task is None:
-                    return
+                    retry_at[target] = time.monotonic() + 5
+                    continue
                 await asyncio.shield(task)
-                if pending[key] == considered:
-                    return
+                async with self.session_state(target) as state:
+                    observation = state.participation.get(target) or {}
+                    choice = observation.get("opportunity") or {}
+                    if observation.get("decision") == "deferred":
+                        retry_at[target] = time.monotonic() + max(1, min(30, float(choice.get("due_at") or 0) - self._now()))
+                        continue
+                if pending.get(key, {}).get(target) == considered:
+                    pending[key].pop(target, None)
+                    retry_at.pop(target, None)
                 started = time.monotonic()
 
         # Waiting for a person to finish typing must not occupy a model worker.
@@ -336,31 +382,48 @@ class ParticipationMixin:
                                                   else "最近15分钟没有仍可回应的消息，不追答旧聊天")
                     self.note_browse_reply_gate(state, session_id, browse_id, status, reason)
                 return None
-            # Listening is a completed decision too. Persist before inference so a
-            # discarded/empty response cannot re-evaluate the same burst forever.
-            state.participation[session_id] = {"checked_seq": max(int(r.get("seq") or 0) for r in rows),
-                                                "checked_at": self._now(), "decision": "listening"}
-            if sample and not self.participation_sample(state, session_id, new):
+            # Scheduling is not a model decision. Only advance checked_seq once
+            # admitted; deferred scenes remain available until their live expiry.
+            state.participation[session_id] = observation
+            if sample and not self.participation_sample(state, session_id, new, await self._persona_text(session_id)):
+                observation.update(decision="deferred", reason=(observation.get("opportunity") or {}).get("reason", "等待新的现场"))
                 return outcome
             if self.llm is None:
+                observation.update(decision="unavailable", reason="没有可用的主模型，暂未判断是否接话")
                 if source == "browse":
                     self.note_browse_reply_gate(state, session_id, browse_id, "unavailable", "没有可用的主模型，未能判断是否接话")
                 return outcome
+            now = self._now()
+            observation.update(checked_seq=max(int(r.get("seq") or 0) for r in rows),
+                               checked_at=now, evaluated_at=now, decision="considering", reason="正在考虑是否接话",
+                               request_id=outcome.speech_receipt_batch)
+            observation["attempts"] = [at for at in observation.get("attempts", []) if 0 <= now - at < 3600][-119:]
+            if source == "message":
+                observation["attempts"].append(now)
             self.decision_trace(session_id, "participation", "considering", "近期群聊已聚合，判断是否有话想接",
                                 messages=len(rows))
             self.claim_chat_scene(outcome, session_id, rows, window=window)
-            message, reply_to = await self.participation_text(state, session_id,
-                source=source, browse_id=browse_id, outcome=outcome)
+            try:
+                message, reply_to = await self.participation_text(state, session_id,
+                    source=source, browse_id=browse_id, outcome=outcome)
+            except asyncio.CancelledError:
+                self.finish_participation_observation(state, session_id, outcome.speech_receipt_batch,
+                    "cancelled", "接话推理已取消，等待最新现场")
+                raise
+            except Exception as exc:
+                self.finish_participation_observation(state, session_id, outcome.speech_receipt_batch,
+                    "failed", f"接话判断未完成（{type(exc).__name__}）")
+                raise
             if source == "browse" and not outcome.speech_decisions:
                 reason = str((state.participation.get(session_id) or {}).get("reason") or "未取得有效的接话决定")
                 self.note_browse_reply_gate(state, session_id, browse_id, "failed", reason)
             if (not message or self.participation_gate(state, session_id, source=source)
                     or self._now() >= outcome.chat_expires_at[session_id]):
-                reason = ("这轮继续旁听" if source == "browse" or self.world.decider.natural_silence
-                          else "本轮没有可发送的接话，或现场与权限已变化")
+                reason = "这轮继续旁听" if not message else "现场与权限已变化，本轮取消发送"
                 if outcome.speech_decisions:
                     self.decision_trace(session_id, "participation", "listening" if not message else "cancelled", reason)
                     state.participation[session_id]["decision"] = "listening" if not message else "cancelled"
+                    state.participation[session_id]["reason"] = reason
                 outcome.notes.append(reason)
             else:
                 outcome.add_speech(message)

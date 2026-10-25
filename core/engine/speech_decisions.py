@@ -30,8 +30,10 @@ class SpeechDecisionsMixin:
         if kind not in CHAT_KINDS and self.speech_allowed(target, kind):
             allowed.append("outreach" if kind == "outreach" else "life_share")
         chat = self.expression_chat(state, target)
-        if kind in {"", "life_share", "outreach", "continuation"} and chat and self.speech_allowed(target, "continuation"):
+        if chat and kind != "reply" and self.speech_allowed(target, "continuation"):
             allowed.append("continue_chat")
+            if kind in CHAT_KINDS:
+                allowed.append("join_chat")
         targets = {f"c{i}": str(row["message_id"]) for i, row in enumerate(chat, 1) if row.get("message_id")}
         return allowed, chat, targets
 
@@ -40,10 +42,16 @@ class SpeechDecisionsMixin:
         allowed, rows, targets = self.expression_options(state, target, kind)
         scene = [{"ref": ref, "text": next(str(r.get("text") or "")[:500] for r in rows
                   if str(r.get("message_id")) == mid)} for ref, mid in targets.items()]
+        descriptions = {
+            "life_share": "life_share 分享有记录的生活事实，不借分享追答旧话题。",
+            "outreach": "outreach 有具体缘由地找人，不催促未回应的人。",
+            "continue_chat": "continue_chat 顺着下面仍未回应的现场，必须用 reply_to 引用编号。",
+            "join_chat": "join_chat 自然接当前现场，不带引用时只接仍在进行的话题。",
+        }
         return ("\n# 这次开口的意图\n保留动作协议，同时在顶层返回 intent 和 reply_to；"
                 "reasoning.inner 必须有一句符合人设的真实心里话（不是分析步骤）。intent 只能选 "
-                + "、".join(allowed) + "。life_share 分享有记录的生活事实，outreach 有具体缘由地找人；"
-                "continue_chat 顺着下面仍未回应的现场，必须用 reply_to 引用编号。"
+                + "、".join(allowed) + "。" + "".join(descriptions.get(kind, "") for kind in allowed)
+                + "没有想说的内容可以 listen；观察机会不是发言任务。"
                 "问题已解决、明确结束或换题时不追答；不把生活分享伪装成续聊。listen 不发言。\n"
                 + json.dumps(scene, ensure_ascii=False))
 
@@ -57,18 +65,36 @@ class SpeechDecisionsMixin:
         if not isinstance(payload, dict):
             return None
         payload["say"] = "\n".join(lines)
+        default = "join_chat" if outcome.speech_kind in CHAT_KINDS else (
+            "outreach" if outcome.speech_kind == "outreach" else "life_share")
         decision = parse_decision(json.dumps(payload, ensure_ascii=False), targets,
-            default_intent="outreach" if outcome.speech_kind == "outreach" else "life_share", allowed=tuple(allowed))
+            default_intent=default, allowed=tuple(allowed))
         if decision.error:
-            await self._log_event(state, "speech_decision_failed", {"trigger": trigger, "reason": decision.error}, outcome=outcome, silent=True)
+            known = {"listen", "life_share", "outreach", "join_chat", "continue_chat"}
+            returned = payload.get("intent")
+            await self._log_event(state, "speech_decision_failed", {"trigger": trigger, "reason": decision.error,
+                "returned_intent": returned if isinstance(returned, str) and returned in known else "unknown",
+                "allowed": allowed, "origin": outcome.speech_kind}, outcome=outcome, silent=True)
+            if decision.inner:
+                identity = uuid4().hex
+                await self._remember_inner_thought(state, decision.inner, source="动作结束后",
+                    dialogue_session=target, decision_id=identity)
+                state.thoughts[-1].setdefault("detail", {})["speech"] = {
+                    "id": identity, "trigger": trigger, "status": "failed", "target": target,
+                    "sent": [], "note": decision.error, "at": self._now()}
             # Old action payloads remain usable for life actions, but cannot
             # acquire chat privileges without a validated thought and reference.
             return "quiet" if payload.get("intent") or outcome.speech_kind in CHAT_KINDS else None
         await self.remember_speech_decision(state, target, decision, trigger=trigger, outcome=outcome,
-                                           drafts=lines, raw=raw)
+                                           drafts=lines if decision.say else [], raw=raw)
         if decision.intent == "continue_chat":
             self.claim_chat_scene(outcome, target, rows, window=900)
             outcome.reply_targets[target] = decision.reply_to
+            return "continuation"
+        if decision.intent == "join_chat":
+            self.claim_chat_scene(outcome, target, rows, window=900)
+            if decision.reply_to:
+                outcome.reply_targets[target] = decision.reply_to
             return "continuation"
         return "quiet" if decision.intent == "listen" else outcome.speech_kind
 
@@ -113,6 +139,9 @@ class SpeechDecisionsMixin:
                  "reply_to": decision.reply_to, "browse_id": browse_id,
                  "status": "prepared" if decision.say else "listening", "at": self._now(),
                  "draft": decision.say, "drafts": list(drafts) if drafts is not None else ([decision.say] if decision.say else []), "sent": []}
+        if (outcome is not None and (state.participation.get(target) or {}).get("request_id")
+                == outcome.speech_receipt_batch):
+            trace["participation_request"] = outcome.speech_receipt_batch
         referenced = next((r for r in reversed(state.recent_chat) if str(r.get("message_id") or "") == decision.reply_to
             and decision.reply_to and self._chat_origin(r, state) == target), None)
         if referenced:
@@ -150,6 +179,9 @@ class SpeechDecisionsMixin:
                 status = ("sent" if len(sent) == len(trace["drafts"]) else "partial") if sent else "not_sent"
                 trace.update(status=status, sent=sent,
                              finished_at=self._now(), note="；".join(outcome.notes[-3:])[:300])
+                if trace.get("participation_request"):
+                    self.finish_participation_observation(state, trace["target"], trace["participation_request"],
+                        "joined" if sent else "not_sent", "已接上当前话题" if sent else "接话未发出，等待新的现场")
                 update_thought(state, trace)
                 await self._log_event(state, "speech_result",
                     {k: v for k, v in trace.items() if k != "draft"}, outcome=outcome, silent=True)
