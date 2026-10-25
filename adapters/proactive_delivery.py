@@ -46,6 +46,9 @@ async def delivery(plugin, target, view, *, echo_count=0, instant=False):
     from astrbot.core.message.message_event_result import MessageEventResult, ResultContentType
     from astrbot.core.provider.entities import LLMResponse
     messages, kinds, identities, wire = [], [], [], {}
+    request = original.get_extra("provider_request")
+    history_target = ({"cid": getattr(getattr(request, "conversation", None), "cid", None)}
+                      if request is not None else None)
     source_kinds, source_ids = view.speech_kinds.get("", []), view.speech_ids.get("", [])
     debug_positions = list(view.debug_positions)
     positions = {0: 0}
@@ -68,7 +71,6 @@ async def delivery(plugin, target, view, *, echo_count=0, instant=False):
         # Request hooks may need a video's event; response hooks address the
         # actual message being answered and keep the inference conversation.
         event = isolated_event(public_original, plugin.context, target)
-        request = original.get_extra("provider_request")
         if request is not None:
             event.set_extra("provider_request", snapshot_request(request))
         # A life share addresses the room, not the sender of its last message.
@@ -110,7 +112,8 @@ async def delivery(plugin, target, view, *, echo_count=0, instant=False):
         messages.append(body)
         kinds.append(kind)
         identities.append(identity)
-        wire[(target, position)] = {"text": body, "chain": chain, "event": event, "accepted": False}
+        wire[(target, position)] = {"text": body, "chain": chain, "event": event,
+                                   "accepted": False, "history_target": history_target}
         trace = next((r for r in view.speech_decisions if r["id"] == identity), None)
         if trace and body != text:
             drafts = trace.get("drafts", [])
@@ -149,24 +152,29 @@ async def accepted(plugin, target, text, position):
     response = LLMResponse(role="assistant", completion_text=text)
     from ..core.engine.life_inference import released_life_lock
     async with released_life_lock(plugin.engine):
-        await append_history(plugin, target, event, text)
+        await append_history(plugin, target, event, text, history_target=row.get("history_target"))
         # Memory integrations observe only platform-accepted public content.
         await fire_hook(plugin, event, "OnLLMResponseEvent", response, accepted=True)
         await fire_hook(plugin, event, "OnAfterMessageSentEvent")
 
 
-async def append_history(plugin, target, event, text):
+async def append_history(plugin, target, event, text, *, history_target=None):
     manager = plugin.context.conversation_manager
     from astrbot.core.utils.session_lock import session_lock_manager
     async with session_lock_manager.acquire_lock(target):
         cid = await manager.get_curr_conversation_id(target)
         req = event.get_extra("provider_request")
-        expected = getattr(getattr(req, "conversation", None), "cid", None)
+        expected = (history_target["cid"] if history_target is not None
+                    else getattr(getattr(req, "conversation", None), "cid", None))
         # Do not append to a conversation switched/reset during inference.
-        if req is not None and cid != (expected or None):
+        if (req is not None or history_target is not None) and cid != (expected or None):
             return
         if not cid:
             cid = await manager.new_conversation(target, event.get_platform_id())
+            if history_target is not None:
+                # Only this delivery may follow the branch it just created.
+                # Independent drafts still retain their original expectation.
+                history_target["cid"] = cid
         conversation = await manager.get_conversation(target, cid) if cid else None
         if conversation is None:
             return
