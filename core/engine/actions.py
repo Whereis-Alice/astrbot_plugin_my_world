@@ -907,7 +907,7 @@ class ActionsMixin:
                     outcome.live_ids.append(identity)
                     accepted_live = True
                 from .speech_receipts import remember_accepted
-                await remember_accepted(self, outcome, sid, line, ("live", sid, live_index), identity)
+                await remember_accepted(self, outcome, sid, line, ("live", sid, live_index), identity, kind=kind)
 
             try:
                 from ..speech_policy import guard_send, quote_send, watch_send

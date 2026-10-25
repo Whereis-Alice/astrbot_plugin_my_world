@@ -317,7 +317,8 @@ class OpportunityTests(unittest.TestCase):
 
     def test_acknowledgement_does_not_turn_into_a_delayed_reply_obligation(self):
         self.assertFalse(self.choice(new=[{"text": "嗯嗯"}], observation={}).ready)
-        self.assertTrue(self.choice(new=[{"text": "", "has_images": True}], observation={}).ready)
+        self.assertFalse(self.choice(new=[{"text": "", "has_images": True}], observation={}).ready)
+        self.assertTrue(self.choice(new=[{"text": "", "has_images": True}], observation={}, media_mode="normal").ready)
 
     def test_short_statements_and_emoji_are_not_filtered_by_search_tokenization(self):
         for text in ("累", "饿了", "怕", "🤕", "？"):

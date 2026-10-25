@@ -17129,7 +17129,7 @@ function renderProactiveAccess(fields) {
 }
 
 function consolidateProactiveSettings(form, main) {
-  const titles = ["自主决策", "群聊参与与分寸", "主动找人的保护", "说话频率与预算"];
+  const titles = ["自主决策", "群聊参与与分寸", "续聊节奏与机器人互聊", "主动找人的保护", "说话频率与预算"];
   const common = new Set(["日程到点也发言", "事件发生时发言", "新消息到来后自然接话", "参与程度", "每小时最多观察次数", "好感对观察的影响", "睡前让她自己决定要不要说晚安", "睡醒让她自己决定要不要说早安", "想他想得不行就主动找他"]);
   const advanced = settingsSection("自主发言细节", "观察节奏、预算与关系权重在上方设置；这里调整主动工具、找人保护及生活预算。观察不会要求角色开口。");
   advanced._fields.classList.add("proactive-advanced-groups");
@@ -18354,6 +18354,28 @@ function renderSettings() {
   interject._fields.appendChild(inputField("单次主动工具超时（秒）", world.decider.proactive_tool_timeout ?? 30,
     value => (world.decider.proactive_tool_timeout = Math.max(5, Math.min(120, Number(value) || 30))), {type: "number", min: 5, max: 120, step: 1}));
   form.appendChild(interject);
+
+  const cadence = settingsSection("续聊节奏与机器人互聊", "刚接上话时优先回应，连续聊过后恢复普通观察。机器人互聊按真实发送回合留白；新的非机器人发言解除，正常唤醒回复继续走原生流程。");
+  cadence._fields.appendChild(selectField("无文字图片与表情接话", world.decider.media_only_participation || "contextual", [
+    {key: "contextual", label: "结合当前对话（推荐）"},
+    {key: "normal", label: "按普通消息观察"},
+    {key: "directed", label: "仅明确回应她时考虑"},
+  ], value => (world.decider.media_only_participation = value), {
+    hint: "只考虑当前交流或明确回应她的裸图；带正文照常。浏览仍记录感想，正常唤醒回复不受影响。",
+  }));
+  for (const [key, label, fallback, min, max, hint] of [
+    ["continuation_interval_seconds", "续聊观察间隔（秒）", 20, 5, 600, "优先续聊的两次判断及最近实际发言后都留出这个间隔；不会定时发送。"],
+    ["continuation_priority_turns", "续聊优先回合数", 2, 0, 20, "统计窗口内已聊过这些完整回合后，恢复普通观察节奏；拆段只算一次。0 关闭快速续聊，不关闭接话。"],
+    ["continuation_window_seconds", "续聊统计窗口（秒）", 600, 120, 3600, "用于近期完整回合与互聊统计，不扩大旧消息可回应的时效。"],
+    ["peer_chat_max_turns", "机器人之间最多连续接话", 2, 0, 20, "只有下方配置的机器人继续发言时，每个角色最多连续自主回应这些回合，再留白。0 关闭互聊保护。"],
+    ["peer_chat_pause_seconds", "机器人互聊后留白（秒）", 300, 0, 3600, "达到连续回合数后，从最后实际发言开始等待；新的非机器人消息解除。到期只看新的现场，不补发积压消息。0 关闭保护。"],
+  ]) cadence._fields.appendChild(inputField(label, world.decider[key] ?? fallback,
+    value => (world.decider[key] = Math.max(min, Math.min(max, Math.round(num(value, fallback))))),
+    {type: "number", min, max, step: 1, hint}));
+  cadence._fields.appendChild(textareaField("其他机器人账号（可选）", (world.decider.peer_bot_ids || []).join("\n"),
+    value => (world.decider.peer_bot_ids = [...new Set(value.split(/[\n,，]/).map(v => v.trim()).filter(Boolean))]),
+    {rows: 3, hint: "每行一个账号，可写 平台标识:账号；留空不猜身份。只限制自主互聊，不影响正常唤醒。"}));
+  form.appendChild(cadence);
 
   /* --- 睡眠与打断 --- */
   world.sleep = world.sleep || {};
