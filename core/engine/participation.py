@@ -265,7 +265,11 @@ class ParticipationMixin:
         if source == "browse":
             background += ("\n\n# 刚翻过消息\n你刚安静看过这段对话。看清每条消息距今多久，以及后续是否换了话题、"
                            "问题是否已解决。回看范围只代表还可以考虑，不代表现在应该回复。"
-                           "接较早的话时选择引用，话题已结束或问题已解决时不追答。")
+                           "接较早的话时选择引用，话题已结束或问题已解决时不追答。"
+                           "群聊里的开放分享和公共话题不要求先点名你或向你提问；"
+                           "对具体细节有兴趣、自然的感受或与对方有相关经历时，可以顺着接一句。"
+                           "单凭‘没人问我’不能判断没有参与点；没有自己想接的内容时仍可旁听。"
+                           "别人明确在等另一位参与者、任务专属另一台机器人或话题已收尾时，继续保留原有分寸。")
         configured_silence = bool(self.world.decider.natural_silence)
         # An autonomous opportunity invites a thought, never orders speech.
         # The host's direct-reply path is unaffected.
@@ -354,22 +358,19 @@ class ParticipationMixin:
         raw = await self.ask_speech(state, target, system, prompt, rows=rows, live_window=self._participation_window(source))
         original_draft = raw
         from ..speech_decision import parse_decision
-        from ..json_actions import extract_json_object
-        import json
         feeling = next((item for item in reversed(state.thoughts)
-                        if browse_id and item.get("browse_id") == browse_id), None)
-        if feeling and isinstance(extract_json_object(raw or ""), dict):
-            payload = extract_json_object(raw)
-            payload["inner"] = feeling["content"][:240]
-            raw = json.dumps(payload, ensure_ascii=False)
-        decision = parse_decision(raw or "", targets, allowed=("join_chat", "continue_chat", "listen"))
-        if decision.error and raw and not feeling:
+                        if source == "browse" and browse_id and item.get("browse_id") == browse_id), None)
+        recorded_inner = feeling["content"][:240] if feeling else ""
+        decision = parse_decision(raw or "", targets, allowed=("join_chat", "continue_chat", "listen"),
+                                  recorded_inner=recorded_inner)
+        if decision.error and raw:
             # One bounded repair under the same background budget. Never invent
             # thoughts from the draft and never replay a failed provider call.
             raw = await self.ask_speech(state, target, system, prompt + "\n上轮结果未通过校验："
                 + decision.error + "。请重新给出完整 JSON，补上真实想法，并保留本轮发言选择。"
                 + "\n上轮草稿（只修复格式，不添加新事实）：" + str(raw)[:5000], rows=rows, allow_tools=False)
-            decision = parse_decision(raw or "", targets, allowed=("join_chat", "continue_chat", "listen"))
+            decision = parse_decision(raw or "", targets, allowed=("join_chat", "continue_chat", "listen"),
+                                      recorded_inner=recorded_inner)
         if decision.error:
             self.decision_trace(target, "participation", "failed", decision.error)
             state.participation[target] = {**state.participation.get(target, {}),

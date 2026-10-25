@@ -19,13 +19,15 @@ class SpeechDecision:
 
 
 def parse_decision(raw: str, targets: dict[str, str], *, default_intent: str = "join_chat",
-                   allowed: tuple[str, ...] = ("join_chat", "listen")) -> SpeechDecision:
+                   allowed: tuple[str, ...] = ("join_chat", "listen"),
+                   recorded_inner: str = "") -> SpeechDecision:
+    """Reuse a validated reading thought; a speech choice still requires valid JSON."""
     payload = extract_json_object(strip_reasoning(str(raw or "")))
     if not isinstance(payload, dict):
         return SpeechDecision(error="没有返回完整的想法与发言决定")
     reasoning = payload.get("reasoning")
     reasoning = reasoning if isinstance(reasoning, dict) else {}
-    inner = payload.get("inner", reasoning.get("inner", ""))
+    inner = recorded_inner or payload.get("inner", reasoning.get("inner", ""))
     if not isinstance(inner, str) or not inner.strip() or len(inner.strip()) > 240:
         return SpeechDecision(error="缺少有效的简短内心活动")
     say, reply_to = parse_participation(raw, targets)
