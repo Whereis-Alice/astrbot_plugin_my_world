@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import contextvars
 import copy
@@ -72,8 +73,26 @@ class ScopedConfigMixin:
 
     def _init_config_scopes(self):
         self._config_scope = contextvars.ContextVar("my_world_config_scope", default="")
+        self._weaver_injection = contextvars.ContextVar("my_world_weaver_injection", default=None)
         self._base_runtime = {}
         self._scope_runtimes = {}
+
+    @staticmethod
+    def _context_task() -> asyncio.Task | None:
+        try:
+            return asyncio.current_task()
+        except RuntimeError:
+            return None
+
+    @property
+    def weaver_injecting(self) -> bool:
+        """Only this native turn skips integrated fields; child tasks keep them."""
+        value = self._weaver_injection.get()
+        return bool(value and value[0] is self._context_task() and value[1])
+
+    @weaver_injecting.setter
+    def weaver_injecting(self, enabled: bool) -> None:
+        self._weaver_injection.set((self._context_task(), bool(enabled)))
 
     @property
     def config_scope_id(self) -> str:

@@ -16,6 +16,7 @@ from . import profile_weaver as legacy_bridge
 from .constants import PLUGIN_VERSION
 from .model_call_runtime import tracked_generate
 from .contact_knowledge import contact_knowledge, profile_summary
+from .profile_extraction import ProfileExtractionQueue
 from .profile_weaver_store import (
     BLOCKED_PROFILE_NAME_VALUES,
     DEFAULT_FIELDS,
@@ -417,6 +418,7 @@ class ProfileWeaverService:
         self._sync_latest_legacy_profiles()
         self._recover_collapsed_legacy_scopes()
         self._normalize_profile_keys()
+        self.extraction_queue = ProfileExtractionQueue(self)
 
     @staticmethod
     def _safe_int(value: Any, default: int, minimum: int, maximum: int) -> int:

@@ -56,7 +56,9 @@ class ProfileToolLifecycleTests(unittest.TestCase):
             plugin = types.SimpleNamespace(
                 profile_weaver_service=types.SimpleNamespace(llm_tools_enabled=enabled),
                 context=types.SimpleNamespace(add_llm_tools=lambda *items: registered.extend(items),
-                                              unregister_llm_tool=removed.append), logger=integration._Logger())
+                                              unregister_llm_tool=removed.append,
+                                              get_llm_tool_manager=lambda: types.SimpleNamespace(func_list=registered)),
+                logger=integration._Logger())
             module.register_profile_tools(plugin, legacy_active=legacy, toolset_type=None)
             self.assertEqual({tool.name for tool in registered}, expected)
             self.assertEqual(plugin.profile_weaver_service.prompt_enabled, not legacy)

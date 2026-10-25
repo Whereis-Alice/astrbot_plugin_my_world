@@ -72,7 +72,7 @@ PROFILE_WEAVER_PLUGIN = "astrbot_plugin_profile_weaver"
 """心迹画像：它自己也会往系统提示词里注入画像，所以要知道它开没开。"""
 
 
-def plugin_active(context: Any, names: str | tuple[str, ...]) -> bool:
+def plugin_active(context: Any, names: str | tuple[str, ...], event: Any = None) -> bool:
     """这个插件装没装、启用没有（只读，不碰它的配置）。"""
 
     wanted = {names} if isinstance(names, str) else {str(item) for item in names}
@@ -83,19 +83,32 @@ def plugin_active(context: Any, names: str | tuple[str, ...]) -> bool:
         stars = getter() or []
     except Exception:
         return False
+    allowed = getattr(event, 'plugins_name', None)
+    session_id = str(getattr(event, 'unified_msg_origin', '') or '')
+    if event is not None and allowed is None and session_id:
+        get_config = getattr(context, 'get_config', None)
+        if callable(get_config):
+            try:
+                allowed = get_config(session_id).get('plugin_set', ['*'])
+            except Exception:
+                return False
     for star in stars:
         labels = {str(getattr(star, key, "") or "") for key in ("name", "root_dir_name")}
         if not labels.intersection(wanted):
             continue
         if bool(getattr(star, "activated", False)):
+            if (event is not None and allowed is not None and allowed != ['*']
+                    and not getattr(star, 'reserved', False)
+                    and str(getattr(star, 'name', '') or '') not in allowed):
+                continue
             return True
     return False
 
 
-def profile_weaver_active(context: Any) -> bool:
+def profile_weaver_active(context: Any, event: Any = None) -> bool:
     """心迹画像在不在跑（它在跑就会自己注入画像，我们别重复注入）。"""
 
-    return plugin_active(context, PROFILE_WEAVER_PLUGIN)
+    return plugin_active(context, PROFILE_WEAVER_PLUGIN, event)
 
 
 def motion_media_refs(context: Any, event: Any, request: Any, *, sources: list[str] | None = None) -> tuple[bool, set[str]]:

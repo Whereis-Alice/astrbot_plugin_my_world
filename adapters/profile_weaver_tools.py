@@ -34,32 +34,45 @@ def register_profile_tools(plugin: Any, *, legacy_active: bool, toolset_type: An
     service.prompt_enabled = not legacy_active
     plugin._weaver_tools_registered = False
     plugin._contact_lookup_registered = False
+    plugin._owned_profile_tools = {}
     extract = [ProfileWeaverRememberTool(plugin=service), ProfileWeaverForgetTool(plugin=service)]
     service.auto_extract_tools = toolset_type(tools=extract) if toolset_type else extract
     if not service.llm_tools_enabled:
         return
     try:
-        plugin.context.add_llm_tools(ContactLookupTool(plugin=service))
+        lookup = ContactLookupTool(plugin=service)
+        plugin._owned_profile_tools[lookup.name] = lookup
+        plugin.context.add_llm_tools(lookup)
         plugin._contact_lookup_registered = True
     except Exception as exc:
         plugin.logger.warning(f"[my_world] 通讯录查询工具注册失败：{exc}")
     if not legacy_active:
         try:
-            plugin.context.add_llm_tools(ProfileWeaverViewTool(plugin=service), *extract)
+            tools = [ProfileWeaverViewTool(plugin=service), *extract]
+            plugin._owned_profile_tools.update({tool.name: tool for tool in tools})
+            plugin.context.add_llm_tools(*tools)
             plugin._weaver_tools_registered = True
         except Exception as exc:
             plugin.logger.warning(f"[my_world] 画像工具注册失败：{exc}")
 
 
 def unregister_profile_tools(plugin: Any) -> None:
-    names = []
-    if getattr(plugin, "_contact_lookup_registered", False):
-        names.append(LOOKUP_TOOL_NAME)
-    if getattr(plugin, "_weaver_tools_registered", False):
-        names.extend((VIEW_TOOL_NAME, REMEMBER_TOOL_NAME, FORGET_TOOL_NAME))
-    for name in names:
+    """Remove only the exact objects we registered; other plugins may replace them."""
+    getter = getattr(plugin.context, 'get_llm_tool_manager', None)
+    try:
+        manager = getter() if callable(getter) else None
+        registered = getattr(manager, 'func_list', None)
+    except Exception:
+        return
+    if registered is None:
+        return
+    for name, owned in list(getattr(plugin, '_owned_profile_tools', {}).items()):
+        matches = [tool for tool in registered if getattr(tool, 'name', None) == name]
+        if len(matches) != 1 or matches[0] is not owned:
+            continue
         try:
             plugin.context.unregister_llm_tool(name)
+            plugin._owned_profile_tools.pop(name, None)
         except Exception:
             pass
 
