@@ -799,7 +799,7 @@ class ActionsRunMixin:
                 state,
                 node,
                 "你现在想和群里的人说点什么。用一个符合你此刻状态和人设的短句说出来，"
-                "自然、口语化、不要解释设定。",
+                "自然、口语化、不要解释设定。" + (f"这次的打算：{action.intent}" if action.intent else ""),
                 session_id=session_id,
                 # 这一句是她自己想说的：好奇心高的时候可以顺着问一句还不知道的事
                 autonomy=True,

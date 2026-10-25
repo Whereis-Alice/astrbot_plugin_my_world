@@ -29,7 +29,7 @@ def bind_plan_speech(outcome, body, target, *, image=False):
     if trace is None:
         trace = {"id": uuid4().hex, "thought_id": plan["thought_id"],
             "plan_id": plan["id"], "target": target, "trigger": "plan",
-            "intent": "life_share", "origin": outcome.speech_kind,
+            "intent": "outreach" if outcome.speech_kind == "outreach" else "life_share", "origin": outcome.speech_kind,
             "motivation": str(plan.get("reason") or ""), "status": "prepared",
             "at": plan.get("created_ts", 0), "drafts": [], "sent": []}
         outcome.speech_decisions.append(trace)

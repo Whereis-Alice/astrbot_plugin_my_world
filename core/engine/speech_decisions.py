@@ -20,7 +20,12 @@ def traced_delivery(function):
         try:
             return await function(self, outcome, *args, **kwargs)
         finally:
-            await self.finish_speech_decisions(outcome)
+            try:
+                await self.finish_speech_decisions(outcome)
+            finally:
+                cleanup = getattr(self.messenger, "cleanup_proactive", None)
+                if callable(cleanup):
+                    cleanup(outcome)
     return run
 
 
@@ -51,13 +56,19 @@ class SpeechDecisionsMixin:
             "continue_chat": "continue_chat 顺着下面仍未回应的现场，必须用 reply_to 引用编号。",
             "join_chat": "join_chat 自然接当前现场，不带引用时只接仍在进行的话题。",
         }
+        from ..speech_policy import SPEECH_OUTCOME
+        outcome = SPEECH_OUTCOME.get()
+        people = sorted(outcome.contact_people) if outcome is not None and kind == "outreach" else []
+        recipient_note = ("\n这次明确想找的人：" + json.dumps(people, ensure_ascii=False)
+            + "。若选择 outreach，台词要面向该人，围绕具体缘由自然开口；不能只对整个群自言自语。"
+            "没有想对他本人说的事就 listen。" if people else "")
         return ("\n# 这次开口的意图\n保留动作协议，同时在顶层返回 intent 和 reply_to；"
                 "reasoning.inner 必须有一句符合人设的真实心里话（不是分析步骤）。intent 只能选 "
                 + "、".join(allowed) + "。" + "".join(descriptions.get(kind, "") for kind in allowed)
                 + "没有想说的内容可以 listen；观察机会不是发言任务。"
                 "问题已解决、明确结束或换题时不追答；不把生活分享伪装成续聊。"
                 "对方引用或附和不要求再接一句；没有新的内容、问题或情绪变化时自然收尾，不发收尾占位台词。listen 不发言。\n"
-                + json.dumps(scene, ensure_ascii=False))
+                + json.dumps(scene, ensure_ascii=False) + recipient_note)
 
     async def note_expression(self, state, outcome, raw, lines, *, target, trigger):
         """Annotate the existing action protocol without removing its tool chain."""
@@ -103,11 +114,13 @@ class SpeechDecisionsMixin:
             return "continuation"
         return "quiet" if decision.intent == "listen" else outcome.speech_kind
 
-    async def ask_speech(self, state, target, system, prompt, *, rows, images=None, allow_tools=True, live_window=900):
+    async def ask_speech(self, state, target, system, prompt, *, rows, images=None, allow_tools=True, live_window=900, channel="main"):
         from ..speech_runtime import SPEECH_REQUEST, GROUNDING_RULES
         token = SPEECH_REQUEST.set({"state": state, "target": target, "rows": list(rows),
-                                   "allow_tools": allow_tools, "live_window": live_window})
+                                   "allow_tools": allow_tools, "live_window": live_window, "channel": channel})
         try:
+            if channel == "helper":
+                return await self._ask_helper(target, system + GROUNDING_RULES, prompt)
             return await self._ask_speech_media(state, target, system + GROUNDING_RULES, prompt, rows=rows, images=images)
         finally:
             SPEECH_REQUEST.reset(token)
@@ -176,6 +189,8 @@ class SpeechDecisionsMixin:
             thought.setdefault("detail", {})["speech"] = dict(trace)
         if outcome is not None:
             outcome.speech_decisions.append(trace)
+            if getattr(raw, "native_event", None) is not None:
+                outcome.native_events[target] = raw.native_event
         await self._log_event(state, "speech_decision", {k: v for k, v in trace.items() if k != "draft"},
                               outcome=outcome, silent=True)
         if outcome is not None and decision.say:

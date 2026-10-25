@@ -12,6 +12,36 @@ REPLY_TARGET = ContextVar("world_reply_target", default=None)
 SPEECH_OUTCOME = ContextVar("world_speech_outcome", default=None)
 PLAN_SPEECH = ContextVar("world_plan_speech", default=None)
 SEND_RECEIPT = ContextVar("world_send_receipt", default=None)
+CONTACT_TARGET = ContextVar("world_contact_target", default=None)
+
+
+@contextmanager
+def contact_send(session_id, people, index=0):
+    token = CONTACT_TARGET.set((session_id, tuple(sorted(people)), index))
+    try:
+        yield
+    finally:
+        CONTACT_TARGET.reset(token)
+
+
+def contact_targets(session_id, index=0):
+    target = CONTACT_TARGET.get()
+    return target[1] if target and target[0] == session_id and target[2] == index else ()
+
+
+def activity_speech_kind(kind, definition):
+    """A personal activity cannot retain permission to contact someone later.
+
+    Also applies to persisted actions from older versions. User-requested,
+    scheduled and tool work keep their original provenance.
+    """
+    if (kind == "outreach" and definition is not None
+            and definition.category == "continuous"
+            and definition.target_type in {"none", "node"}
+            and definition.llm_level not in {"tool", "command"}
+            and not definition.tool_list() and not definition.trigger_command):
+        return "life_share"
+    return kind
 
 
 @contextmanager
@@ -95,6 +125,9 @@ def speech_origin(source):
                 action = bound["action"]
                 outcome.contact_id = action.get("contact_id") or action.get("plan_id") or outcome.contact_id
                 outcome.contact_people.update(action.get("contact_people") or [])
+                kind = activity_speech_kind(kind, self.world.action_map().get(action.get("type")))
+            elif source == "plan":
+                kind = activity_speech_kind(kind, self.world.action_map().get(step.get("action")))
             outcome.speech_kind = kind
             token = SPEECH_OUTCOME.set(outcome)
             plan_token = PLAN_SPEECH.set((outcome, plan) if source == "plan"

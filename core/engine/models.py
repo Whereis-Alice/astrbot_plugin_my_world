@@ -138,6 +138,7 @@ class TickOutcome:
     contact_id: str = field(default_factory=lambda: uuid4().hex)
     contact_tokens: dict[str, str] = field(default_factory=dict)
     contact_people: set[str] = field(default_factory=set)
+    native_events: dict[str, Any] = field(default_factory=dict, repr=False)
     delivered_messages: dict[str, list[str]] = field(default_factory=dict)
     speech_decisions: list[dict[str, Any]] = field(default_factory=list)
     speech_ids: dict[str, list[str]] = field(default_factory=dict)

@@ -9,12 +9,12 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from astrbot.api.event import MessageChain
-from astrbot.api.message_components import Image, Plain, Reply
+from astrbot.api.message_components import At, Image, Plain, Reply
 
 from ..core.message_parts import _sendable_images
 from ..core.plugin_compat import group_card_owner
 from ..core.ports import CardResult, PokeResult
-from ..core.speech_policy import segment_allowed, reply_target, accept_segment
+from ..core.speech_policy import segment_allowed, reply_target, accept_segment, contact_targets
 from .group_names import GroupNamesMixin
 
 if TYPE_CHECKING:
@@ -48,6 +48,24 @@ class AstrBotMessenger(GroupNamesMixin):
         refs = self._sent_images.get() or []
         self._sent_images.set(None)
         return list(refs)
+
+    def proactive_delivery(self, session_id, outcome, *, echo_count=0, instant=False):
+        from .proactive_delivery import delivery
+        return delivery(self.plugin, session_id, outcome, echo_count=echo_count, instant=instant)
+
+    def proactive_segment(self, session_id, index):
+        from .proactive_delivery import segment
+        return segment(session_id, index)
+
+    async def proactive_accepted(self, session_id, text, index):
+        from .proactive_delivery import accepted
+        await accepted(self.plugin, session_id, text, index)
+
+    def cleanup_proactive(self, outcome):
+        for event in outcome.native_events.values():
+            cleanup = getattr(event, "cleanup_temporary_local_files", None)
+            if callable(cleanup):
+                cleanup()
 
     # ---------------- 失败冷却（不重试） ----------------
 
@@ -100,7 +118,12 @@ class AstrBotMessenger(GroupNamesMixin):
             if not segment_allowed(session_id, index):
                 break
             try:
-                chain = [Plain(text=str(text))]
+                from .proactive_delivery import prepared_chain
+                chain = prepared_chain(session_id, str(text), index)
+                if chain is None:
+                    chain = [Plain(text=str(text))]
+                if ":GroupMessage:" in session_id:
+                    chain[:0] = [At(qq=person) for person in contact_targets(session_id, index)]
                 quote = reply_target(session_id, index)
                 if quote:
                     chain.insert(0, Reply(id=quote))

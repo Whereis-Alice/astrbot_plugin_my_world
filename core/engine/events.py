@@ -1047,7 +1047,16 @@ class EventsMixin:
                 required="# 当前事件的前因与已发生进展\n" + thread_digest(thread, complete=True))
             prompt += ("\n要说的话要符合人设和此刻场合。求助只问清楚这一件具体的事，"
                        "不要点名催促、重复征集或逐条播报；没必要分享时 say 各项可以留空数组。")
-            reply = await self._ask_llm(state.session_id, system, prompt)
+            target = outcome.home()
+            if self.speech_allowed(target, "event"):
+                reply = await self.ask_speech(state, target, system, prompt,
+                    rows=self.expression_chat(state, target), allow_tools=False)
+                if getattr(reply, "native_event", None) is not None:
+                    outcome.native_events[target] = reply.native_event
+            else:
+                # Silent events still make private decisions without replaying
+                # dialogue hooks or pretending that somebody called the bot.
+                reply = await self._ask_llm(state.session_id, system, prompt)
             outcome.llm_calls += 1
             parsed = parse_decision(
                 reply or "",
@@ -1064,7 +1073,21 @@ class EventsMixin:
         if raw_target:
             picked = self.resolve_send_to(state, raw_target, fallback="")
             if picked:
+                prepared_for = outcome.home()
                 outcome.session_id = picked
+                outcome.speech_home = picked
+                if picked != prepared_for and prepared_for in outcome.native_events and decision.say:
+                    raw = await self.ask_speech(state, picked, system,
+                        prompt + "\n# 已确定的事件选择\n" + str(reply or "")
+                        + "\n事件选择与动作保持既定结果，只结合现在这个会话的背景重写 say；"
+                        "没有必要在这里开口可以把 say 留空。不要引用另一个会话的消息。",
+                        rows=self.expression_chat(state, picked), allow_tools=False)
+                    regenerated = parse_decision(raw or "", package,
+                        allowed_actions={item.id for item in action_defs} if allow_act else set())
+                    decision.say = regenerated.say if regenerated else {}
+                    outcome.llm_calls += 1
+                    if getattr(raw, "native_event", None) is not None:
+                        outcome.native_events[picked] = raw.native_event
             else:
                 outcome.notes.append(
                     f"她本来想跟「{raw_target}」说这件事，但那儿不在她能说话的地方里"
@@ -1166,7 +1189,7 @@ class EventsMixin:
         lines = [str(item.get("text") or "") for item in decision.lines("plan")]
         lines = [text for text in lines if text.strip()]
         if not lines:
-            lines = await self._compose_help_lines(state, package)
+            lines = await self._compose_help_lines(state, package, outcome=outcome)
         lines = lines[: self._event_say_limit("ask")]
         self._set_event_help(state, {
             "thread_id": thread.get("id"),
@@ -1199,7 +1222,7 @@ class EventsMixin:
 
     @model_operation("event", "事件需要向对方求助")
     async def _compose_help_lines(
-        self, state: WorldState, package: EventPackage
+        self, state: WorldState, package: EventPackage, *, outcome: TickOutcome | None = None
     ) -> list[str]:
         """求助那两句让她自己说；模型不可用时才用一句兜底。
 
@@ -1220,7 +1243,11 @@ class EventsMixin:
         except Exception:
             return fallback
         prompt += "\n" + await self.task_background(state, task="expression", query=package.title + "\n" + package.hook)
-        reply = await self._ask_helper(state.session_id, system, prompt)
+        target = outcome.home() if outcome is not None else state.session_id
+        reply = await self.ask_speech(state, target, system, prompt,
+            rows=self.expression_chat(state, target), allow_tools=False, channel="helper")
+        if outcome is not None and getattr(reply, "native_event", None) is not None:
+            outcome.native_events[target] = reply.native_event
         if not reply:
             return fallback
         lines: list[str] = []
