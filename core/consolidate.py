@@ -50,6 +50,7 @@ class ConsolidateResult:
     mode: str = "full"
     ok: bool = False
     retry_needed: bool = False
+    """即使有阶段成功，仍有待重选的材料时也不消耗自动整理轮次。"""
     note: str = ""
     memories: int = 0
     merged: int = 0
@@ -372,10 +373,15 @@ class Consolidator:
                     continue
                 if kind == "profiles":
                     source_ids = [row["source_id"] for row in records]
-                    if self.memory.db.reviewed_profile_sources(source_ids, result.mode):
-                        result.skipped.append("部分原话已被另一轮整理，本次结果不保存，剩余原话留待下次")
+                    reviewed = self.memory.db.reviewed_profile_sources(source_ids, result.mode)
+                    if reviewed:
+                        pending = bool(set(source_ids) - reviewed)
+                        result.retry_needed |= pending
+                        result.skipped.append("部分原话已被另一轮整理，本次结果不保存，剩余原话留待下次"
+                                              if pending else "原话已被另一轮整理，本次人物整理结果不保存")
                         continue
                     if not self._sources_current({sid: originals[sid] for sid in source_ids}):
+                        result.retry_needed = True
                         result.skipped.append("原话来源或使用资格已改变，本次人物整理结果不保存")
                         continue
                     for source_id in source_ids:
@@ -398,6 +404,7 @@ class Consolidator:
                              and version(mid) == original}
                     # A stale review/dream cannot describe an edited or deleted experience.
                     if valid != set(before):
+                        result.retry_needed = True
                         result.skipped.append("生活材料已改变，本次整理结果不保存")
                         continue
                     payload["_review_ids"] = valid

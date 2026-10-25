@@ -30,6 +30,7 @@ class SleepReviewIntegrityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.profiles.profile(SESSION, USER)["digest"], "管理员核实：只喜欢油画")
         self.assertEqual(result.digests, 0)
         self.assertTrue(result.skipped)
+        self.assertFalse(result.retry_needed)
 
     async def test_overlapping_batches_only_present_new_sources(self):
         self.profiles.touch(SESSION, USER, "小明")
@@ -337,3 +338,4 @@ class SleepReviewIntegrityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.db.memory_by_id(second)["content"], "实验失败了")
         self.assertEqual(result.merged, 0)
         self.assertTrue(result.skipped)
+        self.assertFalse(result.retry_needed)
