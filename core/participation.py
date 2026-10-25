@@ -72,7 +72,7 @@ CHAT_ONLY_MANNERS = (
 def build_participation_prompt(*, persona: str, life: dict, rows: list[dict],
                                now: float, live_window: int = 180,
                                style: str = "", background: str = "",
-                               natural_silence: bool = False) -> tuple[str, str, dict[str, str]]:
+                               natural_silence: bool = False, reply_seqs: frozenset[int] | None = None) -> tuple[str, str, dict[str, str]]:
     """A single decision with a bounded scene, no life planner/action schema.
 
     Callers supply only the destination's rows. IDs are local capabilities: the
@@ -90,7 +90,8 @@ def build_participation_prompt(*, persona: str, life: dict, rows: list[dict],
             if row.get(key):
                 item[key] = row[key]
         mid = str(row.get("message_id") or "").strip()
-        if mid and not row.get("is_self") and age < live_window:
+        if (mid and not row.get("is_self") and age < live_window
+                and (reply_seqs is None or int(row.get("seq") or 0) in reply_seqs)):
             targets[tag] = mid
             item["can_reply"] = True
         scene.append(item)

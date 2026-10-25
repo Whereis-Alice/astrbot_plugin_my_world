@@ -487,6 +487,13 @@ class SnapshotMixin:
             node = self.node(node_id)
             from .speech_receipts import scoped_plan_speech
             thought_detail, thought_reply = scoped_plan_speech(item, session_id)
+            wait = thought_detail.get("browse_reply") or {}
+            if wait.get("status") == "waiting":
+                ticket = getattr(self, "_participation_browses", {}).get(state.session_id, {}).get(session_id)
+                if (float(wait.get("until") or 0) <= self._now() or ticket is None
+                        or ticket.browse_id != item.get("browse_id")):
+                    thought_detail["browse_reply"] = {**wait, "status": "expired",
+                        "reason": "短暂等待已结束，本次不再补发"}
             rows.append(
                 {
                     "content": content,

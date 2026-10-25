@@ -6,11 +6,28 @@ from typing import Any
 from .. import profile_weaver as profile_weaver_bridge
 from ..contact_knowledge import contact_knowledge
 from ..relationship import relationship_summary
+from ..profile import PersonView
 from ..state import WorldState
 from .models import MessageContext
 
 
 class ProfilesMixin:
+    def reading_person(self, session_id: str, user_id: str) -> PersonView | None:
+        """A small read-only view, with local structured interests when available."""
+        from dataclasses import replace
+        view = self.profiles.view(session_id, user_id, limit_facts=8)
+        if view is None:
+            return None
+        service = getattr(self, "profile_weaver_service", None)
+        if service is None or not service.enabled:
+            return view
+        detail = service.detail_for(session_id, user_id)
+        interests = [{"kind": "interest", "text": str(field.get("name") or "") + "：" + str(field.get("value") or "")}
+                     for field in detail.get("fields") or [] if not field.get("shared")
+                     and field.get("name") in {"爱好", "喜欢的话题", "兴趣", "兴趣爱好"}
+                     and str(field.get("value") or "").strip()][:2]
+        return replace(view, facts=interests + view.facts)
+
     def profile_session(self, state: WorldState, user_id: str, preferred: str = "") -> str:
         """An autonomous thought uses where this person was actually encountered."""
 

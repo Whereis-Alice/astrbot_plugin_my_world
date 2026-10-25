@@ -218,7 +218,7 @@ class ParticipationMixin:
             return "peer_cooldown"
         return ""
 
-    def participation_prompt(self, state, target, persona, *, rows=None, request=None, source="message", browse_id=""):
+    def participation_prompt(self, state, target, persona, *, rows=None, request=None, source="message", browse_id="", reply_seqs=None):
         """Same builder for production and evaluation; never include another session."""
         if rows is None:
             rows = [row for row in state.recent_chat if self._chat_origin(row, state) == target
@@ -284,7 +284,7 @@ class ParticipationMixin:
                        "有值得回应的新内容时仍可继续，不输出宣布沉默、等待或结束的占位台词。")
         result = build_participation_prompt(persona=persona, life=life, rows=rows,
             now=self._now(), live_window=self._participation_window(source), style=style,
-            background=background, natural_silence=natural_silence)
+            background=background, natural_silence=natural_silence, reply_seqs=reply_seqs)
         request.trace["scene"] = {"rows": len(rows), "characters": len(result[1])}
         request.trace["natural_silence"] = natural_silence
         request.trace["silence_policy"] = {
@@ -336,7 +336,7 @@ class ParticipationMixin:
         if reason:
             state.participation.setdefault(target, {}).update(decision="waiting", reason=reason)
 
-    async def participation_text(self, state, target, *, source="message", browse_id="", outcome=None) -> tuple[str, str]:
+    async def participation_text(self, state, target, *, source="message", browse_id="", outcome=None, browse_ticket=None) -> tuple[str, str]:
         if self.llm is None:
             return "", ""
         rows = [row for row in state.recent_chat if self._chat_origin(row, state) == target
@@ -352,8 +352,13 @@ class ParticipationMixin:
             request.life_persona = sha256(persona.encode("utf-8")).hexdigest()[:24]
             if browse_feeling_item(state, request, browse_id) is None:
                 return "", ""
+        reply_seqs = (frozenset(int(seq) for seq in outcome.chat_claims.get(target, []))
+            if browse_ticket and browse_ticket.deferred else None)
         system, prompt, targets = self.participation_prompt(state, target,
-            persona, request=request, rows=rows, source=source, browse_id=browse_id)
+            persona, request=request, rows=rows, source=source, browse_id=browse_id, reply_seqs=reply_seqs)
+        if reply_seqs is not None:
+            system += ("\n本轮是短暂等待后的阅读机会：后来的消息只供理解当前话题。"
+                       "想接话时必须引用 can_reply=true 的原消息；话题已收尾时选择 listen。")
         self.record_context_selection(request)
         raw = await self.ask_speech(state, target, system, prompt, rows=rows, live_window=self._participation_window(source))
         original_draft = raw
@@ -361,7 +366,8 @@ class ParticipationMixin:
         feeling = next((item for item in reversed(state.thoughts)
                         if source == "browse" and browse_id and item.get("browse_id") == browse_id), None)
         recorded_inner = feeling["content"][:240] if feeling else ""
-        decision = parse_decision(raw or "", targets, allowed=("join_chat", "continue_chat", "listen"),
+        allowed = ("continue_chat", "listen") if reply_seqs is not None else ("join_chat", "continue_chat", "listen")
+        decision = parse_decision(raw or "", targets, allowed=allowed,
                                   recorded_inner=recorded_inner)
         if decision.error and raw:
             # One bounded repair under the same background budget. Never invent
@@ -369,7 +375,7 @@ class ParticipationMixin:
             raw = await self.ask_speech(state, target, system, prompt + "\n上轮结果未通过校验："
                 + decision.error + "。请重新给出完整 JSON，补上真实想法，并保留本轮发言选择。"
                 + "\n上轮草稿（只修复格式，不添加新事实）：" + str(raw)[:5000], rows=rows, allow_tools=False)
-            decision = parse_decision(raw or "", targets, allowed=("join_chat", "continue_chat", "listen"),
+            decision = parse_decision(raw or "", targets, allowed=allowed,
                                       recorded_inner=recorded_inner)
         if decision.error:
             self.decision_trace(target, "participation", "failed", decision.error)
@@ -382,99 +388,13 @@ class ParticipationMixin:
         return decision.say, decision.reply_to
 
     def queue_participation(self, session_id: str) -> None:
-        """One settling job per life; new messages update its target without spawning workers."""
-        if not self.is_enabled(session_id) or not self.chat_is_group(session_id):
-            return
-        with self.config_scope(session_id):
-            if not self.world.decider.message_driven or not self.proactive_chat_allowed(session_id):
-                return
-        key = self.state_key(session_id)
-        if getattr(self, "_background_closed", False):
-            return
-        pending = getattr(self, "_participation_pending", None)
-        if pending is None:
-            pending = self._participation_pending = {}
-        pending.setdefault(key, {})[session_id] = time.monotonic()
-        settlers = getattr(self, "_participation_settlers", None)
-        if settlers is None:
-            settlers = self._participation_settlers = {}
-        if key in settlers and not settlers[key].done():
-            return
-
-        async def settle():
-            started = time.monotonic()
-            retry_at = {}
-            while pending.get(key):
-                # One life has one worker, but every actual session keeps its
-                # own burst. A hot group cannot overwrite a quieter one.
-                target = min(pending[key], key=lambda sid: (retry_at.get(sid, 0), pending[key][sid]))
-                arrived = pending[key][target]
-                with self.config_scope(target):
-                    delay = min(self.world.decider.settle_seconds - (time.monotonic() - arrived),
-                                12 - (time.monotonic() - started))
-                delay = max(delay, retry_at.get(target, 0) - time.monotonic())
-                if delay > 0:
-                    await asyncio.sleep(min(delay, 5))
-                    continue
-                active = getattr(self, "_background_jobs", {}).get("participation:" + key)
-                if active and not active.done():
-                    await asyncio.shield(active)
-                    continue
-                # The last burst must not disappear merely because it arrived
-                # during inference or a cooldown. Wait outside the worker pool,
-                # then recheck both the scene's freshness and the character's life.
-                with self.config_scope(target):
-                    async with self.session_state(target) as state:
-                        observation = state.participation.get(target) or {}
-                        rows = self.live_chat(state, target)
-                        gate = self.participation_gate(state, target)
-                        fresh = any(int(row.get("seq") or 0) > observation.get("checked_seq", 0) for row in rows)
-                        if not fresh or gate in {"paused", "disabled", "message_driven_disabled"}:
-                            if observation.get("decision") in {"waiting", "deferred"}:
-                                observation.update(decision="idle", reason="现场已结束，等待新的消息" if not fresh
-                                                   else "当前自主接话已暂停")
-                            pending[key].pop(target, None)
-                            retry_at.pop(target, None)
-                            continue
-                        if gate:
-                            self.note_participation_waiting(state, target, gate)
-                            retry_at[target] = time.monotonic() + 5
-                            continue
-                considered = arrived
-                task = self.queue_background("participation:" + key, lambda: self.maybe_participate(target, sample=True))
-                if task is None:
-                    retry_at[target] = time.monotonic() + 5
-                    continue
-                await asyncio.shield(task)
-                async with self.session_state(target) as state:
-                    observation = state.participation.get(target) or {}
-                    choice = observation.get("opportunity") or {}
-                    if observation.get("decision") == "deferred":
-                        retry_at[target] = time.monotonic() + max(1, min(30, float(choice.get("due_at") or 0) - self._now()))
-                        continue
-                    if observation.get("decision") == "waiting":
-                        retry_at[target] = time.monotonic() + 5
-                        continue
-                if pending.get(key, {}).get(target) == considered:
-                    pending[key].pop(target, None)
-                    retry_at.pop(target, None)
-                started = time.monotonic()
-
-        # Waiting for a person to finish typing must not occupy a model worker.
-        task = asyncio.create_task(settle(), name="my_world:listen:" + key)
-        settlers[key] = task
-        def finished(done):
-            if settlers.get(key) is done:
-                settlers.pop(key, None)
-                pending.pop(key, None)
-            if not done.cancelled() and done.exception():
-                self._log("debug", "群聊聚合留待下一条消息")
-        task.add_done_callback(finished)
+        from .participation_queue import queue_message
+        queue_message(self, session_id)
 
     @session_scoped
     @life_work()
     @model_operation("participation", "听完近期群聊，决定是否自然接一句")
-    async def maybe_participate(self, session_id: str, *, sample: bool = False, source: str = "message", browse_id: str = "") -> TickOutcome | None:
+    async def maybe_participate(self, session_id: str, *, sample: bool = False, source: str = "message", browse_id: str = "", browse_ticket=None) -> TickOutcome | None:
         if not self.is_enabled(session_id) or (source != "browse" and not self.chat_is_group(session_id)):
             return None
         outcome = TickOutcome(session_id=session_id, speech_kind="browse_reply" if source == "browse" else "participation", place=session_id)
@@ -482,7 +402,17 @@ class ParticipationMixin:
             window = self._participation_window(source)
             rows = self.live_chat(state, session_id, window=window)
             observation = dict(state.participation.get(session_id) or {})
+            already_considered = bool(rows) and all(int(row.get("seq") or 0) <= observation.get("checked_seq", 0)
+                                                   for row in rows)
+            if browse_ticket is not None:
+                status, reason = browse_ticket.error(self, state)
+                if status:
+                    self.note_browse_reply_gate(state, session_id, browse_id, status, reason)
+                    return None
+                rows = browse_ticket.eligible(rows)
             new = [r for r in rows if int(r.get("seq") or 0) > observation.get("checked_seq", 0)]
+            if browse_ticket is not None:
+                rows = new
             if source == "browse":
                 from hashlib import sha256
                 from ..context_sources import browse_feeling_item
@@ -490,6 +420,9 @@ class ParticipationMixin:
                 persona = await self._persona_text(session_id)
                 request.life_persona = sha256(persona.encode("utf-8")).hexdigest()[:24]
                 if browse_feeling_item(state, request, browse_id) is None:
+                    if browse_ticket:
+                        self.note_browse_reply_gate(state, session_id, browse_id, "cancelled",
+                            "人设或阅读感想已变化，本次不再接话")
                     return None
             gate = self.participation_gate(state, session_id, source=source)
             if gate or not new:
@@ -498,14 +431,19 @@ class ParticipationMixin:
                                "resting": "正在休息或精力不足，暂未进入接话判断", "busy": "手头活动需要先收尾，暂未进入接话判断",
                                "reply_pending": "本次未进入接话判断：当时有对话等待回复或正在处理",
                                "peer_cooldown": "刚与其他机器人连续聊过，先留白；有人带来新发言时再看"}
-                    status = gate or ("already_considered" if rows else "no_scene")
-                    reason = reasons.get(gate) or ("这段现场已判断过，等待新的消息" if rows
+                    status = gate or ("already_considered" if rows or already_considered else "no_scene")
+                    reason = reasons.get(gate) or ("这段现场已判断过，等待新的消息" if rows or already_considered
                                                   else "最近15分钟没有仍可回应的消息，不追答旧聊天")
                     self.note_browse_reply_gate(state, session_id, browse_id, status, reason)
                 elif new:
                     # A reply/activity can start while this task waits for a
                     # background worker, after the settler's initial gate check.
                     self.note_participation_waiting(state, session_id, gate)
+                return None
+            if browse_ticket is not None and browse_ticket.deferred and not any(
+                    str(row.get("message_id") or "").strip() for row in new):
+                self.note_browse_reply_gate(state, session_id, browse_id, "no_context",
+                    "原消息没有可确认的引用对象，本次不补发")
                 return None
             if not self.chat_media_allowed(state, session_id, new):
                 reason = "只有图片或表情，尚无与她相接的当前对话；先看不接话（未进入模型判断）"
@@ -535,9 +473,11 @@ class ParticipationMixin:
             self.decision_trace(session_id, "participation", "considering", "近期群聊已聚合，判断是否有话想接",
                                 messages=len(rows))
             self.claim_chat_scene(outcome, session_id, rows, window=window, state=state, media_rows=new)
+            if browse_ticket is not None and browse_ticket.deferred:
+                outcome.chat_expires_at[session_id] = min(outcome.chat_expires_at[session_id], browse_ticket.deadline)
             try:
                 message, reply_to = await self.participation_text(state, session_id,
-                    source=source, browse_id=browse_id, outcome=outcome)
+                    source=source, browse_id=browse_id, outcome=outcome, browse_ticket=browse_ticket)
             except asyncio.CancelledError:
                 self.finish_participation_observation(state, session_id, outcome.speech_receipt_batch,
                     "cancelled", "接话推理已取消，等待最新现场")
@@ -551,6 +491,7 @@ class ParticipationMixin:
                 self.note_browse_reply_gate(state, session_id, browse_id, "failed", reason)
             if (not message or self.participation_gate(state, session_id, source=source)
                     or not self.chat_media_allowed(state, session_id, new)
+                    or (browse_ticket is not None and browse_ticket.deferred and browse_ticket.remaining(self._now()) <= 0)
                     or self._now() >= outcome.chat_expires_at[session_id]):
                 reason = "这轮继续旁听" if not message else "现场与权限已变化，本轮取消发送"
                 if outcome.speech_decisions:
