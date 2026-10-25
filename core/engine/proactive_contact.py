@@ -43,6 +43,11 @@ class ProactiveContactMixin:
         if kind != 'reply' and self.reply_busy(target):
             return False
         if kind in CHAT_KINDS:
+            if self.peer_chat_pause(target, token=outcome.speech_receipt_batch):
+                note = "刚与其他机器人连续聊过，先留白；有人带来新发言时再看"
+                if note not in outcome.notes:
+                    outcome.notes.append(note)
+                return False
             return self._now() < outcome.chat_expires_at.get(target, 0)
         if kind == "reply":
             return True

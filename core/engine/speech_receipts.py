@@ -60,7 +60,7 @@ def update_thought(state, trace):
                 thought["reply"] = "\n".join(trace["sent"])
 
 
-async def remember_accepted(engine, outcome, target, text, key, identity=""):
+async def remember_accepted(engine, outcome, target, text, key, identity="", *, kind=None):
     if key in outcome.remembered_speech:
         return
     async with receipt_state(engine, outcome.session_id) as state:
@@ -72,6 +72,7 @@ async def remember_accepted(engine, outcome, target, text, key, identity=""):
         state.note_reply(text, session_id=target)
         if recorded is not None:
             recorded["speech_turn"] = outcome.speech_receipt_batch
+            recorded["speech_kind"] = kind or outcome.speech_kind
         engine._tag_chat_origin(state, target, recorded)
         trace = next((r for r in outcome.speech_decisions if r["id"] == identity
                       and r["target"] == target), None)
@@ -79,6 +80,7 @@ async def remember_accepted(engine, outcome, target, text, key, identity=""):
             sent = [*outcome.delivered_decisions.get(identity, []), text]
             trace.update(sent=sent, status="sent" if len(sent) == len(trace["drafts"]) else "partial")
             update_thought(state, trace)
+        engine.note_peer_chat_receipt(outcome, target, kind or outcome.speech_kind)
     if trace is not None:
         outcome.delivered_decisions[identity] = sent
     outcome.remembered_speech.add(key)

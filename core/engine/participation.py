@@ -13,6 +13,51 @@ from .models import TickOutcome
 
 
 class ParticipationMixin:
+    def _peer_chat_policy(self, target):
+        with self.config_scope(target):
+            config = self.world.decider
+            platform = target.split(":", 1)[0]
+            peers = {value.strip().removeprefix(platform + ":") for value in config.peer_bot_ids
+                     if value.strip() and (":" not in value or value.startswith(platform + ":"))}
+            key = "peer_chat:" + self.state_key(target)
+            if not peers:
+                return key, {}, peers, config
+            ledger = self.db.raw.kv_get(key, {}) or {}
+            policy = [self.world.world_id, sorted(peers)]
+            if ledger.get("policy") != policy:
+                ledger = {"policy": policy, "sessions": {}}
+            return key, ledger, peers, config
+
+    def note_peer_chat_input(self, target, row):
+        from ..chat_cadence import note_input
+        key, ledger, peers, _ = self._peer_chat_policy(target)
+        if not peers:
+            return
+        sessions = dict(ledger.get("sessions", {}))
+        sessions[target] = note_input(sessions.get(target, {}), row, peers)
+        self.db.raw.kv_set(key, {**ledger, "sessions": sessions})
+
+    def note_peer_chat_receipt(self, outcome, target, kind):
+        from .proactive_contact import CHAT_KINDS
+        if kind not in CHAT_KINDS:
+            return
+        from ..chat_cadence import note_receipt
+        key, ledger, peers, config = self._peer_chat_policy(target)
+        if not peers:
+            return
+        sessions = dict(ledger.get("sessions", {}))
+        sessions[target] = note_receipt(sessions.get(target, {}), outcome.speech_receipt_batch,
+            self._now(), config.continuation_window_seconds,
+            retention=max(config.continuation_window_seconds, config.peer_chat_pause_seconds))
+        self.db.raw.kv_set(key, {**ledger, "sessions": sessions})
+
+    def peer_chat_pause(self, target, *, token=""):
+        from ..chat_cadence import pause_until
+        _, ledger, peers, config = self._peer_chat_policy(target)
+        return (pause_until(ledger.get("sessions", {}).get(target, {}), now=self._now(),
+            cap=config.peer_chat_max_turns, pause=config.peer_chat_pause_seconds,
+            window=config.continuation_window_seconds, token=token) if peers else 0.)
+
     # Arrival registration predicts host dispatch, but cannot prove a reply is
     # running. Keep a five-minute bound only for unowned arrival registrations.
     REPLY_EXPECTATION_SECONDS = 300
@@ -118,6 +163,8 @@ class ParticipationMixin:
             return "busy"
         if self.reply_busy(target):
             return "reply_pending"
+        if self.peer_chat_pause(target):
+            return "peer_cooldown"
         return ""
 
     def participation_prompt(self, state, target, persona, *, rows=None, request=None, source="message", browse_id=""):
@@ -172,6 +219,14 @@ class ParticipationMixin:
         # An autonomous opportunity invites a thought, never orders speech.
         # The host's direct-reply path is unaffected.
         natural_silence = True
+        from ..participation_opportunity import visible_turns
+        turn_count = len(visible_turns([row for row in state.recent_chat
+            if self._chat_origin(row, state) == target], self._now(),
+            window=self.world.decider.continuation_window_seconds))
+        background += (f"\n# 这段对话的节奏\n统计窗口内你已发言 {turn_count} 个完整回合。"
+                       "被引用或收到另一句回应不等于必须再说一句；先看是否有新的问题、信息、情绪变化或想交流的细节。"
+                       "重复争辩同一个点、只剩附和或互相逗一句时，可以自然收尾，安静回到自己的生活。"
+                       "有值得回应的新内容时仍可继续，不输出宣布沉默、等待或结束的占位台词。")
         result = build_participation_prompt(persona=persona, life=life, rows=rows,
             now=self._now(), live_window=self._participation_window(source), style=style,
             background=background, natural_silence=natural_silence)
@@ -200,7 +255,11 @@ class ParticipationMixin:
             attempts=attempts, persona=persona, affinities=affinities,
             level=self.world.decider.participation_level,
             hourly_max=self.world.decider.participation_hourly_max,
-            relation_weight=self.world.decider.participation_relation_weight)
+            relation_weight=self.world.decider.participation_relation_weight,
+            continuation_interval=self.world.decider.continuation_interval_seconds,
+            continuation_turns=self.world.decider.continuation_priority_turns,
+            continuation_window=self.world.decider.continuation_window_seconds,
+            media_mode=self.world.decider.media_only_participation)
         observation["opportunity"] = choice.payload()
         return choice.ready
 
@@ -217,6 +276,7 @@ class ParticipationMixin:
             "reply_pending": "正在回应对话，结束后只看最新现场",
             "busy": "先完成手头活动，再看仍在进行的现场",
             "resting": "正在休息，暂未判断是否接话",
+            "peer_cooldown": "刚与其他机器人连续聊过，先留白；有人带来新发言时再看",
         }.get(gate)
         if reason:
             state.participation.setdefault(target, {}).update(decision="waiting", reason=reason)
@@ -384,7 +444,8 @@ class ParticipationMixin:
                 if source == "browse":
                     reasons = {"paused": "当前会话暂停了主动接话", "disabled": "当前会话未启用翻消息后接话",
                                "resting": "正在休息或精力不足，暂未进入接话判断", "busy": "手头活动需要先收尾，暂未进入接话判断",
-                               "reply_pending": "本次未进入接话判断：当时有对话等待回复或正在处理"}
+                               "reply_pending": "本次未进入接话判断：当时有对话等待回复或正在处理",
+                               "peer_cooldown": "刚与其他机器人连续聊过，先留白；有人带来新发言时再看"}
                     status = gate or ("already_considered" if rows else "no_scene")
                     reason = reasons.get(gate) or ("这段现场已判断过，等待新的消息" if rows
                                                   else "最近15分钟没有仍可回应的消息，不追答旧聊天")
@@ -393,6 +454,16 @@ class ParticipationMixin:
                     # A reply/activity can start while this task waits for a
                     # background worker, after the settler's initial gate check.
                     self.note_participation_waiting(state, session_id, gate)
+                return None
+            from ..participation_opportunity import media_scene_allowed
+            if not media_scene_allowed(rows=[r for r in state.recent_chat
+                if self._chat_origin(r, state) == session_id], new=new, now=self._now(),
+                mode=self.world.decider.media_only_participation):
+                reason = "只有图片或表情，尚无与她相接的当前对话；先看不接话（未进入模型判断）"
+                observation.update(decision="observing", reason=reason)
+                state.participation[session_id] = observation
+                if source == "browse":
+                    self.note_browse_reply_gate(state, session_id, browse_id, "no_context", reason)
                 return None
             # Scheduling is not a model decision. Only advance checked_seq once
             # admitted; deferred scenes remain available until their live expiry.
