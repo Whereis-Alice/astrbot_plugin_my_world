@@ -211,6 +211,16 @@ class ParticipationMixin:
         if observation.get("request_id") == request_id and observation.get("decision") == "considering":
             observation.update(decision=status, reason=reason)
 
+    @staticmethod
+    def note_participation_waiting(state, target: str, gate: str) -> None:
+        reason = {
+            "reply_pending": "正在回应对话，结束后只看最新现场",
+            "busy": "先完成手头活动，再看仍在进行的现场",
+            "resting": "正在休息，暂未判断是否接话",
+        }.get(gate)
+        if reason:
+            state.participation.setdefault(target, {}).update(decision="waiting", reason=reason)
+
     async def participation_text(self, state, target, *, source="message", browse_id="", outcome=None) -> tuple[str, str]:
         if self.llm is None:
             return "", ""
@@ -315,12 +325,7 @@ class ParticipationMixin:
                             retry_at.pop(target, None)
                             continue
                         if gate:
-                            observation = state.participation.setdefault(target, {})
-                            observation.update(decision="waiting", reason={
-                                "reply_pending": "正在回应对话，结束后只看最新现场",
-                                "busy": "先完成手头活动，再看仍在进行的现场",
-                                "resting": "正在休息，暂未判断是否接话",
-                            }.get(gate, gate))
+                            self.note_participation_waiting(state, target, gate)
                             retry_at[target] = time.monotonic() + 5
                             continue
                 considered = arrived
@@ -334,6 +339,9 @@ class ParticipationMixin:
                     choice = observation.get("opportunity") or {}
                     if observation.get("decision") == "deferred":
                         retry_at[target] = time.monotonic() + max(1, min(30, float(choice.get("due_at") or 0) - self._now()))
+                        continue
+                    if observation.get("decision") == "waiting":
+                        retry_at[target] = time.monotonic() + 5
                         continue
                 if pending.get(key, {}).get(target) == considered:
                     pending[key].pop(target, None)
@@ -381,6 +389,10 @@ class ParticipationMixin:
                     reason = reasons.get(gate) or ("这段现场已判断过，等待新的消息" if rows
                                                   else "最近15分钟没有仍可回应的消息，不追答旧聊天")
                     self.note_browse_reply_gate(state, session_id, browse_id, status, reason)
+                elif new:
+                    # A reply/activity can start while this task waits for a
+                    # background worker, after the settler's initial gate check.
+                    self.note_participation_waiting(state, session_id, gate)
                 return None
             # Scheduling is not a model decision. Only advance checked_seq once
             # admitted; deferred scenes remain available until their live expiry.

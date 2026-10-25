@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
-from .context_selection import relevance, search_terms
+from .context_selection import relevance
 
 
 def visible_turns(rows: list[dict], now: float, *, window: float = 120) -> list[dict]:
@@ -62,9 +62,14 @@ def assess_opportunity(*, now: float, rows: list[dict], new: list[dict],
     """Bound judgement calls while related scenes and close authors get earlier reads."""
     turns = visible_turns(rows, now)
     acknowledgements = {"嗯", "嗯嗯", "好", "好的", "哈哈", "哈哈哈", "收到", "+1", "ok"}
-    content = [row for row in new if (str(row.get("reading_text", row.get("text", ""))).strip().casefold() not in acknowledgements
-               and search_terms(str(row.get("reading_text", row.get("text", "")))))
-               or row.get("has_images") or row.get("images") or row.get("addressing") == "me"]
+    # Retrieval tokens describe overlap, not whether a message has meaning.
+    # Short Chinese statements and emoji can be meaningful without any bigram.
+    content = []
+    for row in new:
+        text = str(row.get("reading_text", row.get("text", "")) or "").strip()
+        if ((text and text.casefold() not in acknowledgements) or row.get("has_images")
+                or row.get("images") or row.get("addressing") == "me"):
+            content.append(row)
     if not content:
         return Opportunity(False, "这批只有简短应答或空白，等待新的具体内容", now + 30,
                            own_turns=len(turns))
