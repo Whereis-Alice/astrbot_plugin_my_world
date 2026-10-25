@@ -159,7 +159,12 @@ class AstrBotLLM:
         finally:
             try:
                 if native is not None:
-                    await native.close(retain=getattr(getattr(response, "completion_text", None), "images", ()))
+                    try:
+                        await native.close(retain=getattr(getattr(response, "completion_text", None), "images", ()))
+                    except Exception as exc:
+                        # Cleanup cannot replace the model result, its original
+                        # failure or a cancellation already unwinding this call.
+                        self.plugin.logger.warning(f"[my_world] 主动请求资源清理失败：{type(exc).__name__}")
             finally:
                 self.plugin.reset_self_initiated(token)
         if response is None or getattr(response, "role", "") == "err":

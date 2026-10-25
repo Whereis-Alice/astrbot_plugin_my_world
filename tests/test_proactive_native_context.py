@@ -1,6 +1,7 @@
 """Native-context dispatch, replay isolation and public recipient regressions."""
 import asyncio
 import importlib
+import sys
 import types
 import unittest
 from core.engine import TickOutcome
@@ -49,6 +50,86 @@ class ActivityProvenanceTests(unittest.IsolatedAsyncioTestCase):
 class NativeContextTests(unittest.IsolatedAsyncioTestCase):
     asyncSetUp = integration.IntegrationIntegrityTests.asyncSetUp
     response = integration.IntegrationIntegrityTests.response
+
+    async def generate_native(self, prepare):
+        runtime = importlib.import_module(self.module.__name__ + ".core.speech_runtime")
+        native = importlib.import_module(self.module.__name__ + ".adapters.proactive_context")
+        adapter = self.adapter_module.AstrBotLLM(self.plugin, provider_id="provider-a", role="main")
+        token = runtime.SPEECH_REQUEST.set({"target": self.session, "rows": [], "allow_tools": False})
+        try:
+            with patch.object(native.ProactiveContext, "prepare", prepare):
+                return await adapter.generate(session_id=self.session, system_prompt="人设", prompt="主动判断")
+        finally:
+            runtime.SPEECH_REQUEST.reset(token)
+
+    async def test_motion_response_hook_is_released_with_both_arguments_after_one_attempt(self):
+        from tests.test_dialogue_inject import Event
+        original = Event("媒体", session=self.session)
+        isolated = Event("媒体快照", session=self.session)
+        released = []
+
+        class MotionVision:
+            async def release_media_request(self, event, _response):
+                released.append((event, _response))
+
+        motion = MotionVision()
+        self.plugin.engine.media = types.SimpleNamespace(_motion=lambda _: motion)
+        self.plugin.context.tool_loop_agent = AsyncMock(return_value=self.response("模型已完成"))
+
+        async def prepare(owner, options):
+            owner.event = isolated
+            return options
+
+        reply = await self.generate_native(prepare)
+        self.assertTrue(reply.ok, reply.error)
+        self.assertEqual(reply.text, "模型已完成")
+        self.assertEqual(released, [(isolated, None)])
+        self.assertNotIn(original, [event for event, _ in released])
+        self.plugin.context.tool_loop_agent.assert_awaited_once()
+        self.assertEqual(self.plugin.context.tool_loop_agent.await_args.kwargs["request_max_retries"], 1)
+        self.assertFalse(self.plugin.in_self_initiated_call())
+
+    async def test_cleanup_failure_preserves_success_model_failure_and_cancellation(self):
+        native = importlib.import_module(self.module.__name__ + ".adapters.proactive_context")
+
+        async def prepare(owner, options):
+            return options
+
+        for kind in ("success", "failure", "cancelled"):
+            with self.subTest(kind=kind):
+                self.plugin.context.tool_loop_agent = AsyncMock(return_value=self.response("生成成功"))
+                if kind != "success":
+                    self.plugin.context.tool_loop_agent.side_effect = (
+                        TimeoutError("模型请求超时") if kind == "failure" else asyncio.CancelledError())
+                cleanup = AsyncMock(side_effect=RuntimeError("媒体清理失败"))
+                with patch.object(native.ProactiveContext, "close", cleanup), patch.object(self.plugin.logger, "warning") as warning:
+                    if kind == "cancelled":
+                        with self.assertRaises(asyncio.CancelledError):
+                            await self.generate_native(prepare)
+                    else:
+                        reply = await self.generate_native(prepare)
+                        self.assertEqual(reply.ok, kind == "success")
+                        self.assertEqual(reply.text if reply.ok else reply.error,
+                                         "生成成功" if kind == "success" else "模型请求超时")
+                    self.assertTrue(any("资源清理" in str(call) for call in warning.call_args_list))
+                cleanup.assert_awaited_once()
+                self.plugin.context.tool_loop_agent.assert_awaited_once()
+                self.assertFalse(self.plugin.in_self_initiated_call())
+
+    async def test_proactive_tool_loop_also_uses_one_total_provider_attempt(self):
+        module = importlib.import_module(self.module.__name__ + ".adapters.proactive_agent")
+        context_module = types.ModuleType("astrbot.core.astr_agent_context")
+        context_module.AstrAgentContext = lambda **values: types.SimpleNamespace(**values)
+        agent = module.ProactiveAgent(self.plugin, {"target": self.session})
+        agent.event = object()
+        agent.valid = AsyncMock(return_value=True)
+        self.plugin.context.tool_loop_agent = AsyncMock(return_value=self.response("工具后生成"))
+        tools = object()
+        with patch.dict(sys.modules, {context_module.__name__: context_module}):
+            await agent.invoke(tools, chat_provider_id="provider-a", prompt="现场", system_prompt="人设")
+        self.plugin.context.tool_loop_agent.assert_awaited_once()
+        self.assertIs(self.plugin.context.tool_loop_agent.await_args.kwargs["tools"], tools)
+        self.assertEqual(self.plugin.context.tool_loop_agent.await_args.kwargs["request_max_retries"], 1)
 
     async def test_failed_native_preparation_does_not_fall_back_to_incomplete_context(self):
         runtime = importlib.import_module(self.module.__name__ + ".core.speech_runtime")

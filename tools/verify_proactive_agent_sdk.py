@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 from unittest.mock import patch
 import tempfile
 from astrbot.core.agent.tool import FunctionTool, ToolSet
+from astrbot.core.agent.message import TextPart
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.platform.astrbot_message import AstrBotMessage
 from astrbot.core.platform.platform_metadata import PlatformMetadata
@@ -36,6 +37,10 @@ class Model(Provider):
     def set_key(self, key): pass
     async def get_models(self): return ["synthetic"]
     async def text_chat(self, **kwargs):
+        assert kwargs.get("request_max_retries") == 1
+        serialized = json.dumps(kwargs, ensure_ascii=False,
+            default=lambda part: part.model_dump() if hasattr(part, "model_dump") else str(part))
+        assert "工具判断临时任务" in serialized and "世界书与记忆材料" in serialized, serialized
         self.round += 1
         if self.round <= 2:
             return LLMResponse(role="assistant", completion_text="", tools_call_name=["check_fact"],
@@ -98,7 +103,9 @@ async def check(revoke=False, stale=False, blocked="", timeout=False, cancel=Fal
         assert not calls
         return {"case": blocked or "stale scene", "passed": True}
     assert toolset and toolset.names() == ["check_fact"]
-    task = asyncio.create_task(agent.invoke(toolset, chat_provider_id="synthetic", prompt="test", system_prompt="Return JSON"))
+    task = asyncio.create_task(agent.invoke(toolset, chat_provider_id="synthetic", prompt="test", system_prompt="Return JSON",
+        extra_user_content_parts=[TextPart(text="工具判断临时任务").mark_as_temp(),
+                                  TextPart(text="世界书与记忆材料").mark_as_temp()]))
     if cancel:
         await asyncio.wait_for(started.wait(), timeout=3)
         task.cancel()

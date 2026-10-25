@@ -109,8 +109,9 @@ async def check():
     response = await native.invoke(**options)
     assert response.completion_text.native_event is native.event
     assert len(model.requests) == 1
+    assert model.requests[0].get("request_max_retries") == 1
     serialized = json.dumps(model.requests, ensure_ascii=False, default=lambda obj: obj.model_dump() if hasattr(obj, "model_dump") else str(obj))
-    assert "世界书注入" in serialized and "后台主动任务" in serialized and "之前的回应" in serialized
+    assert "世界书注入" in serialized and "后台主动任务" in serialized and "之前的回应" in serialized, serialized
     assert event.get_extra("provider_request") is old_request
     assert native.event.get_extra("plugin_runtime_handle") is None
     assert native.event.get_extra("plugin_facts") == {"items": ["本轮已有资料"]}

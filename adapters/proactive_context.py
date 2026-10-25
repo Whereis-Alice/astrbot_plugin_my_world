@@ -12,6 +12,7 @@ from ..core.request_context import _drop_persona_instructions
 from ..core.speech_runtime import SpeechDraft
 from .proactive_hooks import fire_hook
 from .proactive_media import snapshot_event
+from .proactive_runner import run_agent
 
 
 def build_config(context, target):
@@ -105,7 +106,7 @@ class ProactiveContext:
         media = getattr(self.plugin.engine, "media", None)
         motion = media._motion(self.target) if media is not None and hasattr(media, "_motion") else None
         if motion is not None:
-            await motion.release_media_request(self.event)
+            await motion.release_media_request(self.event, None)
 
     async def prepare(self, options):
         from astrbot.api.provider import ProviderRequest
@@ -260,7 +261,7 @@ class ProactiveContext:
         # compression. A no-tool request gets exactly one generation step.
         if self.plugin.engine.native_turn_busy(self.target):
             raise RuntimeError("正常回复已开始，取消主动判断")
-        response = await self.plugin.context.tool_loop_agent(event=self.event, tools=None,
-            max_steps=1, request_max_retries=0, **self.runner_options, **options)
+        response = await run_agent(self.plugin.context, event=self.event, tools=None,
+            max_steps=1, request_max_retries=1, **self.runner_options, **options)
         response.completion_text = SpeechDraft(response.completion_text or "", native_event=self.event)
         return response
