@@ -173,6 +173,8 @@ class StateStoreMixin:
             ensure(state, self._now())
             token = STATE_LEASE.set({"owner": asyncio.current_task(), "state": state,
                                      "lock": self.lock(key), "origin": session_id, "released": False,
+                                     "world": self.world, "schedules": self.schedules, "sessions": self.sessions,
+                                     "day": self.local_now().date(),
                                      "persona": await self._persona_text(session_id)})
             try:
                 await self._validate_running_life(state)

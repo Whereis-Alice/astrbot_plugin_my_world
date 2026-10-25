@@ -104,6 +104,40 @@ class ProactiveMediaTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(data["images"], ["prepared:tool.gif"])
         self.motion.handle.assert_not_awaited()
 
+    async def test_current_sdk_image_result_uses_only_its_path(self):
+        self.prepare.side_effect = lambda ref, **kw: ('prepared:' + ref, True, True, ref)
+        async with self.media.context(self.event.unified_msg_origin, [], images=['tool.gif']) as data:
+            self.assertEqual(data['images'], ['prepared:tool.gif'])
+            self.assertIn('不同时刻', data['text'])
+
+    async def test_animation_metadata_reaches_caption_model_and_main_context(self):
+        self.prepare.side_effect = lambda ref, **kw: ('prepared:' + ref, True, True, ref)
+        self.plugin.vision = SimpleNamespace(enabled=True, describe=AsyncMock(return_value=['一段动画']))
+        async with self.media.context(self.event.unified_msg_origin, [self.row]) as data:
+            self.assertFalse(data['images'])
+            self.assertIn('不同时刻', data['text'])
+            self.assertIn('不同时刻', self.plugin.vision.describe.await_args.kwargs['question'])
+
+    async def test_current_sdk_reused_original_is_preserved_after_request(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as temporary:
+            original = Path(temporary) / 'original.png'
+            original.write_bytes(b'synthetic')
+            self.prepare.side_effect = lambda ref, **kw: (str(original), False, False, str(original))
+            async with self.media.context(self.event.unified_msg_origin, [], images=[str(original)]) as data:
+                self.assertEqual(data['images'], [str(original)])
+            self.assertTrue(original.is_file())
+
+    async def test_malformed_sdk_result_is_not_stringified_into_an_image(self):
+        for result in (('', False, False, 'original.gif'), (None, True, True, 'original.gif'),
+                       ('path',), True, ['path'], {'path': 'path'}):
+            with self.subTest(result=result):
+                self.prepare.side_effect = None
+                self.prepare.return_value = result
+                async with self.media.context(self.event.unified_msg_origin, [], images=['tool.gif']) as data:
+                    self.assertEqual(data['images'], [])
+                    self.assertIn('未能读取', data['text'])
+
     async def test_prepared_files_live_until_model_returns_and_cleanup_on_cancel(self):
         created = []
         async def prepare(ref, **kw):

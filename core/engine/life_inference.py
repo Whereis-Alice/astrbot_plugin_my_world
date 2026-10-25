@@ -74,19 +74,39 @@ def decision_state(payload: dict) -> dict:
 ACTION_TIME_FIELDS = ("elapsed_ticks", "effects_settled_minutes")
 
 
+def owned_life_lease() -> dict | None:
+    lease = STATE_LEASE.get()
+    return lease if LIFE_WORK.get() and lease and lease["owner"] is asyncio.current_task() else None
+
+
+async def validate_life_preparation(engine) -> None:
+    """Keep a prepared request's original world and character before admission."""
+    lease = owned_life_lease()
+    if lease and (engine.world is not lease["world"] or engine.schedules is not lease["schedules"]
+                  or engine.sessions is not lease["sessions"] or not engine.is_enabled(lease["origin"])
+                  or engine.state_key(lease["origin"]) != lease["state"].session_id
+                  or engine.local_now().date() != lease["day"]
+                  or await engine._persona_text(lease["origin"]) != lease["persona"]):
+        engine.decision_trace(lease["origin"], "life_inference", "discarded",
+                              "准备请求时人设或世界已变化，取消旧决定", phase="before_request")
+        raise LifeWorkDiscarded()
+
+
 @asynccontextmanager
 async def released_life_lock(engine):
-    lease = STATE_LEASE.get()
-    if not LIFE_WORK.get() or not lease or lease["owner"] is not asyncio.current_task():
+    lease = owned_life_lease()
+    if not lease:
         yield
         return
     state, lock, origin = lease["state"], lease["lock"], lease["origin"]
-    world, key = engine.world, engine.state_key(origin)
-    persona = await engine._persona_text(origin)
+    world, key = lease["world"], state.session_id
+    # Prompt, local materials and eventual commit all belong to the same lease.
+    # A fresh read here could silently rebind an already prepared old prompt.
+    persona = lease["persona"]
     world_config = world.model_dump(mode="json")
-    sessions_config = engine.sessions.model_dump(mode="json") if engine.sessions else None
-    schedules = engine.schedules.model_dump() if engine.schedules else None
-    day = engine.local_now().date()
+    sessions_config = lease["sessions"].model_dump(mode="json") if lease["sessions"] else None
+    schedules = lease["schedules"].model_dump() if lease["schedules"] else None
+    day = lease["day"]
     await engine.save_state(state)
     before = state.to_payload()
     lock.release()

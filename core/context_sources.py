@@ -221,7 +221,8 @@ def runtime_context(prompts: Any, state: Any, node: Any, request: ContextRequest
         from .life import activity_view
         activity = activity_view(state, prompts.world)["label"]
     base = [CONTEXT_GUIDANCE,
-            "# 你的状态\n" + prompts._state_block(state, dwell_minutes=prompts._dwell_minutes(state), tick_seconds=prompts.tick_seconds),
+            "# 你的状态\n" + prompts._state_block(state, dwell_minutes=prompts._dwell_minutes(state),
+                                                  tick_seconds=prompts.tick_seconds, sleep_config=prompts.world.sleep),
             f"# 当前动作：{activity}", f"# 当前位置：{node.name if node else '未知'}"]
     if now is not None:
         base.append(prompts._clock_line(now))

@@ -103,11 +103,15 @@ class ProactiveMedia:
                     refs, failed = await prepared.prepare(list(dict.fromkeys(refs))[:8])
                     if failed:
                         texts.append("部分图片未能读取，不能据此推测画面或动作。")
+                    animation_note = prepared.animation_note(refs)
+                    if animation_note:
+                        texts.append(animation_note)
                     vision = getattr(self.plugin, "vision", None)
                     if refs and vision is not None and vision.enabled:
                         try:
                             captions = await asyncio.wait_for(vision.describe(refs,
-                                question=str(row.get("text") or ""), cache_sources=prepared.cache_sources(refs)), timeout=30)
+                                question="\n".join(text for text in (str(row.get("text") or ""), animation_note) if text),
+                                cache_sources=prepared.cache_sources(refs)), timeout=30)
                             usable = [str(caption).strip()[:500] for caption in captions or [] if str(caption or "").strip()]
                             texts.extend(usable)
                             if len(usable) < len(refs):
@@ -122,6 +126,8 @@ class ProactiveMedia:
                 # Don't re-add originals that Motion Vision already replaced.
                 extra, failed = await prepared.prepare([ref for ref in extra_images if ref not in consumed])
                 images.extend(extra)
+                if animation_note := prepared.animation_note(extra):
+                    notes.append(animation_note)
                 if failed:
                     notes.append("部分工具图片未能读取，不能据此推测画面或动作。")
             yield {"text": "\n\n".join(notes)[:6000], "images": list(dict.fromkeys(images))[:12]}

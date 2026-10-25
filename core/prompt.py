@@ -23,7 +23,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from .memory import RecalledMemory
-from .models import NodeDef, WorldConfig, pronoun_for
+from .models import NodeDef, SleepConfig, WorldConfig, pronoun_for
 from .participation import PARTICIPATION_MANNERS, EXPRESSION_MANNERS
 from .mood import day_mood_info, desire_text
 from .extensions import JsonField, normalize_json_field
@@ -937,6 +937,7 @@ class PromptBuilder:
                 state,
                 dwell_minutes=self._dwell_minutes(state),
                 tick_seconds=self.tick_seconds,
+                sleep_config=self.world.sleep,
             ),
             f"# 当前动作：{action_desc}",
             f"# 当前位置：{node.name if node else '未知'}",
@@ -1104,7 +1105,8 @@ class PromptBuilder:
 
     @staticmethod
     def _state_block(
-        state: WorldState, *, dwell_minutes: float = 0.0, tick_seconds: float = 60.0
+        state: WorldState, *, dwell_minutes: float = 0.0, tick_seconds: float = 60.0,
+        sleep_config: SleepConfig | None = None,
     ) -> str:
         """数值不只是给数字：连范围、含义、当前程度一起说清楚。"""
 
@@ -1120,9 +1122,17 @@ class PromptBuilder:
                 f"- 今天的基调：{today.label}——{today.hint}"
                 "（这是今天一整天的底子，不用刻意说破，让它自然渗进你的反应和选择里）"
             )
+        activity_recovery = sleep_config is not None and sleep_config.mode == "activity"
+        if activity_recovery:
+            from .recovery import recovery_target
+            energy_hint = (f"- 精力 {state.energy:.2f}：低于 {sleep_config.recovery_threshold:.2f} 需要恢复精力；"
+                           f"已开始恢复时，达到 {recovery_target(sleep_config):.2f} 再继续普通活动。"
+                           "使用符合原人设的已配置恢复活动；精力不足不代表犯困，不需要睡眠。")
+        else:
+            energy_hint = (f"- 精力 {state.energy:.2f}：低于 0.25 会明显犯困——白天先小睡一会儿（10~60 分钟）就能缓过来，"
+                           "睡整觉留给夜里和凌晨；高于 0.8 很有精神")
         lines.extend([
-            f"- 精力 {state.energy:.2f}：低于 0.25 会明显犯困——白天先小睡一会儿（10~60 分钟）就能缓过来，"
-            "睡整觉留给夜里和凌晨；高于 0.8 很有精神",
+            energy_hint,
             f"- 孤独感 {state.loneliness:.2f}：超过 0.7 会很想找人说话，低于 0.3 觉得一个人也挺好",
             f"- 好奇心 {state.curiosity:.2f}：超过 0.7 想找点新鲜事做",
             f"- 心潮 {state.affect:.2f}：情绪被激起的强度（不是开心程度），"
@@ -1150,7 +1160,7 @@ class PromptBuilder:
         pressure = max(
             0.0, min(1.0, float(getattr(state, "sleep_pressure", 0.0) or 0.0))
         )
-        if pressure > 0.05:
+        if not activity_recovery and pressure > 0.05:
             if pressure >= 0.85:
                 hint = "已经困得睁不开眼了"
             elif pressure >= 0.5:
@@ -1164,7 +1174,7 @@ class PromptBuilder:
                 "攒到满就真的撑不住了；有人陪着你说话、被亲近一下，都能把困意压下去一点。"
             )
         delay_until = int(getattr(state, "sleep_delay_until", 0) or 0)
-        if delay_until and int(state.world_time) < delay_until:
+        if not activity_recovery and delay_until and int(state.world_time) < delay_until:
             left = max(
                 1,
                 int(

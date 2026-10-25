@@ -13,7 +13,7 @@ from typing import Any
 from ..llm_usage import collect_llm_usage
 from ..model_calls import call_context
 from ..model_call_runtime import safe_error
-from .life_inference import LIFE_WORK, released_life_lock
+from .life_inference import LIFE_WORK, released_life_lock, validate_life_preparation
 
 CRITICAL_TICK = ContextVar("world_critical_tick", default=False)
 
@@ -99,6 +99,7 @@ class BackgroundMixin:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _budgeted_generate(self, channel, **kwargs: Any):
+        await validate_life_preparation(self)
         from ..ports import LLMReply
         context = call_context()
         purpose = str(context.get("purpose") or "other")

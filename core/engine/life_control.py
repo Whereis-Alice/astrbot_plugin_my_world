@@ -153,7 +153,16 @@ class LifeControlMixin:
             running["_life_resume"] = {"ticks": ticks,
                 "usage_keys": dict(usage_keys) if isinstance(usage_keys, dict) else {}}
             pending.insert(0, running)
-        if not pending or not all(self._quiet_resume_step(step) for step in pending):
+        # Keep the safe prefix, including already started quiet work. A later
+        # speech/tool step is a barrier, not a reason to erase that work; steps
+        # after the barrier may depend on it and must not be moved ahead of it.
+        prefix = []
+        for step in pending:
+            if not self._quiet_resume_step(step):
+                break
+            prefix.append(step)
+        pending = prefix
+        if not pending:
             return None
         if saved:
             saved["steps"] = saved["steps"][:current] + pending

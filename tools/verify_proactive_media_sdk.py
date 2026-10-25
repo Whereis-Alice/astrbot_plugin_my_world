@@ -44,6 +44,7 @@ async def main():
             "static PNG": str(root / "static.png"),
         }
         for name, source in sources.items():
+            original = Path(source) if not source.startswith(("data:", "base64://")) else None
             row = {"origin": "synthetic:GroupMessage:media", "message_id": "test",
                    "text": "合成媒体测试", "images": [source]}
             # No event snapshot: the fallback must handle the actual image bytes.
@@ -57,7 +58,10 @@ async def main():
                     assert getattr(prepared, "n_frames", 1) == 1
                     assert max(prepared.size) <= 1536
                 results.append({"case": name, "passed": True, "model_mime": resolved.mime_type})
-            assert not path.exists(), "request image must be released after consumption"
+            if original is not None and path == original:
+                assert original.exists(), "a compliant original reused by the SDK must be preserved"
+            else:
+                assert not path.exists(), "request preview must be released after consumption"
             assert gif.exists(), "original file must be preserved"
         async with media.context("synthetic:GroupMessage:media", [], images=[str(gif)]) as data:
             assert len(data["images"]) == 1

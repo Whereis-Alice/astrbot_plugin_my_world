@@ -8,6 +8,7 @@ from typing import Any
 from ..config_scope import session_scoped
 from ..json_actions import parse_plan_payload
 from ..models import NodeDef
+from ..recovery import recovery_note
 from ..planner import (
     active_plan,
     create_plan,
@@ -380,8 +381,15 @@ class AutonomyMixin:
                 system_prompt = f"{system_prompt}\n\n{layer}"
         note = self.autonomous_prompt_note(state, respect_pause=outcome.speech_kind not in {"reply", "schedule", "event"})
         hint += ("\n只安排安静的个人活动；不发消息、不调用工具，不因想法而越过发言限制。" if quiet else "")
-        hint += ("\n先依照原有人设，再结合精力、困意、近期经历与未完事项选择。reason说明此刻为何这样安排；"
+        needs = "精力、近期经历与未完事项" if self.world.sleep.mode == "activity" else "精力、困意、近期经历与未完事项"
+        hint += (f"\n先依照原有人设，再结合{needs}选择。reason说明此刻为何这样安排；"
                  "有相关经历才引用，不把活动投入当成新喜好，不凭空补经历。也可以安静休息。")
+        rest_guidance = recovery_note(self.world) if self.world.sleep.mode == "activity" else (
+            "结合上面的日期时间、你的状态和作息挑一件最合适的事："
+            "自主模式的整觉由作息评估接管，不要在普通活动计划里重新安排；固定模式遵循已有作息。"
+            "白天只是犯困就先小睡一会儿（10~60 分钟，睡多久你自己定），缓过来接着过，"
+            "别在白天一睡八小时——那样醒来正好是半夜。"
+        )
         prompt = (
             (f"{hint}\n\n" if hint else "")
             + ("\n\n" + note + "\n\n" if note else "")
@@ -389,12 +397,8 @@ class AutonomyMixin:
             '{"plan":[{"action":"walk_to","target_node":"window"},'
             '{"action":"stare","duration":600},{"action":"think","content":"..."}],'
             '"valid_until":1800,"inner":"此刻心里的一句话","reason":"为什么这样安排"}\n'
-            "计划的长度由你决定：可以是几分钟的小事，也可以睡一整晚"
-            "（duration 是这一步持续多少秒；valid_until 是这份计划大概管多少秒）。\n"
-            "结合上面的日期时间、你的状态和作息挑一件最合适的事："
-            "自主模式的整觉由作息评估接管，不要在普通活动计划里重新安排；固定模式遵循已有作息。"
-            "白天只是犯困就先小睡一会儿（10~60 分钟，睡多久你自己定），缓过来接着过，"
-            "别在白天一睡八小时——那样醒来正好是半夜。\n"
+            "计划的长度由你决定；duration 是这一步持续多少秒，valid_until 是这份计划大概管多少秒。\n"
+            + rest_guidance + "\n"
             + self.prompts.AUTONOMOUS_MANNERS
             + "只输出 JSON。"
         )
