@@ -187,8 +187,6 @@ class TickMixin:
             echo_marker = await self._event_marker(state)
             node = self.node(state.node_id) or self.node(self.default_node_id())
             elapsed_life = self.reconcile_life_time(state)
-            from ..chat_browse import expire_feelings
-            expire_feelings(state, self._now())
             state.world_time += 1
             if not self.world.is_home_zone(state.node_id):
                 # 人就在外面：一直记着"最近出过门"，回家以后那句提醒才准

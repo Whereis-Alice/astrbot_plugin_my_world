@@ -9,6 +9,33 @@ class RelationshipApiTests(unittest.IsolatedAsyncioTestCase):
     asyncSetUp = scope.ScopeApiTests.asyncSetUp
     call = scope.ScopeApiTests.call
 
+    async def test_familiarity_switch_round_trip_changes_context_without_erasing_description(self):
+        store = self.plugin.engine.profiles
+        store.touch(self.session, '42')
+        store.note_bond(self.session, '42', type='朋友')
+        before = (await self.call('profile/contact', session=self.session, user_id='42'))['data']['model_context']
+        self.assertNotIn('当前熟悉程度', before)
+        initial = (await self.call('relationships/rules'))['data']
+        profile = initial['profile']
+        self.assertFalse(profile['familiarity_descriptions_enabled'])
+        profile['familiarity_descriptions_enabled'] = True
+        level = next(item for item in profile['levels'] if item['name'] == '熟人')
+        level['familiarity_description'] = '彼此已有一些了解。'
+        result = await self.call('relationships/rules', method='POST', profile=profile, fingerprint=initial['fingerprint'])
+        self.assertEqual(result['status_code'], 200)
+        self.plugin.engine.reload_config()
+        current = (await self.call('profile/contact', session=self.session, user_id='42'))['data']
+        self.assertIn('当前熟悉程度：彼此已有一些了解。', current['model_context'])
+        initial = (await self.call('relationships/rules'))['data']
+        initial['profile']['familiarity_descriptions_enabled'] = False
+        result = await self.call('relationships/rules', method='POST', profile=initial['profile'], fingerprint=initial['fingerprint'])
+        self.assertEqual(result['status_code'], 200)
+        self.plugin.engine.reload_config()
+        after = (await self.call('profile/contact', session=self.session, user_id='42'))['data']['model_context']
+        self.assertEqual(after, before)
+        saved = (await self.call('relationships/rules'))['data']['profile']
+        self.assertEqual(next(item for item in saved['levels'] if item['name'] == '熟人')['familiarity_description'], '彼此已有一些了解。')
+
     async def test_optional_notes_and_explicit_boundaries_survive_save_and_reload(self):
         initial = (await self.call('relationships/rules'))['data']
         self.assertTrue(initial['actions'])

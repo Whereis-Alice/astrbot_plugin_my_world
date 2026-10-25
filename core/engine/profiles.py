@@ -108,6 +108,7 @@ class ProfilesMixin:
                 "name": view.level.name,
                 "index": int(view.level_index or 0),
                 "prompt": view.level.prompt,
+                "familiarity_description": view.level.familiarity_description,
                 "deny": [
                     self.profiles.action_label(item) for item in (view.level.deny or [])
                 ],
@@ -276,6 +277,7 @@ class ProfilesMixin:
             "name": level.name,
             "index": index,
             "prompt": level.prompt,
+            "familiarity_description": level.familiarity_description,
             "deny": [self.profiles.action_label(item) for item in (level.deny or [])],
             "next_name": self._next_level_name(index),
             # 编辑器/调试里能看出这一档是被"气着"压下来的

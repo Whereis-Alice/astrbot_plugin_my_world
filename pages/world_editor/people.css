@@ -160,17 +160,17 @@ main:has(#tab-contacts.active) { padding: 22px 26px 18px; }
 .rule-template-options { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 15px; }
 .rule-denied { margin: 17px 0; }
 .rule-denied > summary { cursor: pointer; color: var(--text-2); font-size: 12px; }
-.relationship-prompt {min-width:0;margin:10px 0;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:linear-gradient(125deg,var(--accent-soft),transparent 70%),var(--bg-soft);}
-.relationship-prompt>summary {display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;color:var(--text-2);font-size:12px;list-style:none;}
-.relationship-prompt>summary strong {font-weight:550;}
-.relationship-prompt>summary strong::before {content:"▸";margin-right:8px;color:var(--accent);}
-.relationship-prompt[open]>summary strong::before {content:"▾";}
+:is(.relationship-prompt,.relationship-familiarity) {min-width:0;margin:10px 0;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:linear-gradient(125deg,var(--accent-soft),transparent 70%),var(--bg-soft);}
+:is(.relationship-prompt,.relationship-familiarity)>summary {display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;color:var(--text-2);font-size:12px;list-style:none;}
+:is(.relationship-prompt,.relationship-familiarity)>summary strong {font-weight:550;}
+:is(.relationship-prompt,.relationship-familiarity)>summary strong::before {content:"▸";margin-right:8px;color:var(--accent);}
+:is(.relationship-prompt,.relationship-familiarity)[open]>summary strong::before {content:"▾";}
 .relationship-prompt>summary span {font-size:11px;color:var(--muted);}
-.relationship-prompt>p {font-size:12px;line-height:1.8;margin:12px 0;}
+:is(.relationship-prompt,.relationship-familiarity)>p {font-size:12px;line-height:1.8;margin:12px 0;}
 .relationship-prompt-field {display:grid;gap:8px;color:var(--text-2);font-size:12px;min-width:0;}
-.relationship-prompt textarea {box-sizing:border-box;width:100%;min-width:0;resize:vertical;line-height:1.7;}
+:is(.relationship-prompt,.relationship-familiarity) textarea {box-sizing:border-box;width:100%;min-width:0;resize:vertical;line-height:1.7;}
 .relationship-prompt>button {margin-top:10px;}
-.relationship-prompt:not([open])>:not(summary) {display:none;}
+:is(.relationship-prompt,.relationship-familiarity):not([open])>:not(summary) {display:none;}
 .rule-action-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 11px; margin-top: 14px; max-height: 230px; overflow: auto; }
 .rule-growth-stage { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: start; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; }
 @media (max-width: 650px) { .rule-card-fields { grid-template-columns: 1fr; } .rule-action-options { grid-template-columns: repeat(2, minmax(0, 1fr)); } .rule-growth-stage { grid-template-columns: 1fr; } }

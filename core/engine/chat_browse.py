@@ -7,7 +7,7 @@ import json
 import math
 from uuid import uuid4
 
-from ..chat_browse import expire_feelings, feeling_error, feeling_prompt, reading_people, reading_text, reading_view
+from ..chat_browse import feeling_error, feeling_prompt, reading_people, reading_text, reading_view
 from ..config_scope import session_scoped
 from ..json_actions import extract_json_object
 from ..model_calls import model_context
@@ -255,7 +255,6 @@ class ChatBrowseMixin:
         state.chat_browsing.pop("last_error_at", None)
         state.chat_browsing.pop("last_error", None)
         state.chat_browsing.pop("last_error_session", None)
-        expire_feelings(state, now)
         quotes = [row for row in rows if row["seq"] in cited][:2]
         persona_key = hashlib.sha256(persona.encode("utf-8")).hexdigest()[:24]
         intent = payload.get("intent")

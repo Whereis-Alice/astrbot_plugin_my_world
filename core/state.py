@@ -9,6 +9,9 @@ from typing import Any
 
 from .events import normalize_abilities
 
+THOUGHT_HISTORY_LIMIT = 3000
+"""Bounded editor history; prompt consumers keep their own much smaller limits."""
+
 # bot_state 取值
 STATE_IDLE = "idle"
 STATE_AWAKENING = "awakening"
@@ -1237,7 +1240,7 @@ class WorldState:
         content: str,
         node_id: str = "",
         source: str = "",
-        keep: int = 300,
+        keep: int = THOUGHT_HISTORY_LIMIT,
         target: str = "",
         quote: str = "",
         reply: str = "",
@@ -1247,7 +1250,7 @@ class WorldState:
     ) -> None:
         """留下她的一句心里话。
 
-        ``keep`` 给得比较宽（300 条）：这些是编辑器「内心活动」那一页的内容，
+        ``keep`` 给得比较宽（3000 条）：这些是编辑器「内心活动」那一页的内容，
         只留最近二十条的话，翻着翻着就没了；提示词那边只会取最后三条，不影响预算。
 
         ``target`` / ``quote`` / ``reply`` 是这一轮的对话上下文（跟谁、对方说了什么、

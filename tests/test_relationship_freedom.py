@@ -9,13 +9,24 @@ from core.json_actions import PlannedAction
 from core.models import IntimacyLevel, parse_world
 from core.planner import create_plan
 from core.prompt import PromptBuilder
-from core.relationship_prompts import INHERITED_LEVEL_PROMPTS
+from core.relationship_prompts import FAMILIARITY_DESCRIPTIONS, INHERITED_LEVEL_PROMPTS
 from tests import test_engine as fixtures
 
 S = fixtures.SESSION
 
 
 class RelationshipFreedomTests(unittest.TestCase):
+    def test_optional_descriptions_preserve_legacy_edits_and_explicit_empty_values(self):
+        world = parse_world(default_world())[0]
+        self.assertFalse(world.profile.familiarity_descriptions_enabled)
+        for level in world.profile.levels:
+            self.assertEqual(level.familiarity_description, FAMILIARITY_DESCRIPTIONS[level.name])
+        blank = IntimacyLevel.model_validate({"name": "朋友", "familiarity_description": ""})
+        self.assertEqual(blank.familiarity_description, "")
+        edited = IntimacyLevel.model_validate({"name": "自定义档", "familiarity_description": "彼此逐渐熟悉。"})
+        self.assertEqual(IntimacyLevel.model_validate(edited.model_dump()).familiarity_description, "彼此逐渐熟悉。")
+        self.assertEqual(IntimacyLevel.model_validate({"name": "自定义档"}).familiarity_description, "")
+
     def test_defaults_provide_distance_without_behavior_scripts(self):
         world = parse_world(default_world())[0]
         for level in world.profile.levels:
@@ -218,3 +229,46 @@ class SuccessfulContactTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("同住一条街", custom)
         self.assertIn("最近常一起散步", custom)
         self.assertIn("这一档还不能做", custom)
+
+    async def test_description_toggle_changes_only_current_distance_context(self):
+        await self.prepare()
+        profiles = self.engine.profiles
+        profiles.touch(S, "42", "小明")
+        profiles.note_bond(S, "42", type="朋友")
+        profiles.note_fact(S, "42", text="喜欢猫", kind="喜好", evidence="我喜欢猫")
+        builder = PromptBuilder(self.engine.world)
+        view = profiles.view(S, "42")
+        view.level.prompt = "最近常一起散步"
+        view.level.deny = ["hug"]
+        baseline = builder.profile_block(view)
+        self.assertNotIn("当前熟悉程度", baseline)
+        self.engine.world.profile.familiarity_descriptions_enabled = True
+        enabled = builder.profile_block(view)
+        line = f"- 当前熟悉程度：{view.level.familiarity_description}\n"
+        self.assertEqual(enabled.replace(line, ""), baseline)
+        self.engine.world.profile.familiarity_descriptions_enabled = False
+        self.assertEqual(builder.profile_block(view), baseline)
+        self.assertEqual(view.affinities, ["朋友"])
+        self.assertEqual(view.level.prompt, "最近常一起散步")
+        self.assertEqual(view.level.deny, ["hug"])
+        view.level.familiarity_description = ""
+        self.engine.world.profile.familiarity_descriptions_enabled = True
+        self.assertEqual(builder.profile_block(view), baseline)
+
+    async def test_engine_uses_actual_cold_distance_and_keeps_special_identity(self):
+        await self.prepare()
+        self.engine.world.profile.familiarity_descriptions_enabled = True
+        profiles = self.engine.profiles
+        profiles.touch(S, "42")
+        profiles.note_bond(S, "42", type="男友", asserted_by="管理员设置")
+        profiles.adjust_affinity(S, "42", 100)
+        ctx = MessageContext(S, user_id="42", text="你好")
+        async with self.engine.session_state(S) as state:
+            warm = self.engine.profile_block(state, ctx)
+            self.assertIn(FAMILIARITY_DESCRIPTIONS["特别的人"], warm)
+            self.engine.note_grudge(state, "说了伤人的话", user_id="42", force=True)
+            cold = self.engine.profile_block(state, ctx)
+            self.assertIn(FAMILIARITY_DESCRIPTIONS["亲近"], cold)
+            self.assertNotIn(FAMILIARITY_DESCRIPTIONS["特别的人"], cold)
+            self.assertIn("男友", cold)
+        self.assertEqual(profiles.view(S, "42").affinities, ["男友"])

@@ -1,4 +1,19 @@
 /** Optional authored context, shared by relationship and distance editors. */
+export function familiarityDescriptionEditor({item, el, onChange = () => {}}) {
+  const box = el("details", "relationship-familiarity");
+  const label = el("label", "relationship-prompt-field");
+  const text = el("textarea"); text.rows = 2; text.value = item.familiarity_description || "";
+  text.maxLength = 160;
+  text.setAttribute("aria-label", "熟悉程度描述");
+  text.placeholder = "只描述熟悉程度；留空则不补充。";
+  label.append(el("span", "", "熟悉程度描述"), text);
+  text.addEventListener("input", () => {item.familiarity_description = text.value; onChange();});
+  const head = el("summary"); head.append(el("strong", "", "熟悉程度描述（仅开启时使用）"));
+  box.append(head,
+    el("p", "muted", "仅描述你对这个人的熟悉程度。开启后作为背景使用；关闭后保留内容，暂停注入。"), label);
+  return box;
+}
+
 export function relationshipPromptEditor({item, kind, el, onChange = () => {}}) {
   const box = el("details", "relationship-prompt");
   const head = el("summary");

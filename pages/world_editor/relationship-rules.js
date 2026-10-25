@@ -1,6 +1,6 @@
 import { relationshipBoundaryEditor } from "./relationship-boundary.js";
 import { applyDetailedLevels } from "./relationship-preset.js";
-import { relationshipPromptEditor } from "./relationship-prompt.js";
+import { familiarityDescriptionEditor, relationshipPromptEditor } from "./relationship-prompt.js";
 
 const TEMPLATES = [
   ["同学", "classmate", 0, 30, "日常身份"], ["同事", "colleague", 0, 30, "日常身份"],
@@ -76,6 +76,9 @@ export async function openRelationshipRulesEditor({ el, apiGet, apiPost,
       }
       function levels() {
         content.append(el("p", "people-muted", "档位只描述相处距离，关系只描述身份；具体言行由原有人设和当前情境决定。好感仍按身份上下限匹配档位，需要时可添加额外说明。"));
+        content.append(check("补充熟悉程度描述", profile.familiarity_descriptions_enabled,
+          value => {profile.familiarity_descriptions_enabled = value;}),
+          el("p", "people-muted", "默认关闭，沿用原有关系上下文；开启后仅补充当前相处档位的短描述。已有自定义说明与动作边界按原规则使用。"));
         const preset = el("details", "rule-template-library");
         preset.append(el("summary", "", "使用十档相处方案"),
           el("p", "people-muted", "戒备 → 疏远 → 礼貌 → 初识 → 熟悉 → 投缘 → 信任 → 亲密 → 知己 → 相依。应用会换算身份上下限，保存前可取消。"),
@@ -90,7 +93,8 @@ export async function openRelationshipRulesEditor({ el, apiGet, apiPost,
             field("好感起点（包含）", input(level.min_affinity, value => {level.min_affinity = value;}, "number")),
             field("好感终点", input(level.max_affinity, value => {level.max_affinity = value;}, "number")));
           const denied = relationshipBoundaryEditor({item: level, actions: loaded.actions || [], el});
-          card.append(head, fields, relationshipPromptEditor({item: level, kind: "档位", el}), denied, button("删除此档位", () => {
+          card.append(head, fields, familiarityDescriptionEditor({item: level, el}),
+            relationshipPromptEditor({item: level, kind: "档位", el}), denied, button("删除此档位", () => {
             if (profile.levels.length <= 1) {toast("至少保留一个档位"); return;}
             profile.levels.splice(index, 1);
             for (const bond of profile.bonds) for (const key of ["floor", "cap"])

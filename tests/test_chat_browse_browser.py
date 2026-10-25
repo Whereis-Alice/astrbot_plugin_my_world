@@ -32,6 +32,47 @@ class ChatBrowseBrowserTests(unittest.TestCase):
         self.page.get_by_role('button', name='手机与电脑', exact=True).click()
         expect(self.page.locator('#dialog-title')).to_have_text('手机与电脑')
 
+    def test_both_categories_can_filter_old_dates_before_expanding_rows(self):
+        self.page.evaluate("""() => {
+          const read = AstrBotPluginPage.apiGet;
+          window.historyReads = [];
+          AstrBotPluginPage.apiGet = (key, params) => {
+            if (key !== 'thoughts') return read(key, params);
+            historyReads.push(params);
+            const dated = (content, date, browse = false) => ({content, date, at: 1792857600,
+              source: browse ? '翻消息时' : '聊完一轮', ...(browse ? {browse_session: params.session} : {})});
+            return Promise.resolve({thoughts: [
+              ...Array.from({length: 60}, (_, i) => dated(`当天心里话${i}`, '2026-10-26')),
+              ...Array.from({length: 45}, (_, i) => dated(`昨天心里话${i}`, '2026-10-25')),
+              dated('前天翻消息的想法', '2026-10-24', true),
+              {content: '老记录没有时间', source: '聊完一轮'}
+            ]});
+          };
+        }""")
+        self.page.locator('button[data-tab="thoughts"]').click()
+        date = self.page.get_by_label('内心活动日期', exact=True)
+        expect(date).to_have_value('')
+        self.assertEqual(self.page.evaluate('historyReads.at(-1).limit'), 3000)
+        date.select_option('2026-10-25')
+        expect(self.page.locator('.thought-row')).to_have_count(40)
+        expect(self.page.locator('#thoughts-list')).to_contain_text('昨天心里话0')
+        expect(self.page.locator('#thoughts-list')).not_to_contain_text('当天心里话')
+        self.page.locator('.thought-more').click()
+        expect(self.page.locator('.thought-row')).to_have_count(45)
+        date.select_option('undated')
+        expect(self.page.locator('.thought-row')).to_have_count(1)
+        expect(self.page.locator('#thoughts-list')).to_contain_text('老记录没有时间')
+        self.page.get_by_role('tab', name='翻消息时', exact=True).click()
+        date.select_option('2026-10-24')
+        expect(self.page.locator('.thought-row')).to_have_count(1)
+        expect(self.page.locator('#thoughts-list')).to_contain_text('前天翻消息的想法')
+        expect(self.page.locator('#thoughts-hint')).not_to_contain_text('保留最近 24 小时')
+        self.host.set_viewport_size({'width': 390, 'height': 844})
+        self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'))
+        date.select_option('')
+        expect(self.page.locator('.thought-row')).to_have_count(1)
+        self.assertEqual(self.errors, [])
+
     def test_saved_reply_gate_is_displayed_as_history_instead_of_live_progress(self):
         self.page.evaluate("""() => {
           const read = AstrBotPluginPage.apiGet;

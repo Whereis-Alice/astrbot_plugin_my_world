@@ -1761,6 +1761,8 @@ class IntimacyLevel(Permissive):
     name: str = ""
     min_affinity: float = -100.0
     max_affinity: float = 100.0
+    familiarity_description: str = Field(default="", max_length=160)
+    """简短的熟悉程度描述；仅在相应开关开启时注入，不规定表达或行为。"""
     deny: list[str] = Field(default_factory=list)
     """明确禁止的动作 id：写进提示词的"现在还不能：…"。
 
@@ -1779,9 +1781,14 @@ class IntimacyLevel(Permissive):
 
     @model_validator(mode="before")
     @classmethod
-    def _clear_inherited_prompt(cls, data: Any) -> Any:
-        from .relationship_prompts import clear_inherited_level_prompt
-        return clear_inherited_level_prompt(data)
+    def _prepare_context(cls, data: Any) -> Any:
+        from .relationship_prompts import FAMILIARITY_DESCRIPTIONS, clear_inherited_level_prompt
+        data = clear_inherited_level_prompt(data)
+        if isinstance(data, dict):
+            # Missing stock descriptions get a previewable default. Explicit
+            # edits, including an empty string, survive loading and renaming.
+            data.setdefault("familiarity_description", FAMILIARITY_DESCRIPTIONS.get(str(data.get("name") or ""), ""))
+        return data
 
 
 def _default_profile_tables() -> tuple[list[BondType], list[IntimacyLevel]]:
@@ -1881,6 +1888,9 @@ class ProfileConfig(Permissive):
 
     relationship_auto_enabled: bool = True
     """根据实际交谈天数和好感，自动发展普通友谊；不自动确立恋爱或身份关系。"""
+
+    familiarity_descriptions_enabled: bool = False
+    """给模型补充当前档位的简短熟悉程度描述；默认关闭，已有自定义说明仍按原规则使用。"""
 
     friendship_stages: list[FriendshipStage] = Field(default_factory=lambda: [
         FriendshipStage(bond="群友", min_talk_days=2, min_affinity=3),

@@ -342,6 +342,7 @@ DEFAULT_WORLD: dict[str, Any] = {
         "call_name_blacklist": [],
         "bond_conflict_policy": "reject",
         "default_bond": "陌生人",
+        "familiarity_descriptions_enabled": False,
         # 关系类型 → 亲密度的下限 / 上限（都是 level 的下标）。
         # floor 是"关系本身带来的态度"：绑成男友之后，好感还没养起来也该能抱抱；
         # cap 是"上限"：普通关系聊再久也上不去，只有关系本身升级才会放宽。

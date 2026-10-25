@@ -2389,6 +2389,10 @@ class PromptBuilder:
                 )
             if relation_line:
                 lines.append(f"- {relation_line}")
+            if self.world.profile.familiarity_descriptions_enabled:
+                description = str(_field(level, "familiarity_description", "") or "").strip()
+                if description:
+                    lines.append(f"- 当前熟悉程度：{description}")
             # 时间锚点：她自己得知道"上次跟他说话是多久前"——不然"你昨天说的那个"
             # 永远是空话（想念那条线有这个数，但那只在她主动找你时才算）
             when = self._talked_ago_line(person)

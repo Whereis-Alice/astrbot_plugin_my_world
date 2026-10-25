@@ -123,7 +123,7 @@ def dialogue_origin(item: dict) -> str | None:
 
 
 def thought_visible(
-    item: dict, session: str, now: float, *, fallback_session: str = ""
+    item: dict, session: str, now: float, *, fallback_session: str = "", history: bool = False
 ) -> bool:
     origin = dialogue_origin(item)
     if origin is None:
@@ -134,12 +134,7 @@ def thought_visible(
     if origin and origin != session:
         return False
     return not item.get("browse_session") or (
-        item["browse_session"] == session and float(item.get("expires_at") or 0) > now)
-
-
-def expire_feelings(state, now: float) -> None:
-    state.thoughts = [row for row in state.thoughts if not row.get("browse_session")
-                      or float(row.get("expires_at") or 0) > now]
+        item["browse_session"] == session and (history or float(item.get("expires_at") or 0) > now))
 
 
 def feeling_context(state, session: str, now: float, *, persona_key: str = "") -> str:

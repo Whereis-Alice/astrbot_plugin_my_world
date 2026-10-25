@@ -621,8 +621,44 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
             _, prompt = self.engine.prompts.build_dialogue_prompt(persona_text=self.persona.text, state=state, node=None, current_session=sid)
             self.assertEqual("私聊后的独有感受" in prompt, visible)
         self.clock.advance(86401)
-        self.assertEqual((await self.engine.thoughts_payload(P))["thoughts"], [])
+        historical = (await self.engine.thoughts_payload(P))["thoughts"]
+        self.assertEqual(len(historical), 1)
+        self.assertEqual(historical[0]["content"], "私聊后的独有感受")
+        self.assertEqual((await self.engine.thoughts_payload(S))["thoughts"], [])
         self.assertEqual(feeling_context(state, P, self.clock.now()), "")
+
+    async def test_expired_reading_survives_ticks_and_new_readings_as_history_only(self):
+        action = await self.prepare()
+        state = await self.complete(action, inner="昨天想到窗边的花。")
+        self.clock.advance(86401)
+        self.engine.should_ask_llm = lambda state: False
+        await self.engine._tick_session(S)
+        rows = (await self.engine.thoughts_payload(S))["thoughts"]
+        self.assertIn("昨天想到窗边的花。", [row["content"] for row in rows])
+        self.assertEqual(feeling_context(state, S, self.clock.now()), "")
+        action = await self.prepare()
+        state = await self.complete(action, inner="今天又想起了不同的花。")
+        rows = (await self.engine.thoughts_payload(S))["thoughts"]
+        self.assertIn("昨天想到窗边的花。", [row["content"] for row in rows])
+        self.assertIn("今天又想起了不同的花。", [row["content"] for row in rows])
+        context = feeling_context(state, S, self.clock.now())
+        self.assertIn("今天又想起了不同的花。", context)
+        self.assertNotIn("昨天想到窗边的花。", context)
+        self.assertEqual(await self.engine.clear_thoughts(S, "browse"), 2)
+
+    async def test_history_filters_actual_session_before_limiting_and_keeps_older_inner_rows(self):
+        self.add_group(sessions=[S, P])
+        async with self.engine.session_state(S) as state:
+            state.add_thought("本群旧想法", source="聊完一轮", dialogue_session=S)
+            state.thoughts[-1]["at"] = self.clock.now() - 3 * 86400
+            for index in range(325):
+                state.add_thought(f"私聊想法{index}", source="聊完一轮", dialogue_session=P)
+        rows = (await self.engine.thoughts_payload(S, limit=1))["thoughts"]
+        self.assertEqual([row["content"] for row in rows], ["本群旧想法"])
+        self.assertEqual(rows[0]["date"], self.engine._today_key(self.clock.now() - 3 * 86400))
+        private = (await self.engine.thoughts_payload(P, limit=3000))["thoughts"]
+        self.assertEqual(len(private), 325)
+        self.assertNotIn("本群旧想法", [row["content"] for row in private])
 
     async def test_meaningful_memory_retains_source_but_never_enters_review_or_generic_runtime(self):
         self.add_group(sessions=[S, P])

@@ -7,7 +7,8 @@ import { createRelationshipsPage } from "./relationships.js";
 import { createModelCallsPage } from "./model-calls.js?v=4.35.0";
 import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js?v=4.38.0";
 import { memorySearchFields } from "./memory-settings.js";
-import { relationshipPromptEditor } from "./relationship-prompt.js";
+import { familiarityDescriptionEditor, relationshipPromptEditor } from "./relationship-prompt.js";
+import { thoughtDate, updateThoughtDates } from "./thought-history.js";
 import { mountLifeWorkspace } from "./life-workspace.js";
 import { openBrowseSettings } from "./browse-settings.js?v=4.34.7";
 import { personAvatar, personColor, bindPeopleSort } from "./people-ui.js";
@@ -1684,12 +1685,19 @@ function levelsEditor(world) {
   world.profile = world.profile || {};
   if (!Array.isArray(world.profile.levels)) world.profile.levels = [];
   const box = foldEditor("亲密度分级", "按好感度描述相处距离；具体言行遵循原有人设，额外说明可选。");
+  box.appendChild(pillsField(
+    "补充熟悉程度描述", world.profile.familiarity_descriptions_enabled === true ? "on" : "off",
+    [{key: "on", label: "开", hint: "仅补充当前档位的简短熟悉程度，不规定性格或行为。"},
+      {key: "off", label: "关", hint: "默认关闭，沿用原有关系上下文；保存的短描述保留。"}],
+    value => {world.profile.familiarity_descriptions_enabled = value === "on"; markDirty(); renderSettings();},
+    {hint: "已有自定义说明与动作边界按原规则使用。"},
+  ));
   const preset = el("button", "small ghost", "使用十档相处方案");
   preset.type = "button";
   preset.addEventListener("click", async () => {
     if (!await confirmDialog({title: "使用十档相处方案", danger: false,
       message: DETAILED_LEVELS.map(level => level.name).join(" → ")
-        + "。将替换档位、边界和频率，并换算各关系的上下限；额外说明默认留空，现有关系、好感和自然形成开关保留。保存后生效。",
+        + "。将替换档位、熟悉程度描述和动作边界，并换算各关系的上下限；熟悉程度开关保持当前选择，额外说明默认留空。现有关系、好感和自然形成开关保留，保存后生效。",
       confirmText: "应用到草稿"})) return;
     applyDetailedLevels(world.profile);
     markDirty();
@@ -1777,6 +1785,7 @@ function levelsEditor(world) {
       edit.appendChild(del);
       body.appendChild(edit);
 
+      body.appendChild(familiarityDescriptionEditor({item, el, onChange: markDirty}));
       body.appendChild(relationshipPromptEditor({item, kind: "档位", el, onChange: markDirty}));
 
       body.appendChild(relationshipBoundaryEditor({item, actions: world.actions || [], el, onChange: markDirty}));
@@ -3918,6 +3927,9 @@ function bindButtons() {
   if ($("thought-session")) {
     $("thought-session").addEventListener("change", loadThoughts);
   }
+  $("thought-date")?.addEventListener("change", () => {
+    ui.thoughtDate = $("thought-date").value; ui.thoughtRenderLimit = 40; renderThoughtsPage();
+  });
   if ($("thoughts-clear")) {
     $("thoughts-clear").addEventListener("click", clearThoughts);
   }
@@ -16188,6 +16200,8 @@ async function loadThoughts() {
   const list = $("thoughts-list");
   if (!list) return;
   const session = $("thought-session") ? $("thought-session").value : "";
+  if (ui.thoughtSession !== session) ui.thoughtDate = "";
+  ui.thoughtSession = session;
   const requestId = ui.thoughtRequest = (ui.thoughtRequest || 0) + 1;
   $("thoughts-health")?.classList.add("hidden");
   $("thoughts-browse-status")?.classList.add("hidden");
@@ -16203,7 +16217,7 @@ async function loadThoughts() {
   }
   list.appendChild(el("p", "muted", "读取中…"));
   try {
-    const data = await apiGet("thoughts", { session, limit: 300 });
+    const data = await apiGet("thoughts", { session, limit: 3000 });
     if (requestId !== ui.thoughtRequest || $("thought-session")?.value !== session) return;
     renderThoughts(data);
   } catch (error) {
@@ -16221,7 +16235,7 @@ function renderThoughts(data) {
   const jump = ui.thoughtJump;
   if (jump && jump.session === $("thought-session")?.value) {
     const found = ui.thoughtRows.find(row => row.detail?.speech?.id === jump.id);
-    if (found) { ui.thoughtTab = found.browse_session ? "browse" : "inner"; ui.thoughtRenderLimit = 300; }
+    if (found) { ui.thoughtTab = found.browse_session ? "browse" : "inner"; ui.thoughtDate = ""; ui.thoughtRenderLimit = 3000; }
     else { toast("关联内心活动已不在当前保留范围内，可查看日志"); ui.thoughtJump = null; }
   }
   ui.browseStatus = data.browse || null;
@@ -16242,7 +16256,9 @@ function renderThoughtsPage() {
   list.innerHTML = "";
   const browsing = ui.thoughtTab === "browse";
   const all = ui.thoughtRows || [];
-  const rows = all.filter(row => Boolean(row.browse_session) === browsing);
+  const categoryRows = all.filter(row => Boolean(row.browse_session) === browsing);
+  updateThoughtDates($("thought-date"), categoryRows, ui.thoughtDate || "");
+  const rows = categoryRows.filter(row => !ui.thoughtDate || thoughtDate(row) === ui.thoughtDate);
   $("thoughts-content")?.setAttribute("aria-labelledby", browsing ? "thought-tab-browse" : "thought-tab-inner");
   document.querySelectorAll("[data-thought-tab]").forEach(button => {
     const selected = (button.dataset.thoughtTab === "browse") === browsing;
@@ -16258,14 +16274,14 @@ function renderThoughtsPage() {
     };
   });
   $("thoughts-hint").textContent = browsing
-    ? "安静读过的消息，也会在心里留下回声。这里单独保留最近 24 小时的阅读感想；没有特别感受时，也算一次浏览。"
-    : "聊后的心里话和自主生活的想法，按时间留下。翻消息产生的感想可以在「翻消息时」子页查看。";
+    ? "安静读过的消息，也会在心里留下回声。阅读感想可按日期回看，超过 24 小时的感想不再作为近期对话参考。两类内心活动合计保留最近 3000 条。"
+    : "聊后的心里话和自主生活的想法，可按日期回看。翻消息的感想在「翻消息时」查看，两类合计保留最近 3000 条。";
   renderBrowseStatus(browsing);
   const note = $("thoughts-note");
   if (!rows.length) {
     if (note) note.textContent = "";
     list.appendChild(
-      el("p", "muted", browsing ? "这会儿还没有阅读感想。她可能尚未完成浏览，或这次想法未能记录；具体进度见上方。" : "还没有记录：等她说完一轮话，或者自己做一次决定，这里就会有。"),
+      el("p", "muted", ui.thoughtDate ? "这个日期没有保留的记录，可以选择全部日期或其它日期。" : browsing ? "这会儿还没有阅读感想。她可能尚未完成浏览，或这次想法未能记录；具体进度见上方。" : "还没有记录：等她说完一轮话，或者自己做一次决定，这里就会有。"),
     );
     return;
   }
@@ -16383,7 +16399,7 @@ async function clearThoughts() {
   const category = ui.thoughtTab === "browse" ? "browse" : "inner";
   const sure = await confirmDialog({
     title: category === "browse" ? "清空阅读感想" : "清空心里的话",
-    message: "只清掉当前子页的记录；其他子页、浏览进度、状态、记忆、日志和日程都不动。",
+    message: "会清空当前会话、当前子页所有日期的记录。其他子页、浏览进度、状态、记忆、日志和日程保留。",
     confirmText: "清空",
   });
   if (!sure) return;

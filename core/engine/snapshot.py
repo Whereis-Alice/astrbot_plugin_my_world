@@ -10,6 +10,7 @@ import time
 from typing import Any
 from ..config_scope import session_scoped
 from ..chat_browse import thought_visible
+from ..state import THOUGHT_HISTORY_LIMIT
 from ..decider import reply_willingness
 from ..events import (
     ABILITIES,
@@ -475,9 +476,10 @@ class SnapshotMixin:
         except Exception:
             return {"session": session_id, "thoughts": []}
         rows: list[dict[str, Any]] = []
-        for item in list(state.thoughts or [])[-max(1, int(limit)):]:
+        limit = max(1, min(THOUGHT_HISTORY_LIMIT, int(limit)))
+        for item in reversed(list(state.thoughts or [])):
             if not isinstance(item, dict) or not thought_visible(
-                item, session_id, self._now(), fallback_session=state.session_id
+                item, session_id, self._now(), fallback_session=state.session_id, history=True
             ):
                 continue
             content = str(item.get("content") or "").strip()
@@ -500,6 +502,7 @@ class SnapshotMixin:
                     # 老记录里只有世界时钟（那是个计数器，不是时间戳），
                     # 读不出来时前端按"没有时间"处理，不硬编一个假时间。
                     "at": float(item.get("at") or 0.0),
+                    "date": self._date_text(item.get("at")),
                     "world_time": float(item.get("world_time") or 0.0),
                     "node_id": node_id,
                     "node_name": (node.name or node.id) if node is not None else "",
@@ -515,7 +518,8 @@ class SnapshotMixin:
                     "browse_replied": bool(item.get("browse_replied")),
                 }
             )
-        rows.reverse()
+            if len(rows) >= limit:
+                break
         recent = bool(state.life_updated_at and self._now() - state.life_updated_at < max(180, self.tick_seconds * 3))
         enabled = self.is_enabled(session_id)
         action = state.current_action or {}
@@ -576,7 +580,7 @@ class SnapshotMixin:
                 if (category == "browse" and not item.get("browse_session"))
                 or (category == "inner" and item.get("browse_session"))
                 or not thought_visible(
-                    item, session_id, 0, fallback_session=state.session_id
+                    item, session_id, 0, fallback_session=state.session_id, history=True
                 )
             ]
             removed = before - len(state.thoughts)

@@ -6,6 +6,7 @@ import unittest
 
 from core.defaults import default_world
 from core.models import parse_world
+from core.relationship_prompts import FAMILIARITY_DESCRIPTIONS
 from tests import test_generation_browser as generation
 from tests.test_contacts_browser import CONTACTS_BRIDGE
 from tests.test_generation_browser import expect, sync_playwright
@@ -451,6 +452,57 @@ class RelationshipsBrowserTests(unittest.TestCase):
         first = self.page.locator(".rule-card").first
         first.locator(":scope > summary").click()
         self.assertFalse(first.locator(".relationship-boundary").evaluate("n => n.open"))
+        self.assertEqual(self.errors, [])
+
+    def test_familiarity_descriptions_default_off_and_survive_switching_off(self):
+        self.page.locator(".people-management > summary").click()
+        self.page.locator("#relationships-rules").click()
+        self.page.get_by_role("button", name="相处档位", exact=True).click()
+        toggle = self.page.get_by_label("补充熟悉程度描述", exact=True)
+        expect(toggle).not_to_be_checked()
+        first = self.page.locator(".rule-card").first
+        first.locator(":scope > summary").click()
+        first.locator(".relationship-familiarity > summary").click()
+        first.get_by_label("熟悉程度描述", exact=True).fill("目前彼此的相处距离很远。")
+        toggle.check()
+        self.page.locator("#dialog-ok").click()
+        self.page.wait_for_function("socialWrites.length === 1")
+        self.assertTrue(self.page.evaluate("socialRules.familiarity_descriptions_enabled"))
+        self.page.locator(".people-management > summary").click()
+        self.page.locator("#relationships-rules").click()
+        self.page.get_by_role("button", name="相处档位", exact=True).click()
+        self.page.get_by_label("补充熟悉程度描述", exact=True).uncheck()
+        self.host.set_viewport_size({"width": 390, "height": 844})
+        self.assertTrue(self.page.locator("#dialog").evaluate("n => n.scrollWidth <= n.clientWidth + 1"))
+        self.page.locator("#dialog-ok").click()
+        self.page.wait_for_function("socialWrites.length === 2")
+        self.assertFalse(self.page.evaluate("socialRules.familiarity_descriptions_enabled"))
+        self.assertEqual(self.page.evaluate("socialRules.levels[0].familiarity_description"), "目前彼此的相处距离很远。")
+        self.assertEqual(self.errors, [])
+
+    def test_settings_switch_updates_visually_and_presets_keep_the_switch(self):
+        self.page.locator('button[data-tab="settings"]').click()
+        self.page.get_by_role('button', name='记忆与资料', exact=True).click()
+        fold = self.page.locator('.fold-editor').filter(has=self.page.get_by_text('亲密度分级', exact=True))
+        fold.locator(':scope > summary').click()
+        field = fold.locator('.field').filter(has=self.page.get_by_text('补充熟悉程度描述', exact=True))
+        expect(field.locator('.pill.on')).to_have_text('关')
+        field.get_by_role('button', name='开', exact=True).click()
+        fold.locator(':scope > summary').click()
+        expect(field.locator('.pill.on')).to_have_text('开')
+        values = self.page.evaluate("""async () => {
+          const {DETAILED_LEVELS, applyDetailedLevels} = await import('./relationship-preset.js');
+          const profile = {levels: [], bonds: [], familiarity_descriptions_enabled: true};
+          applyDetailedLevels(profile);
+          return {enabled: profile.familiarity_descriptions_enabled, levels: DETAILED_LEVELS};
+        }""")
+        self.assertTrue(values['enabled'])
+        for level in values['levels']:
+            self.assertEqual(level['familiarity_description'], FAMILIARITY_DESCRIPTIONS[level['name']])
+            self.assertEqual(level['prompt'], '')
+        field.get_by_role('button', name='关', exact=True).click()
+        fold.locator(':scope > summary').click()
+        expect(field.locator('.pill.on')).to_have_text('关')
         self.assertEqual(self.errors, [])
 
     def test_gallery_dossier_and_mobile_relationships_have_no_horizontal_overflow(self):
