@@ -152,10 +152,17 @@ async def accepted(plugin, target, text, position):
     response = LLMResponse(role="assistant", completion_text=text)
     from ..core.engine.life_inference import released_life_lock
     async with released_life_lock(plugin.engine):
-        await append_history(plugin, target, event, text, history_target=row.get("history_target"))
+        history_error = None
+        try:
+            await append_history(plugin, target, event, text, history_target=row.get("history_target"))
+        except Exception as exc:
+            history_error = exc
         # Memory integrations observe only platform-accepted public content.
+        # Their accepted hook must still run if the independent host DB fails.
         await fire_hook(plugin, event, "OnLLMResponseEvent", response, accepted=True)
         await fire_hook(plugin, event, "OnAfterMessageSentEvent")
+        if history_error is not None:
+            raise history_error
 
 
 async def append_history(plugin, target, event, text, *, history_target=None):
@@ -180,4 +187,28 @@ async def append_history(plugin, target, event, text, *, history_target=None):
             return
         history = json.loads(conversation.history or "[]")
         history.append({"role": "assistant", "content": text})
+        await _save_history(manager, target, cid, history)
+
+
+async def _save_history(manager, target, cid, history):
+    """Retry an unchanged baseline, recognizing a committed write first.
+
+    The caller holds the native session lock throughout readback and retry.
+    Do not deduplicate by text: a separate accepted turn may say the same thing.
+    """
+    try:
+        await manager.update_conversation(target, cid, history=history)
+    except Exception as failure:
+        try:
+            if await manager.get_curr_conversation_id(target) != cid:
+                return
+            conversation = await manager.get_conversation(target, cid)
+            persisted = json.loads(conversation.history or "[]") if conversation is not None else None
+        except Exception:
+            raise failure
+        if persisted == history:
+            return  # The write committed; only its response failed.
+        if persisted != history[:-1]:
+            raise  # Missing/edited history cannot be safely overwritten.
+        # Exactly one retry of the same write, never of transport or hooks.
         await manager.update_conversation(target, cid, history=history)

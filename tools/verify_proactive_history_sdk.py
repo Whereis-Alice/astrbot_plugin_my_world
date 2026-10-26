@@ -5,6 +5,7 @@ import json
 import sys
 import tempfile
 import types
+from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -31,7 +32,7 @@ class Event(AstrMessageEvent):
         raise AssertionError("No real transport may be invoked")
 
 
-async def check_case(manager, kind):
+async def build_scene(manager, kind, content=None):
     message = AstrBotMessage()
     message.type, message.group_id, message.self_id = MessageType.GROUP_MESSAGE, kind, "bot"
     message.message_id, message.message = "source", []
@@ -39,8 +40,8 @@ async def check_case(manager, kind):
     event = Event("观察到的消息", message,
         PlatformMetadata(name="synthetic", description="test", id="synthetic"), kind)
     target = event.unified_msg_origin
-    if kind in {"existing", "switch before acceptance"}:
-        await manager.new_conversation(target, content=[{"role": "user", "content": "原来的话"}])
+    if content is not None:
+        await manager.new_conversation(target, content=content)
     expected = await manager.get_curr_conversation_id(target)
     conversation = (await manager.get_conversation(target, expected) if expected else
                     Conversation(platform_id="synthetic", user_id=target, cid="", history="[]"))
@@ -57,6 +58,13 @@ async def check_case(manager, kind):
         result.add_speech("第二段")
         return result
 
+    return target, request, plugin, view
+
+
+async def check_case(manager, kind):
+    content = [{"role": "user", "content": "原来的话"}] if kind in {"existing", "switch before acceptance"} else None
+    target, request, plugin, view = await build_scene(manager, kind, content)
+    expected = request.conversation.cid or None
     new_branch = None
     first_branch = None
     with patch.object(delivery, "fire_hook", AsyncMock(return_value=False)):
@@ -112,6 +120,76 @@ async def check_case(manager, kind):
     return {"case": kind, "passed": True}
 
 
+async def check_recovery_case(manager, kind):
+    identical = kind == "committed identical text"
+    content = [{"role": "assistant", "content": "第一段"}] if identical else None
+    target, request, plugin, view = await build_scene(manager, kind, content)
+    original_update, original_read = manager.update_conversation, manager.get_conversation
+    attempts = 0
+    failure = OSError("synthetic database failure")
+    hook = AsyncMock(return_value=False)
+
+    async def update(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if kind == "cancelled write":
+            raise asyncio.CancelledError()
+        if kind == "branch changed during failure":
+            await manager.new_conversation(target, content=[{"role": "user", "content": "新分支"}])
+            raise failure
+        if kind == "history edited during failure":
+            await original_update(args[0], args[1], history=[{"role": "user", "content": "已编辑"}])
+            raise failure
+        if kind.startswith("committed"):
+            await original_update(*args, **kwargs)
+        if attempts == 1 or kind in {"persistent write failure", "readback failure"}:
+            raise failure
+        await original_update(*args, **kwargs)
+
+    async def read(*args, **kwargs):
+        if attempts:
+            raise ValueError("synthetic readback failure")
+        return await original_read(*args, **kwargs)
+
+    errors = {"persistent write failure", "history edited during failure", "readback failure"}
+    read_patch = patch.object(manager, "get_conversation", read) if kind == "readback failure" else nullcontext()
+    with patch.object(manager, "update_conversation", update), read_patch, patch.object(delivery, "fire_hook", hook):
+        async with delivery.delivery(plugin, target, view()):
+            hook.reset_mock()  # Count acceptance, separately from draft preparation.
+            caught = None
+            try:
+                await delivery.accepted(plugin, target, "第一段", 0)
+            except (OSError, asyncio.CancelledError) as exc:
+                caught = exc
+            if kind in errors:
+                assert caught is failure, (kind, caught)
+            elif kind == "cancelled write":
+                assert isinstance(caught, asyncio.CancelledError)
+            else:
+                assert caught is None, (kind, caught)
+            await delivery.accepted(plugin, target, "第一段", 0)
+    assert attempts == (2 if kind in {"temporary write failure", "persistent write failure"} else 1), (kind, attempts)
+    if kind == "cancelled write":
+        hook.assert_not_awaited()
+    else:
+        assert [call.args[2] for call in hook.await_args_list] == ["OnLLMResponseEvent", "OnAfterMessageSentEvent"]
+        assert hook.await_args_list[0].kwargs["accepted"]
+    cid = await manager.get_curr_conversation_id(target)
+    current = await manager.get_conversation(target, cid)
+    history = json.loads(current.history)
+    wanted = [{"role": "assistant", "content": "第一段"}] * (2 if identical else 1)
+    if kind == "branch changed during failure":
+        wanted = [{"role": "user", "content": "新分支"}]
+    elif kind == "history edited during failure":
+        wanted = [{"role": "user", "content": "已编辑"}]
+    elif kind in {"persistent write failure", "readback failure", "cancelled write"}:
+        wanted = []
+    assert history == wanted, (kind, history)
+    return {"case": kind, "passed": True, "write_attempts": attempts,
+            "accepted_hook_calls": hook.await_count,
+            "memory_notifications": sum(bool(call.kwargs.get("accepted")) for call in hook.await_args_list)}
+
+
 async def main():
     with tempfile.TemporaryDirectory(prefix="my-world-history-sdk-") as folder:
         database = SQLiteDatabase(str(Path(folder) / "history.db"))
@@ -126,6 +204,10 @@ async def main():
                     "new branch", "existing", "user reply between segments", "switch before acceptance",
                     "switch after first", "reset after first", "independent stale batch",
                     "second segment only", "no acceptance")]
+                results.extend([await check_recovery_case(manager, kind) for kind in (
+                    "temporary write failure", "committed response failure", "committed identical text",
+                    "persistent write failure", "branch changed during failure", "history edited during failure",
+                    "readback failure", "cancelled write")])
             print(json.dumps(results, ensure_ascii=False))
         finally:
             await database.engine.dispose()

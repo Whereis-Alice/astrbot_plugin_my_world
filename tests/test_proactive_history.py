@@ -130,3 +130,117 @@ class ProactiveHistoryTests(unittest.IsolatedAsyncioTestCase):
         await self.accept(1)
         self.assertEqual(self.histories["switched"], [])
         self.assertEqual([row["content"] for row in self.histories["created"]], ["第一段"])
+
+    async def test_transient_write_failure_recovers_before_memory_hooks_without_resending(self):
+        update = self.manager.update_conversation
+        failed = False
+
+        async def fail_once(*args, **kwargs):
+            nonlocal failed
+            self.assertTrue(self.lock.locked())
+            if not failed:
+                failed = True
+                raise OSError("temporary database failure")
+            await update(*args, **kwargs)
+
+        self.manager.update_conversation = AsyncMock(side_effect=fail_once)
+        token = self.delivery.WIRE.set(self.wire())
+        self.addCleanup(self.delivery.WIRE.reset, token)
+        await self.accept(0)
+        await self.accept(0)
+        self.assertEqual(self.histories["created"], [{"role": "assistant", "content": "第一段"}])
+        self.assertEqual(self.manager.update_conversation.await_count, 2)
+        self.assertEqual(self.hook.await_count, 2)
+
+    async def test_committed_write_error_does_not_duplicate_identical_older_text(self):
+        self.current = "existing"
+        self.histories[self.current] = [{"role": "assistant", "content": "第一段"}]
+        update = self.manager.update_conversation
+
+        async def commit_then_fail(*args, **kwargs):
+            await update(*args, **kwargs)
+            raise OSError("write response lost after commit")
+
+        self.manager.update_conversation = AsyncMock(side_effect=commit_then_fail)
+        token = self.delivery.WIRE.set(self.wire(self.current))
+        self.addCleanup(self.delivery.WIRE.reset, token)
+        await self.accept(0)
+        await self.accept(0)
+        self.assertEqual(self.histories["existing"], [{"role": "assistant", "content": "第一段"}] * 2)
+        self.manager.update_conversation.assert_awaited_once()
+        self.assertEqual(self.hook.await_count, 2)
+
+    async def test_persistent_history_failure_still_notifies_memory_once(self):
+        failure = OSError("persistent database failure")
+        self.manager.update_conversation = AsyncMock(side_effect=failure)
+        token = self.delivery.WIRE.set(self.wire())
+        self.addCleanup(self.delivery.WIRE.reset, token)
+        with self.assertRaises(OSError) as caught:
+            await self.accept(0)
+        self.assertIs(caught.exception, failure)
+        await self.accept(0)
+        self.assertEqual(self.hook.await_count, 2)
+        self.assertEqual(self.hook.await_args_list[0].args[2], "OnLLMResponseEvent")
+        self.assertTrue(self.hook.await_args_list[0].kwargs["accepted"])
+        self.assertEqual(self.hook.await_args_list[1].args[2], "OnAfterMessageSentEvent")
+        self.assertEqual(self.manager.update_conversation.await_count, 2)
+        self.assertEqual(self.histories["created"], [])
+
+    async def test_write_failure_with_branch_switch_does_not_retry_into_new_branch(self):
+        async def switch_and_fail(*args, **kwargs):
+            self.current = "switched"
+            self.histories[self.current] = [{"role": "user", "content": "新会话"}]
+            raise OSError("database failed while branch changed")
+
+        self.manager.update_conversation = AsyncMock(side_effect=switch_and_fail)
+        token = self.delivery.WIRE.set(self.wire())
+        self.addCleanup(self.delivery.WIRE.reset, token)
+        await self.accept(0)
+        self.manager.update_conversation.assert_awaited_once()
+        self.assertEqual(self.histories["switched"], [{"role": "user", "content": "新会话"}])
+        self.assertEqual(self.hook.await_count, 2)
+
+    async def test_changed_history_after_failed_write_is_preserved_without_blind_retry(self):
+        failure = OSError("database failed while history changed")
+
+        async def edit_and_fail(*args, **kwargs):
+            self.histories[self.current] = [{"role": "user", "content": "手动编辑过的历史"}]
+            raise failure
+
+        self.manager.update_conversation = AsyncMock(side_effect=edit_and_fail)
+        token = self.delivery.WIRE.set(self.wire())
+        self.addCleanup(self.delivery.WIRE.reset, token)
+        with self.assertRaises(OSError) as caught:
+            await self.accept(0)
+        self.assertIs(caught.exception, failure)
+        self.manager.update_conversation.assert_awaited_once()
+        self.assertEqual(self.histories["created"], [{"role": "user", "content": "手动编辑过的历史"}])
+        self.assertEqual(self.hook.await_count, 2)
+
+    async def test_history_write_cancellation_propagates_without_retrying_hooks(self):
+        self.manager.update_conversation = AsyncMock(side_effect=asyncio.CancelledError())
+        token = self.delivery.WIRE.set(self.wire())
+        self.addCleanup(self.delivery.WIRE.reset, token)
+        with self.assertRaises(asyncio.CancelledError):
+            await self.accept(0)
+        self.manager.update_conversation.assert_awaited_once()
+        self.hook.assert_not_awaited()
+
+    async def test_failed_readback_preserves_write_error_and_still_notifies_memory(self):
+        failure = OSError("history write failed")
+        self.manager.update_conversation = AsyncMock(side_effect=failure)
+        read = self.manager.get_conversation
+
+        async def fail_readback(*args, **kwargs):
+            if self.manager.update_conversation.await_count:
+                raise ValueError("readback failed too")
+            return await read(*args, **kwargs)
+
+        self.manager.get_conversation = AsyncMock(side_effect=fail_readback)
+        token = self.delivery.WIRE.set(self.wire())
+        self.addCleanup(self.delivery.WIRE.reset, token)
+        with self.assertRaises(OSError) as caught:
+            await self.accept(0)
+        self.assertIs(caught.exception, failure)
+        self.manager.update_conversation.assert_awaited_once()
+        self.assertEqual(self.hook.await_count, 2)
