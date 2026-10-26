@@ -19,6 +19,7 @@ SOCIAL_BRIDGE = r"""
   window.socialPeople = __SOCIAL_PEOPLE__;
   window.socialRules = __SOCIAL_RULES__;
   window.socialWrites = [];
+  window.settingsWrites = [];
   window.socialReads = [];
   window.socialCatalogReads = [];
   window.socialPending = [];
@@ -68,6 +69,7 @@ SOCIAL_BRIDGE = r"""
       return original.apiGet(endpoint, params);
     },
     apiPost: async (endpoint, params = {}) => {
+      if (endpoint.startsWith('config/')) settingsWrites.push({endpoint, params:clone(params)});
       if (endpoint.startsWith('relationships')) {
         socialWrites.push({endpoint, params: clone(params)});
         if (endpoint === 'relationships/rules') {window.socialRules = clone(params.profile); return {ok:true};}
@@ -124,6 +126,8 @@ class RelationshipsBrowserTests(unittest.TestCase):
         payload["config"]["sessions"]["sessions"] = [
             {"session_id": "aiocqhttp:GroupMessage:1001", "enabled": True, "note": "日常聊天"},
             {"session_id": "aiocqhttp:GroupMessage:2002", "enabled": True, "note": "朋友的小群"}]
+        bonds = payload["config"]["world"]["profile"]["bonds"]
+        payload["config"]["world"]["profile"]["bonds"] = [b for b in bonds if b["name"] not in {"好友", "挚友"}] + [b for b in bonds if b["name"] in {"好友", "挚友"}]
         script = BRIDGE_JS.replace("__PAYLOAD__", json.dumps(payload, ensure_ascii=False))
         social = SOCIAL_BRIDGE.replace("__SOCIAL_PEOPLE__", json.dumps(social_people(), ensure_ascii=False))
         social = social.replace("__SOCIAL_RULES__", json.dumps(parse_world(default_world())[0].profile.model_dump(mode="json"), ensure_ascii=False))
@@ -455,61 +459,112 @@ class RelationshipsBrowserTests(unittest.TestCase):
         self.assertFalse(first.locator(".relationship-boundary").evaluate("n => n.open"))
         self.assertEqual(self.errors, [])
 
-    def test_five_stage_friendship_is_visible_and_applies_only_to_a_reviewed_draft(self):
+    def test_relationship_table_completes_legacy_types_in_sorted_groups_without_saving(self):
         self.page.evaluate("""() => {
           socialRules.bonds = socialRules.bonds.filter(b => !['好友','挚友'].includes(b.name));
           socialRules.friendship_stages = socialRules.friendship_stages.slice(0,2);
+          socialRules.friendship_stages[0].min_talk_days = 4;
           socialRules.bonds.find(b => b.name === '闺蜜').aliases.push('挚友');
         }""")
         original = self.page.evaluate("structuredClone(socialRules)")
         self.page.locator(".people-management > summary").click()
         self.page.locator("#relationships-rules").click()
-        self.page.get_by_role("button", name="普通友谊", exact=True).click()
-        preset = self.page.locator("#dialog .friendship-preset")
-        preset.locator(":scope > summary").click()
-        expect(preset.locator(".friendship-chain")).to_have_text("陌生人 → 群友 → 朋友 → 好友 → 挚友")
-        self.host.screenshot(path=str(self.shots / "five-stage-friendship-desktop.png"))
-        self.host.set_viewport_size({"width":390,"height":844})
-        self.assertTrue(self.page.locator("#dialog").evaluate("n => n.scrollWidth <= n.clientWidth + 1"))
-        self.host.screenshot(path=str(self.shots / "five-stage-friendship-mobile.png"))
-        preset.get_by_role("button", name="应用五阶段到当前草稿", exact=True).click()
-        expect(self.page.locator("#dialog .rule-growth-stage")).to_have_count(4)
-        self.assertEqual(self.page.evaluate("socialWrites.length"), 0)
-        self.page.locator("#dialog-cancel").click()
-        self.assertEqual(self.page.evaluate("socialRules"), original)
-        self.host.set_viewport_size({"width":1600,"height":1000})
-        self.page.locator(".people-management > summary").click()
-        self.page.locator("#relationships-rules").click()
-        self.page.get_by_role("button", name="普通友谊", exact=True).click()
-        self.page.locator("#dialog .friendship-preset > summary").click()
-        self.page.get_by_role("button", name="应用五阶段到当前草稿", exact=True).click()
-        self.page.locator("#dialog-ok").click()
-        self.page.wait_for_function("socialWrites.length === 1")
-        saved = self.page.evaluate("socialWrites[0].params.profile")
-        self.assertEqual([stage["bond"] for stage in saved["friendship_stages"]], ["群友","朋友","好友","挚友"])
-        self.assertEqual(saved["levels"], original["levels"])
-        self.assertFalse(saved["familiarity_descriptions_enabled"])
-        for name in ("主人","男友","家人"):
-            self.assertEqual(next(b for b in saved["bonds"] if b["name"] == name),
-                             next(b for b in original["bonds"] if b["name"] == name))
-        self.assertNotIn("挚友", next(b for b in saved["bonds"] if b["name"] == "闺蜜")["aliases"])
+        self.assertEqual(self.page.locator('#dialog [data-rules-tab="growth"]').count(), 0)
+        ordinary = self.page.locator('#dialog .relationship-group[data-kind="ordinary"]')
+        expect(ordinary.locator('.rule-card > summary strong')).to_have_text(['陌生人','群友','朋友'])
+        self.page.get_by_role('button', name='补齐普通关系', exact=True).click()
+        expect(ordinary.locator('.rule-card > summary strong')).to_have_text(['陌生人','群友','朋友','好友','挚友'])
+        self.assertEqual(self.page.locator('#dialog .friendship-preset').count(), 0)
+        special = self.page.locator('#dialog .relationship-group[data-kind="special"]')
+        expect(special.locator('.rule-card > summary strong')).to_have_text(['闺蜜','主人','男友','女友','家人','讨厌的人','敌人'])
+        self.assertEqual(special.locator('.relationship-growth').count(), 0)
+        friend = ordinary.locator('.rule-card').filter(has=self.page.locator('summary strong', has_text='朋友'))
+        friend.locator(':scope > summary').click()
+        friend.locator('.relationship-growth > summary').click()
+        self.host.screenshot(path=str(self.shots / 'relationship-groups-desktop.png'))
+        self.host.set_viewport_size({'width':390,'height':844})
+        self.assertTrue(self.page.locator('#dialog').evaluate('n => n.scrollWidth <= n.clientWidth + 1'))
+        self.host.screenshot(path=str(self.shots / 'relationship-groups-mobile.png'))
+        self.assertEqual(self.page.evaluate('socialWrites.length'), 0)
+        self.page.locator('#dialog-cancel').click()
+        self.assertEqual(self.page.evaluate('socialRules'), original)
+        self.host.set_viewport_size({'width':1600,'height':1000})
+        self.page.locator('.people-management > summary').click()
+        self.page.locator('#relationships-rules').click()
+        self.page.get_by_role('button', name='补齐普通关系', exact=True).click()
+        self.page.locator('#dialog-ok').click()
+        self.page.wait_for_function('socialWrites.length === 1')
+        saved = self.page.evaluate('socialWrites[0].params.profile')
+        self.assertEqual([s['bond'] for s in saved['friendship_stages']], ['群友','朋友','好友','挚友'])
+        self.assertEqual(saved['friendship_stages'][:2], original['friendship_stages'])
+        self.assertEqual(saved['levels'], original['levels'])
+        for name in ('主人','男友','家人'):
+            self.assertEqual(next(b for b in saved['bonds'] if b['name'] == name),
+                             next(b for b in original['bonds'] if b['name'] == name))
+        self.assertNotIn('挚友', next(b for b in saved['bonds'] if b['name'] == '闺蜜')['aliases'])
         self.assertEqual(self.errors, [])
 
-    def test_settings_has_the_same_five_stage_friendship_preview(self):
+    def test_settings_edits_progression_inside_the_grouped_relationship_table(self):
         self.page.locator('button[data-tab="settings"]').click()
         self.page.get_by_role('button', name='记忆与资料', exact=True).click()
-        editor = self.page.locator('.fold-editor').filter(has=self.page.get_by_text('普通友谊的发展条件', exact=True))
+        editor = self.page.locator('.fold-editor').filter(has=self.page.get_by_text('关系表', exact=True))
         editor.locator(':scope > summary').click()
-        editor.locator('.friendship-preset > summary').click()
-        expect(editor.locator('.friendship-chain')).to_have_text("陌生人 → 群友 → 朋友 → 好友 → 挚友")
-        editor.get_by_role('button', name='应用五阶段到当前草稿', exact=True).click()
+        names = editor.locator('.relationship-group[data-kind="ordinary"] > .list-row input[placeholder="名称"]')
+        self.assertEqual(names.evaluate_all('nodes => nodes.map(n => n.value)'), ['陌生人','群友','朋友','好友','挚友'])
+        self.assertEqual(self.page.get_by_text('普通友谊的发展条件', exact=True).count(), 0)
+        self.assertEqual(self.page.locator('.friendship-preset').count(), 0)
+        self.assertEqual(editor.locator('.relationship-group[data-kind="special"] .relationship-growth').count(), 0)
+        growth = editor.locator('.relationship-group[data-kind="ordinary"] .relationship-options').nth(2).locator('.relationship-growth')
+        growth.locator(':scope > summary').click()
+        growth.get_by_label('不同日期直接交谈', exact=True).fill('12')
+        growth.get_by_label('至少好感', exact=True).fill('27.5')
         expect(self.page.locator('#save-state')).to_contain_text('未保存')
-        self.assertEqual(self.page.evaluate('socialWrites.length'), 0)
+        self.assertEqual(self.page.evaluate('settingsWrites.length'), 0)
+        self.host.screenshot(path=str(self.shots / 'settings-relationship-groups.png'))
+        self.page.locator('#settings-save-top').click()
+        self.page.wait_for_function("settingsWrites.some(w => w.endpoint === 'config/world')")
+        saved = self.page.evaluate("settingsWrites.find(w => w.endpoint === 'config/world').params.world.profile")
+        self.assertEqual(next(s for s in saved['friendship_stages'] if s['bond']=='朋友'),
+                         {'bond':'朋友','min_talk_days':12,'min_affinity':27.5})
+        self.assertEqual(self.errors, [])
+
+    def test_attached_conditions_follow_renaming_toggling_and_deleting_the_actual_type(self):
+        self.page.evaluate("socialRules.friendship_stages.find(s=>s.bond==='朋友').bond='好朋友'")
+        self.page.locator('.people-management > summary').click()
+        self.page.locator('#relationships-rules').click()
+        friend = self.page.locator('#dialog .rule-card').filter(has=self.page.locator('summary strong', has_text='朋友'))
+        friend.locator(':scope > summary').click()
+        friend.get_by_label('别名', exact=True).fill('旧友')
+        friend.get_by_label('关系名称', exact=True).fill('伙伴')
+        friend = self.page.locator('#dialog .rule-card').filter(has=self.page.locator('summary strong', has_text='伙伴'))
+        growth = friend.locator('.relationship-growth')
+        growth.locator(':scope > summary').click()
+        growth.get_by_label('不同日期直接交谈', exact=True).fill('9')
+        growth.get_by_label('至少好感', exact=True).fill('28')
+        growth.get_by_label('按相处推进到此关系', exact=True).uncheck()
+        growth.get_by_label('按相处推进到此关系', exact=True).check()
+        expect(growth.get_by_label('不同日期直接交谈', exact=True)).to_have_value('9')
+        self.page.locator('#dialog-ok').click()
+        self.page.wait_for_function('socialWrites.length === 1')
+        saved = self.page.evaluate('socialRules')
+        self.assertNotIn('朋友', [s['bond'] for s in saved['friendship_stages']])
+        self.assertEqual(next(s for s in saved['friendship_stages'] if s['bond']=='伙伴'),
+                         {'bond':'伙伴','min_talk_days':9,'min_affinity':28})
+        self.page.locator('.people-management > summary').click()
+        self.page.locator('#relationships-rules').click()
+        renamed = self.page.locator('#dialog .rule-card').filter(has=self.page.locator('summary strong', has_text='伙伴'))
+        renamed.locator(':scope > summary').click()
+        renamed.get_by_role('button', name='删除此关系类型', exact=True).click()
+        self.page.locator('#dialog-ok').click()
+        self.page.wait_for_function('socialWrites.length === 2')
+        self.assertNotIn('伙伴', self.page.evaluate('socialRules.bonds.map(b => b.name)'))
+        self.assertNotIn('伙伴', self.page.evaluate('socialRules.friendship_stages.map(s => s.bond)'))
+        self.assertIn('好友', self.page.evaluate('socialRules.bonds.map(b => b.name)'))
         self.assertEqual(self.errors, [])
 
     def test_friendship_preset_preserves_custom_distance_and_rejects_special_name_collisions(self):
         result = self.page.evaluate("""async () => {
-          const {buildFriendshipPreset, applyDetailedLevels} = await import('./relationship-preset.js');
+          const {completeOrdinaryRelationships, applyDetailedLevels} = await import('./relationship-preset.js');
           const profile = structuredClone(socialRules);
           applyDetailedLevels(profile);
           profile.relationship_auto_enabled = false;
@@ -519,23 +574,61 @@ class RelationshipsBrowserTests(unittest.TestCase):
           profile.bonds.find(b => b.name === '朋友').initial = true;
           const original = JSON.stringify(profile);
           const preset = (await AstrBotPluginPage.apiGet('defaults')).friendship_preset;
-          const draft = buildFriendshipPreset(profile,preset);
+          const draft = completeOrdinaryRelationships(profile,preset);
           const originalUntouched = original === JSON.stringify(profile);
           const levelAt = x => draft.levels.findIndex(l => x >= l.min_affinity && x < l.max_affinity);
           const valid = JSON.stringify(draft.levels)===JSON.stringify(profile.levels)
             && !draft.relationship_auto_enabled && draft.familiarity_descriptions_enabled
-            && draft.default_bond === '陌生人' && draft.bonds.every(b => !('initial' in b))
+            && draft.default_bond === '朋友' && draft.bonds.find(b => b.name==='朋友').initial
             && draft.bonds.find(b => b.name==='好友').floor === levelAt(30)
             && draft.bonds.find(b => b.name==='挚友').floor === levelAt(55);
           profile.bonds.push({name:'好友', unique:true, negative:false, slot:'guardian'});
           const conflicting = JSON.stringify(profile);
           let rejected=false;
-          try {buildFriendshipPreset(profile,preset);} catch(error) {rejected=error.message.includes('好友');}
+          try {completeOrdinaryRelationships(profile,preset);} catch(error) {rejected=error.message.includes('好友');}
           return {valid, rejected, originalUntouched, conflictUntouched:JSON.stringify(profile)===conflicting,
             hasFourStages:draft.friendship_stages.length===4, draft};
         }""")
-        self.assertEqual(ProfileConfig.model_validate(result.pop("draft")).default_bond, "陌生人")
+        self.assertEqual(ProfileConfig.model_validate(result.pop("draft")).default_bond, "朋友")
         self.assertTrue(all(result.values()), result)
+
+    def test_completing_types_preserves_disabled_stages_and_rejects_an_overfull_upgrade(self):
+        result = self.page.evaluate("""async () => {
+          const {completeOrdinaryRelationships} = await import('./relationship-preset.js');
+          const {relationshipGroups} = await import('./relationship-editing.js');
+          const preset = (await AstrBotPluginPage.apiGet('defaults')).friendship_preset;
+          const profile = structuredClone(socialRules);
+          profile.bonds = profile.bonds.filter(b => !['好友','挚友'].includes(b.name));
+          profile.friendship_stages = [];
+          const original = JSON.stringify(profile);
+          const draft = completeOrdinaryRelationships(profile, preset);
+          const emptyPreserved = draft.friendship_stages.length === 0 && JSON.stringify(profile) === original;
+          const groups = relationshipGroups(draft, preset);
+          const grouped = groups[0].items.map(x=>x.bond.name).join('、') === '陌生人、群友、朋友、好友、挚友'
+            && groups[1].items.slice(-2).every(x=>x.bond.negative);
+          for (let i=0; i<12; i++) {
+            profile.bonds.push({name:`自定义友谊${i}`,slot:`custom_${i}`,group:'close',auto_form:true});
+            profile.friendship_stages.push({bond:`自定义友谊${i}`,min_talk_days:i+1,min_affinity:i});
+          }
+          const full = JSON.stringify(profile);
+          let guarded = false;
+          try {completeOrdinaryRelationships(profile,preset);} catch(e) {guarded=e.message.includes('阶段已满');}
+          return {emptyPreserved, grouped, guarded, unchanged:JSON.stringify(profile) === full};
+        }""")
+        self.assertTrue(all(result.values()), result)
+
+    def test_explicit_initial_relationship_choice_overrides_legacy_row_markers(self):
+        self.page.evaluate("""() => {
+          socialRules.default_bond = '朋友';
+          socialRules.bonds.find(b => b.name === '朋友').initial = true;
+        }""")
+        self.page.locator('.people-management > summary').click()
+        self.page.locator('#relationships-rules').click()
+        self.page.get_by_label('初次认识的默认关系', exact=True).select_option('陌生人')
+        self.page.locator('#dialog-ok').click()
+        self.page.wait_for_function('socialWrites.length === 1')
+        self.assertEqual(ProfileConfig.model_validate(self.page.evaluate('socialRules')).default_bond, '陌生人')
+        self.assertEqual(self.errors, [])
 
     def test_familiarity_descriptions_default_off_and_survive_switching_off(self):
         self.page.locator(".people-management > summary").click()

@@ -24,12 +24,12 @@ export function applyDetailedLevels(profile) {
   profile.levels = structuredClone(DETAILED_LEVELS);
 }
 
-/** Build a new draft; existing special identities and distance rules survive. */
-export function buildFriendshipPreset(profile, preset) {
-  if (!preset?.bonds?.length || !preset?.stages?.length) throw new Error("五阶段方案尚未加载，请重新打开页面");
+/** Complete missing ordinary types while keeping existing choices and conditions. */
+export function completeOrdinaryRelationships(profile, preset) {
+  if (!preset?.bonds?.length || !preset?.stages?.length) throw new Error("普通关系默认值尚未加载，请重新打开页面");
   const next = structuredClone(profile);
   next.bonds = next.bonds || [];
-  const names = new Set(preset.bonds.map(bond => bond.name));
+  const added = new Set();
   const levelAt = value => {
     let index = 0;
     (next.levels || []).forEach((level, i) => {if (value >= Number(level.min_affinity)) index = i;});
@@ -44,40 +44,31 @@ export function buildFriendshipPreset(profile, preset) {
       bond.cap = levelAt(Number(preset.levels[template.cap]?.max_affinity ?? 100) - 0.000001);
       bond.floor = Math.min(bond.floor, bond.cap);
       next.bonds.push(bond);
-    }
-    if (template.name !== preset.default_bond) {
-      bond.auto_form = true;
-      bond.group = template.group;
+      added.add(bond.name);
     }
   }
   // An old "闺蜜" alias must not claim the new ordinary identity "挚友".
   for (const bond of next.bonds) {
-    bond.aliases = (bond.aliases || []).filter(alias => !names.has(alias) || alias === bond.name);
-    // The reviewed preset replaces the initial identity. Legacy row markers
-    // would otherwise override default_bond again during server validation.
-    delete bond.initial;
+    bond.aliases = (bond.aliases || []).filter(alias => !added.has(alias));
   }
-  next.default_bond = preset.default_bond;
-  next.friendship_stages = structuredClone(preset.stages);
+  if (!next.bonds.some(bond => bond.name === next.default_bond)) next.default_bond = preset.default_bond;
+  if (!Array.isArray(next.friendship_stages)) next.friendship_stages = structuredClone(preset.stages);
+  else if (next.friendship_stages.length) {
+    next.friendship_stages.push(...structuredClone(preset.stages.filter(stage => added.has(stage.bond)
+      && !next.friendship_stages.some(existing => existing.bond === stage.bond))));
+  }
+  if (next.friendship_stages.length > 12) throw new Error("普通关系阶段已满，请先停用一个不需要的发展阶段");
   return next;
 }
 
-/** The same preview is used by settings and the dedicated relationship page. */
-export function friendshipPresetControls({profile, preset, el, onApplied, onError}) {
-  const box = el("details", "friendship-preset");
-  box.appendChild(el("summary", "", "五阶段普通友谊方案"));
-  if (!preset) {box.appendChild(el("p", "hint-line", "重新加载页面后可查看方案。")); return box;}
-  box.appendChild(el("p", "friendship-chain", [preset.default_bond, ...preset.stages.map(stage => stage.bond)].join(" → ")));
-  const list = el("ul");
-  preset.stages.forEach(stage => list.appendChild(el("li", "", `${stage.bond}：直接交谈 ${stage.min_talk_days} 个不同日期，好感至少 ${stage.min_affinity}`)));
-  box.appendChild(list);
-  box.appendChild(el("p", "hint-line", "添加缺失的普通关系并替换发展条件，开启这些关系的自然形成。已有特殊身份、相处档位、说明和自动发展总开关保留；应用后仍需保存。"));
-  const apply = el("button", "small ghost", "应用五阶段到当前草稿");
+export function ordinaryRelationshipCompletionButton({profile, preset, el, onApplied, onError}) {
+  if (!preset?.bonds?.some(template => !(profile.bonds || []).some(bond => bond.name === template.name))) return null;
+  const apply = el("button", "small ghost", "补齐普通关系");
   apply.type = "button";
+  apply.title = "补齐缺少的普通关系；保留已有关系规则与发展条件，保存后生效。";
   apply.addEventListener("click", () => {
-    try {Object.assign(profile, buildFriendshipPreset(profile, preset)); onApplied();}
-    catch (error) {onError(error.message || "友谊方案未应用");}
+    try {Object.assign(profile, completeOrdinaryRelationships(profile, preset)); onApplied();}
+    catch (error) {onError(error.message || "普通关系未补齐");}
   });
-  box.appendChild(apply);
-  return box;
+  return apply;
 }

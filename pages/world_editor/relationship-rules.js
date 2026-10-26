@@ -1,5 +1,6 @@
 import { relationshipBoundaryEditor } from "./relationship-boundary.js";
-import { applyDetailedLevels, friendshipPresetControls } from "./relationship-preset.js";
+import { applyDetailedLevels, ordinaryRelationshipCompletionButton } from "./relationship-preset.js";
+import { relationshipGroups, relationshipStageEditor, renameRelationship, setInitialRelationship, setRelationshipAliases, removeRelationship } from "./relationship-editing.js";
 import { familiarityDescriptionEditor, relationshipPromptEditor } from "./relationship-prompt.js";
 
 const TEMPLATES = [
@@ -26,6 +27,7 @@ export async function openRelationshipRulesEditor({ el, apiGet, apiPost,
     node.addEventListener("input", () => save(type === "number" ? Number(node.value) : node.value)); return node;
   };
   const field = (label, node, hint = "") => {
+    node.setAttribute("aria-label", label);
     const wrap = el("label", "rule-field"); wrap.append(el("span", "", label), node);
     if (hint) wrap.append(el("small", "people-muted", hint)); return wrap;
   };
@@ -51,28 +53,34 @@ export async function openRelationshipRulesEditor({ el, apiGet, apiPost,
       body.append(container);
       const tabs = el("div", "people-filters rule-tabs");
       const content = el("div", "relationship-rules-content");
-      for (const [key, title] of [["bonds", "关系类型"], ["levels", "相处档位"], ["growth", "普通友谊"]]) {
+      for (const [key, title] of [["bonds", "关系类型"], ["levels", "相处档位"]]) {
         const node = button(title, () => {tab = key; render();}); node.dataset.rulesTab = key; tabs.append(node);
       }
       container.append(tabs, content);
       const redraw = () => render();
-      function bondCard(bond, index) {
+      function bondCard(bond, ordinary) {
         const card = el("details", "rule-card");
         const head = el("summary");
         head.append(el("strong", "", bond.name || "未命名关系"),
           el("span", "people-muted", `${bond.auto_form ? "允许自然形成" : "仅手动确立"} · ${bond.unique ? "唯一身份" : "可多人拥有"}`));
         const fields = el("div", "rule-card-fields");
-        fields.append(field("关系名称", input(bond.name, value => {bond.name = value; head.querySelector("strong").textContent = value || "未命名关系";})),
+        fields.append(field("关系名称", input(bond.name, value => {renameRelationship(profile, bond, value); head.querySelector("strong").textContent = value || "未命名关系";})),
           field("槽位", input(bond.slot, value => {bond.slot = value;}), "同槽位表示同类身份；启用唯一后，该会话只能由一人占用。"),
           field("替代组", input(bond.group || "", value => {bond.group = value;}), "同一个人在同组内只保留一种关系。留空可与其他身份并存。"),
-          field("别名", input((bond.aliases || []).join("、"), value => {bond.aliases = value.split(/[、,，]/).map(x => x.trim()).filter(Boolean);})),
+          field("别名", input((bond.aliases || []).join("、"), value => {setRelationshipAliases(profile, bond, value.split(/[、,，]/).map(x => x.trim()).filter(Boolean));})),
           field("最低相处档位", select(bond.floor || 0, profile.levels.map((x, i) => [i, x.name]), value => {bond.floor = Number(value);})),
           field("通常最高档位", select(bond.cap || 0, profile.levels.map((x, i) => [i, x.name]), value => {bond.cap = Number(value);})));
         const toggles = el("div", "rule-toggles");
         for (const [key, label] of [["auto_form", "允许自然形成"], ["allow_boundary_crossing", "允许越过通常上限"], ["unique", "唯一身份"], ["negative", "负面关系"]])
-          toggles.append(check(label, bond[key], value => {bond[key] = value;}));
-        const remove = button("删除此关系类型", () => {profile.bonds.splice(index, 1); redraw();}, "ghost small danger");
-        card.append(head, fields, toggles, relationshipPromptEditor({item: bond, kind: "关系", el}), remove); return card;
+          toggles.append(check(label, bond[key], value => {bond[key] = value; if (key === "unique" || key === "negative") redraw();}));
+        const remove = button("删除此关系类型", () => {removeRelationship(profile, bond); redraw();}, "ghost small danger");
+        const options = el("div", "relationship-options");
+        options.append(relationshipPromptEditor({item: bond, kind: "关系", el}));
+        if (ordinary) {
+          const growth = relationshipStageEditor({profile, bond, preset: loaded.friendship_preset, el, onError: toast});
+          if (growth) options.append(growth);
+        }
+        card.append(head, fields, toggles, options, remove); return card;
       }
       function levels() {
         content.append(el("p", "people-muted", "档位只描述相处距离，关系只描述身份；具体言行由原有人设和当前情境决定。好感仍按身份上下限匹配档位，需要时可添加额外说明。"));
@@ -108,32 +116,16 @@ export async function openRelationshipRulesEditor({ el, apiGet, apiPost,
           profile.levels.push({name: "新档位", min_affinity: end, max_affinity: end + 10, deny: [], deny_customized: false, prompt: ""}); redraw();
         }));
       }
-      function growth() {
-        content.appendChild(friendshipPresetControls({profile, preset: loaded.friendship_preset, el,
-          onApplied: () => {redraw(); toast("已应用五阶段普通友谊，请保存关系规则");}, onError: message => toast(message)}));
-        content.append(el("p", "people-muted", "只在当前会话积累直接交谈日期。普通身份按阶段缓慢发展，不会自动升成恋人，也不覆盖管理员设置。"),
-          check("自动发展普通友谊", profile.relationship_auto_enabled, value => {profile.relationship_auto_enabled = value;}));
-        (profile.friendship_stages || []).forEach((stage, index) => {
-          const row = el("div", "rule-growth-stage");
-          row.append(field("目标关系", select(stage.bond, profile.bonds.filter(bond => bond.group && !bond.unique && !bond.negative).map(bond => [bond.name, bond.name]), value => {stage.bond = value;})),
-            field("不同日期直接交谈", input(stage.min_talk_days, value => {stage.min_talk_days = value;}, "number")),
-            field("至少好感", input(stage.min_affinity, value => {stage.min_affinity = value;}, "number")),
-            button("删除阶段", () => {profile.friendship_stages.splice(index, 1); redraw();}, "ghost small danger"));
-          content.append(row);
-        });
-        content.append(button("＋ 添加普通阶段", () => {
-          const bond = profile.bonds.find(item => item.auto_form && item.group && !item.unique && !item.negative);
-          if (!bond) {toast("先为一种普通关系开启自然形成，并设置替代组"); return;}
-          profile.friendship_stages = [...(profile.friendship_stages || []), {bond: bond.name, min_talk_days: 7, min_affinity: 20}]; redraw();
-        }));
-      }
       function render() {
         content.replaceChildren();
         tabs.querySelectorAll("button").forEach(node => node.classList.toggle("on", node.dataset.rulesTab === tab));
         if (tab === "levels") {levels(); return;}
-        if (tab === "growth") {growth(); return;}
         content.append(el("p", "people-muted", "同学、室友、搭档等身份可以与朋友或恋人并存。新建身份默认只允许管理员设置；自然形成和越过上限需分别开启。"),
-          field("初次认识的默认关系", select(profile.default_bond, profile.bonds.map(bond => [bond.name, bond.name]), value => {profile.default_bond = value;})));
+          field("初次认识的默认关系", select(profile.default_bond, profile.bonds.map(bond => [bond.name, bond.name]), value => {setInitialRelationship(profile, value);})),
+          check("自动发展普通友谊", profile.relationship_auto_enabled !== false, value => {profile.relationship_auto_enabled = value;}));
+        const complete = ordinaryRelationshipCompletionButton({profile, preset: loaded.friendship_preset, el,
+          onApplied: () => {redraw(); toast("已补齐普通关系，请保存关系规则");}, onError: toast});
+        if (complete) content.append(complete);
         const library = el("details", "rule-template-library");
         library.append(el("summary", "", "从身份模板添加"));
         const templates = el("div", "rule-template-options");
@@ -145,7 +137,15 @@ export async function openRelationshipRulesEditor({ el, apiGet, apiPost,
           }); node.disabled = exists; node.title = category; templates.append(node);
         });
         library.append(templates); content.append(library);
-        profile.bonds.forEach((bond, index) => content.append(bondCard(bond, index)));
+        for (const group of relationshipGroups(profile, loaded.friendship_preset)) {
+          if (!group.items.length) continue;
+          const section = el("section", "relationship-group"); section.dataset.kind = group.kind;
+          const heading = el("h4", "relationship-group-title");
+          heading.append(el("span", "", group.label), el("small", "people-muted", `${group.items.length} 种`));
+          section.append(heading);
+          group.items.forEach(({bond}) => section.append(bondCard(bond, group.kind === "ordinary")));
+          content.append(section);
+        }
         content.append(button("＋ 自定义一种关系", () => {profile.bonds.push({name: "新关系", slot: "", group: "", floor: 0,
           cap: profile.levels.length - 1, aliases: [], auto_form: false, allow_boundary_crossing: false, unique: false, negative: false}); redraw();}));
       }

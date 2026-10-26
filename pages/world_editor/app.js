@@ -13,7 +13,8 @@ import { mountLifeWorkspace } from "./life-workspace.js";
 import { openBrowseSettings } from "./browse-settings.js?v=4.34.7";
 import { personAvatar, personColor, bindPeopleSort } from "./people-ui.js";
 import { openRelationshipRulesEditor } from "./relationship-rules.js";
-import { applyDetailedLevels, DETAILED_LEVELS, friendshipPresetControls } from "./relationship-preset.js";
+import { applyDetailedLevels, DETAILED_LEVELS, ordinaryRelationshipCompletionButton } from "./relationship-preset.js";
+import { relationshipGroups, relationshipStageEditor, renameRelationship, setInitialRelationship, setRelationshipAliases, removeRelationship } from "./relationship-editing.js";
 import { initialiseAppearance, openAppearancePicker } from "./appearance.js?v=4.29.0";
 import { initialiseWorkspace, updateWorkspaceContext } from "./workspace-ui.js?v=4.34.9";
 
@@ -1491,60 +1492,20 @@ function foldEditor(title, hint) {
   return box;
 }
 
-/** 关系表：一行一种关系（槽位 / 亲密度区间 / 别名）。 */
-function friendshipEditor(world) {
-  world.profile = world.profile || {};
-  world.profile.friendship_stages = world.profile.friendship_stages ?? structuredClone(
-    (ui.defaults.friendship_preset?.stages || []).filter(stage =>
-      (world.profile.bonds || []).some(bond => bond.name === stage.bond)));
-  const box = foldEditor("普通友谊的发展条件", "两个条件同时满足，普通关系才会逐渐变熟。只在不同日期直接交谈时累计天数，群内刷屏不累计。");
-  box.appendChild(friendshipPresetControls({profile: world.profile, preset: ui.defaults.friendship_preset, el,
-    onApplied: () => {markDirty(); renderSettings(); toast("已应用五阶段普通友谊，请保存");}, onError: message => toast(message)}));
-  box._note.textContent = `${world.profile.friendship_stages.length} 个阶段 · 点开编辑`;
-  world.profile.friendship_stages.forEach((stage, index) => {
-    const row = el("div", "list-row");
-    row.appendChild(cellSelect(stage.bond, (world.profile.bonds || []).filter(bond =>
-      bond.group && !bond.unique && !bond.negative).map(bond => ({value: bond.name, label: bond.name})),
-    value => (stage.bond = value), {width: 110, title: "这个阶段的普通关系，需同时开启自然形成"}));
-    row.appendChild(el("span", "muted", "交谈天数"));
-    row.appendChild(cellInput(stage.min_talk_days, value => {
-      stage.min_talk_days = Math.max(1, Math.min(366, Math.round(num(value, 2))));
-    }, { type: "number", min: 1, max: 366, width: 80 }));
-    row.appendChild(el("span", "muted", "最低好感"));
-    row.appendChild(cellInput(stage.min_affinity, value => {
-      stage.min_affinity = Math.max(-100, Math.min(100, num(value, 3)));
-    }, { type: "number", min: -100, max: 100, width: 80 }));
-    const remove = el("button", "icon-btn", "✕");
-    remove.type = "button";
-    remove.title = "移除这个发展阶段";
-    remove.addEventListener("click", () => {
-      world.profile.friendship_stages.splice(index, 1);
-      markDirty();
-      renderSettings();
-    });
-    row.appendChild(remove);
-    box.appendChild(row);
-  });
-  const add = el("button", "small ghost", "＋ 添加普通友谊阶段");
-  add.type = "button";
-  add.disabled = world.profile.friendship_stages.length >= 12;
-  add.addEventListener("click", () => {
-    const bond = (world.profile.bonds || []).find(bond => bond.group && !bond.unique && !bond.negative
-      && !world.profile.friendship_stages.some(stage => stage.bond === bond.name));
-    if (!bond) { toast("请先在关系表添加一种普通关系", "error"); return; }
-    world.profile.friendship_stages.push({bond: bond.name, min_talk_days: 10, min_affinity: 30});
-    markDirty();
-    renderSettings();
-  });
-  box.appendChild(add);
-  box.appendChild(el("p", "hint-line", "只自动发展普通友谊。恋爱、特殊身份、负面关系和管理员手动设置不由这些条件决定；也不会因为暂时少聊就自动解除关系。"));
-  return box;
-}
-
+/** Relationships and their own progression conditions. */
 function bondsEditor(world) {
   world.profile = world.profile || {};
   if (!Array.isArray(world.profile.bonds)) world.profile.bonds = [];
   const box = foldEditor("关系表", "一行一种关系：槽位、亲密度区间、别名都在这儿改。");
+  box.appendChild(pillsField(
+    "自动发展普通友谊", world.profile.relationship_auto_enabled === false ? "off" : "on",
+    [{key: "on", label: "开", hint: "按各普通关系的交谈日期与好感条件逐渐发展。"},
+      {key: "off", label: "关", hint: "保留已有关系，暂停按日期与好感推进。"}],
+    value => {world.profile.relationship_auto_enabled = value === "on"; markDirty();}, {},
+  ));
+  const complete = ordinaryRelationshipCompletionButton({profile: world.profile, preset: ui.defaults.friendship_preset, el,
+    onApplied: () => {markDirty(); renderSettings(); toast("已补齐普通关系，请保存");}, onError: toast});
+  if (complete) box.appendChild(complete);
   box.appendChild(
     el(
       "p",
@@ -1570,8 +1531,9 @@ function bondsEditor(world) {
   const fallbackName = String((world.profile.bonds[0] || {}).name || "");
   defaultSelect.value = String(world.profile.default_bond || fallbackName);
   defaultSelect.title = "第一次见到一个人时先给他这条关系；只能有一条";
+  defaultSelect.setAttribute("aria-label", "新认识的人默认关系");
   defaultSelect.addEventListener("change", () => {
-    world.profile.default_bond = defaultSelect.value;
+    setInitialRelationship(world.profile, defaultSelect.value);
     markDirty();
   });
   defaultRow.appendChild(defaultSelect);
@@ -1581,74 +1543,92 @@ function bondsEditor(world) {
 
   function redraw() {
     rows.innerHTML = "";
-    box._note.textContent = world.profile.bonds.length
-      ? `${world.profile.bonds.length} 种 · 点开编辑`
-      : "还没有关系";
-    world.profile.bonds.forEach((item, index) => {
-      const row = el("div", "list-row");
-      row.appendChild(
-        cellInput(item.name || "", (value) => (item.name = value), {
-          placeholder: "名称",
-          width: 72,
-        }),
-      );
-      row.appendChild(
-        cellInput(item.slot || "", (value) => (item.slot = value), {
-          placeholder: "槽位",
-          title: "同类关系靠槽位判重：槽位相同的只能有一个",
-          width: 84,
-        }),
-      );
-      row.appendChild(cellInput(item.group || "", value => (item.group = value), {
-        placeholder: "替代组", width: 84, title: "同一人、同组只保留一种关系；留空可并存",
-      }));
-      row.appendChild(cellCheck("自然形成", item.auto_form, value => (item.auto_form = value), "允许模型根据真实相处确立；关闭后只能管理员设置"));
-      row.appendChild(cellCheck("允许越过上限", item.allow_boundary_crossing,
-        value => (item.allow_boundary_crossing = value), "好感可超出通常距离上限；不会自动改变身份或取消动作边界"));
-      row.appendChild(
-        el("span", "muted", "最低"),
-      );
-      row.appendChild(
-        cellSelect(item.floor ?? 0, levelOptions, (value) => (item.floor = num(value)), {
-          title: "这个关系至少到哪一档（关系本身就是一种态度）",
-          width: 112,
-        }),
-      );
-      row.appendChild(
-        el("span", "muted", "最高"),
-      );
-      row.appendChild(
-        cellSelect(item.cap ?? 0, levelOptions, (value) => (item.cap = num(value)), {
-          title: "通常距离上限；允许越过上限时可随好感继续发展",
-          width: 112,
-        }),
-      );
-      row.appendChild(
-        cellInput((item.aliases || []).join("，"), (value) => {
-          item.aliases = value
-            .split(/[，,]/)
-            .map((one) => one.trim())
-            .filter(Boolean);
-        }, { placeholder: "别名，逗号分隔", width: 130 }),
-      );
-      row.appendChild(
-        cellCheck("唯一", item.unique, (value) => (item.unique = value), "同槽位在当前生活组中只能有一人"),
-      );
-      row.appendChild(
-        cellCheck("负面", item.negative, (value) => (item.negative = value), "负面关系：不惦记、不主动"),
-      );
-      const del = el("button", "icon-btn", "✕");
-      del.type = "button";
-      del.title = "删掉这种关系";
-      del.addEventListener("click", () => {
-        world.profile.bonds.splice(index, 1);
-        markDirty();
-        redraw();
+    const groups = relationshipGroups(world.profile, ui.defaults.friendship_preset);
+    box._note.textContent = groups.map(group => `${group.label} ${group.items.length}`).join(" · ");
+    const syncDefault = () => {
+      defaultSelect.replaceChildren(...world.profile.bonds.map(item => option(item.name || "", item.name || "（无名）")));
+      defaultSelect.value = world.profile.default_bond || "";
+    };
+    syncDefault();
+    for (const group of groups) {
+      if (!group.items.length) continue;
+      const section = el("section", "relationship-group"); section.dataset.kind = group.kind;
+      const heading = el("h4", "relationship-group-title");
+      heading.append(el("span", "", group.label), el("small", "muted", `${group.items.length} 种`));
+      section.append(heading); rows.append(section);
+      group.items.forEach(({bond: item}) => {
+        const row = el("div", "list-row");
+        row.appendChild(
+          cellInput(item.name || "", value => {renameRelationship(world.profile, item, value); syncDefault();}, {
+            placeholder: "名称",
+            width: 72,
+          }),
+        );
+        row.appendChild(
+          cellInput(item.slot || "", (value) => (item.slot = value), {
+            placeholder: "槽位",
+            title: "同类关系靠槽位判重：槽位相同的只能有一个",
+            width: 84,
+          }),
+        );
+        row.appendChild(cellInput(item.group || "", value => (item.group = value), {
+          placeholder: "替代组", width: 84, title: "同一人、同组只保留一种关系；留空可并存",
+        }));
+        row.appendChild(cellCheck("自然形成", item.auto_form, value => (item.auto_form = value), "允许模型根据真实相处确立；关闭后只能管理员设置"));
+        row.appendChild(cellCheck("允许越过上限", item.allow_boundary_crossing,
+          value => (item.allow_boundary_crossing = value), "好感可超出通常距离上限；不会自动改变身份或取消动作边界"));
+        row.appendChild(
+          el("span", "muted", "最低"),
+        );
+        row.appendChild(
+          cellSelect(item.floor ?? 0, levelOptions, (value) => (item.floor = num(value)), {
+            title: "这个关系至少到哪一档（关系本身就是一种态度）",
+            width: 112,
+          }),
+        );
+        row.appendChild(
+          el("span", "muted", "最高"),
+        );
+        row.appendChild(
+          cellSelect(item.cap ?? 0, levelOptions, (value) => (item.cap = num(value)), {
+            title: "通常距离上限；允许越过上限时可随好感继续发展",
+            width: 112,
+          }),
+        );
+        row.appendChild(
+          cellInput((item.aliases || []).join("，"), (value) => {
+            setRelationshipAliases(world.profile, item, value
+              .split(/[，,]/)
+              .map((one) => one.trim())
+              .filter(Boolean));
+          }, { placeholder: "别名，逗号分隔", width: 130 }),
+        );
+        row.appendChild(
+          cellCheck("唯一", item.unique, value => {item.unique = value; redraw();}, "同槽位在当前生活组中只能有一人"),
+        );
+        row.appendChild(
+          cellCheck("负面", item.negative, value => {item.negative = value; redraw();}, "负面关系：不惦记、不主动"),
+        );
+        const del = el("button", "icon-btn", "✕");
+        del.type = "button";
+        del.title = "删掉这种关系";
+        del.addEventListener("click", () => {
+          removeRelationship(world.profile, item);
+          markDirty();
+          redraw();
+        });
+        row.appendChild(del);
+        section.appendChild(row);
+        const options = el("div", "relationship-options");
+        options.append(relationshipPromptEditor({item, kind: "关系", el, onChange: markDirty}));
+        if (group.kind === "ordinary") {
+          const growth = relationshipStageEditor({profile: world.profile, bond: item, preset: ui.defaults.friendship_preset,
+            el, onChange: markDirty, onError: toast});
+          if (growth) options.append(growth);
+        }
+        section.append(options);
       });
-      row.appendChild(del);
-      rows.appendChild(row);
-      rows.appendChild(relationshipPromptEditor({item, kind: "关系", el, onChange: markDirty}));
-    });
+    }
     const add = el("button", "small ghost", "＋ 加一种关系");
     add.type = "button";
     add.addEventListener("click", () => {
@@ -19632,18 +19612,11 @@ function renderSettings() {
       { hint: "当前说话人永远是全文；群里其他人各给一行缩略版。", type: "number", min: 1 },
     ),
   );
-  profileSection._fields.appendChild(pillsField(
-    "自动发展普通友谊", world.profile?.relationship_auto_enabled === false ? "off" : "on",
-    [{ key: "on", label: "开", hint: "按配置的普通关系阶段，结合交谈日期与好感逐渐发展。" },
-      { key: "off", label: "关", hint: "只保留已有关系与明确判断。" }],
-    value => { world.profile = world.profile || {}; world.profile.relationship_auto_enabled = value === "on"; }, {},
-  ));
   profileSection._fields.appendChild(inputField(
     "好感保留天数", num(world.profile?.affinity_decay_grace_days, 7),
     value => { world.profile = world.profile || {}; world.profile.affinity_decay_grace_days = Math.max(0, Math.min(366, num(value, 7))); },
     { hint: "正好感在最近直接交谈后保留几天，再缓慢回落；负面情绪仍逐渐缓和。默认 7，0 = 不保留。", type: "number", min: 0, max: 366 },
   ));
-  profileSection._fields.appendChild(friendshipEditor(world));
   for (const [key, title, hint] of [
     ["interaction_learning", "从互动学习相处习惯", "按本轮实际行为缓慢调整好感，积累依据后归纳相处方式；原有人设始终优先。关闭后暂停这两项学习。"],
     ["vocabulary_learning", "会话词典", "从原话学习共同用语，只在当前会话命中时参考；可在记忆页维护。关闭后暂停学习与注入。"],
