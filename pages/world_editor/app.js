@@ -13,7 +13,7 @@ import { mountLifeWorkspace } from "./life-workspace.js";
 import { openBrowseSettings } from "./browse-settings.js?v=4.34.7";
 import { personAvatar, personColor, bindPeopleSort } from "./people-ui.js";
 import { openRelationshipRulesEditor } from "./relationship-rules.js";
-import { applyDetailedLevels, DETAILED_LEVELS } from "./relationship-preset.js";
+import { applyDetailedLevels, DETAILED_LEVELS, friendshipPresetControls } from "./relationship-preset.js";
 import { initialiseAppearance, openAppearancePicker } from "./appearance.js?v=4.29.0";
 import { initialiseWorkspace, updateWorkspaceContext } from "./workspace-ui.js?v=4.34.9";
 
@@ -1494,11 +1494,12 @@ function foldEditor(title, hint) {
 /** 关系表：一行一种关系（槽位 / 亲密度区间 / 别名）。 */
 function friendshipEditor(world) {
   world.profile = world.profile || {};
-  world.profile.friendship_stages = world.profile.friendship_stages ?? [
-    { bond: "群友", min_talk_days: 2, min_affinity: 3 },
-    { bond: "朋友", min_talk_days: 5, min_affinity: 15 },
-  ];
+  world.profile.friendship_stages = world.profile.friendship_stages ?? structuredClone(
+    (ui.defaults.friendship_preset?.stages || []).filter(stage =>
+      (world.profile.bonds || []).some(bond => bond.name === stage.bond)));
   const box = foldEditor("普通友谊的发展条件", "两个条件同时满足，普通关系才会逐渐变熟。只在不同日期直接交谈时累计天数，群内刷屏不累计。");
+  box.appendChild(friendshipPresetControls({profile: world.profile, preset: ui.defaults.friendship_preset, el,
+    onApplied: () => {markDirty(); renderSettings(); toast("已应用五阶段普通友谊，请保存");}, onError: message => toast(message)}));
   box._note.textContent = `${world.profile.friendship_stages.length} 个阶段 · 点开编辑`;
   world.profile.friendship_stages.forEach((stage, index) => {
     const row = el("div", "list-row");
@@ -19633,7 +19634,7 @@ function renderSettings() {
   );
   profileSection._fields.appendChild(pillsField(
     "自动发展普通友谊", world.profile?.relationship_auto_enabled === false ? "off" : "on",
-    [{ key: "on", label: "开", hint: "相处久了，陌生人可以逐渐成为群友、朋友。" },
+    [{ key: "on", label: "开", hint: "按配置的普通关系阶段，结合交谈日期与好感逐渐发展。" },
       { key: "off", label: "关", hint: "只保留已有关系与明确判断。" }],
     value => { world.profile = world.profile || {}; world.profile.relationship_auto_enabled = value === "on"; }, {},
   ));

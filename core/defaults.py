@@ -343,6 +343,12 @@ DEFAULT_WORLD: dict[str, Any] = {
         "bond_conflict_policy": "reject",
         "default_bond": "陌生人",
         "familiarity_descriptions_enabled": False,
+        "friendship_stages": [
+            {"bond": "群友", "min_talk_days": 2, "min_affinity": 3.0},
+            {"bond": "朋友", "min_talk_days": 5, "min_affinity": 15.0},
+            {"bond": "好友", "min_talk_days": 10, "min_affinity": 35.0},
+            {"bond": "挚友", "min_talk_days": 20, "min_affinity": 60.0},
+        ],
         # 关系类型 → 亲密度的下限 / 上限（都是 level 的下标）。
         # floor 是"关系本身带来的态度"：绑成男友之后，好感还没养起来也该能抱抱；
         # cap 是"上限"：普通关系聊再久也上不去，只有关系本身升级才会放宽。
@@ -354,8 +360,12 @@ DEFAULT_WORLD: dict[str, Any] = {
              "aliases": ["网友", "同群的"]},
             {"name": "朋友", "slot": "friend", "auto_form": True, "group": "close", "floor": 3, "cap": 4,
              "aliases": ["好朋友"]},
+            {"name": "好友", "slot": "close_friend", "auto_form": True, "group": "close", "floor": 4, "cap": 5,
+             "aliases": ["密友"]},
+            {"name": "挚友", "slot": "trusted_friend", "auto_form": True, "group": "close", "floor": 5, "cap": 6,
+             "aliases": ["知己"]},
             {"name": "闺蜜", "slot": "bestie", "group": "close", "floor": 4, "cap": 5, "unique": True,
-             "aliases": ["死党", "挚友"]},
+             "aliases": ["死党"]},
             {"name": "主人", "slot": "guardian", "floor": 4, "cap": 5, "unique": True,
              "aliases": ["主人さま", "老板"]},
             {"name": "男友", "slot": "romance", "group": "close", "floor": 5, "cap": 6, "unique": True,
@@ -2694,3 +2704,11 @@ def default_profile() -> dict[str, Any]:
     """
 
     return copy.deepcopy(DEFAULT_WORLD.get("profile") or {})
+
+
+def default_friendship_preset() -> dict[str, Any]:
+    """A reviewed opt-in upgrade for existing ordinary relationship tables."""
+    profile = default_profile()
+    names = {profile["default_bond"], *(stage["bond"] for stage in profile["friendship_stages"])}
+    return {"default_bond": profile["default_bond"], "stages": profile["friendship_stages"],
+            "bonds": [bond for bond in profile["bonds"] if bond["name"] in names], "levels": profile["levels"]}

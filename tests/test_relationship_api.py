@@ -2,12 +2,53 @@
 
 import unittest
 
+from core.defaults import default_profile
 from tests import test_scope_api as scope
 
 
 class RelationshipApiTests(unittest.IsolatedAsyncioTestCase):
     asyncSetUp = scope.ScopeApiTests.asyncSetUp
     call = scope.ScopeApiTests.call
+
+    async def test_five_stage_preset_is_shared_by_read_only_editor_endpoints(self):
+        before = self.plugin.store.raw_world()
+        rules = (await self.call('relationships/rules'))['data']
+        defaults = (await self.call('defaults'))['data']
+        self.assertEqual(rules['friendship_preset'], defaults['friendship_preset'])
+        preset = rules['friendship_preset']
+        self.assertEqual([preset['default_bond'], *[stage['bond'] for stage in preset['stages']]],
+                         ['陌生人', '群友', '朋友', '好友', '挚友'])
+        self.assertEqual(self.plugin.store.raw_world(), before)
+
+    async def test_global_five_stage_upgrade_preserves_independent_rules_and_people(self):
+        raw = self.plugin.store.raw_world()
+        raw['profile']['bonds'] = [b for b in raw['profile']['bonds'] if b['name'] not in {'好友', '挚友'}]
+        raw['profile'].pop('friendship_stages', None)
+        self.plugin.store.save_world(raw, snapshot=False)
+        self.plugin.engine.reload_config()
+        self.plugin.engine.profiles.touch(self.session, '42')
+        self.plugin.engine.profiles.note_bond(self.session, '42', type='主人', asserted_by='管理员设置')
+        person = self.plugin.engine.profiles.profile(self.session, '42')
+        bonds = self.plugin.engine.profiles.bonds(self.session, '42', statuses=['current'])
+        raw['profile']['relationship_auto_enabled'] = False
+        raw['profile']['friendship_stages'] = [{'bond': '朋友', 'min_talk_days': 30, 'min_affinity': 40}]
+        self.plugin.store.save_scope(self.session, raw, self.plugin.store.raw_schedules(), ['settings'])
+        self.plugin.engine.reload_config()
+        independent = self.plugin.store.raw_sessions()
+        initial = (await self.call('relationships/rules'))['data']
+        result = await self.call('relationships/rules', method='POST', profile=default_profile(),
+                                 fingerprint=initial['fingerprint'])
+        self.assertEqual(result['status_code'], 200)
+        self.plugin.engine.reload_config()
+        self.assertEqual([s.bond for s in self.plugin.engine.world.profile.friendship_stages],
+                         ['群友', '朋友', '好友', '挚友'])
+        self.assertEqual(self.plugin.store.raw_sessions(), independent)
+        self.assertEqual(self.plugin.engine.profiles.profile(self.session, '42'), person)
+        self.assertEqual(self.plugin.engine.profiles.bonds(self.session, '42', statuses=['current']), bonds)
+        with self.plugin.engine.config_scope(self.session):
+            self.assertFalse(self.plugin.engine.world.profile.relationship_auto_enabled)
+            self.assertEqual([s.model_dump(mode='json') for s in self.plugin.engine.world.profile.friendship_stages],
+                             raw['profile']['friendship_stages'])
 
     async def test_familiarity_switch_round_trip_changes_context_without_erasing_description(self):
         store = self.plugin.engine.profiles

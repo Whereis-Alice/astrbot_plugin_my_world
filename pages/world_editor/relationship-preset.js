@@ -23,3 +23,56 @@ export function applyDetailedLevels(profile) {
   }
   profile.levels = structuredClone(DETAILED_LEVELS);
 }
+
+/** Build a new draft; existing special identities and distance rules survive. */
+export function buildFriendshipPreset(profile, preset) {
+  if (!preset?.bonds?.length || !preset?.stages?.length) throw new Error("五阶段方案尚未加载，请重新打开页面");
+  const next = structuredClone(profile);
+  next.bonds = next.bonds || [];
+  const names = new Set(preset.bonds.map(bond => bond.name));
+  const levelAt = value => {
+    let index = 0;
+    (next.levels || []).forEach((level, i) => {if (value >= Number(level.min_affinity)) index = i;});
+    return index;
+  };
+  for (const template of preset.bonds) {
+    let bond = next.bonds.find(item => item.name === template.name);
+    if (bond?.unique || bond?.negative) throw new Error(`「${template.name}」已被设为特殊或负面关系，请先核对关系表`);
+    if (!bond) {
+      bond = structuredClone(template);
+      bond.floor = levelAt(preset.levels[template.floor]?.min_affinity ?? 0);
+      bond.cap = levelAt(Number(preset.levels[template.cap]?.max_affinity ?? 100) - 0.000001);
+      bond.floor = Math.min(bond.floor, bond.cap);
+      next.bonds.push(bond);
+    }
+    if (template.name !== preset.default_bond) {
+      bond.auto_form = true;
+      bond.group = template.group;
+    }
+  }
+  // An old "闺蜜" alias must not claim the new ordinary identity "挚友".
+  for (const bond of next.bonds) bond.aliases = (bond.aliases || []).filter(alias => !names.has(alias) || alias === bond.name);
+  next.default_bond = preset.default_bond;
+  next.friendship_stages = structuredClone(preset.stages);
+  return next;
+}
+
+/** The same preview is used by settings and the dedicated relationship page. */
+export function friendshipPresetControls({profile, preset, el, onApplied, onError}) {
+  const box = el("details", "friendship-preset");
+  box.appendChild(el("summary", "", "五阶段普通友谊方案"));
+  if (!preset) {box.appendChild(el("p", "hint-line", "重新加载页面后可查看方案。")); return box;}
+  box.appendChild(el("p", "friendship-chain", [preset.default_bond, ...preset.stages.map(stage => stage.bond)].join(" → ")));
+  const list = el("ul");
+  preset.stages.forEach(stage => list.appendChild(el("li", "", `${stage.bond}：直接交谈 ${stage.min_talk_days} 个不同日期，好感至少 ${stage.min_affinity}`)));
+  box.appendChild(list);
+  box.appendChild(el("p", "hint-line", "添加缺失的普通关系并替换发展条件，开启这些关系的自然形成。已有特殊身份、相处档位、说明和自动发展总开关保留；应用后仍需保存。"));
+  const apply = el("button", "small ghost", "应用五阶段到当前草稿");
+  apply.type = "button";
+  apply.addEventListener("click", () => {
+    try {Object.assign(profile, buildFriendshipPreset(profile, preset)); onApplied();}
+    catch (error) {onError(error.message || "友谊方案未应用");}
+  });
+  box.appendChild(apply);
+  return box;
+}

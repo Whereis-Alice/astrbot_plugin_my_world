@@ -1,5 +1,5 @@
 import { relationshipBoundaryEditor } from "./relationship-boundary.js";
-import { applyDetailedLevels } from "./relationship-preset.js";
+import { applyDetailedLevels, friendshipPresetControls } from "./relationship-preset.js";
 import { familiarityDescriptionEditor, relationshipPromptEditor } from "./relationship-prompt.js";
 
 const TEMPLATES = [
@@ -109,6 +109,8 @@ export async function openRelationshipRulesEditor({ el, apiGet, apiPost,
         }));
       }
       function growth() {
+        content.appendChild(friendshipPresetControls({profile, preset: loaded.friendship_preset, el,
+          onApplied: () => {redraw(); toast("已应用五阶段普通友谊，请保存关系规则");}, onError: message => toast(message)}));
         content.append(el("p", "people-muted", "只在当前会话积累直接交谈日期。普通身份按阶段缓慢发展，不会自动升成恋人，也不覆盖管理员设置。"),
           check("自动发展普通友谊", profile.relationship_auto_enabled, value => {profile.relationship_auto_enabled = value;}));
         (profile.friendship_stages || []).forEach((stage, index) => {

@@ -1814,6 +1814,12 @@ class FriendshipStage(Permissive):
     min_affinity: float = Field(default=3.0, ge=-100, le=100)
 
 
+def _default_friendship_stages() -> list[FriendshipStage]:
+    from .defaults import default_profile
+
+    return [FriendshipStage.model_validate(item) for item in default_profile()["friendship_stages"]]
+
+
 class ProfileConfig(Permissive):
     interaction_learning: bool = True
     vocabulary_learning: bool = True
@@ -1835,6 +1841,10 @@ class ProfileConfig(Permissive):
             data = dict(data)
             if data.pop("miss_push_daily_max", None) == 0:
                 data["miss_push_enabled"] = False
+            if "friendship_stages" not in data and isinstance(data.get("bonds"), list) and data["bonds"]:
+                names = {item.get("name") for item in data["bonds"] if isinstance(item, dict)}
+                data["friendship_stages"] = [stage.model_dump(mode="json") for stage in _default_friendship_stages()
+                                              if stage.bond in names]
         return data
 
     consolidate_enabled: bool = True
@@ -1892,10 +1902,7 @@ class ProfileConfig(Permissive):
     familiarity_descriptions_enabled: bool = False
     """给模型补充当前档位的简短熟悉程度描述；默认关闭，已有自定义说明仍按原规则使用。"""
 
-    friendship_stages: list[FriendshipStage] = Field(default_factory=lambda: [
-        FriendshipStage(bond="群友", min_talk_days=2, min_affinity=3),
-        FriendshipStage(bond="朋友", min_talk_days=5, min_affinity=15),
-    ], max_length=12)
+    friendship_stages: list[FriendshipStage] = Field(default_factory=_default_friendship_stages, max_length=12)
 
     digest_chars: int = 60
     """缩略版画像最多多少字（非主要的人注入这一份）。"""

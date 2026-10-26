@@ -27,6 +27,7 @@ from ..core.defaults import (
     DEFAULT_CAPTION_RELATION_PROMPT,
     DEFAULT_FORWARD_PROMPT,
     DEFAULT_WORLD,
+    default_friendship_preset,
 )
 from ..core.generator import grid_layout_nodes, spring_layout_zones
 from ..core.json_actions import extract_json_object
@@ -464,6 +465,7 @@ class WebApiMixin(LifeApiMixin):
         fingerprint = hashlib.sha256(json.dumps(profile, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         if str(getattr(request, "method", "GET")).upper() != "POST":
             return json_response({"profile": profile, "fingerprint": fingerprint,
+                "friendship_preset": default_friendship_preset(),
                 "actions": [{"id": action.id, "name": action.name or action.id, "enabled": action.enabled} for action in self.engine.world.actions]})
         if payload.get("fingerprint") != fingerprint:
             return error_response("关系规则已经变更，请重新打开后再修改")
@@ -3806,6 +3808,7 @@ class WebApiMixin(LifeApiMixin):
                 # 默认动作现在是"按需启用"：编辑器用它做一键开启 / 关闭，
                 # 核心动作（说话 / 移动 / 睡觉…）始终保留。
                 "core_actions": sorted(CORE_BUILTIN_ACTIONS),
+                "friendship_preset": default_friendship_preset(),
                 # 配置字段的中文说明：滑块明细和旧默认值提醒都用它，
                 # 免得同一份字段名要在前端再抄一遍。
                 "field_labels": dict(FIELD_LABELS),

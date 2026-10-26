@@ -159,6 +159,11 @@ class ConfigStore:
             self._write_json(self.world_path, raw)
         # 升级补字段：默认值 + 用户值（用户值优先）
         merged = _deep_merge(default_world(), raw)
+        profile = raw.get("profile")
+        if isinstance(profile, dict) and "bonds" in profile and "friendship_stages" not in profile:
+            # Let the model derive only stages supported by the legacy table.
+            # Deep merge must not insert new identity targets into an old table.
+            merged["profile"].pop("friendship_stages", None)
         merged["nodes"] = raw.get("nodes", merged.get("nodes", []))
         merged["edges"] = raw.get("edges", merged.get("edges", []))
         merged["actions"] = raw.get("actions", merged.get("actions", []))

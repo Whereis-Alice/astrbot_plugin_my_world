@@ -33,6 +33,7 @@ from core.defaults import (  # noqa: E402
     DEFAULT_WORLD,
     default_schedules,
     default_world,
+    default_friendship_preset,
 )
 from core.models import DEFAULT_INTIMACY, FIELD_LABELS, parse_world  # noqa: E402
 from core.tool_import import build_drafts  # noqa: E402
@@ -202,6 +203,7 @@ def build_payload() -> dict:
         "tools": {"tools": tools, "global_allowed": world["global_allowed_tools"]},
         "defaults": {
             "core_actions": sorted(CORE_BUILTIN_ACTIONS),
+            "friendship_preset": default_friendship_preset(),
             "actions": {
                 str(item.get("id")): {
                     "name": item.get("name", ""),

@@ -65,11 +65,11 @@ def friendship_progress(store: Any, session_id: str, user_id: str) -> dict[str, 
         and str(item.get("asserted_by") or "") != "管理员设置"
         for item in current
     )
-    # Crossing a distance ceiling does not change the order of identity stages.
-    cap = max((bond.cap for bond in (config.bond_by_name(str(item.get("type") or ""))
-                                    for item in current) if bond is not None), default=-1)
-    remaining = [(stage, bond) for stage, bond in stages if bond.cap > cap]
-    remaining.sort(key=lambda pair: (pair[1].cap, pair[0].min_talk_days, pair[0].min_affinity))
+    # Identity follows the configured stage order, independently of distance
+    # tiers. Custom distance tables may give adjacent identities the same cap.
+    current_names = {str(item.get("type") or "") for item in current}
+    reached = max((index for index, (_, bond) in enumerate(stages) if bond.name in current_names), default=-1)
+    remaining = stages[reached + 1:]
     next_stage = remaining[0][0] if remaining and eligible else None
     affinity = float(row.get("affinity") or 0)
     return {
