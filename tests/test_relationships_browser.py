@@ -5,7 +5,7 @@ import json
 import unittest
 
 from core.defaults import default_world
-from core.models import parse_world
+from core.models import ProfileConfig, parse_world
 from core.relationship_prompts import FAMILIARITY_DESCRIPTIONS
 from tests import test_generation_browser as generation
 from tests.test_contacts_browser import CONTACTS_BRIDGE
@@ -515,6 +515,8 @@ class RelationshipsBrowserTests(unittest.TestCase):
           profile.relationship_auto_enabled = false;
           profile.familiarity_descriptions_enabled = true;
           profile.bonds = profile.bonds.filter(b => !['好友','挚友'].includes(b.name));
+          profile.default_bond = '朋友';
+          profile.bonds.find(b => b.name === '朋友').initial = true;
           const original = JSON.stringify(profile);
           const preset = (await AstrBotPluginPage.apiGet('defaults')).friendship_preset;
           const draft = buildFriendshipPreset(profile,preset);
@@ -522,6 +524,7 @@ class RelationshipsBrowserTests(unittest.TestCase):
           const levelAt = x => draft.levels.findIndex(l => x >= l.min_affinity && x < l.max_affinity);
           const valid = JSON.stringify(draft.levels)===JSON.stringify(profile.levels)
             && !draft.relationship_auto_enabled && draft.familiarity_descriptions_enabled
+            && draft.default_bond === '陌生人' && draft.bonds.every(b => !('initial' in b))
             && draft.bonds.find(b => b.name==='好友').floor === levelAt(30)
             && draft.bonds.find(b => b.name==='挚友').floor === levelAt(55);
           profile.bonds.push({name:'好友', unique:true, negative:false, slot:'guardian'});
@@ -529,8 +532,9 @@ class RelationshipsBrowserTests(unittest.TestCase):
           let rejected=false;
           try {buildFriendshipPreset(profile,preset);} catch(error) {rejected=error.message.includes('好友');}
           return {valid, rejected, originalUntouched, conflictUntouched:JSON.stringify(profile)===conflicting,
-            hasFourStages:draft.friendship_stages.length===4};
+            hasFourStages:draft.friendship_stages.length===4, draft};
         }""")
+        self.assertEqual(ProfileConfig.model_validate(result.pop("draft")).default_bond, "陌生人")
         self.assertTrue(all(result.values()), result)
 
     def test_familiarity_descriptions_default_off_and_survive_switching_off(self):

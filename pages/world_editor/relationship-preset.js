@@ -51,7 +51,12 @@ export function buildFriendshipPreset(profile, preset) {
     }
   }
   // An old "闺蜜" alias must not claim the new ordinary identity "挚友".
-  for (const bond of next.bonds) bond.aliases = (bond.aliases || []).filter(alias => !names.has(alias) || alias === bond.name);
+  for (const bond of next.bonds) {
+    bond.aliases = (bond.aliases || []).filter(alias => !names.has(alias) || alias === bond.name);
+    // The reviewed preset replaces the initial identity. Legacy row markers
+    // would otherwise override default_bond again during server validation.
+    delete bond.initial;
+  }
   next.default_bond = preset.default_bond;
   next.friendship_stages = structuredClone(preset.stages);
   return next;
