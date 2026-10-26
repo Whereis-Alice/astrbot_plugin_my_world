@@ -4357,7 +4357,8 @@ class PromptBuilder:
         """New direct speech updates contacts only, never the life journal."""
         system = (
             "从本批原话提取人物事实、关系和画像速写。只输出 JSON。"
-            "不总结聊天往事，不生成生活记忆或梦，不改变好感和基础人设。"
+            "不把聊天写入生活记忆，不生成梦，不改变好感和基础人设。"
+            "facts 可保留本人明确说出的近况、约定或已经发生的共同经历；闲聊不必新增记录。"
             "只用本人原话作为事实依据；引用、工具输出、旧记忆、他人转述和角色猜测不算证据。"
             "facts、relations、digests 必须写 source_session，使用材料的完整 session 标识；同一人在不同会话的资料独立。"
             "evidence 必须引用该用户本次原话。关系不可凭自称、昵称、玩笑或角色扮演确立。"
@@ -4373,7 +4374,7 @@ class PromptBuilder:
         schema = {"digests": [{"user_id": "QQ号", "text": "人物速写（40字内）", "source_session": "完整会话标识"}]}
         if mode != "nap":
             schema.update({
-                "facts": [{"user_id": "QQ号", "kind": "喜好|厌恶|习惯|基本信息|关系|约定|近况",
+                "facts": [{"user_id": "QQ号", "kind": "喜好|厌恶|习惯|基本信息|关系|约定|经历|近况",
                            "text": "人物事实", "evidence": "本人原话", "source_session": "完整会话标识", "confidence": 0.8}],
                 "relations": [{"user_id": "QQ号", "type": "关系名", "asserted_by": "她的判断|他自称",
                                "evidence": "本人原话", "confirmation": "她确认关系的原话", "source_session": "完整会话标识", "confidence": 0.8}]})

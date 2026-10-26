@@ -252,6 +252,7 @@ class Consolidator:
         persona_text: str = "", now: float | None = None, dry_run: bool = False,
         session_labels: dict[str, str] | None = None, current_session: str = "",
         context_current: Callable[[], Awaitable[bool]] | None = None,
+        include_pending: bool = False,
     ) -> ConsolidateResult:
         """Two independent stages: direct speech -> profiles; lived events -> journal review."""
         result = ConsolidateResult(mode=str(mode or "full"))
@@ -261,8 +262,13 @@ class Consolidator:
             return result
         stamp = float(now if now is not None else time.time())
         records, observed, originals = [], {}, {}
-        for row in chat_records or []:
+        sessions = list(dict.fromkeys([session_id, *self._sessions_of(session_id)]))
+        pending = self.memory.db.pending_profile_sources(sessions, result.mode) if (
+            include_pending and world.profile.enabled and world.profile.consolidate_enabled) else []
+        for row in [*pending, *(chat_records or [])]:
             snapshot = source_snapshot(row, session_id)
+            if include_pending and snapshot['session'] not in sessions:
+                continue
             stored = self.memory.db.source_record(snapshot["id"])
             if stored is not None and not stored["eligible"] or row.get("eligible") is False and stored is None:
                 continue
@@ -287,7 +293,11 @@ class Consolidator:
                         self.memory.db.observe_source(snapshot, eligible=True)
                     self.memory.db.mark_profile_reviewed([row["source_id"] for row in records], result.mode, stamp)
             reviewed = self.memory.db.reviewed_profile_sources([row["source_id"] for row in records], result.mode)
-            records = [row for row in records if row["source_id"] not in reviewed][:400]
+            records = [row for row in records if row["source_id"] not in reviewed]
+            if len(records) > 400:
+                result.retry_needed = True
+                result.skipped.append("本批人物原话达到400条上限，剩余来源留待下一批整理")
+            records = records[:400]
         profile_key = self._batch_key(session_id, result.mode, records)
         if records and self.world.profile.enabled and self.world.profile.consolidate_enabled and not self.memory.db.kv_get(profile_key):
             known_profiles = []

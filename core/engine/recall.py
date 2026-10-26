@@ -373,7 +373,9 @@ class RecallMixin:
                     and self.is_enabled(session_id) and persona == persona_text
                     and (context_guard is None or await context_guard()))
 
-        records = self.chat_window(state, session_id)
+        # Reviews consume retained speech, not the brief reply context. Sources
+        # already outside this archive are recovered from eligible DB snapshots.
+        records = list(state.recent_chat or [])
         result = await self.consolidator.run(
             session_id=session_id,
             llm=(
@@ -390,6 +392,7 @@ class RecallMixin:
             persona_text=persona_text,
             dry_run=dry_run,
             context_current=context_current,
+            include_pending=True,
         )
         if not await context_current():
             return None

@@ -588,7 +588,8 @@ class AutonomousLifeIntegrityTests(unittest.IsolatedAsyncioTestCase):
     async def test_partial_review_retries_only_the_failed_stage_without_consuming_a_pass(self):
         await self.sleeping()
         self.engine.profiles.touch(SESSION, "42", "小明")
-        self.engine.chat_window = lambda *args: [{"user_id": "42", "text": "我喜欢猫", "origin": SESSION}]
+        async with self.engine.session_state(SESSION) as state:
+            state.recent_chat = [{"user_id": "42", "text": "我喜欢猫", "origin": SESSION}]
         self.engine._ask_consolidate = AsyncMock(side_effect=[None, '{"dream":"云间的风车"}',
             '{"facts":[{"user_id":"42","text":"喜欢猫","evidence":"我喜欢猫"}]}'])
         first = await self.engine.consolidate_session(SESSION, automatic=True)

@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS memory_revision(id INTEGER PRIMARY KEY AUTOINCREMENT,
 CREATE TABLE IF NOT EXISTS memory_vector(memory_id INTEGER NOT NULL, model_key TEXT NOT NULL,
     revision TEXT NOT NULL, vector TEXT NOT NULL, PRIMARY KEY(memory_id, model_key));
 CREATE INDEX IF NOT EXISTS idx_memory_source_age ON memory_source(observed_at);
+CREATE INDEX IF NOT EXISTS idx_memory_source_review ON memory_source(session_id,eligible,observed_at,id);
 CREATE INDEX IF NOT EXISTS idx_memory_evidence_source ON memory_evidence(source_id);
 CREATE TABLE IF NOT EXISTS profile_review_source(source_id TEXT NOT NULL,
     mode TEXT NOT NULL, at REAL NOT NULL, PRIMARY KEY(source_id, mode));
@@ -121,6 +122,23 @@ class EvidenceStoreMixin:
                 + ",".join("?" for _ in modes) + ")", [*batch, *modes])
             reviewed.update(row["source_id"] for row in rows)
         return reviewed
+
+    def pending_profile_sources(self, session_ids: list[str], mode: str, *, limit: int = 401) -> list[dict]:
+        """Oldest eligible speech first; completed naps do not consume full reviews."""
+        sessions = list(dict.fromkeys(session_ids))
+        if not sessions or limit <= 0:
+            return []
+        modes = ['full', 'nap'] if mode == 'nap' else ['full']
+        rows = self._query(
+            "SELECT s.snapshot FROM memory_source s WHERE s.session_id IN ("
+            + ','.join('?' for _ in sessions) + ") AND s.eligible=1 "
+            "AND json_extract(s.snapshot,'$.kind') IN ('direct_speech','self_statement') "
+            "AND NOT EXISTS (SELECT 1 FROM profile_review_source r WHERE r.source_id=s.id AND r.mode IN ("
+            + ','.join('?' for _ in modes) + ")) ORDER BY s.observed_at,s.id LIMIT ?",
+            [*sessions, *modes, int(limit)],
+        )
+        return [{**(item := json.loads(row['snapshot'])), 'origin': item['session'],
+                 'source_id': item['id'], 'eligible': True} for row in rows]
 
     def mark_profile_reviewed(self, source_ids: list[str], mode: str, now: float) -> None:
         for source_id in source_ids:
