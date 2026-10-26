@@ -137,6 +137,15 @@ class ScopeApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("group_name", result["data"]["sessions"]["sessions"][0])
         self.assertEqual(self.plugin.store.raw_sessions(), before)
 
+    async def test_compact_global_config_omits_duplicate_world_but_scoped_keeps_defaults(self):
+        full = (await self.call("config"))["data"]
+        compact = (await self.call("config", compact="1"))["data"]
+        self.assertEqual(compact["world"], full["world"])
+        self.assertFalse("global_config" in compact, "compact global response should omit the duplicate world")
+        scoped = (await self.call("config", compact="1", config_scope=self.session))["data"]
+        self.assertEqual(scoped["global_config"], full["global_config"])
+        self.assertEqual(scoped["scope"], self.session)
+
     async def test_global_pause_does_not_change_schedule_or_event_settings(self):
         before = self.plugin.engine.world.events.model_dump(mode="json")
         result = await self.call("config/proactive", method="POST", config_scope=self.session, enabled=False)

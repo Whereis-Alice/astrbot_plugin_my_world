@@ -2317,10 +2317,10 @@ class WebApiMixin(LifeApiMixin):
                 "extension_actions": self.extension_host.action_groups(),
                 "scope": self.engine.config_scope_id,
                 "scope_blocks": list(getattr(self.engine.session_config(self.engine.config_scope_id), "config_overrides", {}) or {}),
-                "global_config": {
+                **({"global_config": {
                     "world": self.engine._base_runtime["world"].model_dump(mode="json", by_alias=True),
                     "schedules": self.engine._base_runtime["schedules"].model_dump(mode="json"),
-                },
+                }} if self.engine.config_scope_id or _query_int("compact") != 1 else {}),
                 "scope_owners": {
                     item.session_id: self.engine.main_session(item.session_id)
                     for item in self.engine.sessions.sessions

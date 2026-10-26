@@ -3318,10 +3318,13 @@ async function loadAll(scope = ui.scope) {
   setSaveState("加载中…");
   try {
     const [config, tools, defaults] = await Promise.all([
-      apiGet("config", { config_scope: scope }),
-      apiGet("tools"),
+      apiGet("config", { config_scope: scope, compact: 1 }),
+      apiGet("tools", { config_scope: scope }),
       apiGet("defaults"),
     ]);
+    if (!config.global_config && !(config.scope ?? scope)) {
+      config.global_config = structuredClone({ world: config.world, schedules: config.schedules });
+    }
     ui.config = config;
     ui.scope = config.scope ?? scope;
     ui.scopeBlocks = new Set(config.scope_blocks || []);
@@ -3358,7 +3361,7 @@ function renderEverything() {
   renderSettings();
   renderToolWarnings();
   refreshStatus();
-  loadTools();
+  loadTools({ tools: ui.tools });
   loadOverview();
   applyPronoun($("app"));
   renderConfigScope();
@@ -4611,7 +4614,6 @@ async function saveAll() {
     // 保存时顺手给缺意图的工具 / 指令步骤补的意图（写进配置了，编辑器里能看到）
     const autoIntents = scheduleResult.filled || [];
     // 保存即生效：不用再单独点「热加载」
-    const reloadResult = await apiPost("reload", {});
     ui.dirty = false;
     ui.dirtyTabs.clear();
     renderSettingsTabs();
@@ -4621,8 +4623,6 @@ async function saveAll() {
         ? `已保存并生效，提醒：${warnings.join("；")}`
         : autoIntents.length
           ? `已保存并生效，顺手补了这些步骤的意图：${autoIntents.join("；")}`
-        : (reloadResult.warnings || []).length
-          ? `已保存并生效，提醒：${reloadResult.warnings.join("；")}`
           : "已保存并生效",
     );
     await loadAll();
@@ -20842,11 +20842,11 @@ function importPreset() {
   });
 }
 
-async function loadTools() {
+async function loadTools(loaded = null) {
   const list = $("tools-list");
   list.innerHTML = "";
   try {
-    const data = await apiGet("tools");
+    const data = loaded || await apiGet("tools");
     (data.tools || []).forEach((tool) => {
       const item = el("div", "list-item");
       const info = el("div");

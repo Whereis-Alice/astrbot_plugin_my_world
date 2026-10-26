@@ -12,6 +12,7 @@ SCOPE_BRIDGE = r"""
 (() => {
   const original = window.AstrBotPluginPage;
   window.scopeWrites = [];
+  window.scopeReads = [];
   const local = {};
   const mapKeys = ['zones', 'zone_edges', 'nodes', 'edges'];
   const actionKeys = ['actions', 'purged_actions', 'idle_life'];
@@ -21,6 +22,7 @@ SCOPE_BRIDGE = r"""
     : ![...mapKeys, ...actionKeys, ...fixed].includes(key)));
   window.AstrBotPluginPage = {...original,
     apiGet: async (endpoint, params = {}) => {
+      scopeReads.push({endpoint, params: structuredClone(params)});
       const data = await original.apiGet(endpoint, params);
       if (endpoint !== 'config') return data;
       data.sessions.sessions = [
@@ -36,6 +38,7 @@ SCOPE_BRIDGE = r"""
         if (block === 'schedules') data.schedules = structuredClone(value);
         else Object.assign(data.world, structuredClone(value));
       }
+      if (!data.scope && params.compact === 1) delete data.global_config;
       return data;
     },
     apiPost: async (endpoint, data) => {
@@ -116,8 +119,23 @@ class ScopeBrowserTests(unittest.TestCase):
         self.page.locator("#config-scope").select_option("test:GroupMessage:100")
         expect(self.page.locator("#scope-edit-label")).to_be_visible()
 
+    def test_global_save_does_not_reload_again_or_duplicate_tool_requests(self):
+        self.page.locator('button[data-tab="settings"]').click()
+        expect(self.page.locator("#save-state")).to_have_text("已加载")
+        self.assertEqual(self.page.evaluate("scopeReads.filter(r => r.endpoint === 'tools').length"), 1)
+        self.page.get_by_label("世界名称").fill("Fast World")
+        self.page.locator("#save").click()
+        self.page.wait_for_function("scopeReads.filter(r => r.endpoint === 'config').length === 2")
+        expect(self.page.locator("#save-state")).to_have_text("已加载")
+        self.assertEqual(self.page.evaluate("scopeWrites.map(r => r.endpoint)"),
+                         ["config/world", "config/schedules", "config/sessions"])
+        self.assertEqual(self.page.evaluate("scopeReads.filter(r => r.endpoint === 'tools').length"), 2)
+        self.assertEqual(self.errors, [])
+
     def test_local_save_and_restore_never_write_global_files(self):
         self.select_local()
+        self.assertEqual(self.page.evaluate("scopeReads.filter(r => r.endpoint === 'tools').at(-1).params.config_scope"),
+                         "test:GroupMessage:100")
         self.assertTrue(self.page.locator("#tab-settings").evaluate("node => node.inert"))
         self.page.locator("#scope-edit").check()
         self.page.get_by_label("世界名称").fill("Local World")

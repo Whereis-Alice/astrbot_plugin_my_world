@@ -76,6 +76,8 @@ class ConfigStore:
         self._schedules: SchedulesConfig | None = None
         self._sessions: SessionsConfig | None = None
         self.created_files: list[str] = []
+        # Cache only small display metadata, never fifty decoded world bodies.
+        self._history_metadata: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
 
     # ---------------- 路径 ----------------
 
@@ -605,16 +607,29 @@ class ConfigStore:
         return changed
 
     def _history_entries(self) -> list[dict[str, Any]]:
-        """目录里所有历史快照，**新的在前**。
+        """历史元数据，**新的在前**；正文只在读取／比较具体版本时打开。
 
         只认 ``hist-`` 前缀；早期版本留下的 ``before-apply-*.json`` 也一起列出来
         （标成旧版备份），但不参与滚动删除——那是用户自己的老东西。
         """
 
         if not self.history_dir.exists():
+            self._history_metadata.clear()
             return []
+        cache = self._history_metadata
+        live: set[str] = set()
         entries: list[dict[str, Any]] = []
         for path in self.history_dir.glob("*.json"):
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                continue
+            signature = (stat.st_mtime_ns, stat.st_size)
+            live.add(path.name)
+            cached = cache.get(path.name)
+            if cached is not None and cached[0] == signature:
+                entries.append(dict(cached[1]))
+                continue
             payload = self._read_json(path, {})
             if not isinstance(payload, dict):
                 continue
@@ -627,11 +642,11 @@ class ConfigStore:
                     "created_at": str(payload.get("created_at") or ""),
                     "stamp": float(payload.get("stamp") or 0.0),
                     "legacy": not path.stem.startswith(HISTORY_PREFIX),
-                    "world": payload.get("world") if isinstance(payload.get("world"), dict) else {},
-                    "schedules": payload.get("schedules") or {},
-                    "sessions": payload.get("sessions") or {},
                 }
             )
+            cache[path.name] = (signature, dict(entries[-1]))
+        for name in cache.keys() - live:
+            del cache[name]
         entries.sort(key=lambda item: (item["stamp"], item["id"]), reverse=True)
         return entries
 
@@ -641,11 +656,11 @@ class ConfigStore:
         entries = [item for item in self._history_entries() if not item["legacy"]]
         if not entries:
             return None
-        newest = entries[0]
+        newest = self._read_json(self.history_dir / f"{entries[0]['id']}.json", {})
         return {
-            "world": newest["world"],
-            "schedules": newest["schedules"],
-            "sessions": newest["sessions"],
+            "world": newest.get("world") if isinstance(newest.get("world"), dict) else {},
+            "schedules": newest.get("schedules") or {},
+            "sessions": newest.get("sessions") or {},
         }
 
     def _trim_history(self, keep: int = HISTORY_KEEP) -> int:

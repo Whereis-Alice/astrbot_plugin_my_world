@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -52,6 +53,48 @@ class HistoryTestCase(unittest.TestCase):
         for _ in range(3):
             self.store.save_world(self.store.raw_world())
         self.assertEqual(len(self.store.list_history()), count)
+
+    def test_warm_history_scan_does_not_read_old_snapshot_bodies(self):
+        for index in range(4):
+            self.set_persona(f"版本 {index}")
+        self.store.list_history()
+        with patch.object(self.store, "_read_json", wraps=self.store._read_json) as read:
+            entries = self.store.list_history()
+            self.assertEqual(len(entries), 4)
+            self.assertEqual(read.call_count, 0)
+
+    def test_latest_snapshot_reads_only_one_body_after_metadata_is_loaded(self):
+        for index in range(4):
+            self.set_persona(f"版本 {index}")
+        self.store.list_history()
+        with patch.object(self.store, "_read_json", wraps=self.store._read_json) as read:
+            latest = self.store._last_snapshot_body()
+            self.assertEqual(latest["world"]["persona"]["text"], "版本 2")
+            self.assertEqual(read.call_count, 1)
+
+    def test_history_metadata_cache_observes_external_edits_and_deletions(self):
+        self.set_persona("第一版")
+        self.set_persona("第二版")
+        entries = self.store.list_history()
+        path = self.store.history_dir / f"{entries[-1]['id']}.json"
+        payload = self.store._read_json(path, {})
+        newest = self.store._read_json(self.store.history_dir / f"{entries[0]['id']}.json", {})
+        payload.update(name="外部修改后的名称", stamp=newest["stamp"] + 1)
+        self.store._write_json(path, payload)
+        refreshed = self.store.list_history()
+        self.assertEqual(refreshed[0]["name"], "外部修改后的名称")
+        refreshed[0]["name"] = "调用者改动"
+        self.assertEqual(self.store.list_history()[0]["name"], "外部修改后的名称")
+        path.unlink()
+        self.assertEqual(len(self.store.list_history()), 1)
+
+    def test_history_metadata_cache_does_not_retain_world_bodies(self):
+        self.set_persona("内容")
+        self.store.list_history()
+        cache = getattr(self.store, "_history_metadata", {})
+        self.assertTrue(cache)
+        for _, entry in cache.values():
+            self.assertFalse({"world", "schedules", "sessions"} & entry.keys())
 
     def test_history_rolls_at_the_limit(self):
         """只留最近 HISTORY_KEEP 条，最老的自动清掉。"""
