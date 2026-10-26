@@ -5,12 +5,30 @@ import copy
 import json
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
+from typing import TYPE_CHECKING
 
 from .proactive_context import isolated_event, source_event
 from .event_snapshot import snapshot_request
 from .proactive_hooks import fire_hook as _fire_hook
 
+if TYPE_CHECKING:
+    from astrbot.core.provider.entities import LLMResponse
+
 WIRE = ContextVar("my_world_proactive_wire", default=None)
+
+
+def public_response(text: str, source: LLMResponse | None = None) -> LLMResponse:
+    """Give response hooks a native, detached chain containing only public text."""
+    from astrbot.api.event import MessageChain
+    from astrbot.api.message_components import Plain
+    from astrbot.core.provider.entities import LLMResponse
+
+    response = copy.copy(source) if source is not None else LLMResponse(role="assistant")
+    # Detach before setting text: the native setter edits an existing chain.
+    response.result_chain = MessageChain(chain=[Plain(text=text)])
+    response.completion_text = text
+    response.reasoning_content = ""
+    return response
 
 
 async def fire_hook(plugin, *args, **kwargs):
@@ -44,7 +62,6 @@ async def delivery(plugin, target, view, *, echo_count=0, instant=False):
         return
     from astrbot.core.message.components import Plain
     from astrbot.core.message.message_event_result import MessageEventResult, ResultContentType
-    from astrbot.core.provider.entities import LLMResponse
     messages, kinds, identities, wire = [], [], [], {}
     request = original.get_extra("provider_request")
     history_target = ({"cid": getattr(getattr(request, "conversation", None), "cid", None)}
@@ -81,10 +98,7 @@ async def delivery(plugin, target, view, *, echo_count=0, instant=False):
                 sender.user_id = person or event.get_group_id()
                 sender.nickname = person or "群里"
         raw = plugin.take_llm_response(target)
-        response = copy.copy(raw) if raw is not None else LLMResponse(role="assistant", completion_text=text)
-        response.completion_text = text
-        response.reasoning_content = ""
-        response.result_chain = None
+        response = public_response(text, raw)
         if await fire_hook(plugin, event, "OnLLMResponseEvent", response):
             positions[index + 1] = len(messages)
             continue
@@ -148,8 +162,7 @@ async def accepted(plugin, target, text, position):
         return
     row["accepted"] = True
     event = row["event"]
-    from astrbot.core.provider.entities import LLMResponse
-    response = LLMResponse(role="assistant", completion_text=text)
+    response = public_response(text)
     from ..core.engine.life_inference import released_life_lock
     async with released_life_lock(plugin.engine):
         history_error = None

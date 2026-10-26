@@ -95,7 +95,9 @@ async def validate_life_preparation(engine) -> None:
 @asynccontextmanager
 async def released_life_lock(engine):
     lease = owned_life_lease()
-    if not lease:
+    if not lease or lease["released"]:
+        # A receipt may call nested plugin hooks while its outer operation has
+        # already released this lease. Only that outer scope may rejoin it.
         yield
         return
     state, lock, origin = lease["state"], lease["lock"], lease["origin"]

@@ -1235,9 +1235,10 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
         if not self.enabled:
             return
         if self.in_self_initiated_call():
-            # 正常情况下这里只该拦下"我们自己发起的请求"。
-            # 真有人 @ 她却被拦在这里，说明那道标记泄漏了——留一条日志，好排查。
-            if event.get_sender_id() and event.get_sender_id() != event.get_self_id():
+            # 主动上下文回放保留源消息的发送者，是正常的内部调用。
+            # 未标记的真人事件仍记录异常重入，不能把已知回放误报成漏回复。
+            if (not event.get_extra("my_world_proactive", False)
+                    and event.get_sender_id() and event.get_sender_id() != event.get_self_id()):
                 self.logger.warning(
                     f"[my_world] 这条消息被「插件自己在调模型」的标记拦下了"
                     f"（depth={self._self_initiated_depth}）："

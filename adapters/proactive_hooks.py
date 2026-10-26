@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import inspect
+from traceback import extract_tb
 
 
 class ReadOnlyArchive:
@@ -96,7 +97,9 @@ async def fire_hook(plugin, event, name, *args, accepted=False):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            plugin.logger.warning(f"[my_world] 主动发言钩子 {name}/{metadata.handler_name} 失败：{type(exc).__name__}")
+            frames = extract_tb(exc.__traceback__, limit=-1)
+            location = f"（{frames[0].name}:{frames[0].lineno}）" if frames else ""
+            plugin.logger.warning(f"[my_world] 主动发言钩子 {name}/{metadata.handler_name} 失败：{type(exc).__name__}{location}")
         if event.is_stopped():
             return True
     return event.is_stopped()
