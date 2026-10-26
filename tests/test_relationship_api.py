@@ -18,6 +18,12 @@ class RelationshipApiTests(unittest.IsolatedAsyncioTestCase):
         preset = rules['friendship_preset']
         self.assertEqual([preset['default_bond'], *[stage['bond'] for stage in preset['stages']]],
                          ['陌生人', '群友', '朋友', '好友', '挚友'])
+        self.assertEqual(preset['special_bonds'], [
+            {'name': '闺蜜', 'slot': 'bestie'}, {'name': '主人', 'slot': 'guardian'},
+            {'name': '男友', 'slot': 'romance'}, {'name': '女友', 'slot': 'romance'},
+            {'name': '家人', 'slot': 'family'}, {'name': '讨厌的人', 'slot': 'rival'},
+            {'name': '敌人', 'slot': 'enemy'},
+        ])
         self.assertEqual(self.plugin.store.raw_world(), before)
 
     async def test_global_five_stage_upgrade_preserves_independent_rules_and_people(self):

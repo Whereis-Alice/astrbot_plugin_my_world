@@ -2711,4 +2711,7 @@ def default_friendship_preset() -> dict[str, Any]:
     profile = default_profile()
     names = {profile["default_bond"], *(stage["bond"] for stage in profile["friendship_stages"])}
     return {"default_bond": profile["default_bond"], "stages": profile["friendship_stages"],
-            "bonds": [bond for bond in profile["bonds"] if bond["name"] in names], "levels": profile["levels"]}
+            "bonds": [bond for bond in profile["bonds"] if bond["name"] in names],
+            "special_bonds": [{"name": bond["name"], "slot": bond["slot"]}
+                              for bond in profile["bonds"] if bond["name"] not in names],
+            "levels": profile["levels"]}

@@ -3,20 +3,30 @@ const resolveBond = (profile, name) => (profile.bonds || []).find(b => b.name ==
   || (profile.bonds || []).find(b => (b.aliases || []).includes(name));
 
 export function relationshipGroups(profile, preset) {
-  const ordinary = new Set((preset?.bonds || []).map(b => b.name));
-  const ordered = (preset?.bonds || []).map(b => b.name);
-  if (!ordered.includes(profile.default_bond)) ordered.unshift(profile.default_bond);
+  const templates = preset?.bonds || [];
+  const ordinaryNames = new Set(templates.map(b => b.name));
+  const ordinarySlots = new Set(templates.map(b => b.slot).filter(Boolean));
+  const specialNames = new Set((preset?.special_bonds || []).map(b => b.name));
+  const specialSlots = new Set((preset?.special_bonds || []).map(b => b.slot).filter(Boolean));
+  const isSpecial = bond => bond.negative || specialNames.has(bond.name) || specialSlots.has(bond.slot);
+  const staged = new Set();
+  const ordered = templates.map(template => ((profile.bonds || []).find(b => b.name === template.name)
+    || (profile.bonds || []).find(b => template.slot && b.slot === template.slot))?.name || template.name);
   for (const stage of profile.friendship_stages || []) {
     const bond = resolveBond(profile, stage.bond);
-    if (bond && bond.group && !bond.unique && !bond.negative) {ordinary.add(bond.name); ordered.push(bond.name);}
+    if (bond && bond.group && !isSpecial(bond)) {staged.add(bond.name); ordered.push(bond.name);}
   }
+  // Exclusivity limits occupants; it does not turn a friendship into a special identity.
+  const isOrdinary = bond => !isSpecial(bond) && (ordinaryNames.has(bond.name) || ordinarySlots.has(bond.slot)
+    || (bond.group && (staged.has(bond.name) || bond.auto_form)));
+  if (!ordered.includes(profile.default_bond)) ordered.unshift(profile.default_bond);
   const rank = name => {const i = ordered.indexOf(name); return i < 0 ? ordered.length : i;};
   const groups = [
     {kind: "ordinary", label: "普通关系", items: []},
     {kind: "special", label: "特殊关系", items: []},
   ];
   (profile.bonds || []).forEach((bond, index) => {
-    groups[(ordinary.has(bond.name) || bond.group) && !bond.unique && !bond.negative ? 0 : 1].items.push({bond, index});
+    groups[isOrdinary(bond) ? 0 : 1].items.push({bond, index});
   });
   groups[0].items.sort((a, b) => rank(a.bond.name) - rank(b.bond.name) || a.index - b.index);
   groups[1].items.sort((a, b) => Number(Boolean(a.bond.negative)) - Number(Boolean(b.bond.negative)) || a.index - b.index);
@@ -94,6 +104,6 @@ export function relationshipStageEditor({profile, bond, preset, el, onChange = (
     }
     refresh(); onChange();
   });
-  box.append(head, el("p", "muted", "交谈日期与好感需同时达到，且此关系需允许自然形成。只计直接交谈；特殊身份与管理员设定仍受保护。"), toggle, fields);
+  box.append(head, el("p", "muted", "交谈日期与好感需同时达到，且此关系需允许自然形成、设置替代组，并关闭唯一与负面标记。只计直接交谈；特殊身份与管理员设定仍受保护。"), toggle, fields);
   refresh(); return box;
 }

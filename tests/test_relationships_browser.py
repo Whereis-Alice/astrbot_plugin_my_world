@@ -630,6 +630,54 @@ class RelationshipsBrowserTests(unittest.TestCase):
         self.assertEqual(ProfileConfig.model_validate(self.page.evaluate('socialRules')).default_bond, '陌生人')
         self.assertEqual(self.errors, [])
 
+    def test_ordinary_and_special_categories_are_independent_of_exclusivity(self):
+        self.page.locator('.people-management > summary').click()
+        self.page.locator('#relationships-rules').click()
+        boyfriend = self.page.locator('#dialog .rule-card').filter(has=self.page.locator('summary strong', has_text='男友'))
+        boyfriend.locator(':scope > summary').click()
+        boyfriend.get_by_label('唯一身份', exact=True).uncheck()
+        special = self.page.locator('#dialog .relationship-group[data-kind="special"]')
+        expect(special.locator('.rule-card > summary strong')).to_contain_text(['男友'])
+        boyfriend = special.locator('.rule-card').filter(has=self.page.locator('summary strong', has_text='男友'))
+        boyfriend.locator(':scope > summary').click()
+        boyfriend.get_by_label('允许自然形成', exact=True).check()
+        boyfriend.get_by_label('关系名称', exact=True).fill('恋人')
+        ordinary = self.page.locator('#dialog .relationship-group[data-kind="ordinary"]')
+        friend = ordinary.locator('.rule-card').filter(has=self.page.locator('summary strong', has_text='朋友'))
+        friend.locator(':scope > summary').click()
+        friend.get_by_label('唯一身份', exact=True).check()
+        expect(ordinary.locator('.rule-card > summary strong')).to_have_text(['陌生人','群友','朋友','好友','挚友'])
+        expect(special.locator('.rule-card > summary strong')).to_contain_text(['恋人'])
+        self.page.locator('#dialog-ok').click()
+        self.page.wait_for_function('socialWrites.length === 1')
+        self.page.locator('.people-management > summary').click()
+        self.page.locator('#relationships-rules').click()
+        expect(ordinary.locator('.rule-card > summary strong')).to_have_text(['陌生人','群友','朋友','好友','挚友'])
+        expect(special.locator('.rule-card > summary strong')).to_contain_text(['恋人'])
+        profile = ProfileConfig.model_validate(self.page.evaluate('socialRules'))
+        self.assertTrue(next(b for b in profile.bonds if b.name == '朋友').unique)
+        self.assertFalse(next(b for b in profile.bonds if b.name == '恋人').unique)
+        self.assertEqual(self.errors, [])
+
+    def test_completing_missing_types_preserves_an_exclusive_friendship(self):
+        self.page.evaluate("""() => {
+          socialRules.bonds = socialRules.bonds.filter(b => !['好友','挚友'].includes(b.name));
+          socialRules.bonds.find(b => b.name === '朋友').unique = true;
+          socialRules.friendship_stages = [{bond:'朋友',min_talk_days:9,min_affinity:28}];
+        }""")
+        self.page.locator('.people-management > summary').click()
+        self.page.locator('#relationships-rules').click()
+        self.page.get_by_role('button', name='补齐普通关系', exact=True).click()
+        ordinary = self.page.locator('#dialog .relationship-group[data-kind="ordinary"]')
+        expect(ordinary.locator('.rule-card > summary strong')).to_have_text(['陌生人','群友','朋友','好友','挚友'])
+        self.page.locator('#dialog-ok').click()
+        self.page.wait_for_function('socialWrites.length === 1')
+        profile = ProfileConfig.model_validate(self.page.evaluate('socialRules'))
+        self.assertTrue(next(b for b in profile.bonds if b.name == '朋友').unique)
+        self.assertEqual(profile.friendship_stages[0].model_dump(mode='json'),
+                         {'bond':'朋友','min_talk_days':9,'min_affinity':28})
+        self.assertEqual(self.errors, [])
+
     def test_familiarity_descriptions_default_off_and_survive_switching_off(self):
         self.page.locator(".people-management > summary").click()
         self.page.locator("#relationships-rules").click()

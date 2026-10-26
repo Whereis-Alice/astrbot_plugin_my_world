@@ -37,7 +37,8 @@ export function completeOrdinaryRelationships(profile, preset) {
   };
   for (const template of preset.bonds) {
     let bond = next.bonds.find(item => item.name === template.name);
-    if (bond?.unique || bond?.negative) throw new Error(`「${template.name}」已被设为特殊或负面关系，请先核对关系表`);
+    if (bond?.negative || (bond && preset.special_bonds?.some(item => item.slot && item.slot === bond.slot)))
+      throw new Error(`「${template.name}」已被设为特殊或负面关系，请先核对关系表`);
     if (!bond) {
       bond = structuredClone(template);
       bond.floor = levelAt(preset.levels[template.floor]?.min_affinity ?? 0);
