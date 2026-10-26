@@ -146,7 +146,7 @@ class Consolidator:
                 continue
             who = str(item.get("name") or item.get("user_id") or "有人")
             uid = str(item.get("user_id") or "")
-            stamp = self._datetime(float(item.get("at") or 0.0)).strftime("%m-%d %H:%M")
+            stamp = self._datetime(float(item.get("at") or 0.0)).strftime("%Y-%m-%d %H:%M")
             where = str(item.get("origin") or current_session or "")
             tag = "（她自己）" if item.get("is_self") else f"（QQ {uid}）" if uid else ""
             source_id = str(item.get("source_id") or "")
@@ -512,6 +512,14 @@ class Consolidator:
             for item in rows:
                 sid = destination(item)
                 if sid:
+                    if field == 'facts':
+                        evidence = normalized(item.get('evidence'))
+                        times = [float(row.get('at') or 0) for row in origin_records[sid]
+                                 if not row.get('is_self') and str(row.get('user_id')) == str(item.get('user_id'))
+                                 and evidence and evidence in normalized(row.get('text'))]
+                        # Only matching immutable sources supply dates, never
+                        # a timestamp guessed by the extraction model.
+                        item = {**item, '_observed_at': max(times, default=0) or None}
                     local[sid][field].append(item)
                 else:
                     result.skipped.append(f"材料里没这个人或会话来源不明确，未修改{field}：{item.get('user_id')}")
@@ -614,6 +622,7 @@ class Consolidator:
                 context=str(item.get("context") or ""),
                 confidence=float(item.get("confidence") or 0.6),
                 source_session=session_id,
+                observed_at=item.get('_observed_at'),
             )
             if outcome.get("ok"):
                 result.facts += 1

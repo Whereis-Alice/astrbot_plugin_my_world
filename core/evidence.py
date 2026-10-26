@@ -129,16 +129,31 @@ class EvidenceStoreMixin:
         if not sessions or limit <= 0:
             return []
         modes = ['full', 'nap'] if mode == 'nap' else ['full']
-        rows = self._query(
-            "SELECT s.snapshot FROM memory_source s WHERE s.session_id IN ("
+        query = (
+            "SELECT s.snapshot,s.observed_at,s.id FROM memory_source s WHERE s.session_id IN ("
             + ','.join('?' for _ in sessions) + ") AND s.eligible=1 "
             "AND json_extract(s.snapshot,'$.kind') IN ('direct_speech','self_statement') "
             "AND NOT EXISTS (SELECT 1 FROM profile_review_source r WHERE r.source_id=s.id AND r.mode IN ("
-            + ','.join('?' for _ in modes) + ")) ORDER BY s.observed_at,s.id LIMIT ?",
-            [*sessions, *modes, int(limit)],
+            + ','.join('?' for _ in modes) + "))"
         )
-        return [{**(item := json.loads(row['snapshot'])), 'origin': item['session'],
-                 'source_id': item['id'], 'eligible': True} for row in rows]
+        selected, after = [], None
+        while len(selected) < limit:
+            cursor = " AND (s.observed_at,s.id)>(?,?)" if after is not None else ""
+            rows = self._query(query + cursor + " ORDER BY s.observed_at,s.id LIMIT ?",
+                               [*sessions, *modes, *(after or ()), int(limit)])
+            if not rows:
+                break
+            for row in rows:
+                item = json.loads(row['snapshot'])
+                # A quote or injected memory may leave no actual speech. Skip
+                # it without consuming the input quota or its review receipt.
+                if not direct_text(str(item.get('text') or '')):
+                    continue
+                selected.append({**item, 'origin': item['session'], 'source_id': item['id'], 'eligible': True})
+                if len(selected) == limit:
+                    return selected
+            after = (rows[-1]['observed_at'], rows[-1]['id'])
+        return selected
 
     def mark_profile_reviewed(self, source_ids: list[str], mode: str, now: float) -> None:
         for source_id in source_ids:

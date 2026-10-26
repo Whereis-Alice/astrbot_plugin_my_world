@@ -460,11 +460,13 @@ class ProfileStore:
         source_session: str = "",
         mentions: list[str] | None = None,
         pinned: bool = False,
+        observed_at: float | None = None,
     ) -> dict[str, Any]:
         """记一条关于他的事实（去重 / 冲突处理都在这儿）。
 
         返回 ``{"ok", "id", "action", "reason"}``；``action`` 是 ``add`` / ``merge`` /
         ``replace`` / ``skip``，方便整理日志写清楚发生了什么。
+        ``observed_at`` 由已核对的原话提供，补整理时不让旧依据覆盖较新的确认。
         """
 
         if not self.enabled():
@@ -476,11 +478,23 @@ class ProfileStore:
                 return {"ok": False, "action": "skip", "reason": "没有内容"}
             kind = str(kind or "other")
             existing = self.db.list_user_facts(group_id=key, user_id=uid)
+            stamp = time.time()
+            if observed_at is not None:
+                observed_at = float(observed_at)
+                observed_at = min(stamp, observed_at) if math.isfinite(observed_at) and observed_at > 0 else None
+            if observed_at is not None:
+                stamp = observed_at
+                for item in existing:
+                    if (item['kind'] == kind and float(item.get('last_confirmed_at') or 0) >= stamp
+                            and (_conflicts(item['text'], body) or _norm(item['text']) == _norm(body)
+                                 or _same_fact(item['text'], body))):
+                        return {'ok': False, 'id': item['id'], 'action': 'skip',
+                                'reason': '已有同一事实的较新确认，保留当前资料，不用旧原话覆盖或刷新日期'}
             if not pinned and any(row.get("pinned") and row.get("kind") == kind and _conflicts(row["text"], body) for row in existing):
                 candidate = next((row for row in existing if row.get("status") == "candidate" and row.get("kind") == kind
                                   and (_norm(row["text"]) == _norm(body) or _same_fact(row["text"], body))), None)
                 if candidate:
-                    self.db.update_user_fact(fact_id=candidate["id"], last_confirmed_at=time.time())
+                    self.db.update_user_fact(fact_id=candidate["id"], last_confirmed_at=stamp)
                     return {"ok": True, "id": candidate["id"], "action": "candidate"}
             for item in existing:
                 if str(item.get("kind") or "") != kind:
@@ -497,14 +511,15 @@ class ProfileStore:
                         text=body if len(body) > len(old) else None,
                         pinned=True if pinned else None,
                         confidence=max(float(item.get("confidence") or 0.0), float(confidence)),
-                        last_confirmed_at=time.time(),
+                        last_confirmed_at=stamp,
                     )
                     return {"ok": True, "id": int(item["id"]), "action": "merge"}
                 if _conflicts(str(item.get("text") or ""), body):
                     if item.get("pinned") and not pinned:
                         new_id = self.db.add_user_fact(group_id=key, user_id=uid, kind=kind, text=body,
                             evidence=evidence, context=context, confidence=confidence, status="candidate",
-                            source_session=source_session, mentions=mentions)
+                            source_session=source_session, mentions=mentions,
+                            first_at=observed_at, last_confirmed_at=observed_at)
                         self.db.record_learning_change(key, uid, "fact_conflict", {"id": item["id"], "text": item["text"]},
                             {"id": new_id, "text": body, "status": "candidate"}, "新资料与固定事实冲突，保留固定内容，等待人工核对", [evidence])
                         return {"ok": True, "id": new_id, "action": "candidate"}
@@ -521,6 +536,8 @@ class ProfileStore:
                         source_session=source_session,
                         pinned=pinned,
                         mentions=mentions,
+                        first_at=observed_at,
+                        last_confirmed_at=observed_at,
                     )
                     self.db.record_learning_change(key, uid, "fact_conflict", {"id": item["id"], "text": item["text"]},
                         {"id": new_id, "text": body, "status": status}, "新的直接资料与旧事实冲突，旧内容转为过往记录", [evidence])
@@ -537,6 +554,8 @@ class ProfileStore:
                 source_session=source_session,
                 pinned=pinned,
                 mentions=mentions,
+                first_at=observed_at,
+                last_confirmed_at=observed_at,
             )
             return {"ok": True, "id": new_id, "action": "add"}
 

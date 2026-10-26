@@ -1015,6 +1015,7 @@ class Database(
         pinned: bool = False,
         mentions: list[str] | None = None,
         first_at: float | None = None,
+        last_confirmed_at: float | None = None,
     ) -> int:
         now = time.time()
         cursor = self._execute(
@@ -1034,7 +1035,7 @@ class Database(
                 1 if pinned else 0,
                 json.dumps(list(mentions or []), ensure_ascii=False),
                 float(first_at if first_at is not None else now),
-                now if status == "active" else 0.0,
+                float(last_confirmed_at) if last_confirmed_at is not None else now if status == "active" else 0.0,
                 now,
             ),
         )
