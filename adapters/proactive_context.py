@@ -10,7 +10,7 @@ from dataclasses import fields
 
 from ..core.request_context import _drop_persona_instructions
 from ..core.speech_runtime import SpeechDraft
-from .proactive_hooks import fire_hook
+from .proactive_hooks import card_agent_hooks, fire_hook
 from .proactive_media import snapshot_event
 from .proactive_runner import run_agent
 
@@ -89,11 +89,14 @@ class ProactiveContext:
         self.request = None
         self.tool_agent = None
         self.toolset = None
+        self.agent_hooks = None
         self.config = None
         self.runner_options = {}
         self.legacy_images = None
 
     async def close(self, retain=()):
+        if self.agent_hooks is not None:
+            await self.agent_hooks.cleanup()
         if self.legacy_images is not None:
             self.legacy_images.close()
         if self.event is None:
@@ -176,6 +179,9 @@ class ProactiveContext:
         # request's tools and later restore them after a maintenance operation.
         allowed_tools = await self.tool_agent.prepare(event=self.event) if self.tool_agent is not None else None
         request.func_tool = allowed_tools
+        if allowed_tools is not None:
+            self.agent_hooks = card_agent_hooks(self.plugin, self.event)
+            self.runner_options["agent_hooks"] = self.agent_hooks
         if await fire_hook(self.plugin, self.event, "OnLLMRequestEvent", request):
             raise RuntimeError("主动请求被插件钩子终止")
         self.toolset = _restricted_tools(request.func_tool, allowed_tools)

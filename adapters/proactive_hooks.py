@@ -73,6 +73,31 @@ def replay_handler(handler, hook):
     return handler.__func__.__get__(owner, type(owner))
 
 
+def card_agent_hooks(plugin, event):
+    """Bind and release card maintenance without exposing private drafts to memory hooks."""
+    from astrbot.core.agent.hooks import BaseAgentRunHooks
+
+    class CardAgentHooks(BaseAgentRunHooks):
+        run_context = None
+        finished = False
+
+        async def on_agent_begin(self, run_context):
+            self.run_context = run_context
+            if await fire_hook(plugin, event, "OnAgentBeginEvent", run_context):
+                raise asyncio.CancelledError("主动工具开始被插件钩子终止")
+
+        async def on_agent_done(self, run_context, response):
+            if self.finished:
+                return
+            self.finished = True
+            await fire_hook(plugin, event, "OnAgentDoneEvent", run_context, response)
+
+        async def cleanup(self):
+            await self.on_agent_done(self.run_context, None)
+
+    return CardAgentHooks()
+
+
 async def fire_hook(plugin, event, name, *args, accepted=False):
     """Use the native registry's activation, session filters and priority order."""
     from astrbot.core.star.star_handler import EventType, star_handlers_registry
@@ -90,6 +115,13 @@ async def fire_hook(plugin, event, name, *args, accepted=False):
             handler = replay_handler(handler, name)
         if handler is None:
             continue
+        if name in {"OnAgentBeginEvent", "OnAgentDoneEvent"}:
+            # These phases carry the private JSON task, not accepted speech.
+            expected = ("bind_group_card_reminder_context" if name == "OnAgentBeginEvent"
+                        else "release_group_card_reminder")
+            if ("astrbot_plugin_dynamic_card_plus" not in str(getattr(handler, "__module__", ""))
+                    or getattr(handler, "__name__", "") != expected):
+                continue
         if (name == "OnLLMRequestEvent" and args
                 and "astrbot_plugin_dynamic_card_plus" in str(getattr(handler, "__module__", ""))
                 and getattr(handler, "__name__", "") == "inject_group_card_tool_hint"):

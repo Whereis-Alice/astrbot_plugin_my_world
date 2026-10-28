@@ -64,8 +64,10 @@ class ProactiveToolContractTests(unittest.IsolatedAsyncioTestCase):
         api.ProviderRequest = Request
         parts = types.ModuleType("astrbot.core.agent.message")
         parts.TextPart, parts.ImageURLPart = Part, object
+        hooks = types.ModuleType("astrbot.core.agent.hooks")
+        hooks.BaseAgentRunHooks = type("BaseAgentRunHooks", (), {})
         for patcher in (
-            patch.dict(sys.modules, {host.__name__: host, api.__name__: api, parts.__name__: parts}),
+            patch.dict(sys.modules, {host.__name__: host, api.__name__: api, parts.__name__: parts, hooks.__name__: hooks}),
             patch.object(module, "build_config", lambda *_: types.SimpleNamespace(
                 llm_compress_instruction="", llm_compress_keep_recent_ratio=.15,
                 dequeue_context_length=1, max_context_length=-1, tool_schema_mode="full")),
@@ -166,3 +168,57 @@ class ProactiveToolContractTests(unittest.IsolatedAsyncioTestCase):
             for tools in (None, Tools(["lookup_weather"]), Tools(["set_dynamic_group_card"])):
                 await hooks.fire_hook(self.plugin, event, "OnLLMRequestEvent", types.SimpleNamespace(func_tool=tools))
         self.assertEqual(calls, ["book", "book", "card", "book"])
+
+    async def test_card_lifecycle_is_once_and_does_not_expose_private_task_to_other_plugins(self):
+        hooks = importlib.import_module(self.module.__name__ + ".adapters.proactive_hooks")
+        event = Event("源消息", session=self.session)
+        event.plugins_name, event.is_stopped = None, lambda: False
+        calls = []
+
+        class Card:
+            async def bind_group_card_reminder_context(self, event, context):
+                calls.append(("begin", context))
+
+            async def release_group_card_reminder(self, event, context, response):
+                calls.append(("done", context, response))
+
+        for method in (Card.bind_group_card_reminder_context, Card.release_group_card_reminder):
+            method.__module__ = "data.plugins.astrbot_plugin_dynamic_card_plus.main"
+        owner = Card()
+
+        async def other(event, *args):
+            self.fail("Private Agent JSON must not enter unrelated lifecycle hooks")
+
+        registry = types.ModuleType("astrbot.core.star.star_handler")
+        registry.EventType = types.SimpleNamespace(OnAgentBeginEvent="begin", OnAgentDoneEvent="done")
+        registry.star_handlers_registry = types.SimpleNamespace(get_handlers_by_event_type=lambda phase, **kwargs: [
+            types.SimpleNamespace(handler=owner.bind_group_card_reminder_context if phase == "begin"
+                else owner.release_group_card_reminder, handler_name="card"),
+            types.SimpleNamespace(handler=other, handler_name="other")])
+        base = types.ModuleType("astrbot.core.agent.hooks")
+        base.BaseAgentRunHooks = type("BaseAgentRunHooks", (), {})
+        with patch.dict(sys.modules, {registry.__name__: registry, base.__name__: base}):
+            for completed in (True, False):
+                with self.subTest(completed=completed):
+                    calls.clear()
+                    adapter, context, response = hooks.card_agent_hooks(self.plugin, event), object(), object()
+                    await adapter.on_agent_begin(context)
+                    if completed:
+                        await adapter.on_agent_done(context, response)
+                    await adapter.cleanup()
+                    await adapter.cleanup()
+                    self.assertEqual(calls, [("begin", context), ("done", context, response if completed else None)])
+
+    async def test_failed_request_preparation_still_releases_card_lifecycle(self):
+        async def hook(plugin, event, name, request):
+            raise RuntimeError("request failed after reminder binding")
+
+        native = self.fixture(hook)
+        native.tool_agent = types.SimpleNamespace(prepare=AsyncMock(return_value=Tools(["set_dynamic_group_card"])))
+        cleanup = AsyncMock()
+        context = importlib.import_module(self.module.__name__ + ".adapters.proactive_context")
+        with patch.object(context, "card_agent_hooks", return_value=types.SimpleNamespace(cleanup=cleanup)):
+            with self.assertRaisesRegex(RuntimeError, "request failed"):
+                await native.prepare(self.options())
+            await native.close()
+        cleanup.assert_awaited_once()
