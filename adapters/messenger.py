@@ -16,6 +16,7 @@ from ..core.plugin_compat import group_card_owner
 from ..core.ports import CardResult, PokeResult
 from ..core.speech_policy import segment_allowed, reply_target, accept_segment, contact_targets
 from .group_names import GroupNamesMixin
+from .group_mentions import GroupMentions, addressed_chain, has_body
 
 if TYPE_CHECKING:
     from .. import MyWorldPlugin
@@ -31,6 +32,7 @@ class AstrBotMessenger(GroupNamesMixin):
 
     def __init__(self, plugin: "MyWorldPlugin") -> None:
         self.plugin = plugin
+        self._mentions = GroupMentions(plugin)
         self._blocked_until: dict[str, float] = {}
         self._fail_notes: dict[str, str] = {}
         self._sent_texts: ContextVar[list[str] | None] = ContextVar("my_world_sent_texts", default=None)
@@ -122,11 +124,14 @@ class AstrBotMessenger(GroupNamesMixin):
                 chain = prepared_chain(session_id, str(text), index)
                 if chain is None:
                     chain = [Plain(text=str(text))]
-                if ":GroupMessage:" in session_id:
-                    chain[:0] = [At(qq=person) for person in contact_targets(session_id, index)]
-                quote = reply_target(session_id, index)
-                if quote:
-                    chain.insert(0, Reply(id=quote))
+                if not has_body(chain):
+                    continue
+                people = contact_targets(session_id, index) if ":GroupMessage:" in session_id else ()
+                chain = addressed_chain(chain, people, reply_target(session_id, index))
+                chain = await self._mentions.prepare(session_id, chain)
+                # Permissions can change while the bounded member read is waiting.
+                if not segment_allowed(session_id, index):
+                    break
                 result = await self.plugin.context.send_message(
                     session_id, MessageChain(chain=chain)
                 )

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from .proactive_context import isolated_event, source_event
 from .event_snapshot import snapshot_request
 from .proactive_hooks import fire_hook as _fire_hook
+from .group_mentions import has_body
 
 if TYPE_CHECKING:
     from astrbot.core.provider.entities import LLMResponse
@@ -116,7 +117,7 @@ async def delivery(plugin, target, view, *, echo_count=0, instant=False):
         current = event.get_result()
         chain = list(getattr(current, "chain", []) or [])
         body = "\n".join(part.text for part in chain if isinstance(part, Plain) and part.text).strip()
-        if not chain:
+        if not has_body(chain):
             positions[index + 1] = len(messages)
             continue
         # A voice-only replacement still speaks the text; retain it for the
