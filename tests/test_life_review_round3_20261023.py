@@ -155,14 +155,16 @@ class ReadingIntentTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(thought["browse_replied"])
         self.assertEqual(len([t for t in state.thoughts if t.get("browse_id") == action["id"]]), 1)
 
-    async def test_old_messages_record_no_live_scene_instead_of_model_silence(self):
+    async def test_old_messages_allow_a_real_model_listening_choice(self):
         action = await self.prepare(reply_enabled=True)
         self.clock.advance(901)
-        state = await self.complete(action)
+        state = await self.complete(action, decision=(
+            '{"intent":"listen","motivation":"这件事已经聊完了，留着自己的感想。"}'))
         thought = next(t for t in state.thoughts if t.get("browse_id") == action["id"])
-        self.assertEqual((thought["detail"].get("browse_reply") or {}).get("status"), "no_scene")
-        self.assertNotIn("speech", thought["detail"])
-        self.assertEqual(len(self.llm.calls), 1)
+        self.assertEqual(thought["detail"]["speech"]["intent"], "listen")
+        self.assertEqual(thought["detail"]["speech"]["motivation"], "这件事已经聊完了，留着自己的感想。")
+        self.assertEqual(self.messenger.sent, [])
+        self.assertEqual(len(self.llm.calls), 2)
 
     async def test_already_considered_scene_records_skip_without_a_new_model_choice(self):
         action = await self.prepare(reply_enabled=True)
