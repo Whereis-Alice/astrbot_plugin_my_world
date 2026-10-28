@@ -61,8 +61,15 @@ class ProactiveAgent:
             state = await engine.load_state(self.target, cold_start=False)
             if engine._is_asleep(state):
                 return False
-            observed = {str(r.get("seq")) for r in self.request["rows"] if not r.get("is_self")}
-            live = engine.live_chat(state, self.target, window=self.request.get("live_window", 900))
+            reply_seqs = self.request.get("reply_seqs")
+            observed = {str(r.get("seq")) for r in self.request["rows"] if not r.get("is_self")
+                        and (reply_seqs is None or int(r.get("seq") or 0) in reply_seqs)}
+            window = self.request.get("live_window", 900)
+            if window is None:
+                from ..core.browse_reply import available_rows
+                live = available_rows(engine, state, self.target)
+            else:
+                live = engine.live_chat(state, self.target, window=window)
             return bool(observed & {str(r.get("seq")) for r in live})
 
     async def capture(self, chain, *args, **kwargs):

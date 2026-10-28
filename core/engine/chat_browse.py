@@ -219,15 +219,14 @@ class ChatBrowseMixin:
             self._stop_chat_browse(state, snapshot)
 
         # Reading and speaking have different scopes and authorization. Only the
-        # source conversation's still-live scene may be considered, through the
-        # same bounded response/quote path as normal participation, with a short
-        # look-back after reading. No historical replay, tools or forced speech.
+        # original reading may be considered, with later chat as context. Message
+        # age informs the model; only this reading grants reply capabilities.
         target = snapshot["browse_session"]
         if completed:
             from ..browse_reply import BrowseReply, RETRYABLE, reply_status
             from .participation_queue import queue_browse
             async with self.session_state(session_id) as state:
-                ticket = BrowseReply.capture(self, state, target, action_id)
+                ticket = BrowseReply.capture(self, state, target, action_id, read_rows=snapshot["browse_rows"])
             await self.maybe_participate(target, source="browse", browse_id=action_id, browse_ticket=ticket)
             async with self.session_state(session_id) as state:
                 if reply_status(state, ticket) in RETRYABLE and queue_browse(self, ticket):

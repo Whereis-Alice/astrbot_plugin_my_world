@@ -114,10 +114,12 @@ class SpeechDecisionsMixin:
             return "continuation"
         return "quiet" if decision.intent == "listen" else outcome.speech_kind
 
-    async def ask_speech(self, state, target, system, prompt, *, rows, images=None, allow_tools=True, live_window=900, channel="main"):
+    async def ask_speech(self, state, target, system, prompt, *, rows, images=None, allow_tools=True,
+                         live_window=900, channel="main", reply_seqs=None):
         from ..speech_runtime import SPEECH_REQUEST, GROUNDING_RULES
         token = SPEECH_REQUEST.set({"state": state, "target": target, "rows": list(rows),
-                                   "allow_tools": allow_tools, "live_window": live_window, "channel": channel})
+                                   "allow_tools": allow_tools, "live_window": live_window, "channel": channel,
+                                   "reply_seqs": reply_seqs})
         try:
             if channel == "helper":
                 return await self._ask_helper(target, system + GROUNDING_RULES, prompt)
@@ -126,14 +128,14 @@ class SpeechDecisionsMixin:
             SPEECH_REQUEST.reset(token)
 
     async def ask_speech_decision(self, state, target, system, prompt, *, targets, allowed,
-                                  recorded_inner="", **kwargs):
+                                  recorded_inner="", strict_reply=False, **kwargs):
         """Keep transport failures attached to this attempt, including format repair."""
         from ..llm_attempt import capture_attempt
         from ..speech_decision import parse_decision
         with capture_attempt(target) as attempt:
             raw = await self.ask_speech(state, target, system, prompt, **kwargs)
         return raw, parse_decision(raw or "", targets, allowed=allowed,
-                                   recorded_inner=recorded_inner, generation_error=attempt.error)
+                                   recorded_inner=recorded_inner, generation_error=attempt.error, strict_reply=strict_reply)
 
     async def _ask_speech_media(self, state, target, system, prompt, *, rows, images=None):
         media = getattr(self, "media", None)

@@ -11,6 +11,17 @@ def message_identity(row: dict) -> tuple:
             str(row.get("event_id") or ""), str(row.get("text") or ""))
 
 
+def available_rows(engine, state, target: str) -> list[dict]:
+    """Retained, unanswered source messages; age is left to the reading decision."""
+    from .state import chat_item_is_fresh
+    until, seq = engine._watermark(state, target)
+    return [row for row in state.recent_chat if engine._chat_origin(row, state) == target
+            and not row.get("is_self") and not row.get("internal")
+            and float(row.get("at") or 0) <= engine._now()
+            and chat_item_is_fresh(row, replied_until=until, replied_seq=seq)
+            and not engine.is_plugin_command(str(row.get("text") or ""))]
+
+
 @dataclass(frozen=True)
 class BrowseReply:
     life: str
@@ -23,11 +34,17 @@ class BrowseReply:
     deferred: bool = False
 
     @classmethod
-    def capture(cls, engine, state, target: str, browse_id: str) -> BrowseReply:
-        rows = engine.live_chat(state, target, window=engine._participation_window("browse"))
-        checked = (state.participation.get(target) or {}).get("checked_seq", 0)
+    def capture(cls, engine, state, target: str, browse_id: str, *, read_rows=None) -> BrowseReply:
+        if read_rows is None:
+            # Older/public callers can use only the reading's retained evidence,
+            # never broaden a past reading to everything currently in the archive.
+            thought = next((row for row in reversed(state.thoughts) if row.get("browse_id") == browse_id
+                            and row.get("browse_session") == target), {})
+            read_rows = thought.get("browse_sources") or []
+        read_seqs = {int(row.get("seq") or 0) for row in read_rows}
+        rows = [row for row in available_rows(engine, state, target) if int(row.get("seq") or 0) in read_seqs]
         return cls(state.session_id, target, browse_id,
-                   frozenset(message_identity(row) for row in rows if int(row.get("seq") or 0) > checked),
+                   frozenset(message_identity(row) for row in rows),
                    engine.world.chat_browse.reply_wait_seconds, engine._now(), time.monotonic())
 
     def queued(self) -> BrowseReply:

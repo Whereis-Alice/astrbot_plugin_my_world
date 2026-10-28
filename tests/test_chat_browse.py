@@ -281,8 +281,8 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await self.engine.maybe_participate(S, source="browse"))
         self.assertEqual(len(self.llm.calls), 2)
 
-    async def test_reply_uses_live_target_and_quote_without_life_sharing_or_message_driven(self):
-        action = await self.prepare(reply_enabled=True)
+    async def test_reply_uses_read_target_and_quote_without_life_sharing_or_message_driven(self):
+        action = await self.prepare(reply_enabled=True, message_id="flower-read")
         self.engine.world.life_share_session_whitelist = []
         self.engine.world.decider.message_driven = False
         # A stable reading identity was captured before changing message-driven config.
@@ -295,9 +295,9 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
             self.messenger.sent.append((target, list(messages)))
             return True
         self.messenger.send_text = send
-        state = await self.complete(action, decision='{"say":"窗边有散光的地方就很好。","reply_to":"m2"}')
+        state = await self.complete(action, decision='{"say":"窗边有散光的地方就很好。","reply_to":"m1"}')
         self.assertEqual(self.messenger.sent, [(S, ["窗边有散光的地方就很好。"])])
-        self.assertEqual(quotes, [(S, "flower-live")])
+        self.assertEqual(quotes, [(S, "flower-read")])
         self.assertTrue(state.thoughts[-1]["browse_replied"])
         self.assertFalse(state.awaiting_reply)
         self.assertEqual(self.engine.contact_status(S)["left"], 6)
@@ -456,12 +456,12 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(task, return_exceptions=True)
         self.assertEqual(self.messenger.sent, [])
 
-    async def test_expired_chat_is_not_replied_to_after_reading(self):
+    async def test_older_chat_can_be_considered_after_reading(self):
         action = await self.prepare(reply_enabled=True)
         self.clock.advance(901)
-        state = await self.complete(action, decision='{"say":"过时的接话"}')
-        self.assertEqual(len(self.llm.calls), 1)
-        self.assertEqual(self.messenger.sent, [])
+        state = await self.complete(action, decision='{"say":"刚看到窗边花开的消息。"}')
+        self.assertEqual(len(self.llm.calls), 2)
+        self.assertEqual(self.messenger.sent, [(S, ["刚看到窗边花开的消息。"])])
         self.assertEqual(state.chat_browsing["sessions"][S]["result"], "feeling")
 
     async def test_reading_duration_does_not_expire_the_message_she_just_read(self):

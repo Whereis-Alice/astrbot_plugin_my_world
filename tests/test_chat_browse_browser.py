@@ -269,7 +269,7 @@ class ChatBrowseBrowserTests(unittest.TestCase):
             {at:Date.now()/1000,source:'翻消息时',browse_session:params.session,content:'想问花的情况',
              detail:{intent:'安静看看，然后继续自己的生活',speech:{intent:'join_chat',status:'sent',motivation:'想问问花是不是晒得太久。'}}},
             {at:Date.now()/1000,source:'翻消息时',browse_session:params.session,content:'有点惦记自己的窗边',
-             detail:{intent:'先看看自己的花。',browse_reply:{status:'no_scene',reason:'最近15分钟没有仍可回应的消息'}}},
+             detail:{intent:'先看看自己的花。',browse_reply:{status:'no_scene',reason:'本次读过的消息已回应或不再可用，本轮没有可接的话'}}},
             {at:Date.now()/1000,source:'翻消息时',browse_session:params.session,content:'现在并不想插话',
              detail:{intent:'安静看看，然后继续自己的生活',speech:{intent:'listen',status:'listening',motivation:'他们已经商量好了，先听着。'}}}
           ]}):read(key,params);
@@ -279,7 +279,7 @@ class ChatBrowseBrowserTests(unittest.TestCase):
         expect(self.page.locator('.thought-row')).to_have_count(4)
         expect(self.page.locator('.thought-row').filter(has_text='旧的阅读感想').locator('.thought-intent')).to_have_text('打算：阅读时未记录具体打算')
         expect(self.page.locator('.thought-row').filter(has_text='想问花的情况').locator('.thought-intent')).to_have_text('打算：想问问花是不是晒得太久。')
-        expect(self.page.locator('.thought-row').filter(has_text='有点惦记自己的窗边')).to_contain_text('接话：最近15分钟没有仍可回应的消息')
+        expect(self.page.locator('.thought-row').filter(has_text='有点惦记自己的窗边')).to_contain_text('接话：本次读过的消息已回应或不再可用，本轮没有可接的话')
         expect(self.page.locator('.thought-row').filter(has_text='有点惦记自己的窗边').locator('.thought-intent')).to_have_text('打算：先看看自己的花。')
         expect(self.page.locator('.thought-row').filter(has_text='现在并不想插话').locator('.thought-intent')).to_have_text('打算：他们已经商量好了，先听着。')
         expect(self.page.locator('#thoughts-list')).not_to_contain_text('安静看看，然后继续自己的生活')

@@ -55,7 +55,8 @@ class Event(AstrMessageEvent):
         raise AssertionError("The real event transport must never be called")
 
 
-async def check(revoke=False, stale=False, blocked="", timeout=False, cancel=False, image_path=""):
+async def check(revoke=False, stale=False, blocked="", timeout=False, cancel=False, image_path="",
+                browse=False, original_replied=False):
     model = Model()
     context = Context.__new__(Context)
     context.provider_manager = types.SimpleNamespace(get_provider_by_id=AsyncMock(return_value=model))
@@ -70,7 +71,7 @@ async def check(revoke=False, stale=False, blocked="", timeout=False, cancel=Fal
     message.group_id = "synthetic-room"
     event = Event("test", message, PlatformMetadata(name="synthetic", description="test", id="synthetic"), "synthetic-room")
     target = event.unified_msg_origin
-    row = {"seq": 1, "text": "一个测试问题", "at": 1, "message_id": "synthetic-message"}
+    row = {"seq": 1, "text": "一个测试问题", "at": 1, "message_id": "synthetic-message", "session_id": target}
     calls = []
     started = asyncio.Event()
 
@@ -89,19 +90,25 @@ async def check(revoke=False, stale=False, blocked="", timeout=False, cancel=Fal
     tool = FunctionTool(name="check_fact", description="Read a synthetic fact", parameters={
         "type": "object", "properties": {"round": {"type": "integer"}}, "required": ["round"]}, handler=handler)
     context.get_llm_tool_manager = lambda: types.SimpleNamespace(get_full_tool_set=lambda: ToolSet([] if blocked == "missing" else [tool]))
-    state = types.SimpleNamespace(node_id="test")
+    later = {"seq": 2, "text": "后来换了话题", "at": 7200, "message_id": "later-message", "session_id": target}
+    state = types.SimpleNamespace(node_id="test", recent_chat=[row, later] if original_replied else [row])
     engine = types.SimpleNamespace(config_scope=lambda _: nullcontext(), load_state=AsyncMock(return_value=state),
         world=types.SimpleNamespace(decider=types.SimpleNamespace(proactive_tools=True, proactive_tool_names=[], proactive_tool_steps=5, proactive_tool_timeout=1 if timeout else 5)),
         allowed_tool_names=lambda _: {"check_fact"}, is_enabled=lambda _: True, native_turn_busy=lambda _: False,
-        proactive_chat_allowed=lambda _: True, _is_asleep=lambda _: False, live_chat=lambda *_args, **_kwargs: [] if stale else [row])
+        proactive_chat_allowed=lambda _: True, _is_asleep=lambda _: False, live_chat=lambda *_args, **_kwargs: [] if stale else [row],
+        _now=lambda: 7201, _watermark=lambda *_: (0, 1 if original_replied else 0),
+        _chat_origin=lambda item, _: item["session_id"], is_plugin_command=lambda _: False)
     plugin = types.SimpleNamespace(context=context, engine=engine, last_event=lambda _: event, _fire_hook=AsyncMock(return_value=False))
-    agent = ProactiveAgent(plugin, {"target": target, "state": state, "rows": [row], "allow_tools": True})
+    request = {"target": target, "state": state, "rows": [row, later] if original_replied else [row], "allow_tools": True}
+    if browse:
+        request.update(live_window=None, reply_seqs=frozenset({1}))
+    agent = ProactiveAgent(plugin, request)
     with patch.object(agent_module, "_tool_owner", return_value="synthetic-plugin"):
         toolset = await agent.prepare()
-    if stale or blocked:
+    if stale or blocked or original_replied:
         assert toolset is None
         assert not calls
-        return {"case": blocked or "stale scene", "passed": True}
+        return {"case": "read source already answered with later unread messages" if original_replied else blocked or "stale scene", "passed": True}
     assert toolset and toolset.names() == ["check_fact"]
     task = asyncio.create_task(agent.invoke(toolset, chat_provider_id="synthetic", prompt="test", system_prompt="Return JSON",
         extra_user_content_parts=[TextPart(text="工具判断临时任务").mark_as_temp(),
@@ -126,13 +133,14 @@ async def check(revoke=False, stale=False, blocked="", timeout=False, cancel=Fal
     assert all(row["status"] == ("failed" if timeout else "completed") for row in result.completion_text.tools)
     assert result.completion_text.images == ([image_path] if image_path else [])
     assert event.get_result() is None
-    return {"case": "timeout" if timeout else "image buffering" if image_path else "mid-loop revocation" if revoke else "host multi-step loop and buffered sends", "passed": True, "rounds": model.round}
+    return {"case": "two-hour-old read source with native tool loop" if browse else "timeout" if timeout else "image buffering" if image_path else "mid-loop revocation" if revoke else "host multi-step loop and buffered sends", "passed": True, "rounds": model.round}
 
 
 async def main():
     results = [await check(), await check(revoke=True), await check(stale=True),
                *[await check(blocked=kind) for kind in ("persona", "plugin", "missing")],
-               await check(timeout=True), await check(cancel=True)]
+               await check(timeout=True), await check(cancel=True),
+               await check(browse=True), await check(browse=True, original_replied=True)]
     with tempfile.TemporaryDirectory() as folder:
         import base64
         path = Path(folder) / "test.png"

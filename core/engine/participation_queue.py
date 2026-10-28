@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import time
 
-from ..browse_reply import BrowseReply, RETRYABLE, reply_status
+from ..browse_reply import BrowseReply, RETRYABLE, available_rows, reply_status
 
 
 def registries(engine):
@@ -159,7 +159,7 @@ async def settle_browse(engine, ticket: BrowseReply) -> float | None:
         async with engine.session_state(target) as state:
             status, reason = ticket.error(engine, state)
             if not status:
-                rows = ticket.eligible(engine.live_chat(state, target, window=engine._participation_window("browse")))
+                rows = ticket.eligible(available_rows(engine, state, target))
                 checked = (state.participation.get(target) or {}).get("checked_seq", 0)
                 if not any(int(row.get("seq") or 0) > checked for row in rows):
                     status, reason = (("already_considered", "原消息已判断，本次不重复接话") if rows

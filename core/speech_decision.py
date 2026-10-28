@@ -20,7 +20,7 @@ class SpeechDecision:
 
 def parse_decision(raw: str, targets: dict[str, str], *, default_intent: str = "join_chat",
                    allowed: tuple[str, ...] = ("join_chat", "listen"),
-                   recorded_inner: str = "", generation_error: str = "") -> SpeechDecision:
+                   recorded_inner: str = "", generation_error: str = "", strict_reply: bool = False) -> SpeechDecision:
     """Reuse a validated reading thought; a speech choice still requires valid JSON."""
     if generation_error:
         from .model_call_runtime import safe_error
@@ -42,6 +42,8 @@ def parse_decision(raw: str, targets: dict[str, str], *, default_intent: str = "
         intent = "continue_chat"
     if intent not in allowed:
         return SpeechDecision(inner=" ".join(inner.split()), error="发言意图不在本轮允许范围")
+    if strict_reply and intent != "listen" and payload.get("reply_to") and str(payload["reply_to"]) not in targets:
+        return SpeechDecision(inner=" ".join(inner.split()), error="引用不在本次可回应的消息范围")
     if intent == "continue_chat" and not reply_to:
         return SpeechDecision(inner=" ".join(inner.split()), error="续聊需要引用本轮仍可回应的消息")
     if intent == "listen":

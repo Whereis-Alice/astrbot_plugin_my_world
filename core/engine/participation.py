@@ -78,10 +78,12 @@ class ParticipationMixin:
         """One conversation priority check from arrival through native sending."""
         return self.pending_reply_busy(session_id) or self.native_turn_busy(session_id)
 
-    def _participation_window(self, source: str = "message") -> int:
-        # Reading itself lasts 3–8 minutes. A three-minute live window would
-        # expire every message she picked up before she could finish reading.
-        return 900 if source in {"browse", "completion"} else self.world.decider.live_window_seconds
+    def _participation_window(self, source: str = "message") -> int | None:
+        # Reading grants access to its exact original messages. Their age is
+        # context for the model, not an expiry on the opportunity to read them.
+        if source == "browse":
+            return None
+        return 900 if source == "completion" else self.world.decider.live_window_seconds
 
     def claim_chat_scene(self, outcome, target: str, rows: list[dict], *, window: int | None = None,
                          state=None, media_rows=None) -> None:
@@ -221,15 +223,30 @@ class ParticipationMixin:
     def participation_prompt(self, state, target, persona, *, rows=None, request=None, source="message", browse_id="", reply_seqs=None):
         """Same builder for production and evaluation; never include another session."""
         if rows is None:
+            window = self._participation_window(source)
             rows = [row for row in state.recent_chat if self._chat_origin(row, state) == target
-                    and self._now() - float(row.get("at") or 0) <= max(600, self._participation_window(source))
+                    and (window is None or self._now() - float(row.get("at") or 0) <= max(600, window))
                     and not self.is_plugin_command(str(row.get("text") or ""))]
+        if source == "browse" and reply_seqs is None:
+            from ..browse_reply import BrowseReply, available_rows
+            ticket = BrowseReply.capture(self, state, target, browse_id)
+            reply_seqs = frozenset(int(row.get("seq") or 0) for row in ticket.eligible(available_rows(self, state, target)))
         from ..context_selection import CONTEXT_GUIDANCE, relevance, select_context
         from ..context_sources import browse_feeling_item, life_items, memory_context_items
         request = request or self.context_request(state, target, task="participation", rows=rows)
         from hashlib import sha256
         request.life_persona = sha256(persona.encode("utf-8")).hexdigest()[:24]
+        if source == "browse" and reply_seqs:
+            # Anchor the feeling's cited sources alongside the latest scene,
+            # using the existing bounded selector and its quote ancestry rules.
+            thought = next((item for item in reversed(state.thoughts) if item.get("browse_id") == browse_id
+                            and item.get("browse_session") == target), {})
+            cited = {int(row.get("seq") or 0) for row in thought.get("browse_sources") or []} & reply_seqs
+            rows = [row for row in rows if int(row.get("seq") or 0) not in cited] + [
+                row for row in rows if int(row.get("seq") or 0) in cited]
         rows = self.context_chat(state, request, rows)
+        if source == "browse":
+            rows.sort(key=lambda row: int(row.get("seq") or 0))
         _, _, style = self.style_for(state, target, remember=False)
         life = {"mood": state.mood,
                 "local_time": self.local_now().isoformat(timespec="minutes")}
@@ -264,7 +281,9 @@ class ParticipationMixin:
         background = "\n\n".join(part for part in (CONTEXT_GUIDANCE, profile, self.context_emotions(state, request), background) if part)
         if source == "browse":
             background += ("\n\n# 刚翻过消息\n你刚安静看过这段对话。看清每条消息距今多久，以及后续是否换了话题、"
-                           "问题是否已解决。回看范围只代表还可以考虑，不代表现在应该回复。"
+                           "问题是否已解决。消息时间只作参考，不按15分钟固定截断，也不因为刚读过就必须回复。"
+                           "较早的分享、兴趣或仍有意义的话题也可以自然接一句；"
+                           "不要把过去的活动、求助或安排当成刚发生、仍在等答复。"
                            "接较早的话时选择引用，话题已结束或问题已解决时不追答。"
                            "群聊里的开放分享和公共话题不要求先点名你或向你提问；"
                            "对具体细节有兴趣、自然的感受或与对方有相关经历时，可以顺着接一句。"
@@ -339,8 +358,9 @@ class ParticipationMixin:
     async def participation_text(self, state, target, *, source="message", browse_id="", outcome=None, browse_ticket=None) -> tuple[str, str]:
         if self.llm is None:
             return "", ""
+        window = self._participation_window(source)
         rows = [row for row in state.recent_chat if self._chat_origin(row, state) == target
-                and self._now() - float(row.get("at") or 0) <= max(600, self._participation_window(source))
+                and (window is None or self._now() - float(row.get("at") or 0) <= max(600, window))
                 and not self.is_plugin_command(str(row.get("text") or ""))]
         request = self.context_request(state, target, task="participation", rows=rows)
         await self.prepare_context_memory(request)
@@ -352,29 +372,39 @@ class ParticipationMixin:
             request.life_persona = sha256(persona.encode("utf-8")).hexdigest()[:24]
             if browse_feeling_item(state, request, browse_id) is None:
                 return "", ""
-        reply_seqs = (frozenset(int(seq) for seq in outcome.chat_claims.get(target, []))
-            if browse_ticket and browse_ticket.deferred else None)
+        reply_seqs = None
+        if source == "browse":
+            from ..browse_reply import BrowseReply, available_rows
+            ticket = browse_ticket or BrowseReply.capture(self, state, target, browse_id)
+            original = ticket.eligible(available_rows(self, state, target))
+            claimed = outcome.chat_claims.get(target, []) if outcome is not None else []
+            reply_seqs = frozenset(int(seq) for seq in claimed) if claimed else frozenset(int(row["seq"]) for row in original)
         system, prompt, targets = self.participation_prompt(state, target,
             persona, request=request, rows=rows, source=source, browse_id=browse_id, reply_seqs=reply_seqs)
         if reply_seqs is not None:
-            system += ("\n本轮是短暂等待后的阅读机会：后来的消息只供理解当前话题。"
-                       "想接话时必须引用 can_reply=true 的原消息；话题已收尾时选择 listen。")
+            system += ("\n本轮回应这次实际读过的消息：后来的消息只供理解当前话题。"
+                       "引用只能选择 can_reply=true 的原消息；接较早的话时引用并自然说明刚看到，"
+                       "话题已收尾时选择 listen。")
+            if browse_ticket and browse_ticket.deferred:
+                system += "短暂等待后接话必须引用原消息，不能转而接后来的新话题。"
         self.record_context_selection(request)
         feeling = next((item for item in reversed(state.thoughts)
                         if source == "browse" and browse_id and item.get("browse_id") == browse_id), None)
         recorded_inner = feeling["content"][:240] if feeling else ""
-        allowed = ("continue_chat", "listen") if reply_seqs is not None else ("join_chat", "continue_chat", "listen")
-        raw, decision = await self.ask_speech_decision(state, target, system, prompt, rows=rows,
-            live_window=self._participation_window(source), targets=targets, allowed=allowed,
-            recorded_inner=recorded_inner)
+        allowed = ("continue_chat", "listen") if browse_ticket and browse_ticket.deferred else ("join_chat", "continue_chat", "listen")
+        source_rows = [row for row in rows if int(row.get("seq") or 0) in reply_seqs] if reply_seqs is not None else rows
+        raw, decision = await self.ask_speech_decision(state, target, system, prompt, rows=source_rows,
+            live_window=window, reply_seqs=reply_seqs, targets=targets, allowed=allowed,
+            recorded_inner=recorded_inner, strict_reply=source == "browse")
         original_draft = raw
         if decision.error and str(raw or "").strip():
             # One bounded repair under the same background budget. Never invent
             # thoughts from the draft and never replay a failed provider call.
             raw, decision = await self.ask_speech_decision(state, target, system, prompt + "\n上轮结果未通过校验："
                 + decision.error + "。请重新给出完整 JSON，补上真实想法，并保留本轮发言选择。"
-                + "\n上轮草稿（只修复格式，不添加新事实）：" + str(raw)[:5000], rows=rows, allow_tools=False,
-                targets=targets, allowed=allowed, recorded_inner=recorded_inner)
+                + "\n上轮草稿（只修复格式，不添加新事实）：" + str(raw)[:5000], rows=source_rows, allow_tools=False,
+                live_window=window, reply_seqs=reply_seqs,
+                targets=targets, allowed=allowed, recorded_inner=recorded_inner, strict_reply=source == "browse")
         if decision.error:
             self.decision_trace(target, "participation", "failed", decision.error)
             state.participation[target] = {**state.participation.get(target, {}),
@@ -398,7 +428,12 @@ class ParticipationMixin:
         outcome = TickOutcome(session_id=session_id, speech_kind="browse_reply" if source == "browse" else "participation", place=session_id)
         async with self.session_state(session_id) as state:
             window = self._participation_window(source)
-            rows = self.live_chat(state, session_id, window=window)
+            if source == "browse":
+                from ..browse_reply import BrowseReply, available_rows
+                browse_ticket = browse_ticket or BrowseReply.capture(self, state, session_id, browse_id)
+                rows = browse_ticket.eligible(available_rows(self, state, session_id))
+            else:
+                rows = self.live_chat(state, session_id, window=window)
             observation = dict(state.participation.get(session_id) or {})
             already_considered = bool(rows) and all(int(row.get("seq") or 0) <= observation.get("checked_seq", 0)
                                                    for row in rows)
@@ -431,7 +466,7 @@ class ParticipationMixin:
                                "peer_cooldown": "刚与其他机器人连续聊过，先留白；有人带来新发言时再看"}
                     status = gate or ("already_considered" if rows or already_considered else "no_scene")
                     reason = reasons.get(gate) or ("这段现场已判断过，等待新的消息" if rows or already_considered
-                                                  else "最近15分钟没有仍可回应的消息，不追答旧聊天")
+                                                  else "本次读过的消息已回应或不再可用，本轮没有可接的话")
                     self.note_browse_reply_gate(state, session_id, browse_id, status, reason)
                 elif new:
                     # A reply/activity can start while this task waits for a
@@ -471,6 +506,10 @@ class ParticipationMixin:
             self.decision_trace(session_id, "participation", "considering", "近期群聊已聚合，判断是否有话想接",
                                 messages=len(rows))
             self.claim_chat_scene(outcome, session_id, rows, window=window, state=state, media_rows=new)
+            if source == "browse":
+                # Expire the newly prepared draft, not the older source message.
+                # Deferred work additionally keeps its existing contention deadline.
+                outcome.chat_expires_at[session_id] = now + self.world.decider.live_window_seconds
             if browse_ticket is not None and browse_ticket.deferred:
                 outcome.chat_expires_at[session_id] = min(outcome.chat_expires_at[session_id], browse_ticket.deadline)
             try:
