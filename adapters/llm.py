@@ -99,7 +99,8 @@ class AstrBotLLM:
             attempt += 1
             return await tracked_generate(self.plugin, session_id=session_id, role=self.role,
                 trace_id=trace_id, attempt=attempt, retry_reason=retry_reason,
-                invoke=(lambda **kw: agent.invoke(toolset, runner_options=native.runner_options if native else None, **kw)) if toolset else native.invoke if native else None,
+                invoke=(lambda **kw: agent.invoke(toolset, runner_options=native.runner_options,
+                    request=native.request, **kw)) if toolset else native.invoke if native else None,
                 coverage="agent_final" if toolset else "direct", **options)
 
         options = dict(chat_provider_id=provider_id, prompt=prompt, system_prompt=system_prompt,
@@ -114,11 +115,12 @@ class AstrBotLLM:
                 try:
                     from .proactive_context import ProactiveContext
                     native = ProactiveContext(self.plugin, speech)
-                    options = await native.prepare(options)
                     if self.role == "main" and speech.get("allow_tools") and self.plugin.engine.world.decider.proactive_tools:
                         from .proactive_agent import ProactiveAgent
                         agent = ProactiveAgent(self.plugin, speech)
-                        toolset = await agent.prepare(event=native.event)
+                        native.tool_agent = agent
+                    options = await native.prepare(options)
+                    toolset = native.toolset
                 except Exception as exc:
                     return LLMReply(ok=False, error=f"主动上下文准备失败：{type(exc).__name__}: {exc}")
             while True:

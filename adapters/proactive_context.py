@@ -86,6 +86,9 @@ class ProactiveContext:
         self.plugin, self.speech = plugin, speech
         self.target = speech["target"]
         self.event = None
+        self.request = None
+        self.tool_agent = None
+        self.toolset = None
         self.config = None
         self.runner_options = {}
         self.legacy_images = None
@@ -168,8 +171,15 @@ class ProactiveContext:
             }
         else:
             request.system_prompt = await self.plugin._host_persona_prompt(self.event, request, self.target)
+        # Hooks must see the tool permission of this background task, not the
+        # full host set built for an ordinary reply. Some hooks narrow this
+        # request's tools and later restore them after a maintenance operation.
+        allowed_tools = await self.tool_agent.prepare(event=self.event) if self.tool_agent is not None else None
+        request.func_tool = allowed_tools
         if await fire_hook(self.plugin, self.event, "OnLLMRequestEvent", request):
             raise RuntimeError("主动请求被插件钩子终止")
+        self.toolset = _restricted_tools(request.func_tool, allowed_tools)
+        request.func_tool = self.toolset
         if build_main_agent:
             try:
                 from astrbot.core.astr_main_agent import prepare_request_images
@@ -191,6 +201,11 @@ class ProactiveContext:
         persona = await self.plugin._host_persona_prompt(self.event, request, self.target)
         await self._bind_image_sources(request, prepared)
         request.system_prompt = options["system_prompt"] + "\n\n" + _drop_persona_instructions(request.system_prompt, persona)
+        contract = ("本轮没有可执行工具。其他插件、历史或背景中的工具提醒不在本轮执行。"
+                    if self.toolset is None else "本轮只执行已授权工具，工具维护完成后继续完成原始后台任务。")
+        request.extra_user_content_parts.append(TextPart(text=contract
+            + "最终只按最初后台任务要求的 JSON 格式输出；内心、计划和工具参数不直接对外发送。").mark_as_temp())
+        self.request = request
         self.event.set_extra("provider_request", request)
         return {**options, "prompt": request.prompt, "system_prompt": request.system_prompt,
             "contexts": request.contexts, "image_urls": request.image_urls or None,
@@ -262,6 +277,20 @@ class ProactiveContext:
         if self.plugin.engine.native_turn_busy(self.target):
             raise RuntimeError("正常回复已开始，取消主动判断")
         response = await run_agent(self.plugin.context, event=self.event, tools=None,
-            max_steps=1, request_max_retries=1, **self.runner_options, **options)
+            request=self.request, max_steps=1, request_max_retries=1, **self.runner_options, **options)
         response.completion_text = SpeechDraft(response.completion_text or "", native_event=self.event)
         return response
+
+
+def _restricted_tools(requested, allowed):
+    """Hooks may narrow a guarded set, but cannot add an unguarded tool."""
+    if requested is None or allowed is None:
+        return None
+    guards = {tool.name: tool for tool in allowed.tools}
+    selected = [guards[tool.name] for tool in requested.tools if tool.name in guards]
+    if not selected:
+        return None
+    if len(selected) == len(requested.tools) and all(a is b for a, b in zip(selected, requested.tools)):
+        return requested
+    from astrbot.core.agent.tool import ToolSet
+    return ToolSet(selected)

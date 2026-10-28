@@ -74,6 +74,7 @@ class ProactiveRunnerTests(unittest.IsolatedAsyncioTestCase):
         options = runner.reset.await_args.kwargs
         request = options["request"]
         self.assertIs(request.extra_user_content_parts, self.parts)
+
         self.assertTrue(all(part._no_save for part in request.extra_user_content_parts))
         self.assertEqual(request.contexts, history)
         self.assertEqual(request.session_id, self.event.unified_msg_origin)
@@ -84,6 +85,25 @@ class ProactiveRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(options["read_tool"], read_tool)
         self.assertEqual(options["tool_result_overflow_dir"], "host-overflow")
         self.assertEqual((steps, options["temperature"], options["request_max_retries"]), ([5], .4, 1))
+
+    async def test_prepared_no_tool_request_initializes_without_light_schema_mode(self):
+        for tools in (None, types.SimpleNamespace(get_tool=lambda name: None)):
+            with self.subTest(has_tools=tools is not None):
+                runner = types.SimpleNamespace(reset=AsyncMock(), get_final_llm_resp=lambda: object())
+
+                async def steps(_):
+                    yield None
+
+                runner.step_until_done = steps
+                context = types.SimpleNamespace(tool_loop_agent=AsyncMock(),
+                    provider_manager=types.SimpleNamespace(get_provider_by_id=AsyncMock(return_value=object())))
+                request = types.SimpleNamespace(prompt="计划", system_prompt="人设", contexts=[],
+                    image_urls=[], audio_urls=[], extra_user_content_parts=self.parts, func_tool=tools)
+                with self.sdk(runner):
+                    await self.module.run_agent(context, event=self.event, chat_provider_id="model", request=request,
+                        tool_schema_mode="skills_like", request_max_retries=1)
+                expected = "full" if tools is None else "skills_like"
+                self.assertEqual(runner.reset.await_args.kwargs["tool_schema_mode"], expected)
 
     async def test_legacy_failure_and_cancellation_propagate_without_helper_retry(self):
         for failure in (TimeoutError("模型超时"), asyncio.CancelledError()):
@@ -97,3 +117,47 @@ class ProactiveRunnerTests(unittest.IsolatedAsyncioTestCase):
                 runner.reset.assert_awaited_once()
                 context.tool_loop_agent.assert_not_awaited()
                 context.provider_manager.get_provider_by_id.assert_awaited_once()
+
+    async def test_prepared_request_is_the_exact_object_seen_by_the_runner(self):
+        result = object()
+        runner = types.SimpleNamespace(reset=AsyncMock(), get_final_llm_resp=lambda: result,
+                                       EMPTY_OUTPUT_RETRY_ATTEMPTS=3)
+
+        async def steps(_):
+            yield None
+
+        runner.step_until_done = steps
+        context = types.SimpleNamespace(tool_loop_agent=AsyncMock(return_value=result),
+            provider_manager=types.SimpleNamespace(get_provider_by_id=AsyncMock(return_value=object())))
+        request = types.SimpleNamespace(prompt="计划判断", system_prompt="人设", contexts=[],
+            image_urls=[], audio_urls=[], extra_user_content_parts=self.parts, func_tool=None)
+        with self.sdk(runner):
+            response = await self.module.run_agent(context, event=self.event, chat_provider_id="model",
+                request=request, prompt="计划判断", system_prompt="人设",
+                extra_user_content_parts=self.parts, request_max_retries=1)
+        self.assertIs(response, result)
+        context.tool_loop_agent.assert_not_awaited()
+        self.assertIs(runner.reset.await_args.kwargs["request"], request)
+        self.assertEqual(runner.EMPTY_OUTPUT_RETRY_ATTEMPTS, 1)
+
+    async def test_prepared_request_keeps_binding_when_media_is_removed_for_compatibility(self):
+        runner = types.SimpleNamespace(reset=AsyncMock(), get_final_llm_resp=lambda: object())
+
+        async def steps(_):
+            yield None
+
+        runner.step_until_done = steps
+        context = types.SimpleNamespace(tool_loop_agent=AsyncMock(),
+            provider_manager=types.SimpleNamespace(get_provider_by_id=AsyncMock(return_value=object())))
+        request = types.SimpleNamespace(prompt="现场", system_prompt="人设", contexts=[{"role": "user", "content": "原话"}],
+            image_urls=["image-before-fallback"], audio_urls=["audio-before-fallback"],
+            extra_user_content_parts=self.parts, func_tool=None)
+        with self.sdk(runner):
+            await self.module.run_agent(context, event=self.event, chat_provider_id="model", request=request,
+                prompt="现场", system_prompt="人设", image_urls=None, audio_urls=None,
+                contexts=request.contexts, extra_user_content_parts=self.parts, request_max_retries=1)
+        self.assertIs(runner.reset.await_args.kwargs["request"], request)
+        self.assertEqual(request.image_urls, [])
+        self.assertEqual(request.audio_urls, [])
+        self.assertEqual(request.contexts, [{"role": "user", "content": "原话"}])
+        self.assertIs(request.extra_user_content_parts, self.parts)

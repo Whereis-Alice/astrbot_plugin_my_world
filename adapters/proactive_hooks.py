@@ -90,6 +90,12 @@ async def fire_hook(plugin, event, name, *args, accepted=False):
             handler = replay_handler(handler, name)
         if handler is None:
             continue
+        if (name == "OnLLMRequestEvent" and args
+                and "astrbot_plugin_dynamic_card_plus" in str(getattr(handler, "__module__", ""))
+                and getattr(handler, "__name__", "") == "inject_group_card_tool_hint"):
+            tools = getattr(args[0], "func_tool", None)
+            if tools is None or tools.get_tool("set_dynamic_group_card") is None:
+                continue  # Do not consume a card reminder on a read-only thought.
         try:
             result = handler(event, *args)
             if inspect.isawaitable(result):
