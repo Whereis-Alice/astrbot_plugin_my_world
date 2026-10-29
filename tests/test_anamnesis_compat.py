@@ -84,6 +84,8 @@ class AnamnesisCompatibilityTests(unittest.TestCase):
             "actual_query": "热茶",
             "recall_session_id": session,
             "use_persona_filtering": True,
+            # Current Anamnesis prepares these options before this injection branch.
+            "format_options": {"max_chars": 6000, "entry_max_chars": 1200},
             "TextPart": Part,
             "self": types.SimpleNamespace(config_manager={"recall_engine.top_k": 5}),
             "format_memories_for_fake_tool_call": lambda *a, **k: messages,

@@ -540,15 +540,33 @@ class CalendarDiaryMixin:
             ):
                 continue
             for row in item.get("history") or []:
-                at = float(row.get("at") or 0)
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    at = float(row.get("at") or 0)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if not math.isfinite(at) or at <= 0:
+                    continue
                 if start.timestamp() <= at < end.timestamp() and row.get("text"):
+                    receipt = row.get("receipt")
+                    receipt = receipt if isinstance(receipt, dict) else {}
                     matters.append(
                         {
-                            "title": _clip(item.get("text"), 160),
+                            "at": at,
+                            # Later edits own a new goal; they do not rename
+                            # yesterday's invested work. Legacy receipts can
+                            # still identify a goal without rewriting history.
+                            "title": _clip(row.get("goal") or receipt.get("goal"), 160) or "当时目标未记录",
                             "event": _clip(row.get("kind"), 40),
                             "detail": _clip(row.get("text"), 240),
                         }
                     )
+        # Projects can interleave during the day. Preserve that saved order
+        # across projects; a later history entry is not moved beside its first.
+        matters.sort(key=lambda row: row["at"])
+        for row in matters:
+            row.pop("at")
         calendar = None
         calendar_cfg = getattr(self.world, "calendar", None)
         parsed_day = _parse_day(day)

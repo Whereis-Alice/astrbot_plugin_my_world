@@ -2,6 +2,7 @@
 from __future__ import annotations
 from typing import Any
 from uuid import uuid4
+from ..speech_policy import private_recipient
 from .models import TickOutcome
 
 LIFE_KINDS = {"", "life_share", "schedule", "event"}
@@ -12,11 +13,10 @@ class ProactiveContactMixin:
     @staticmethod
     def _outreach_people(outcome: TickOutcome, target: str) -> set[str]:
         """Native FriendMessage and legacy private origins identify the direct recipient."""
-        people = set(outcome.contact_people)
-        parts = target.split(":", 2)
-        if len(parts) == 3 and parts[1] in {"FriendMessage", "PrivateMessage"} and parts[2]:
-            people.add(parts[2])
-        return people
+        recipient = private_recipient(target)
+        if recipient:
+            return {recipient}
+        return set(outcome.contact_people)
 
     def _contact_started(self, ledger: dict, target: str, token: str) -> float:
         started = (ledger.get("started_at") or {}).get(token)
@@ -184,12 +184,12 @@ class ProactiveContactMixin:
         self._contact_pending[identity] = receipt
         return receipt, ""
 
-    def _finish_contact(self, receipt: dict | None, success: bool | set[str]) -> None:
+    def _finish_contact(self, receipt: dict | None, success: bool | set[str], *, people: set[str] | None = None) -> None:
         if receipt is None:
             return
         if "receipts" in receipt:
             for item in receipt["receipts"]:
-                self._finish_contact(item, success)
+                self._finish_contact(item, success, people=people)
             return
         if isinstance(success, set):
             success = bool(success & LIFE_KINDS) if receipt.get("kind") == "life_share" else bool(
@@ -206,12 +206,15 @@ class ProactiveContactMixin:
             ledger.setdefault("started_at", {}).setdefault(receipt["token"], self._now())
             known = contacts.setdefault(receipt["token"], [])
             for session_id, uid in receipt["people"]:
+                if people is not None and uid not in people:
+                    continue
                 if [session_id, uid] not in known:
                     self.profiles.note_proactive(session_id, uid, now=self._now())
                     known.append([session_id, uid])
             self.db.raw.kv_set(receipt["key"], ledger)
             target = receipt["target"]
             self.note_visible_speech(target, token=receipt["token"],
-                                     people=[uid for _, uid in receipt["people"]])
+                                     people=[uid for _, uid in receipt["people"]
+                                             if people is None or uid in people])
         finally:
             self._contact_pending.pop(receipt["identity"], None)

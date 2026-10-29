@@ -30,7 +30,7 @@ from ..planner import (
     create_plan,
 )
 from ..ports import ToolCallResult
-from ..speech_policy import SILENT_FOLLOWUP, speech_origin
+from ..speech_policy import SILENT_FOLLOWUP, speech_origin, private_recipient
 from ..state import (
     STATE_DROWSY,
     WorldState,
@@ -300,6 +300,7 @@ class ActionsRunMixin:
             str(key): value for key, value in params.items() if not str(key).startswith("_")
         }
 
+    @speech_origin("action")
     async def _start_action(
         self,
         state: WorldState,
@@ -316,6 +317,27 @@ class ActionsRunMixin:
     ) -> bool | None:
         # 这里是所有动作真正开始执行的唯一入口（计划 / 日程 / 自主行为 / 工具后续都走这里），
         # 因此把「能不能做」的校验统一放在这里，避免某条路径绕过检查。
+        destination = self._speech_target(state, action, outcome)
+        recipient = private_recipient(destination)
+        if (definition.target_type == "user" and recipient and action.target
+                and str(action.target) != recipient):
+            outcome.notes.append("私聊收件人与动作对象冲突，取消定向动作，不改找另一个人")
+            if from_plan and state.current_plan is not None:
+                advance(state, status="skipped")
+                await self._tick_plan(state, node, outcome, depth=depth + 1)
+            return False
+        if action.send_to and destination is None:
+            outcome.notes.append(f"落点「{action.send_to}」不在她能说话的地方里，取消定向发言")
+            if (definition.target_type == "user" or definition.id in {"say", "share", "poke"}
+                    or definition.llm_level in {"tool", "command"}
+                    or definition.tool_list() or definition.trigger_command):
+                if from_plan and state.current_plan is not None:
+                    advance(state, status="skipped")
+                    await self._tick_plan(state, node, outcome, depth=depth + 1)
+                return False
+            # The private conversation is unavailable; independent activities
+            # can still happen without exporting their narration to the group.
+            outcome.speech_kind = "quiet"
         from ..activity_time import window_allows
         if not window_allows(definition.preconditions.time_window, self.world, self.local_now().hour):
             outcome.notes.append("尚未到动作适合开始的当地时段")
@@ -942,7 +964,7 @@ class ActionsRunMixin:
         elif not callable(poker):
             reason = "当前发送通道不支持戳一戳"
         else:
-            outcome.contact_people.add(target)
+            outcome.contact_people = {target}
             receipt, blocked = self._reserve_contact(outcome, outcome.home(), [kind])
             if blocked:
                 outcome.notes.append(blocked)

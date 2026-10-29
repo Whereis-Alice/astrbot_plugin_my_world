@@ -1048,7 +1048,8 @@ class PromptBuilder:
             blocks.append("# 其他插件提供的上下文\n" + other_context)
         # 还没聊完的事：接在聊天记录之后——"接着上次那句问"就靠它
         topics_block = self.open_topics_layer(
-            self._due_open_topics(state, current_session, focus_user=focus_user),
+            self._due_open_topics(state, current_session, focus_user=focus_user,
+                                  persona_key=life_persona_key),
             who_name="",
             pronoun=pronoun_for(getattr(self.world, "gender", "female")),
         )
@@ -1067,7 +1068,8 @@ class PromptBuilder:
     # ---------------- 第 4 层的分段构件 ----------------
 
     def _due_open_topics(
-        self, state: WorldState, session_key: str, *, focus_user: str = ""
+        self, state: WorldState, session_key: str, *, focus_user: str = "",
+        persona_key: str | None = None,
     ) -> list[dict[str, Any]]:
         """到点可以提的「还没聊完的事」：按会话筛，到时间才带出来。
 
@@ -1077,14 +1079,20 @@ class PromptBuilder:
         now = self._now()
         stamp = now.timestamp() if now is not None else 0.0
         key = str(session_key or state.session_id or "")
+        keep_days = max(1, int(getattr(self.world.context, "open_topic_days", 7) or 7))
         picked: list[dict[str, Any]] = []
         for item in state.open_topics or []:
             if not isinstance(item, dict):
                 continue
-            topic_session = str(item.get("session") or "")
+            if (persona_key is not None and item.get("persona_key")
+                    and item["persona_key"] != persona_key):
+                continue
+            topic_session = str(item.get("session") or state.session_id or "")
             if topic_session and key and topic_session != key:
                 continue
             due = float(item.get("next_ask_at") or 0.0)
+            if stamp and stamp - float(item.get("at") or 0.0) >= keep_days * 86400:
+                continue
             if stamp and due and due > stamp:
                 continue
             if focus_user and str(item.get("who") or "") not in ("", focus_user):

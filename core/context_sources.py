@@ -274,13 +274,14 @@ def runtime_context(prompts: Any, state: Any, node: Any, request: ContextRequest
     if inner:
         candidates.append(ContextItem("inner:current", "thought",
             "# 当时的内心活动（主观想法，仅你可见，不直接复述）\n" + inner))
-    for index, topic in enumerate(prompts._due_open_topics(state, request.session)):
+    for index, topic in enumerate(prompts._due_open_topics(state, request.session,
+                                                        persona_key=request.life_persona)):
         body = prompts.open_topics_layer([topic], who_name="", pronoun="她")
         if body:
             who = str(topic.get("who") or topic.get("user_id") or "")
             candidates.append(ContextItem(f"topic:{index}", "topic", body,
                 people=(who,) if who else (), continuing=True,
-                session=str(topic.get("session") or "")))
+                session=str(topic.get("session") or state.session_id)))
     # A note summarising previous dialogue is a candidate, not an extra instruction.
     note = state.chat_note_text(request.session,
         max_minutes=int(getattr(prompts.world.context, "chat_note_max_minutes", 30)), now=request.now)

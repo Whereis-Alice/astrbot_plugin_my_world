@@ -7,6 +7,7 @@ from ..llm_fallback import fallback_block_reason
 
 import asyncio
 import math
+from dataclasses import replace
 from typing import Any
 from ..json_actions import (
     PlannedAction,
@@ -271,8 +272,8 @@ class ActionsMixin:
         plan: dict[str, Any],
         *,
         fallback: str,
-    ) -> str:
-        """计划级的落点：她写了就用她的，写不出来就留在当前会话（并记一笔）。"""
+    ) -> str | None:
+        """Missing destinations stay local; explicit invalid destinations remain unsendable."""
 
         raw = str((plan or {}).get("send_to") or "").strip()
         if not raw:
@@ -281,9 +282,9 @@ class ActionsMixin:
         if target:
             return target
         outcome.notes.append(
-            f"落点「{raw}」不在她能说话的地方里，这一轮按当前会话处理"
+            f"落点「{raw}」不在她能说话的地方里，保留原落点并取消定向发言"
         )
-        return str(fallback)
+        return None
 
     def _freeze_plan_target(
         self,
@@ -302,7 +303,8 @@ class ActionsMixin:
         """
 
         target = self._plan_target(state, outcome, plan, fallback=fallback)
-        plan["send_to"] = str(target or "")
+        unresolved = str(plan.get("send_to") or "") if target is None else ""
+        plan["send_to"] = unresolved or str(target or "")
         for step in plan.get("steps") or []:
             if not isinstance(step, dict):
                 continue
@@ -313,15 +315,16 @@ class ActionsMixin:
                 if not picked:
                     outcome.notes.append(
                         f"这一步想说到「{raw}」，但那儿不在她能说话的地方里，"
-                        "改按整份计划的落点处理"
+                        "保留原落点并取消这一步的定向发言"
                     )
-                    step["send_to"] = ""
-                    picked = str(target or "")
+                    picked = str(target or fallback)
             else:
-                picked = str(target or "")
+                picked = str(target or fallback)
+                if unresolved:
+                    step["send_to"] = unresolved
             if not str(step.get("session") or "").strip():
                 step["session"] = picked
-        return str(target or "")
+        return str(target or fallback)
 
     def talking_session(self, state: WorldState) -> str:
         """最近别人是在哪个会话里说话的。
@@ -509,7 +512,8 @@ class ActionsMixin:
             )
         if state.current_plan:
             state.current_plan.setdefault("contact_id", outcome.contact_id)
-            state.current_plan.setdefault("contact_people", sorted(outcome.contact_people))
+            from ..speech_policy import plan_contact_people
+            state.current_plan.setdefault("contact_people", sorted(plan_contact_people(outcome)))
         if note:
             outcome.notes.append(note)
 
@@ -580,10 +584,6 @@ class ActionsMixin:
         if browsing is not None:
             # Reading is an isolated activity; ignore any accompanying speech/tools.
             return self.start_chat_browse(state, browsing.type)
-        for candidate in actions:
-            definition = self.world.action_map().get(candidate.type)
-            if definition is not None and definition.target_type == "user" and candidate.target:
-                outcome.contact_people.add(str(candidate.target))
         executed = False
         max_actions = self.world.limits.max_actions_per_message
         queued_actions = list(actions)[:max_actions]
@@ -772,11 +772,19 @@ class ActionsMixin:
                 and str(getattr(definition, "target_type", "")) == "user"
                 and bool(getattr(self.world.profile, "enabled", True))
             ):
-                token = self._contact_token(outcome, outcome.home())
-                status = self.contact_status(outcome.home(), action.target, token=token)
-                if status["reason"]:
-                    outcome.notes.append(f"主动找 {action.target} 的次数今天用完了：{status['reason']}，跳过这一步")
-                    continue
+                destination = self._speech_target(state, action, outcome)
+                if destination is not None:
+                    view = replace(outcome, contact_people={str(action.target)})
+                    token = self._contact_token(view, destination)
+                    blocked = False
+                    for uid in sorted(self._outreach_people(view, destination)):
+                        status = self.contact_status(destination, uid, token=token)
+                        if status["reason"]:
+                            outcome.notes.append(f"主动找 {uid} 的次数今天用完了：{status['reason']}，跳过这一步")
+                            blocked = True
+                            break
+                    if blocked:
+                        continue
             before_action = state.current_action
             answered = await self._start_action(
                 state,
@@ -867,13 +875,20 @@ class ActionsMixin:
         return str(getattr(definition, "llm_level", "")) in ("tool", "command")
 
     async def _flush_say(self, outcome: TickOutcome) -> None:
-        self._filter_proactive_speech(outcome)
-        prepare = getattr(self.messenger, "proactive_delivery", None)
-        if callable(prepare) and outcome.messages and not outcome.broadcast_targets:
-            async with prepare(outcome.home(), outcome, instant=True):
+        # The primary buffer belongs to session_id; the next slow step may
+        # already have changed speech_home to a different room.
+        previous_home = outcome.speech_home
+        outcome.speech_home = outcome.session_id
+        try:
+            self._filter_proactive_speech(outcome)
+            prepare = getattr(self.messenger, "proactive_delivery", None)
+            if callable(prepare) and outcome.messages and not outcome.broadcast_targets:
+                async with prepare(outcome.home(), outcome, instant=True):
+                    await self._flush_prepared_say(outcome)
+            else:
                 await self._flush_prepared_say(outcome)
-        else:
-            await self._flush_prepared_say(outcome)
+        finally:
+            outcome.speech_home = previous_home
 
     async def _flush_prepared_say(self, outcome: TickOutcome) -> None:
         """慢动作开始前，把她已经说出口的话**当场发出去**。
@@ -891,15 +906,18 @@ class ActionsMixin:
             return
         kinds = outcome.speech_kinds.pop("", [])
         ids = outcome.speech_ids.pop("", [])
+        people = outcome.speech_people.pop("", [])
         lines = outcome.take_messages()
         sent_count = 0
         for index, line in enumerate(lines):
             kind = kinds[index] if index < len(kinds) else outcome.speech_kind
+            recipients = set(people[index]) if index < len(people) else set(outcome.contact_people)
+            view = replace(outcome, contact_people=recipients)
             if (not self.speech_allowed(outcome.home(), kind)
-                    or not self.contact_speech_allowed(outcome, outcome.home(), kind)):
+                    or not self.contact_speech_allowed(view, outcome.home(), kind)):
                 sent_count += 1
                 continue
-            receipt, blocked = self._reserve_contact(outcome, outcome.home(), [kind])
+            receipt, blocked = self._reserve_contact(view, outcome.home(), [kind])
             if blocked:
                 outcome.notes.append(blocked)
                 sent_count += 1
@@ -918,6 +936,7 @@ class ActionsMixin:
                     outcome.live_kinds.append(kind)
                     outcome.live_origins.append(sid)
                     outcome.live_ids.append(identity)
+                    outcome.live_people.append(tuple(sorted(recipients)))
                     accepted_live = True
                 from .speech_receipts import remember_accepted
                 await remember_accepted(self, outcome, sid, line, ("live", sid, live_index), identity, kind=kind)
@@ -930,11 +949,13 @@ class ActionsMixin:
                 from contextlib import nullcontext
                 prepare_segment = getattr(self.messenger, "proactive_segment", None)
                 wire = prepare_segment(outcome.home(), index) if callable(prepare_segment) else nullcontext()
-                contacted = any(k == "outreach" and sid == outcome.home()
-                    for k, sid in zip(outcome.live_kinds, outcome.live_origins))
-                with wire, contact_send(outcome.home(), outcome.contact_people, 0 if kind == "outreach" and not contacted else -1), watch_send(received_segment), quote_send(outcome.home(), outcome.reply_targets.get(outcome.home(), "")), guard_send(
+                mentioned = set()
+                for i, (k, sid) in enumerate(zip(outcome.live_kinds, outcome.live_origins)):
+                    if k == "outreach" and sid == outcome.home():
+                        mentioned.update(outcome.live_people[i] if i < len(outcome.live_people) else outcome.contact_people)
+                with wire, contact_send(outcome.home(), recipients - mentioned, 0 if kind == "outreach" else -1), watch_send(received_segment), quote_send(outcome.home(), outcome.reply_targets.get(outcome.home(), "")), guard_send(
                     lambda sid, i: self.speech_allowed(sid, kind)
-                        and self.contact_speech_allowed(outcome, sid, kind, reserved=receipt is not None)):
+                        and self.contact_speech_allowed(view, sid, kind, reserved=receipt is not None)):
                     sent = bool(await self.say_sink(outcome.home(), line))
                     if sent or accepted_live:
                         await received_segment(outcome.home(), line, 0)
@@ -956,6 +977,7 @@ class ActionsMixin:
         outcome.messages = lines[sent_count:]
         outcome.speech_kinds[""] = kinds[sent_count:]
         outcome.speech_ids[""] = ids[sent_count:]
+        outcome.speech_people[""] = people[sent_count:]
         # 回显的位置是"排在第几句之后"：前面几句已经当场发出去了，位置整体往前挪
         outcome.debug_positions = [
             max(0, int(position) - sent_count) for position in outcome.debug_positions
@@ -1040,7 +1062,8 @@ class ActionsMixin:
         )
         if state.current_plan:
             state.current_plan["contact_id"] = outcome.contact_id
-            state.current_plan["contact_people"] = sorted(outcome.contact_people)
+            from ..speech_policy import plan_contact_people
+            state.current_plan["contact_people"] = sorted(plan_contact_people(outcome))
 
     def _node_name(self, node_id: str) -> str:
         node = self.node(node_id)

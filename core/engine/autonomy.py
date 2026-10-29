@@ -95,7 +95,8 @@ class AutonomyMixin:
                     await self._decide_normally(state, node, outcome, session_id)
             await self._echo_events_since(state, outcome, echo_marker)
         # 发消息这件事必须在**出锁之后**做：_deliver 自己还要拿这把会话锁
-        if outcome.messages or outcome.live_messages or outcome.debug_messages or outcome.speech_decisions:
+        if (outcome.messages or outcome.routed or outcome.images or outcome.routed_images
+                or outcome.live_messages or outcome.debug_messages or outcome.speech_decisions):
             await self._deliver(outcome)
         return outcome
 

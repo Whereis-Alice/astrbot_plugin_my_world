@@ -16,8 +16,10 @@ CONTACT_TARGET = ContextVar("world_contact_target", default=None)
 
 
 @contextmanager
-def contact_send(session_id, people, index=0):
-    token = CONTACT_TARGET.set((session_id, tuple(sorted(people)), index))
+def contact_send(session_id, people, index=0, *, positions=None):
+    targets = ({index: tuple(sorted(people))} if positions is None else
+               {i: tuple(sorted(values)) for i, values in positions.items()})
+    token = CONTACT_TARGET.set((session_id, targets))
     try:
         yield
     finally:
@@ -26,7 +28,20 @@ def contact_send(session_id, people, index=0):
 
 def contact_targets(session_id, index=0):
     target = CONTACT_TARGET.get()
-    return target[1] if target and target[0] == session_id and target[2] == index else ()
+    return target[1].get(index, ()) if target and target[0] == session_id else ()
+
+
+def plan_contact_people(outcome):
+    """The plan's default recipient survives queuing; an action target does not."""
+    context = PLAN_SPEECH.get()
+    if context and context[0] is outcome:
+        return set(context[1].get("contact_people") or [])
+    return set(outcome.contact_people)
+
+
+def private_recipient(session_id):
+    parts = str(session_id or "").split(":", 2)
+    return parts[2] if len(parts) == 3 and parts[1] in {"FriendMessage", "PrivateMessage"} else ""
 
 
 def activity_speech_kind(kind, definition):
@@ -97,6 +112,8 @@ def speech_origin(source):
             bound = signature.bind(self, *args, **kwargs).arguments
             outcome = bound["outcome"]
             previous = outcome.speech_kind
+            previous_people = outcome.contact_people
+            previous_home = outcome.speech_home
             if source == "completion":
                 kind = bound["action"].get("speech_kind") or previous or "life_share"
             elif source == "sleep":
@@ -104,14 +121,13 @@ def speech_origin(source):
             elif source == "plan":
                 plan = bound["state"].current_plan or {}
                 outcome.contact_id = plan.get("contact_id") or plan.get("id") or outcome.contact_id
-                outcome.contact_people.update(plan.get("contact_people") or [])
-                for candidate in plan.get("steps") or []:
-                    definition = self.world.action_map().get(candidate.get("action"))
-                    if definition is not None and definition.target_type == "user" and candidate.get("target"):
-                        outcome.contact_people.add(str(candidate["target"]))
                 steps = plan.get("steps") or []
                 index = int(plan.get("current_step") or 0)
                 step = steps[index] if 0 <= index < len(steps) else {}
+                outcome.contact_people = set(plan.get("contact_people") or [])
+                definition = self.world.action_map().get(step.get("action"))
+                if definition is not None and definition.target_type == "user" and step.get("target"):
+                    outcome.contact_people = {str(step["target"])}
                 kind = step.get("kind") or ("schedule" if plan.get("source") == "schedule"
                     else "outreach" if outcome.contact_people else "life_share")
                 scene = step.get("speech_scene") or plan.get("speech_scene") or {}
@@ -132,25 +148,52 @@ def speech_origin(source):
                 if not kind and not bound.get("autonomous", True):
                     kind = "reply"
                 kind = kind or "life_share"
+            elif source == "action":
+                kind = previous
+                definition, action = bound["definition"], bound["action"]
+                if definition.target_type == "user":
+                    target = self._speech_target(bound["state"], action, outcome)
+                    if target is not None:
+                        outcome.speech_home = target
+                        recipient = private_recipient(target)
+                        if not action.target and recipient:
+                            action.target = recipient
+                    if action.target:
+                        outcome.contact_people = {str(action.target)}
+                        if kind in {"", "life_share"}:
+                            kind = "outreach"
             else:
                 kind = source
             if source == "completion":
                 action = bound["action"]
                 outcome.contact_id = action.get("contact_id") or action.get("plan_id") or outcome.contact_id
-                outcome.contact_people.update(action.get("contact_people") or [])
-                kind = activity_speech_kind(kind, self.world.action_map().get(action.get("type")))
+                outcome.contact_people = set(action.get("contact_people") or [])
+                definition = self.world.action_map().get(action.get("type"))
+                if definition is not None and definition.target_type == "user":
+                    recipient = private_recipient(action.get("session") or outcome.home())
+                    if recipient and action.get("target") and str(action["target"]) != recipient:
+                        kind = "quiet"
+                        outcome.contact_people = set()
+                        outcome.notes.append("私聊收件人与动作对象冲突，动作照常结算，取消对外续说")
+                    elif recipient or action.get("target"):
+                        outcome.contact_people = {recipient or str(action["target"])}
+                kind = activity_speech_kind(kind, definition)
             elif source == "plan":
                 kind = activity_speech_kind(kind, self.world.action_map().get(step.get("action")))
             outcome.speech_kind = kind
             token = SPEECH_OUTCOME.set(outcome)
             plan_token = PLAN_SPEECH.set((outcome, plan) if source == "plan"
-                else PLAN_SPEECH.get() if source == "actions" else None)
+                else PLAN_SPEECH.get() if source in {"actions", "action"} else None)
             try:
                 return await function(self, *args, **kwargs)
             finally:
                 PLAN_SPEECH.reset(plan_token)
                 SPEECH_OUTCOME.reset(token)
                 outcome.speech_kind = previous
+                if source in {"plan", "completion", "action"}:
+                    outcome.contact_people = previous_people
+                if source in {"action", "completion"}:
+                    outcome.speech_home = previous_home
 
         return invoke
     return decorate

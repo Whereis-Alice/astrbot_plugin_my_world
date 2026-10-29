@@ -307,7 +307,8 @@ class SendMixin:
                 from ..participation import speakable
                 targets = [target, *outcome.broadcast_targets] if not key and include_broadcast else [target]
                 def contact_allowed(sid):
-                    return self.contact_speech_allowed(outcome, sid, kind, reserved=contact_reserved)
+                    view = replace(outcome, contact_people=outcome.speech_recipients(key, i, images=images))
+                    return self.contact_speech_allowed(view, sid, kind, reserved=contact_reserved)
                 return (images or kind == "reply" or speakable(lines[i])) and any(
                     self.speech_allowed(sid, kind) and (protected or (
                         (not block_contact or kind in CHAT_KINDS) and contact_allowed(sid)))
@@ -320,6 +321,9 @@ class SendMixin:
             identities = outcome.image_ids if images else outcome.speech_ids
             ids = identities.get(key, [])
             identities[key] = [ids[i] if i < len(ids) else "" for i, ok in enumerate(mask) if ok]
+            people = outcome.image_people if images else outcome.speech_people
+            people[key] = [tuple(sorted(outcome.speech_recipients(key, i, images=images)))
+                           for i, ok in enumerate(mask) if ok]
             return [line for line, ok in zip(lines, mask) if ok]
 
         outcome.messages = keep(outcome.messages, "", outcome.speech_kinds)
@@ -440,6 +444,15 @@ class SendMixin:
                 kinds.extend(view.speech_kinds.get("", []) or [view.speech_kind])
             if view.images:
                 kinds.extend(view.image_kinds.get("", []) or [view.speech_kind])
+            recipients = set()
+            for lines, metadata, images in ((view.messages, view.speech_kinds, False),
+                                            (view.images, view.image_kinds, True)):
+                values = metadata.get("", [])
+                for i in range(len(lines)):
+                    kind = values[i] if i < len(values) else view.speech_kind
+                    if kind not in autonomous_kinds:
+                        recipients.update(view.speech_recipients("", i, images=images))
+            view.contact_people = recipients
             receipt, blocked = self._reserve_contact(view, target, kinds)
             if blocked:
                 outcome.notes.append(f"{target}：{blocked}")
@@ -449,6 +462,7 @@ class SendMixin:
             def autonomous(values):
                 return any(kind not in autonomous_kinds for kind in values)
             sent_kinds = set()
+            accepted_people = set()
             try:
                 if target_ordered:
                     attempted = True
@@ -472,6 +486,9 @@ class SendMixin:
                         ids = view.speech_ids.get("", [])
                         identity = ids[index] if index < len(ids) else ""
                         recorded_indices.add(position)
+                        if ordered_kinds[position] not in autonomous_kinds:
+                            people = view.speech_recipients("", index)
+                            accepted_people.update(self._outreach_people(replace(view, contact_people=people), target))
                         await remember_accepted(self, outcome, target, text,
                             (send_identity, target, position), identity, kind=ordered_kinds[position])
                         notify = getattr(self.messenger, "proactive_accepted", None)
@@ -479,10 +496,17 @@ class SendMixin:
                             await notify(target, text, position)
                     quote_index = next((i for i, kind in enumerate(ordered_kinds)
                                         if kind in CHAT_KINDS), 0)
-                    contact_index = next((i for i, kind in enumerate(ordered_kinds) if kind == "outreach"), -1)
-                    if any(kind == "outreach" and sid == target for kind, sid in zip(outcome.live_kinds, outcome.live_origins)):
-                        contact_index = -1
-                    with contact_send(target, view.contact_people, contact_index), watch_send(received_segment), quote_send(target, view.reply_targets.get(target, ""), quote_index), guard_send(
+                    mentioned = set()
+                    for i, (kind, sid) in enumerate(zip(outcome.live_kinds, outcome.live_origins)):
+                        if kind == "outreach" and sid == target:
+                            mentioned.update(outcome.live_people[i] if i < len(outcome.live_people) else outcome.contact_people)
+                    positions = {}
+                    for position, (_, index) in enumerate(entries):
+                        if index is not None and ordered_kinds[position] == "outreach":
+                            people = view.speech_recipients("", index)
+                            positions[position] = people - mentioned
+                            mentioned.update(people)
+                    with contact_send(target, (), positions=positions), watch_send(received_segment), quote_send(target, view.reply_targets.get(target, ""), quote_index), guard_send(
                         lambda sid, i: self.speech_allowed(sid, ordered_kinds[i])
                             and self.contact_speech_allowed(view, sid, ordered_kinds[i], reserved=receipt is not None)):
                         try:
@@ -558,6 +582,10 @@ class SendMixin:
                         indices = [view.images.index(ref) for ref in actual_images]
                         values, ids = view.image_kinds.get("", []), view.image_ids.get("", [])
                         actual_kinds = [values[i] if i < len(values) else view.speech_kind for i in indices]
+                        for i, kind in zip(indices, actual_kinds):
+                            if kind not in autonomous_kinds:
+                                people = view.speech_recipients("", i, images=True)
+                                accepted_people.update(self._outreach_people(replace(view, contact_people=people), target))
                         identities = [ids[i] if i < len(ids) else "" for i in indices]
                         # Acceptance counts even if later local persistence fails.
                         sent_kinds.update(actual_kinds)
@@ -576,7 +604,7 @@ class SendMixin:
                 outcome.notes.append(f"发到 {target} 失败：{exc}")
                 self._log("warning", f"发到 {target} 失败：{exc}")
             finally:
-                self._finish_contact(receipt, sent_kinds)
+                self._finish_contact(receipt, sent_kinds, people=accepted_people)
                 outcome.notes.extend(note for note in view.notes if note not in outcome.notes)
 
         for target in broadcast_targets:
@@ -587,8 +615,10 @@ class SendMixin:
                 routed={}, routed_images={}, notes=[], broadcast_targets=[],
                 speech_kinds={"": list(outcome.speech_kinds.get("", []))},
                 speech_ids={"": list(outcome.speech_ids.get("", []))},
+                speech_people={"": list(outcome.speech_people.get("", []))},
                 image_kinds={"": list(outcome.image_kinds.get("", []))},
-                image_ids={"": list(outcome.image_ids.get("", []))})
+                image_ids={"": list(outcome.image_ids.get("", []))},
+                image_people={"": list(outcome.image_people.get("", []))})
             await send_target(target, view, pending)
         for target in dict.fromkeys([*routed, *routed_images]):
             if cancelled:
@@ -598,8 +628,10 @@ class SendMixin:
                 routed={}, routed_images={}, notes=[], broadcast_targets=[], debug_messages=[], debug_positions=[],
                 speech_kinds={"": list(outcome.speech_kinds.get(target, []))},
                 speech_ids={"": list(outcome.speech_ids.get(target, []))},
+                speech_people={"": list(outcome.speech_people.get(target, []))},
                 image_kinds={"": list(outcome.image_kinds.get(target, []))},
-                image_ids={"": list(outcome.image_ids.get(target, []))})
+                image_ids={"": list(outcome.image_ids.get(target, []))},
+                image_people={"": list(outcome.image_people.get(target, []))})
             await send_target(target, view)
         outcome.delivered_messages.update(delivered)
         if delivered or delivered_images:

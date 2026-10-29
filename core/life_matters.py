@@ -337,7 +337,7 @@ def routine_hints(state, *, now: float = 0, persona_key: str | None = None) -> l
 
 def history(item: dict, kind: str, text: str, now: float, **evidence: Any) -> None:
     item["history"] = [*item.get("history", []), {
-        "at": now, "kind": kind, "text": str(text)[:500], **evidence,
+        "at": now, "kind": kind, "text": str(text)[:500], "goal": item.get("text", ""), **evidence,
     }][-60:]
     item["updated_at"] = now
     item["revision"] = int(item.get("revision", 0)) + 1

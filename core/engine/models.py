@@ -138,11 +138,14 @@ class TickOutcome:
     contact_id: str = field(default_factory=lambda: uuid4().hex)
     contact_tokens: dict[str, str] = field(default_factory=dict)
     contact_people: set[str] = field(default_factory=set)
+    speech_people: dict[str, list[tuple[str, ...]]] = field(default_factory=dict)
+    image_people: dict[str, list[tuple[str, ...]]] = field(default_factory=dict)
     native_events: dict[str, Any] = field(default_factory=dict, repr=False)
     delivered_messages: dict[str, list[str]] = field(default_factory=dict)
     speech_decisions: list[dict[str, Any]] = field(default_factory=list)
     speech_ids: dict[str, list[str]] = field(default_factory=dict)
     live_ids: list[str] = field(default_factory=list)
+    live_people: list[tuple[str, ...]] = field(default_factory=list)
     delivered_decisions: dict[str, list[str]] = field(default_factory=dict)
     delivered_image_decisions: dict[str, list[str]] = field(default_factory=dict)
     accepted_speech_at: dict[str, float] = field(default_factory=dict)
@@ -186,6 +189,9 @@ class TickOutcome:
             from .speech_receipts import bind_plan_speech
             decision_id = bind_plan_speech(self, body, target or self.home())
         ids.append(decision_id)
+        people = self.speech_people.setdefault(key, [])
+        people.extend([tuple(sorted(self.contact_people))] * max(0, len(bucket) - len(people)))
+        people.append(tuple(sorted(self.contact_people)))
         if not target or target == str(self.session_id):
             self.messages.append(body)
             return
@@ -213,7 +219,15 @@ class TickOutcome:
             ids.extend([""] * max(0, len(bucket) - len(ids)))
             from .speech_receipts import bind_plan_speech
             ids.append(decision_id or bind_plan_speech(self, ref, target or self.home(), image=True))
+            people = self.image_people.setdefault(key, [])
+            people.extend([tuple(sorted(self.contact_people))] * max(0, len(bucket) - len(people)))
+            people.append(tuple(sorted(self.contact_people)))
             bucket.append(ref)
+
+    def speech_recipients(self, key: str, index: int, *, images=False) -> set[str]:
+        """Older/custom callers can still queue speech directly without metadata."""
+        values = (self.image_people if images else self.speech_people).get(key, [])
+        return set(values[index]) if index < len(values) else set(self.contact_people)
 
     def ordered_messages(self) -> list[str]:
         """正式回复 + 调试回显，按实际发生的先后排好。"""

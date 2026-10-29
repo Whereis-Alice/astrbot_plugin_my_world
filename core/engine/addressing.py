@@ -705,13 +705,22 @@ class AddressingMixin:
         now = self._now()
         who = str(getattr(ctx, "user_id", "") or "")
         session = str(getattr(ctx, "session_id", "") or state.session_id)
+        persona_key = self._matter_persona_key(state) or ""
         items = [dict(item) for item in (state.open_topics or []) if isinstance(item, dict)]
+
+        def same_source(item):
+            return (str(item.get("who") or "") == who
+                    and str(item.get("session") or state.session_id) == session
+                    and self._emotion_belongs(state, item, persona_key))
+
         for item in items:
             existing = str(item.get("text") or "")
-            if str(item.get("who") or "") != who:
+            if not same_source(item):
                 continue
             if existing == body or (existing and (existing in body or body in existing)):
                 item["text"] = body
+                item["session"] = session
+                item["persona_key"] = persona_key
                 item["at"] = now
                 item["next_ask_at"] = now + delay
                 item["asked"] = 0
@@ -723,12 +732,13 @@ class AddressingMixin:
                 "who": who,
                 "who_name": str(getattr(ctx, "user_name", "") or ""),
                 "session": session,
+                "persona_key": persona_key,
                 "at": now,
                 "next_ask_at": now + delay,
                 "asked": 0,
             }
         )
-        mine = [item for item in items if str(item.get("who") or "") == who]
+        mine = [item for item in items if same_source(item)]
         if len(mine) > per_person:
             keep_ids = {id(item) for item in mine[-per_person:]}
             items = [item for item in items if item not in mine or id(item) in keep_ids]
@@ -747,15 +757,19 @@ class AddressingMixin:
         now = self._now()
         who = str(getattr(ctx, "user_id", "") or "")
         session = str(getattr(ctx, "session_id", "") or state.session_id)
+        persona_key = self._matter_persona_key(state)
         kept: list[dict[str, Any]] = []
         for item in state.open_topics:
             if not isinstance(item, dict):
                 continue
-            topic_session = str(item.get("session") or "")
+            if not self._emotion_belongs(state, item, persona_key):
+                kept.append(item)
+                continue
+            topic_session = str(item.get("session") or state.session_id)
             due = float(item.get("next_ask_at") or 0.0)
             aged = now - float(item.get("at") or 0.0) >= keep_days * 86400
             same_person = str(item.get("who") or "") == who
-            same_place = not topic_session or topic_session == session
+            same_place = topic_session == session
             if aged:
                 continue
             if same_person and same_place and (not due or due <= now):

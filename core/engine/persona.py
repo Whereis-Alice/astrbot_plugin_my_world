@@ -279,7 +279,8 @@ class PersonaMixin:
                                     getattr(state, "last_other_context", "") or ""
                                 ),
                                 open_topics_text=self.prompts.open_topics_layer(
-                                    self.prompts._due_open_topics(state, session_id)
+                                    self.prompts._due_open_topics(state, session_id,
+                                                                 persona_key=request.life_persona)
                                 ),
                                 prev_analysis=prev_analysis,
                                 pronoun=pronounce_for(self.world.gender),
@@ -312,7 +313,8 @@ class PersonaMixin:
                                 recent_chat=recent_chat,
                                 profile_text=profile_text,
                                 open_topics_text=self.prompts.open_topics_layer(
-                                    self.prompts._due_open_topics(state, session_id)
+                                    self.prompts._due_open_topics(state, session_id,
+                                                                 persona_key=request.life_persona)
                                 ),
                                 style_block=style_text,
                                 pronoun=pronounce_for(self.world.gender),
