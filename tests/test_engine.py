@@ -3192,12 +3192,15 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             state.miss = {"42": 0.55}
         self.llm.replies = [
             '{"plan":[{"action":"say","messages":["一个人待着有点闷，你在吗"],'
-            '"send_to":"群 1001"}],"valid_until":1800,"reason":"想找他说句话"}'
+            '"send_to":"群 1001"}],"valid_until":1800,"reason":"想找他说句话",'
+            '"inner":"有点想听听他的声音。","intent":"outreach","reply_to":""}'
         ]
-        await self.engine.maybe_decide(SESSION, force=True)
+        outcome = await self.engine.maybe_decide(SESSION, force=True)
         state = await self.get_state()
         self.assertEqual(state.miss_push_count, 1)
         self.assertIn("一个人待着有点闷，你在吗", self.messenger.flat_messages)
+        self.assertEqual(outcome.contact_people, {"42"})
+        self.assertFalse(outcome.reply_targets)
 
     async def test_hourly_autonomous_limit(self):
         # 自己把额度定死：这条测的是"触顶就不动"，不该跟着默认值一起漂
@@ -7373,7 +7376,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             state.miss = {"42": 0.95}
         self.llm.replies = [
             '{"plan":[{"action":"say","messages":["突然有点想你了"],"send_to":"群 1001"}],'
-            '"valid_until":1800,"reason":"想他了就去找他说一句"}'
+            '"valid_until":1800,"reason":"想他了就去找他说一句",'
+            '"inner":"突然想听听他今天过得怎么样。","intent":"outreach","reply_to":""}'
         ]
         outcome = await self.engine.maybe_decide(SESSION, force=True)
         self.assertIsNotNone(outcome)
@@ -7385,6 +7389,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.miss.get("42", 0.0), 0.0)
         self.assertEqual(state.miss_push_count, 1)
         self.assertEqual(self.engine.profiles.proactive_quota_left(SESSION, "42"), 1)
+        self.assertEqual(outcome.contact_people, {"42"})
+        self.assertFalse(outcome.reply_targets)
         events = await self.db.call("query_events", session_id=SESSION, limit=20)
         self.assertTrue(any(item["event_type"] == "miss_push" for item in events))
 
@@ -7425,7 +7431,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.engine.group_is_chatting(await self.get_state()))
         self.llm.replies = [
             '{"plan":[{"action":"say","messages":["突然有点想你了"],"send_to":"群 1001"}],'
-            '"valid_until":1800,"reason":"想他了就去找他说一句"}'
+            '"valid_until":1800,"reason":"想他了就去找他说一句",'
+            '"inner":"还是有点想他。","intent":"outreach","reply_to":""}'
         ]
         outcome = await self.engine.maybe_decide(SESSION, force=True)
         self.assertIsNotNone(outcome)
@@ -7437,6 +7444,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.miss.get("42", 0.0), 0.0)
         self.assertEqual(state.miss_push_count, 1)
         self.assertIn("突然有点想你了", self.messenger.flat_messages)
+        self.assertEqual(outcome.contact_people, {"42"})
+        self.assertFalse(outcome.reply_targets)
         events = await self.db.call("query_events", session_id=SESSION, limit=20)
         self.assertTrue(any(item["event_type"] == "miss_push" for item in events))
 
@@ -8854,6 +8863,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_arrival_at_new_node_triggers_a_decision(self):
         """走到新地方后立刻做一次决策，而不是愣在那儿等下个评估周期。"""
 
+        from tests.schedule_delivery import settled_clock_delivery
+
         self.tools.schemas["web_search"] = {
             "type": "object",
             "properties": {"query": {"type": "string"}},
@@ -8870,7 +8881,11 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         await self.engine.handle_incoming(ctx)
         await self.engine.handle_reply(ctx)
         await self.engine.tick()  # 卧室 -> 大厅
+        await settled_clock_delivery(self.engine)
         await self.engine.tick()  # 大厅 -> 书房：落地并就地决策
+        # Arrival inference may outlive the clock's 150ms foreground budget.
+        # Await this exact tracked cycle, without starting another simulated tick.
+        await settled_clock_delivery(self.engine)
 
         state = await self.get_state()
         self.assertEqual(state.node_id, "study")
@@ -10953,13 +10968,22 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_schedule_with_edited_time_fires_the_same_day(self):
         """当天把触发时间改掉之后，新时间点要能正常触发（原来会被日期去重挡掉）。"""
 
+        from tests.schedule_delivery import settled_clock_delivery
+
+        async def settled_tick():
+            await self.engine.tick()
+            await settled_clock_delivery(self.engine)
+            delivery = getattr(self.engine, "_schedule_delivery_job", None)
+            if delivery is not None:
+                await asyncio.wait_for(delivery, timeout=5)
+
         self.add_schedule(
             id="news",
             time="12:00",
             action_chain=[{"type": "say", "messages": ["第一次"]}],
         )
         self.clock.set_struct(datetime(2026, 9, 10, 12, 0))
-        await self.engine.tick()
+        await settled_tick()
         self.assertIn("第一次", self.messenger.flat_messages)
 
         raw = self.store.raw_schedules()
@@ -10977,7 +11001,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.clock.advance(1800)
         self.clock.set_struct(datetime(2026, 9, 10, 12, 30))
-        await self.engine.tick()
+        await settled_tick()
         self.assertIn("改完时间之后", self.messenger.flat_messages)
 
     async def test_blocked_schedule_is_logged_with_reason(self):
