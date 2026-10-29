@@ -46,6 +46,39 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.action.on_complete.effects_per_minute["energy"] = "+0.1"
         self.assertEqual(recovery_seconds(self.action, .2, self.engine.world), 390)
 
+    async def test_recovery_duration_accounts_for_completion_penalty(self):
+        self.action.on_complete.effects_per_minute["energy"] = "+0.1"
+        self.action.on_complete.effects["energy"] = "-0.1"
+        self.assertEqual(recovery_seconds(self.action, .2, self.engine.world), 450)
+
+    async def test_recovery_duration_accounts_for_completion_multiplier(self):
+        self.action.on_complete.effects_per_minute["energy"] = "+0.1"
+        self.action.on_complete.effects["energy"] = "*2"
+        self.assertEqual(recovery_seconds(self.action, .2, self.engine.world), 135)
+
+    async def test_automatic_recovery_reaches_target_after_completion_penalty(self):
+        self.action.on_complete.effects_per_minute["energy"] = "+0.1"
+        self.action.on_complete.effects["energy"] = "-0.1"
+        async with self.engine.session_state(fixture.SESSION) as state:
+            await self.engine.tick_activity_recovery(state, self.outcome())
+            for _ in range(7):
+                await self.engine._tick_continuous(state, self.engine.node("study"), self.outcome())
+            self.assertIsNotNone(state.current_action)
+            await self.engine._tick_continuous(state, self.engine.node("study"), self.outcome())
+            self.assertIsNone(state.current_action)
+            self.assertGreaterEqual(state.energy, self.engine.world.sleep.recovery_target)
+
+    async def test_automatic_recovery_stops_when_completion_multiplier_reaches_target(self):
+        self.action.on_complete.effects_per_minute["energy"] = "+0.1"
+        self.action.on_complete.effects["energy"] = "*2"
+        async with self.engine.session_state(fixture.SESSION) as state:
+            await self.engine.tick_activity_recovery(state, self.outcome())
+            state.current_action["duration_ticks"] = 60
+            for _ in range(3):
+                await self.engine._tick_continuous(state, self.engine.node("study"), self.outcome())
+            self.assertIsNone(state.current_action)
+            self.assertGreaterEqual(state.energy, self.engine.world.sleep.recovery_target)
+
     async def test_quota_and_preconditions_prevent_unrunnable_recovery(self):
         state = await self.get_state()
         self.action.preconditions.min_energy = .5

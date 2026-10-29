@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..recovery import sleep_action_kind, recovery_target
+from ..recovery import sleep_action_kind, recovery_gain, recovery_target
 
 from ..model_calls import model_operation
 
@@ -398,7 +398,8 @@ class TickMixin:
                 and restores_energy(definition, energy=state.energy)
                 and (state.current_plan or {}).get("source") == "recovery"
                 and int(action.get("elapsed_ticks") or 0) * self.tick_seconds >= definition.duration_min
-                and state.energy >= recovery_target(self.world.sleep)):
+                and state.energy + recovery_gain(definition, state.energy, self.world, 0, state)
+                    >= recovery_target(self.world.sleep)):
             action["duration_ticks"] = int(action.get("elapsed_ticks") or 0)
         self.settle_life_practice(state, action)
         self.settle_matter_work(state, action)

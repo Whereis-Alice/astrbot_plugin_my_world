@@ -16,7 +16,7 @@ def window_allows(window: str, world: WorldConfig, hour: int) -> bool:
 
 
 def matter_start_at(step: dict, action: ActionDef | None, world: WorldConfig, now: float,
-                    local_at: Callable[[float], datetime]) -> float | None:
+                    local_at: Callable[[float], datetime], *, travel: ActionDef | None = None) -> float | None:
     """Intersect the saved earliest date, project window and action window.
 
     Old steps inherit the quiet-life preference without rewriting saved effort.
@@ -27,8 +27,20 @@ def matter_start_at(step: dict, action: ActionDef | None, world: WorldConfig, no
     if window == "auto":
         window = action_window if action_window != "any" else "daytime" if world.night.quiet_life else "any"
     base = max(now, float(step.get("not_before") or 0))
-    local = local_at(base)
     windows = (window, action_window)
+    start = _next_window_at(base, windows, world, local_at)
+    if start is None or travel is None:
+        return start
+    travel_window = travel.preconditions.time_window
+    combined = _next_window_at(base, (*windows, travel_window), world, local_at)
+    # Disjoint windows can still form a valid journey: travel in the daytime,
+    # then wait at the destination for a nocturnal task. Arrival checks again.
+    return combined if combined is not None else _next_window_at(base, (travel_window,), world, local_at)
+
+
+def _next_window_at(base: float, windows: tuple[str, ...], world: WorldConfig,
+                    local_at: Callable[[float], datetime]) -> float | None:
+    local = local_at(base)
     if all(window_allows(w, world, local.hour) for w in windows):
         return base
     midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)

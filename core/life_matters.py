@@ -448,6 +448,7 @@ def complete_step(state, matter_id: str, step_id: str, *, now: float,
     if step is None or step.get("status") == "done" or not receipt.get("ok"):
         return False
     step.update(status="done", result=receipt, finished_at=now)
+    item.pop("time_wait", None)
     item["obstacle"] = ""
     remaining = [s for s in item["steps"] if s.get("status") != "done"]
     item["progress"] = round(100 * (len(item["steps"]) - len(remaining)) / len(item["steps"]))

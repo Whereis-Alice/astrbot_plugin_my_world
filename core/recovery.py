@@ -67,23 +67,28 @@ def recovery_cost(action, world, state=None) -> float:
 
 
 def recovery_seconds(action, energy: float, world, state=None) -> int:
-    """Estimate needed time within the action's limits; fixed durations remain fixed."""
+    """Find the shortest bounded duration using the same net effects as ranking."""
     if action.duration_mode == "fixed":
         return max(1, action.duration)
     low = max(60, action.duration_min or 60)
     high = max(low, action.duration_max or low)
-    per_minute = str(action.on_complete.effects_per_minute.get("energy", ""))
-    try:
-        rate = float(per_minute) if per_minute.startswith("+") else 0
-        completion = str(action.on_complete.effects.get("energy", ""))
-        bonus = float(completion) if completion.startswith("+") else 0
-    except ValueError:
-        rate, bonus = 0, 0
-    # Non-sleeping recovery still pays normal energy use. Ignore calming-area
-    # bonuses when estimating so the plan does not depend on invented recovery.
-    rate -= recovery_cost(action, world, state)
-    wanted = recovery_target(world.sleep) - energy - bonus
-    return min(high, max(low, math.ceil(max(0, wanted) / rate * 60))) if rate > 0 else low
+    wanted = recovery_target(world.sleep) - energy
+    low_gain = recovery_gain(action, energy, world, low, state)
+    if low_gain >= wanted - 1e-9:
+        return low
+    high_gain = recovery_gain(action, energy, world, high, state)
+    if high_gain < wanted - 1e-9:
+        return high if high_gain > low_gain else low
+    # Supported effects are monotonic when longer activity helps. Binary search
+    # handles additive penalties, multipliers and set values without another
+    # operator parser or iterating every second of a long action.
+    while low < high:
+        middle = (low + high) // 2
+        if recovery_gain(action, energy, world, middle, state) >= wanted - 1e-9:
+            high = middle
+        else:
+            low = middle + 1
+    return low
 
 
 def recovery_gain(action, energy: float, world, seconds: int, state=None) -> float:

@@ -35,6 +35,10 @@ class MattersMixin:
     def life_choice(self, state) -> dict:
         thread = self._active_thread(state)
         persona_key = self._matter_persona_key(state)
+        for item in state.life_matters:
+            if (item.get("status") in {"active", "waiting", "blocked", "working"}
+                    and matters.belongs_to(item, persona_key)):
+                self._refresh_matter_time_wait(state, item)
         schedules = [self._next_schedule(sid, state=state, persona_key=persona_key)
                      for sid in self.group_sessions(state.session_id)]
         minutes = [row["in_minutes"] for row in schedules if row is not None]
@@ -332,6 +336,8 @@ class MattersMixin:
                             next_step="目标已调整，保留已做步骤，重新安排后续")
         else:
             raise ValueError("支持暂停、继续、延期、放弃、编辑和手动确认结果")
+        if operation != "edit" or changed_goal:
+            item.pop("time_wait", None)
         if operation in {"pause", "postpone", "abandon", "complete", "edit"}:
             self._stop_matter_work(state, matter_id)
         if operation == "resume":
@@ -346,8 +352,9 @@ class MattersMixin:
 
     def _matter_actions(self, state) -> list[dict]:
         graph = self.world.adjacent()
+        can_travel = self.decider.action_usable("walk_to", check_time=False)
         locations = [node for node in self.world.nodes if node.id == state.node_id or (
-            self.decider.action_usable("walk_to") and find_path(graph, state.node_id, node.id))]
+            can_travel and find_path(graph, state.node_id, node.id))]
         locations.sort(key=lambda node: node.id != state.node_id)
         simulations = [{"action": LIFE_SIMULATION_ACTION.id, "name": "世界内模拟活动",
                         "node": node.id, "place": node.name or node.id,
@@ -361,9 +368,9 @@ class MattersMixin:
                     or life_role(action) not in {"interest", "explore"}):
                 continue
             for node in self.world.nodes:
-                if node.id != state.node_id and not self.decider.action_usable("walk_to"):
+                if node.id != state.node_id and not can_travel:
                     continue
-                if action.available_in(node.id) and (node.id == state.node_id or find_path(self.world.adjacent(), state.node_id, node.id)):
+                if action.available_in(node.id) and (node.id == state.node_id or find_path(graph, state.node_id, node.id)):
                     if self.action_quota_left(state, action) and self._check_preconditions(state, action, check_time=False)[0]:
                         rows.append({"action": action.id, "name": action.name, "description": action.description[:250],
                                      "node": node.id, "place": node.name or node.id,
@@ -660,16 +667,32 @@ class MattersMixin:
                 matters.history(item, "review_blocked", reason, self._now())
             matters.sync(state)
 
-    def _defer_matter_for_time(self, item: dict, step: dict) -> bool:
+    def _refresh_matter_time_wait(self, state, item: dict) -> None:
+        """Only a dated automatic wait may be recalculated; manual delays win."""
+        receipt = item.pop("time_wait", None)
+        if not isinstance(receipt, dict) or receipt.get("until") != item.get("resume_at"):
+            return
+        item["resume_at"] = 0
+        if item.get("needs_replan") or item.get("needs_review") or item.get("blocker") == "evidence":
+            return
+        step = next((s for s in item.get("steps", []) if s.get("status") != "done"), None)
+        if step and not self._defer_matter_for_time(item, step, state=state) and item["status"] == "waiting":
+            item["status"] = "active"
+
+    def _defer_matter_for_time(self, item: dict, step: dict, *, state=None) -> bool:
         """Use the same waiting state before travel and at the actual arrival."""
         now = self._now()
-        start_at = matter_start_at(step, self.world.action_map().get(step["action"]), self.world, now, self.local_at)
+        actions = self.world.action_map()
+        travel = (actions.get("walk_to") if state and state.node_id != step.get("node")
+                  and self.decider.action_usable("walk_to", check_time=False) else None)
+        start_at = matter_start_at(step, actions.get(step["action"]), self.world, now, self.local_at, travel=travel)
         if start_at is None:
             item.update(status="blocked", obstacle="事项和动作的执行时段不一致，保留进度重新安排", needs_replan=True)
             matters.history(item, "blocked", item["obstacle"], now)
             return True
         if start_at > now:
             item.update(status="waiting", resume_at=start_at, next_step=step["text"])
+            item["time_wait"] = {"until": start_at}
             return True
         return False
 
@@ -687,7 +710,7 @@ class MattersMixin:
             if self._complete_accounted_matter_step(state, item, step,
                     evidence_at=float(matters.current_bookmark(item).get("at") or self._now())):
                 return
-        if self._defer_matter_for_time(item, step):
+        if self._defer_matter_for_time(item, step, state=state):
             return
         if (step["action"], step["node"]) not in {(r["action"], r["node"]) for r in self._matter_actions(state)}:
             item.update(status="blocked", obstacle="所需动作或地点现在不可用，保留已有进展", needs_replan=True)

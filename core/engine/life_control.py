@@ -265,7 +265,10 @@ class LifeControlMixin:
         if (not item or not matters.visible(item, session)
                 or not matters.belongs_to(item, self._matter_persona_key(state))
                 or item["status"] in matters.CLOSED | {"paused"}
-                or item.get("blocker") == "evidence" or float(item.get("resume_at") or 0) > self._now()):
+                or item.get("blocker") == "evidence"):
+            return False
+        self._refresh_matter_time_wait(state, item)
+        if float(item.get("resume_at") or 0) > self._now():
             return False
         if (state.current_action or {}).get("matter_id") == item["id"]:
             return True

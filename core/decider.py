@@ -784,12 +784,12 @@ class Decider:
             for action in self.world.actions
         )
 
-    def action_usable(self, action_id: str) -> bool:
+    def action_usable(self, action_id: str, *, check_time: bool = True) -> bool:
         """这个动作现在真的跑得起来吗（存在、没停用、需要工具时至少配了一个）。"""
 
         action = self.world.action_map().get(str(action_id or "").strip())
         from .activity_time import window_allows
-        if action and not window_allows(action.preconditions.time_window, self.world, self.local_hour()):
+        if check_time and action and not window_allows(action.preconditions.time_window, self.world, self.local_hour()):
             return False
         if action is None or not action.enabled or action.idle:
             return False

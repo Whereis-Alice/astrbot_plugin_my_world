@@ -105,6 +105,124 @@ class NightLifeTests(unittest.IsolatedAsyncioTestCase):
         await self.engine.advance_life_matters(fixture.SESSION)
         self.assertEqual((await self.get_state()).current_action["type"], "life_simulation")
 
+    async def wait_for_daytime(self):
+        await self.set_state(energy=.9)
+        async with self.engine.session_state(fixture.SESSION) as state:
+            item = self.engine.add_life_matter(state, "整理记录")
+            item["steps"] = [{"id": "step", "text": "整理", "action": "life_simulation", "node": "study",
+                              "minutes": 10, "not_before": 0, "status": "pending"}]
+            ident = item["id"]
+        await self.engine.advance_life_matters(fixture.SESSION)
+        self.assertIsNone((await self.get_state()).current_action)
+        # Leave the ordinary attempt interval behind, still during the night.
+        self.clock.advance(3600)
+        self.clock.set_struct(datetime(2026, 10, 29, 3, 16))
+        return ident
+
+    async def test_disabling_quiet_preference_releases_only_derived_wait(self):
+        await self.wait_for_daytime()
+        self.engine.world.night.quiet_life = False
+        await self.engine.advance_life_matters(fixture.SESSION)
+        self.assertEqual((await self.get_state()).current_action["type"], "life_simulation")
+
+    async def test_changed_night_boundary_recomputes_pending_wait(self):
+        await self.wait_for_daytime()
+        self.engine.world.night.end_hour = 3
+        await self.engine.advance_life_matters(fixture.SESSION)
+        self.assertEqual((await self.get_state()).current_action["type"], "life_simulation")
+
+    async def test_manual_postponement_survives_changed_night_preference(self):
+        ident = await self.wait_for_daytime()
+        until = self.clock.now() + 86400
+        async with self.engine.session_state(fixture.SESSION) as state:
+            self.engine.manage_life_matter(state, ident, "postpone", resume_at=until, reason="明天继续")
+        self.engine.world.night.quiet_life = False
+        await self.engine.advance_life_matters(fixture.SESSION)
+        state = await self.get_state()
+        self.assertIsNone(state.current_action)
+        self.assertEqual(state.life_matters[-1]["resume_at"], until)
+
+    async def test_unmarked_legacy_wait_is_not_guessed_to_be_automatic(self):
+        await self.wait_for_daytime()
+        async with self.engine.session_state(fixture.SESSION) as state:
+            item = state.life_matters[-1]
+            item.pop("time_wait", None)
+            until = item["resume_at"]
+        self.engine.world.night.quiet_life = False
+        await self.engine.advance_life_matters(fixture.SESSION)
+        state = await self.get_state()
+        self.assertIsNone(state.current_action)
+        self.assertEqual(state.life_matters[-1]["resume_at"], until)
+
+    async def test_explicit_step_date_survives_changed_night_preference(self):
+        await self.wait_for_daytime()
+        until = self.clock.now() + 2 * 86400
+        async with self.engine.session_state(fixture.SESSION) as state:
+            state.life_matters[-1]["steps"][0]["not_before"] = until
+        self.engine.world.night.quiet_life = False
+        await self.engine.advance_life_matters(fixture.SESSION)
+        state = await self.get_state()
+        self.assertIsNone(state.current_action)
+        self.assertEqual(state.life_matters[-1]["resume_at"], until)
+
+    async def test_schedule_appointment_recomputes_automatic_wait(self):
+        from types import SimpleNamespace
+        ident = await self.wait_for_daytime()
+        self.engine.world.night.quiet_life = False
+        async with self.engine.session_state(fixture.SESSION) as state:
+            started = await self.engine.run_matter_appointment(state,
+                SimpleNamespace(id="appointment", matter_id=ident, note="整理"), session=fixture.SESSION)
+            self.assertTrue(started)
+            self.assertEqual(state.current_action["type"], "life_simulation")
+
+    async def test_future_planning_can_see_places_while_travel_waits_for_daytime(self):
+        self.engine.world.action_map()["walk_to"].preconditions.time_window = "daytime"
+        state = await self.get_state()
+        self.assertIn(("life_simulation", "bedroom"),
+                      {(row["action"], row["node"]) for row in self.engine._matter_actions(state)})
+
+    async def test_night_matter_waits_for_travel_without_starting_or_losing_progress(self):
+        self.engine.world.night.quiet_life = False
+        self.engine.world.action_map()["walk_to"].preconditions.time_window = "daytime"
+        await self.set_state(energy=.9)
+        async with self.engine.session_state(fixture.SESSION) as state:
+            item = self.engine.add_life_matter(state, "去卧室整理")
+            item["steps"] = [{"id": "step", "text": "整理", "action": "life_simulation", "node": "bedroom",
+                              "minutes": 10, "worked_minutes": 3, "not_before": 0, "status": "pending"}]
+        await self.engine.advance_life_matters(fixture.SESSION)
+        state = await self.get_state()
+        self.assertIsNone(state.current_action)
+        self.assertEqual(state.life_matters[-1]["status"], "waiting")
+        self.assertFalse(state.life_matters[-1].get("needs_replan"))
+        self.assertEqual(state.life_matters[-1]["steps"][0]["worked_minutes"], 3)
+
+    async def test_daytime_travel_and_night_work_can_be_executed_in_sequence(self):
+        self.engine.world.action_map()["walk_to"].preconditions.time_window = "daytime"
+        await self.set_state(energy=.9)
+        async with self.engine.session_state(fixture.SESSION) as state:
+            item = self.engine.add_life_matter(state, "在卧室夜间观察")
+            item["steps"] = [{"id": "step", "text": "观察", "action": "life_simulation", "node": "bedroom",
+                              "minutes": 10, "not_before": 0, "status": "pending", "time_window": "night"}]
+        await self.engine.advance_life_matters(fixture.SESSION)
+        self.clock.advance(5 * 3600)
+        self.clock.set_struct(datetime(2026, 10, 29, 7, 16))
+        await self.engine.advance_life_matters(fixture.SESSION)
+        async with self.engine.session_state(fixture.SESSION) as state:
+            self.assertEqual(state.current_action["type"], "walk_to")
+            for _ in range(20):
+                if not state.current_action:
+                    break
+                await self.engine._tick_continuous(state, self.engine.node(state.node_id), TickOutcome(fixture.SESSION))
+            self.assertEqual(state.node_id, "bedroom")
+            self.assertIsNone(state.current_action)
+            await self.engine._tick_plan(state, self.engine.node("bedroom"), TickOutcome(fixture.SESSION), depth=0)
+            self.assertEqual(state.life_matters[-1]["status"], "waiting")
+            self.assertFalse(state.life_matters[-1].get("needs_replan"))
+        self.clock.advance(16 * 3600)
+        self.clock.set_struct(datetime(2026, 10, 29, 23, 16))
+        await self.engine.advance_life_matters(fixture.SESSION)
+        self.assertEqual((await self.get_state()).current_action["type"], "life_simulation")
+
     async def test_explicit_action_window_is_enforced_on_execution(self):
         action = ActionDef(id="shop", category="continuous", duration=300,
                            preconditions={"time_window": "daytime"})
