@@ -77,6 +77,9 @@ class InterruptMixin:
             "按实际持续分钟配置 on_complete.effects_per_minute.energy 为正值；"
             "避免以完成奖励直接把精力设满。睡眠类型会接入作息与唤醒，充电等不会进入睡眠。"
             "是否需要睡眠、恢复方式和动作限制以角色设定及生理配置为准。"
+            "有明确时间要求的动作可配置 preconditions.time_window：daytime=白天开始，night=夜间开始，"
+            "any=不限制。日夜由世界的夜晚范围决定；普通逛店、办事、户外运动可限定白天，"
+            "充电、室内安静活动通常不限制，明确的夜行活动可限定夜间；按人设和地点用途判断。"
         )
         try:
             if self.creator_llm is None:

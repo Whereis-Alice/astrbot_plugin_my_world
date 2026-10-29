@@ -10,6 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from .. import life_matters as matters
+from ..activity_time import life_time_context, matter_start_at
 from ..config_scope import session_scoped
 from ..json_actions import extract_json_object
 from ..life import life_role
@@ -139,6 +140,7 @@ class MattersMixin:
                 'bookmark和unreviewed_bookmarks是尚未完成或待复核的思路，不是确认结果；按事项状态理解接续位置。'
                 '编程、创作等兴趣可在世界内模拟，不要求配置电脑，不声称操作了现实文件或外部服务。不要声称已经做成。',
                 json.dumps({"persona": persona, "available": candidates,
+                            "local_time": life_time_context(world, self.local_now()),
                             "interests": interests, "recent_matters": previous}, ensure_ascii=False))
         payload = extract_json_object(raw or "") or {}
         if "text" not in payload or not isinstance(payload["text"], str):
@@ -343,8 +345,14 @@ class MattersMixin:
         return item
 
     def _matter_actions(self, state) -> list[dict]:
-        rows = [{"action": LIFE_SIMULATION_ACTION.id, "name": "世界内模拟活动",
-                 "description": LIFE_SIMULATION_ACTION.description, "node": state.node_id}]
+        graph = self.world.adjacent()
+        locations = [node for node in self.world.nodes if node.id == state.node_id or (
+            self.decider.action_usable("walk_to") and find_path(graph, state.node_id, node.id))]
+        locations.sort(key=lambda node: node.id != state.node_id)
+        simulations = [{"action": LIFE_SIMULATION_ACTION.id, "name": "世界内模拟活动",
+                        "node": node.id, "place": node.name or node.id,
+                        "description": node.prompt[:180], "time_window": "any"} for node in locations[:80]]
+        rows = []
         for action in self.world.actions:
             # Personal quiet work cannot send messages, touch a person or replay external tools.
             if (not action.enabled or action.idle or action.id == "walk_to" or action.category != "continuous"
@@ -356,9 +364,11 @@ class MattersMixin:
                 if node.id != state.node_id and not self.decider.action_usable("walk_to"):
                     continue
                 if action.available_in(node.id) and (node.id == state.node_id or find_path(self.world.adjacent(), state.node_id, node.id)):
-                    if self.action_quota_left(state, action) and self._check_preconditions(state, action)[0]:
-                        rows.append({"action": action.id, "name": action.name, "description": action.description[:250], "node": node.id})
-        return rows[:80]
+                    if self.action_quota_left(state, action) and self._check_preconditions(state, action, check_time=False)[0]:
+                        rows.append({"action": action.id, "name": action.name, "description": action.description[:250],
+                                     "node": node.id, "place": node.name or node.id,
+                                     "time_window": action.preconditions.time_window})
+        return simulations + rows[:80]
 
     @session_scoped
     async def advance_life_matters(self, session_id: str) -> None:
@@ -437,13 +447,20 @@ class MattersMixin:
                     "延续已有草稿、结论或未解问题，不重新从头概述同一个目标；不把模拟笔记说成真实资料验证。"
                     "有可做部分先安排可做部分，blocked只描述剩余阻碍，不能抹掉可做步骤。"
                     '格式：{"motivation":"一句动机","steps":[{"text":"具体下一步","action":"候选ID",'
-                    '"node":"候选地点","minutes":20,"day_offset":0,"focus":"具体从哪里下手",'
+                    '"node":"候选地点","minutes":20,"day_offset":0,"time_window":"auto","focus":"具体从哪里下手",'
                     '"open_question":"这一步准备弄清的问题"}],"blocked":""}。最多6步，每步5到60分钟。'
                     "focus和open_question是待做的方向，不是已经想通的结论。已有bookmark时接着其next_focus与未解点，"
                     "不要重新从头开始，也不要把中途想法当成阶段完成。"
-                    "day_offset是从今天起经过几天才适合做，可跨多日，不要为填满日程而强行赶完。",
+                    "day_offset是从今天起经过几天才适合做，可跨多日，不要为填满日程而强行赶完。"
+                    "local_time是世界的当前当地时间，不用服务器时钟猜时间；先考虑现在或预计执行时段是否合适。"
+                    "time_window可为auto、daytime、night、any：auto跟随夜间安静生活偏好与动作时段；"
+                    "外出办事、逛店、运动等普通事项选daytime；明确夜间任务选night，确实不受时间影响的安静活动可选any。"
+                    "夜间偏好不强制睡眠，不需要睡眠的角色仍可充电、维护或安静活动。"
+                    "node必须选这一步实际发生的候选地点；text写回家、卧室、阳台等时必须绑定相应地点，"
+                    "不能用当前位置冒充已经去了其它地方；没有合适地点时留待安排。",
                     json.dumps({"persona": persona,
-                                "matter": snapshot, "available": candidates}, ensure_ascii=False))
+                                "matter": snapshot, "available": candidates,
+                                "local_time": life_time_context(world, self.local_now())}, ensure_ascii=False))
         payload = extract_json_object(raw or "") or {}
         if not await self._matter_context_current(session_id, world, state_key, persona, day=day):
             return
@@ -460,6 +477,8 @@ class MattersMixin:
                     continue
                 if (step.get("action"), step.get("node", state.node_id)) not in allowed:
                     continue
+                if step.get("time_window", "auto") not in {"auto", "daytime", "night", "any"}:
+                    continue
                 try:
                     minutes = min(60, max(5, int(step.get("minutes") or 20)))
                     day_offset = min(30, max(0, int(step.get("day_offset", index))))
@@ -473,6 +492,7 @@ class MattersMixin:
                               "focus": str(step.get("focus") or step["text"])[:300],
                               "open_question": str(step.get("open_question") or "")[:240],
                               "action": step["action"], "node": step.get("node", state.node_id), "minutes": minutes,
+                              "time_window": step.get("time_window", "auto"),
                               "not_before": now + day_offset * 86400, "status": "pending"})
             if steps:
                 steps = [s for s in item.get("steps", []) if s.get("status") == "done"][-60:] + steps
@@ -561,7 +581,8 @@ class MattersMixin:
                 "summary必须与content的限定一致，正文仍在核对时，标题写核对进展或仍待核实，不能写已确认。"
                 "原有人设和能力优先，不从这次活动创造新身份、喜好或高超技能。"
                 "现实用户的约定仍需兑现依据。可以继续则continue，暂时无法继续则blocked。",
-                json.dumps({"persona": persona, "matter": snapshot}, ensure_ascii=False))
+                json.dumps({"persona": persona, "matter": snapshot,
+                            "local_time": life_time_context(world, self.local_now())}, ensure_ascii=False))
         result = extract_json_object(raw or "") or {}
         if not await self._matter_context_current(session_id, world, state_key, persona, day=day):
             return
@@ -639,6 +660,19 @@ class MattersMixin:
                 matters.history(item, "review_blocked", reason, self._now())
             matters.sync(state)
 
+    def _defer_matter_for_time(self, item: dict, step: dict) -> bool:
+        """Use the same waiting state before travel and at the actual arrival."""
+        now = self._now()
+        start_at = matter_start_at(step, self.world.action_map().get(step["action"]), self.world, now, self.local_at)
+        if start_at is None:
+            item.update(status="blocked", obstacle="事项和动作的执行时段不一致，保留进度重新安排", needs_replan=True)
+            matters.history(item, "blocked", item["obstacle"], now)
+            return True
+        if start_at > now:
+            item.update(status="waiting", resume_at=start_at, next_step=step["text"])
+            return True
+        return False
+
     async def _start_matter_step(self, state, item: dict) -> None:
         if not matters.belongs_to(item, self._matter_persona_key(state)):
             return
@@ -653,8 +687,7 @@ class MattersMixin:
             if self._complete_accounted_matter_step(state, item, step,
                     evidence_at=float(matters.current_bookmark(item).get("at") or self._now())):
                 return
-        if float(step.get("not_before") or 0) > self._now():
-            item.update(status="waiting", resume_at=step["not_before"], next_step=step["text"])
+        if self._defer_matter_for_time(item, step):
             return
         if (step["action"], step["node"]) not in {(r["action"], r["node"]) for r in self._matter_actions(state)}:
             item.update(status="blocked", obstacle="所需动作或地点现在不可用，保留已有进展", needs_replan=True)

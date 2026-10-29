@@ -167,7 +167,7 @@ class Decider:
 
     def recovery_plan(self, state: WorldState) -> dict[str, Any] | None:
         from .pathfinding import nearest_node, travel_cost
-        from .recovery import is_sleep_action, restores_energy, recovery_seconds, recovery_gain
+        from .recovery import is_sleep_action, restores_energy, recovery_seconds, recovery_gain, recovery_total_seconds
         if self.world.sleep.mode != "activity":
             return None
         graph = self.world.adjacent()
@@ -185,16 +185,22 @@ class Decider:
                                   [node.id for node in self.world.nodes if action.available_in(node.id)])
             if not target:
                 continue
-            seconds = recovery_seconds(action, state.energy, self.world, state)
-            if recovery_gain(action, state.energy, self.world, seconds, state) <= 0:
+            travel_seconds = (travel_cost(graph, state.node_id, target) or 0) * self.tick_seconds
+            from .recovery import recovery_cost
+            walking = self.world.action_map().get("walk_to")
+            cost = recovery_cost(walking or action, self.world, state)
+            arrival_energy = max(0, state.energy - cost * travel_seconds / 60)
+            seconds = recovery_seconds(action, arrival_energy, self.world, state)
+            if recovery_gain(action, arrival_energy, self.world, seconds, state) <= 0:
                 continue
+            total = recovery_total_seconds(action, arrival_energy, self.world, state, tick_seconds=self.tick_seconds)
             steps = [*self._travel_then(state.node_id, target, graph), {"action": action.id, "duration": seconds}]
             plan = create_plan(steps=steps, world_time=state.world_time, now=self._now(),
-                tick_seconds=self.tick_seconds, valid_for=max(3600, seconds + 1800),
+                tick_seconds=self.tick_seconds, valid_for=max(3600, travel_seconds + seconds + 1800),
                 reason=f"精力不足，去{action.name or action.id}恢复", source="recovery")
             if self._valid_candidate(state, plan):
-                candidates.append((travel_cost(graph, state.node_id, target) or 0, seconds, action.id, plan))
-        return min(candidates, key=lambda item: item[:3])[3] if candidates else None
+                candidates.append((total == float("inf"), action.recovery_kind != "restore", travel_seconds + total, action.id, plan))
+        return min(candidates, key=lambda item: item[:4])[4] if candidates else None
 
     def sleep_pressure_high(self, state: WorldState) -> bool:
         """困意攒够了没有（``sleep.pressure_threshold``，默认 0.85）。"""
@@ -554,6 +560,9 @@ class Decider:
             action = self.world.action_map().get(str(step.get("action") or ""))
             if not action or not action.enabled or action.idle:
                 return False
+            from .activity_time import window_allows
+            if not window_allows(action.preconditions.time_window, self.world, self.local_hour()):
+                return False
             if self.action_check and not self.action_check(state, action):
                 return False
             if (action.preconditions.min_energy is not None and state.energy < action.preconditions.min_energy
@@ -597,6 +606,10 @@ class Decider:
                 if find_path(graph, state.node_id, node.id) is None:
                     continue
                 score = (0.2 if node.id == state.node_id else 0) + min(2, preferred.get(action.id, {}).get("weight", 0))
+                if self.world.night.quiet_life and self.is_night():
+                    score += .5 if self.world.is_home_zone(node.id) else -2
+                    if life_role(action) == "explore":
+                        score -= 2  # An outdoor habit alone does not make every night an outing.
                 reason = f"有点空闲，想{action.name}"
                 if action.id in recent:
                     score -= 2
@@ -775,6 +788,9 @@ class Decider:
         """这个动作现在真的跑得起来吗（存在、没停用、需要工具时至少配了一个）。"""
 
         action = self.world.action_map().get(str(action_id or "").strip())
+        from .activity_time import window_allows
+        if action and not window_allows(action.preconditions.time_window, self.world, self.local_hour()):
+            return False
         if action is None or not action.enabled or action.idle:
             return False
         if action.llm_level == "tool":

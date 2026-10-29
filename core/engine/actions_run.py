@@ -316,6 +316,12 @@ class ActionsRunMixin:
     ) -> bool | None:
         # 这里是所有动作真正开始执行的唯一入口（计划 / 日程 / 自主行为 / 工具后续都走这里），
         # 因此把「能不能做」的校验统一放在这里，避免某条路径绕过检查。
+        from ..activity_time import window_allows
+        if not window_allows(definition.preconditions.time_window, self.world, self.local_now().hour):
+            outcome.notes.append("尚未到动作适合开始的当地时段")
+            if from_plan and state.current_plan is not None:
+                advance(state, status="skipped")
+            return False
         if action.interject and self._speech_target(state, action, outcome) != outcome.home():
             outcome.notes.append("插话只回应原来的聊天现场，已跳过跨会话落点")
             if from_plan and state.current_plan is not None:

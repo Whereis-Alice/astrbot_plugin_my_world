@@ -39,6 +39,7 @@ from .state import (
 )
 from .pathfinding import travel_cost
 from .tool_policy import allowed_tools
+from .activity_time import quiet_life_note, window_allows
 
 NO_MEMORY_TEXT = "（这里没有特别让你想起什么）"
 
@@ -656,6 +657,8 @@ class PromptBuilder:
                 hints.append(f"不能在 {'/'.join(pre.not_state)} 状态")
             if pre.min_energy is not None:
                 hints.append(f"精力要高于 {pre.min_energy:.2f}")
+            if pre.time_window != "any":
+                hints.append("只在当地白天开始" if pre.time_window == "daytime" else "只在当地夜间开始")
             if hints:
                 lines.append(f"- {action.id}：{'；'.join(hints)}")
         return "\n".join(lines) if lines else "（没有额外限制）"
@@ -744,13 +747,14 @@ class PromptBuilder:
     def _action_usable_now(self, action: Any) -> bool:
         """这个动作在当前时段能不能列进提示词。
 
-        目前只管一条：没到夜里就不给「睡觉」——不然她下午三点也能写睡觉，
-        一觉醒来正好是半夜，作息就乱了。时段在「作息与夜晚」里配。
+        日夜按世界时区与夜晚范围判断；动作的开始时段与睡眠约束同时生效。
         """
 
+        now = self._now()
+        if now and not window_allows(getattr(getattr(action, "preconditions", None), "time_window", "any"), self.world, now.hour):
+            return False
         if str(getattr(action, "id", "")) != "sleep":
             return True
-        now = self._now()
         if now is None:
             return True  # 拿不到钟点时不在这里拦，交给引擎的解析白名单
         return self.world.sleep_allowed_now(now.hour)
@@ -948,6 +952,9 @@ class PromptBuilder:
             # 这几行在相邻两次调用之间通常是稳定的，放在最前面才能让前缀缓存尽量长；
             # 时钟每分钟都变，它后面的内容（记忆、群聊…）本来就每轮都变，放这里不浪费。
             blocks.append(self._clock_line(now))
+        rhythm_note = quiet_life_note(self.world, now)
+        if rhythm_note:
+            blocks.append("# 夜间生活节奏\n" + rhythm_note)
         if weather:
             # 天气跟着时钟走（都是"此刻外面什么样"），同样属于每轮都可能变的内容
             blocks.append(weather)

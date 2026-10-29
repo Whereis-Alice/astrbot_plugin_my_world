@@ -123,6 +123,10 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         # scripted replies or exercise another generator.
         raw.setdefault("calendar", {})["auto_generate"] = False
         raw.setdefault("diary", {})["automatic"] = False
+        # Most focused engine cases exercise another gate at a fixed early-hour
+        # clock. Night-life acceptance opts in explicitly; don't let that gate
+        # hide the recovery, interruption or evidence behavior under test.
+        raw.setdefault("night", {})["quiet_life"] = False
         raw.setdefault("limits", {})["life_matter_notes_per_day"] = 0
         # 本组验证既有日程/夜晚睡眠行为；自主作息由 test_sleep_rhythm 独立验证。
         raw["sleep"]["mode"] = "fixed"
@@ -11014,7 +11018,6 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def test_once_schedule_fires_on_its_date_then_deletes_itself(self):
         """一次性日程：只认自己那一天，跑完就把自己删掉。"""
-        import asyncio
 
         self.add_schedule(
             id="once_thing",
@@ -11026,8 +11029,11 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             action_chain=[{"type": "say", "messages": ["把衣服收了"]}],
         )
         self.clock.set_struct(datetime(2026, 9, 15, 12, 0))  # 周二：星期表对一次性日程不管用
-        await self.engine.tick()
-        await asyncio.wait_for(self.engine._schedule_delivery_job, 5)
+        # Exercise date selection and one-shot cleanup directly. A cold-start
+        # life clock may temporarily own the lock; tick intentionally defers
+        # that schedule pass, which is a different behavior from this test.
+        for outcome in await self.engine.run_schedules():
+            await self.engine._deliver(outcome)
         self.assertIn("把衣服收了", self.messenger.flat_messages)
         self.assertEqual(self.store.raw_schedules()["schedules"], [])
         events = await self.db.call("query_events", session_id=SESSION, limit=20)

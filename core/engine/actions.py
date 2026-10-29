@@ -138,17 +138,20 @@ class ActionsMixin:
 
         blocked = self.exhausted_actions(state)
         return {
-            action.id for action in self.world.actions_in(node_id) if action.id not in blocked
+            action.id for action in self.world.actions_in(node_id)
+            if action.id not in blocked and self._action_usable_now(action)
         }
 
     def _action_usable_now(self, action: Any) -> bool:
         """这个动作现在这个时段能不能用。
 
-        目前只有一条：非夜晚不给「睡觉」（提示词不提供、解析也拒掉）。
-        计划与日程实际执行时也检查此限制。
+        动作的开始时段、睡眠生理约束在计划与日程执行时同样生效。
         """
 
         from ..recovery import recovery_mode_allows
+        from ..activity_time import window_allows
+        if not window_allows(action.preconditions.time_window, self.world, self.local_now().hour):
+            return False
         if not recovery_mode_allows(action, self.world):
             return False
         from ..recovery import sleep_action_kind
@@ -1042,8 +1045,11 @@ class ActionsMixin:
         node = self.node(node_id)
         return (node.name or node.id) if node else node_id
 
-    def _check_preconditions(self, state: WorldState, definition: ActionDef) -> tuple[bool, str]:
+    def _check_preconditions(self, state: WorldState, definition: ActionDef, *, check_time: bool = True) -> tuple[bool, str]:
         pre = definition.preconditions
+        from ..activity_time import window_allows
+        if check_time and not window_allows(pre.time_window, self.world, self.local_now().hour):
+            return False, "尚未到动作适合开始的当地时段"
         if pre.not_state and state.state in pre.not_state:
             return False, f"不能在 {state.state} 状态执行"
         if pre.min_energy is not None and state.energy < pre.min_energy:

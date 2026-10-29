@@ -436,6 +436,8 @@ class During(Permissive):
 class Preconditions(Permissive):
     not_state: list[str] = Field(default_factory=list)
     min_energy: float | None = None
+    time_window: Literal["any", "daytime", "night"] = "any"
+    """动作开始的当地时段；any 保留旧配置，日夜由世界夜晚范围决定。"""
 
 
 class ActionQuota(Permissive):
@@ -2307,8 +2309,8 @@ class DefaultState(Permissive):
 class NightConfig(Permissive):
     """夜晚时段：几点到几点算晚上。
 
-    它同时管三件事：**睡觉动作只在夜里可选**、**夜里醒着要付熬夜代价**、
-    以及规则决策里"夜里睡整觉 / 白天只小睡"的分界。
+    用于睡眠模式的夜间边界、普通生活的夜间偏好，以及动作与事项的执行时段。
+    无需睡眠的角色也能遵循昼夜生活节奏，不因此积累困意或强制入睡。
     """
 
     start_hour: int = 23
@@ -2322,6 +2324,9 @@ class NightConfig(Permissive):
 
     只想在白天也能睡整觉时关掉它（夜里那段熬夜代价仍然照算）。
     """
+
+    quiet_life: bool = True
+    """夜间倾向安静生活，未指定时段的个人事项等到白天；不强制睡眠。"""
 
 
 class PersonaConfig(Permissive):

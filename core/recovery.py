@@ -107,6 +107,26 @@ def recovery_gain(action, energy: float, world, seconds: int, state=None) -> flo
     return value - energy
 
 
+def recovery_total_seconds(action, energy: float, world, state=None, *, tick_seconds: float = 60) -> float:
+    """Estimate actual rounds to the target, including completion-only operators.
+
+    Bounded simulation detects fixed-value plateaus and non-positive net yield.
+    It only ranks candidates; the executor still settles actual elapsed effort.
+    """
+    target = recovery_target(world.sleep)
+    total = 0.0
+    for _ in range(128):
+        if energy >= target - 1e-9:
+            return total
+        seconds = max(1, round(recovery_seconds(action, energy, world, state) / tick_seconds)) * tick_seconds
+        gain = recovery_gain(action, energy, world, seconds, state)
+        if gain <= 1e-9:
+            return math.inf
+        total += seconds
+        energy += gain
+    return math.inf
+
+
 def recovery_note(world) -> str:
     if world.sleep.mode != "activity":
         return ""

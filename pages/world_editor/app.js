@@ -12378,6 +12378,12 @@ function renderActionForm() {
     ),
   );
   advancedBody.appendChild(
+    selectField("适合开始的时段", action.preconditions.time_window || "any",
+      [{key: "any", label: "随时"}, {key: "daytime", label: "白天"}, {key: "night", label: "夜间"}],
+      value => {action.preconditions.time_window = value;},
+      {hint: "日夜按当前世界的时区和夜晚范围判断。只限制开始时间，已经开始的活动可正常收尾。"}),
+  );
+  advancedBody.appendChild(
     inputField("优先级", num(action.priority, 5), (value) => (action.priority = num(value, 5)), {
       hint: "数字越大越优先。日程里同时到点时按这个排序。",
       type: "number",
@@ -19097,6 +19103,12 @@ function renderSettings() {
     value => {world.sleep.recovery_target = num(value, .85);},
     {type: "number", min: .3, max: 1, step: .05, hint: "按恢复速度估算每段时长，遵守动作时长上限；完成一段后按实际精力决定是否继续。"});
   nightSection._fields.append(recoveryTarget);
+  nightSection._fields.appendChild(checkboxField("夜间优先安静生活", world.night.quiet_life !== false,
+    value => {world.night.quiet_life = value;},
+    {hint: "默认开启。夜间倾向安静活动；未指定时段的个人事项等到白天。明确的夜间任务和随时可做的安静事项仍可执行，不强制睡眠。"}));
+  nightSection._fields.appendChild(inputField("自主作息偏好", world.sleep.rhythm_prompt || "",
+    value => {world.sleep.rhythm_prompt = value;},
+    {hint: "例如夜间充电、安静整理，或习惯夜间巡逻。供作息评估和夜间生活规划参考，不要求每天同一时间。"}));
   const physiologicalFields = new Set(nightSection._fields.children);
   [
     ["evaluation_minutes", "常规作息评估间隔（分钟）", 60, 15, 180, 15, "进入疲劳或晚间评估窗口后，默认间隔 60 分钟；模型可提早复查，最短 15 分钟。精神好时不询问，失败按状态兜底。"],
@@ -19106,9 +19118,6 @@ function renderSettings() {
   ].forEach(([key,label,fallback,min,max,step,hint]) => nightSection._fields.appendChild(inputField(
     label, num(world.sleep[key],fallback), value => {world.sleep[key]=num(value,fallback);},
     {type: "number", min: String(min), max: String(max), step: String(step), hint})));
-  nightSection._fields.appendChild(inputField("自主作息偏好", world.sleep.rhythm_prompt || "",
-    value => {world.sleep.rhythm_prompt=value;},
-    {hint: "例如喜欢早起、看完书再睡、累了一天会早些休息。作为偏好供模型考虑，无需指定每天同一个钟点。"}));
   nightSection._fields.appendChild(selectField("睡眠地点", world.sleep.node_id || "",
     [{key: "", label: "自动选择家中的卧室"}, ...nodeItems().map(node => ({key: node.id, label: node.name}))],
     value => {world.sleep.node_id = value;},
@@ -19127,6 +19136,7 @@ function renderSettings() {
       },
     ),
   );
+  physiologicalFields.add(nightSection._fields.lastElementChild);
   nightSection._fields.appendChild(
     inputField(
       "夜晚结束（小时，0~23）",
@@ -19141,6 +19151,7 @@ function renderSettings() {
       },
     ),
   );
+  physiologicalFields.add(nightSection._fields.lastElementChild);
   nightSection._fields.appendChild(
     checkboxField(
       "睡觉只在夜里可选",

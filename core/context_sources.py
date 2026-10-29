@@ -226,6 +226,10 @@ def runtime_context(prompts: Any, state: Any, node: Any, request: ContextRequest
             f"# 当前动作：{activity}", f"# 当前位置：{node.name if node else '未知'}"]
     if now is not None:
         base.append(prompts._clock_line(now))
+    from .activity_time import quiet_life_note
+    rhythm_note = quiet_life_note(prompts.world, now)
+    if rhythm_note:
+        base.append("# 夜间生活节奏\n" + rhythm_note)
     candidates: list[ContextItem] = []
     if prompts.world.state_dynamics.own_topic_enabled:
         candidates += life_items(state, request)

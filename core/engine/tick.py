@@ -1177,6 +1177,23 @@ class TickMixin:
         step = peek_step(state)
         if step is None:
             return
+        plan = active_plan(state) or {}
+        if plan.get("source") == "life_matter" and step.get("action") != "walk_to":
+            from .. import life_matters as matters
+            item = matters.find(state, str(plan.get("matter_id") or ""))
+            saved_step = next((s for s in (item or {}).get("steps", [])
+                               if s.get("id") == plan.get("matter_step_id")), None)
+            if saved_step and state.node_id != saved_step.get("node"):
+                item.update(status="blocked", obstacle="未抵达事项的实际地点，保留进度重新安排", needs_replan=True)
+                matters.history(item, "blocked", item["obstacle"], self._now())
+                state.current_plan = None
+                matters.sync(state)
+                return
+            if saved_step and self._defer_matter_for_time(item, saved_step):
+                # A time boundary crossed during travel cannot consume the step.
+                state.current_plan = None
+                matters.sync(state)
+                return
         action = self._step_to_action(step)
         step_home = str(step.get("session") or "")
         previous_home = outcome.speech_home
