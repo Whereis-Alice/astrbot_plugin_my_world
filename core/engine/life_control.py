@@ -151,6 +151,11 @@ class LifeControlMixin:
             running["duration"] = ticks * self.tick_seconds
             usage_keys = action.get("usage_keys")
             running["_life_resume"] = {"ticks": ticks,
+                "elapsed_ticks": max(0, int(action.get("resumed_elapsed_ticks") or 0))
+                    + max(0, int(action.get("elapsed_ticks") or 0)),
+                "effects_settled_minutes": max(0, float(action.get("resumed_effects_settled_minutes") or 0))
+                    + max(0, float(action.get("effects_settled_minutes") or 0)),
+                "practice_id": str(action.get("practice_id") or ""),
                 "usage_keys": dict(usage_keys) if isinstance(usage_keys, dict) else {}}
             pending.insert(0, running)
         # Keep the safe prefix, including already started quiet work. A later
@@ -189,7 +194,11 @@ class LifeControlMixin:
         receipt = step.get("_life_resume")
         if not isinstance(receipt, dict) or not isinstance(receipt.get("ticks"), int) or receipt["ticks"] <= 0:
             return None
-        return {"ticks": receipt["ticks"], "usage_keys": receipt.get("usage_keys")
+        return {"ticks": receipt["ticks"],
+                "elapsed_ticks": max(0, int(receipt.get("elapsed_ticks") or 0)),
+                "effects_settled_minutes": max(0, float(receipt.get("effects_settled_minutes") or 0)),
+                "practice_id": str(receipt.get("practice_id") or ""),
+                "usage_keys": receipt.get("usage_keys")
                 if isinstance(receipt.get("usage_keys"), dict) else {}}
 
     def resume_life(self, state) -> bool:

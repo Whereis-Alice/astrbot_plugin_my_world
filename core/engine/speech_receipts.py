@@ -29,7 +29,10 @@ def bind_plan_speech(outcome, body, target, *, image=False):
     if trace is None:
         trace = {"id": uuid4().hex, "thought_id": plan["thought_id"],
             "plan_id": plan["id"], "target": target, "trigger": "plan",
-            "intent": "outreach" if outcome.speech_kind == "outreach" else "life_share", "origin": outcome.speech_kind,
+            "intent": (plan.get("speech_choice") or {}).get("intent") or (
+                "continue_chat" if outcome.speech_kind in {"continuation", "interject", "participation", "browse_reply"}
+                else "outreach" if outcome.speech_kind == "outreach" else "life_share"), "origin": outcome.speech_kind,
+            "reply_to": outcome.reply_targets.get(target, ""),
             "motivation": str(plan.get("reason") or ""), "status": "prepared",
             "at": plan.get("created_ts", 0), "drafts": [], "sent": []}
         outcome.speech_decisions.append(trace)

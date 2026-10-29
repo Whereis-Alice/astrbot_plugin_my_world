@@ -1587,11 +1587,31 @@ class AsyncDatabase:
         callbacks, self._close_callbacks = self._close_callbacks, []
         for callback in callbacks:
             await callback()
-        await asyncio.to_thread(self._db.close)
+        await self.run(self._db.close)
 
     async def call(self, func_name: str, *args: Any, **kwargs: Any) -> Any:
         func = getattr(self._db, func_name)
-        return await asyncio.to_thread(func, *args, **kwargs)
+        return await self.run(func, *args, **kwargs)
 
     async def run(self, func, *args: Any, **kwargs: Any) -> Any:
-        return await asyncio.to_thread(func, *args, **kwargs)
+        # Cancelling to_thread only abandons its awaiter; SQLite may still be
+        # saving the old state. Keep the caller's state lease until that worker
+        # has really finished, including repeated cancellation during shutdown.
+        task = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+            except Exception:
+                break  # Retrieve the worker's exception below.
+        try:
+            result = task.result()
+        except BaseException:
+            if cancelled:
+                raise asyncio.CancelledError() from None
+            raise
+        if cancelled:
+            raise asyncio.CancelledError()
+        return result

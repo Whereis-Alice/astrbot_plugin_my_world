@@ -335,6 +335,7 @@ class AutonomyMixin:
         with_extension: bool = True,
         quiet: bool = False,
         focus_user: str = "",
+        contact_user: str = "",
     ) -> dict[str, Any] | None:
         if self.llm is None:
             return None
@@ -413,6 +414,13 @@ class AutonomyMixin:
             + self.prompts.AUTONOMOUS_MANNERS
             + "只输出 JSON。"
         )
+        if contact_user and not quiet:
+            prompt += self.expression_contract(state, request.session, "outreach",
+                                               token=outcome.speech_receipt_batch)
+            prompt += ("\n这次想念的候选对象 user_id=" + contact_user
+                       + "。必须明确选 intent：outreach 是找该人本人；continue_chat 是接上述编号的消息，"
+                         "正文里的‘你’指该消息的真实发言者，必须填写 reply_to；listen 是继续自己的生活。"
+                         "想念候选不是群聊接话的对象。选择接话时不要另行指定群/私聊，也不要附带对候选人的动作。")
         if quiet:
             reply = await self._ask_llm(state.session_id, system_prompt, prompt)
         else:
@@ -432,6 +440,9 @@ class AutonomyMixin:
             ),
             valid_nodes=set(self.world.node_map()),
         )
+        if contact_user and not quiet:
+            plan = await self.contact_plan_choice(state, outcome, plan, reply,
+                                                  target=request.session, user_id=contact_user)
         if plan:
             if quiet:
                 plan["send_to"] = ""
@@ -459,5 +470,8 @@ class AutonomyMixin:
                 created["inner"] = str(plan.get("inner") or "")
                 # 留下模型原话，日志页里能看到"她为什么这么安排"
                 created["raw"] = _clip_text(reply, 240)
+                for key in ("contact_people", "speech_choice", "speech_scene"):
+                    if key in plan:
+                        created[key] = plan[key]
             return created
         return None

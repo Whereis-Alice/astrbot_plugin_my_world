@@ -553,6 +553,12 @@ class ActionsRunMixin:
                     )
             state.current_action = payload
             if resumption:
+                # The resumed clock counts only new work. Earlier online time
+                # belongs to this activity's final effects, not another tick.
+                payload["resumed_elapsed_ticks"] = resumption["elapsed_ticks"]
+                payload["resumed_effects_settled_minutes"] = resumption["effects_settled_minutes"]
+                if resumption["practice_id"]:
+                    payload["practice_id"] = resumption["practice_id"]
                 action.raw.pop("_life_resume", None)
             self._note_event(state, "action_start", {"type": definition.id,
                 "action_name": payload["action_name"]})

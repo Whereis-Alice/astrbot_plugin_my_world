@@ -302,7 +302,8 @@ class CuddleMixin:
             + self.autonomous_prompt_note(state)
             + "\n按你自己的节奏安排这一轮要做什么，输出计划 JSON。"
         )
-        plan = await self._ask_llm_for_plan(state, node, outcome, force=True, hint=hint, focus_user=uid)
+        plan = await self._ask_llm_for_plan(state, node, outcome, force=True, hint=hint,
+                                          focus_user=uid, contact_user=uid)
         if plan is None:
             outcome.notes.append(f"想找 {name}，但这一轮没想出要说什么")
             # 想不出来就先把这个人的想念压一半，别每轮都来问一次
@@ -311,11 +312,10 @@ class CuddleMixin:
         outcome.session_id = self._freeze_plan_target(
             state, outcome, plan, fallback=session_id
         )
-        plan["contact_people"] = [uid]
         await self._apply_plan(state, node, outcome, plan)
         self._count_autonomous(state)
         state.miss[uid] = 0.0
-        # 刚找过他：下一次"想他"重新随机等一段时间
+        # 已考虑过这次感觉：无论找人、接话还是继续生活，都先留白。
         state.miss_ready_at[uid] = self._next_miss_open_at(self._now())
         state.miss_push_count = int(state.miss_push_count or 0) + 1
         await self._log_event(
@@ -325,10 +325,11 @@ class CuddleMixin:
                 "user": uid,
                 "score": round(score, 3),
                 "note": str(plan.get("reason") or "")[:80],
+                "choice": plan.get("speech_choice", {}),
             },
             outcome=outcome,
         )
-        self._log("debug", f"[my_world] 想他想到主动去找：{uid}")
+        self._log("debug", f"[my_world] 想念触发本轮选择：{(plan.get('speech_choice') or {}).get('intent', 'listen')}")
         await self._tick_plan(state, node, outcome, depth=0)
         return True
 

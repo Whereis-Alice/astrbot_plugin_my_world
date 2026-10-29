@@ -1,6 +1,9 @@
 """Group addressing must remain readable when OneBot member names are empty."""
 import importlib
 import asyncio
+import copy
+import sys
+import types
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -63,6 +66,69 @@ class GroupDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(isinstance(part, At) for part in self.sent()))
         self.assertIn("@阿岚", "".join(part.text for part in self.sent() if isinstance(part, Plain)))
         self.assertEqual(self.plugin.messenger.take_sent_texts(self.session), ["最近怎么样"])
+
+    async def test_evicted_reply_event_keeps_selected_sender_for_response_hooks(self):
+        class Event:
+            def __init__(self):
+                self.message_obj = SimpleNamespace(message_id="newer", raw_message={"newer": True},
+                    sender=SimpleNamespace(user_id="333", nickname="后来发言的人"), message=[])
+                self.message_str = "后来的一句"
+                self.unified_msg_origin = self.session = "test:GroupMessage:100"
+                self.result = None
+
+            def get_extra(self, *_):
+                return None
+
+            def get_sender_id(self):
+                return self.message_obj.sender.user_id
+
+            def set_result(self, result):
+                self.result = result
+
+            def get_result(self):
+                return self.result
+
+        class Result:
+            def __init__(self, chain):
+                self.chain = chain
+
+            def set_result_content_type(self, *_):
+                pass
+
+        original = Event()
+        original.unified_msg_origin = self.session
+        self.plugin.last_event = lambda _: original
+        self.plugin.context.tool_loop_agent = AsyncMock()
+        model_type = importlib.import_module(self.module.__name__ + ".core.engine.models").TickOutcome
+        view = model_type(self.session, messages=["TV版天天网购魔兽能不坏吗"], speech_kind="continuation")
+        view.reply_targets[self.session] = "tv-d"
+        view.chat_media_scenes[self.session] = {"rows": [{"message_id": "tv-d", "origin": self.session,
+            "user_id": "222", "name": "说 TV D 的群友", "text": "TV D"}]}
+        components = types.ModuleType("astrbot.core.message.components")
+        components.Plain = Plain
+        results = types.ModuleType("astrbot.core.message.message_event_result")
+        results.MessageEventResult = Result
+        results.ResultContentType = SimpleNamespace(LLM_RESULT="llm")
+        observed = []
+
+        async def hook(_plugin, event, name, *args):
+            observed.append((name, event.get_sender_id(), event.message_obj.message_id, event.message_str))
+            if name == "OnDecoratingResultEvent":
+                event.get_result().chain.insert(0, At(event.get_sender_id()))
+            return False
+
+        def response(text, raw):
+            return SimpleNamespace(completion_text=text, result_chain=SimpleNamespace(chain=[Plain(text)]))
+        with patch.dict(sys.modules, {components.__name__: components, results.__name__: results}), \
+                patch.object(self.delivery, "isolated_event", side_effect=lambda event, *_: copy.deepcopy(event)), \
+                patch.object(self.delivery, "public_response", side_effect=response), \
+                patch.object(self.delivery, "fire_hook", side_effect=hook):
+            async with self.delivery.delivery(self.plugin, self.session, view):
+                chain = self.delivery.prepared_chain(self.session, view.messages[0], 0)
+                self.assertEqual(next(part.qq for part in chain if isinstance(part, At)), "222")
+        self.assertTrue(all(row[1:] == ("222", "tv-d", "TV D") for row in observed))
+        self.assertEqual(original.message_obj.sender.user_id, "333")
+        self.assertEqual(original.message_obj.message_id, "newer")
 
     async def test_resolved_member_keeps_real_mention_with_display_name(self):
         self.bot.call_action.return_value = {"user_id": 42, "card": "群里的阿岚", "nickname": "阿岚"}

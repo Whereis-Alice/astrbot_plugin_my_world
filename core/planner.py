@@ -64,6 +64,7 @@ def create_plan(
                 # 这一步说给哪个会话听（空 = 跟着计划 / 这一轮的落点）
                 "send_to": str(step.get("send_to", "") or ""),
                 "status": "pending",
+                **({"speech_scene": step["speech_scene"]} if isinstance(step.get("speech_scene"), dict) else {}),
             }
         )
     if not normalized:

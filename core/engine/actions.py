@@ -391,6 +391,7 @@ class ActionsMixin:
             # 这一步是"在哪儿安排的"：轮到她做的时候，说话回那儿
             "session": str(session or ""),
             "status": "pending",
+            **({"speech_scene": item.raw["speech_scene"]} if isinstance(item.raw.get("speech_scene"), dict) else {}),
         }
 
     @staticmethod

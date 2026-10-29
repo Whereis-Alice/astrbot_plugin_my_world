@@ -80,15 +80,30 @@ async def delivery(plugin, target, view, *, echo_count=0, instant=False):
             positions[index + 1] = len(messages)
             continue
         public_original = original
+        referenced_row = None
         if kind in {"participation", "browse_reply", "continuation", "interject"}:
             reply_id = view.reply_targets.get(target, '')
             if reply_id:
+                referenced_row = next((row for row in view.chat_media_scenes.get(target, {}).get("rows", [])
+                    if str(row.get("message_id") or "") == reply_id
+                    and str(row.get("origin") or target) == target and not row.get("is_self")), None)
                 referenced = source_event(plugin, target, [{'message_id': reply_id, 'origin': target}])
                 if str(getattr(getattr(referenced, 'message_obj', None), 'message_id', '') or '') == reply_id:
                     public_original = referenced
         # Request hooks may need a video's event; response hooks address the
         # actual message being answered and keep the inference conversation.
         event = isolated_event(public_original, plugin.context, target)
+        if referenced_row and str(getattr(event.message_obj, "message_id", "") or "") != reply_id:
+            # The media event cache is bounded. Its eviction must not make
+            # response decorators address the sender of a different message.
+            sender = getattr(event.message_obj, "sender", None)
+            if sender is not None:
+                sender.user_id = str(referenced_row.get("user_id") or "")
+                sender.nickname = str(referenced_row.get("name") or referenced_row.get("user_name") or sender.user_id)
+            event.message_obj.message_id = reply_id
+            event.message_str = str(referenced_row.get("text") or "")
+            event.message_obj.message = [Plain(text=event.message_str)]
+            event.message_obj.raw_message = None
         if request is not None:
             event.set_extra("provider_request", snapshot_request(request))
         # A life share addresses the room, not the sender of its last message.

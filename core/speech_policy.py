@@ -114,6 +114,19 @@ def speech_origin(source):
                 step = steps[index] if 0 <= index < len(steps) else {}
                 kind = step.get("kind") or ("schedule" if plan.get("source") == "schedule"
                     else "outreach" if outcome.contact_people else "life_share")
+                scene = step.get("speech_scene") or plan.get("speech_scene") or {}
+                if kind in {"participation", "browse_reply", "continuation", "interject"} and scene.get("rows"):
+                    target = str(scene.get("target") or "")
+                    self.claim_chat_scene(outcome, target, scene["rows"], window=scene.get("window", 900), state=bound["state"])
+                    captured = outcome.chat_media_scenes[target]["rows"]
+                    known = {str(row.get("seq")) for row in captured}
+                    # The archive is bounded; a saved source still owns its
+                    # sender and watermark even after newer messages evict it.
+                    from copy import deepcopy
+                    captured.extend(deepcopy(row) for row in scene["rows"] if str(row.get("seq")) not in known)
+                    captured.sort(key=lambda row: int(row.get("seq") or 0))
+                    if scene.get("reply_to"):
+                        outcome.reply_targets[target] = str(scene["reply_to"])
             elif source == "actions":
                 kind = "schedule" if bound.get("from_schedule") else previous
                 if not kind and not bound.get("autonomous", True):

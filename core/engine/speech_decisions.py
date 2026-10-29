@@ -48,8 +48,10 @@ class SpeechDecisionsMixin:
     def expression_contract(self, state, target, kind, *, token=""):
         import json
         allowed, rows, targets = self.expression_options(state, target, kind, token=token)
-        scene = [{"ref": ref, "text": next(str(r.get("text") or "")[:500] for r in rows
-                  if str(r.get("message_id")) == mid)} for ref, mid in targets.items()]
+        scene = [{"ref": ref, "who": str(row.get("name") or row.get("user_name") or row.get("user_id") or "群友"),
+                  "user_id": str(row.get("user_id") or ""), "text": str(row.get("text") or "")[:500],
+                  **{key: row[key] for key in ("reply_to", "at_targets", "addressing") if row.get(key)}}
+                 for ref, mid in targets.items() for row in rows if str(row.get("message_id")) == mid]
         descriptions = {
             "life_share": "life_share 分享有记录的生活事实，不借分享追答旧话题。",
             "outreach": "outreach 有具体缘由地找人，不催促未回应的人。",
@@ -69,6 +71,83 @@ class SpeechDecisionsMixin:
                 "问题已解决、明确结束或换题时不追答；不把生活分享伪装成续聊。"
                 "对方引用或附和不要求再接一句；没有新的内容、问题或情绪变化时自然收尾，不发收尾占位台词。listen 不发言。\n"
                 + json.dumps(scene, ensure_ascii=False) + recipient_note)
+
+    async def contact_plan_choice(self, state, outcome, plan, raw, *, target, user_id):
+        """A feeling names a candidate; only the explicit choice may address them."""
+        import json
+        from copy import deepcopy
+        from ..json_actions import extract_json_object, strip_reasoning
+        from ..speech_decision import parse_decision
+        allowed, rows, targets = self.expression_options(state, target, "outreach",
+                                                         token=outcome.speech_receipt_batch)
+        payload = extract_json_object(strip_reasoning(str(raw or ""))) or {}
+        steps = (plan or {}).get("steps", [])
+        lines = [str(line).strip() for step in steps if step.get("action") in {"say", "share"}
+                 for line in step.get("messages", []) if isinstance(line, str) and line.strip()]
+        decision_payload = {**payload, "say": "\n".join(lines)}
+        # An old plan without a speech choice may still carry quiet activities.
+        # It cannot inherit the candidate's mention simply because of its trigger.
+        if not payload.get("intent"):
+            decision_payload["intent"] = "listen"
+        decision = parse_decision(json.dumps(decision_payload, ensure_ascii=False), targets,
+                                  allowed=tuple(allowed), strict_reply=True)
+        if decision.intent == "outreach" and payload.get("reply_to"):
+            decision.error = "找人和接群聊的目标冲突；outreach 的 reply_to 必须留空"
+        if decision.error:
+            outcome.notes.append("主动联系选择无效，保留安静活动：" + decision.error)
+        chat = decision.intent in {"join_chat", "continue_chat"} and not decision.error
+        outreach = decision.intent == "outreach" and not decision.error
+        quiet_steps = []
+        for step in steps:
+            definition = self.world.action_map().get(step.get("action"))
+            if definition is None:
+                continue
+            personal = (definition.id not in {"say", "share", "poke"}
+                        and definition.target_type in {"none", "node"}
+                        and definition.llm_level not in {"tool", "command"}
+                        and not definition.tool_list() and not definition.trigger_command
+                        and definition.on_complete.trigger in {"none", "llm_followup"})
+            if personal:
+                quiet_steps.append({**step, "kind": "quiet"})
+            elif outreach:
+                if definition.target_type == "user" and step.get("target") not in {"", user_id}:
+                    continue
+                destination = str(step.get("send_to") or (plan or {}).get("send_to") or target)
+                resolved = self.resolve_send_to(state, destination, fallback="")
+                parts = str(resolved or "").split(":", 2)
+                if not resolved or (len(parts) == 3 and parts[1] in {"FriendMessage", "PrivateMessage"}
+                                    and parts[2] != user_id):
+                    outcome.notes.append("联系落点不属于所选对象，未发送该步骤")
+                    continue
+                quiet_steps.append({**step, "kind": "outreach", "target": user_id
+                                    if definition.target_type == "user" else step.get("target", "")})
+            elif chat and definition.id in {"say", "share"}:
+                # The selected source owns the room. A conflicting send_to is not
+                # permission to export this group's message to another session.
+                quiet_steps.append({**step, "kind": "continuation", "target": "",
+                                    "send_to": target})
+        if plan is None:
+            if decision.inner:
+                await self.remember_speech_decision(state, target, decision, trigger="plan", outcome=outcome, drafts=[])
+            return None
+        plan["steps"] = quiet_steps
+        plan["contact_people"] = [user_id] if outreach else []
+        plan["speech_choice"] = {"intent": decision.intent if not decision.error else "listen",
+                                 "reply_to": decision.reply_to if chat else "", "target": target,
+                                 "user_id": user_id if outreach else ""}
+        if chat:
+            plan["send_to"] = target
+            # Persist exact capabilities so a later tick cannot borrow newer chat.
+            plan["speech_scene"] = {"target": target, "rows": deepcopy(rows), "window": 900,
+                                    "reply_to": decision.reply_to}
+            for step in quiet_steps:
+                if step.get("kind") == "continuation":
+                    step["speech_scene"] = deepcopy(plan["speech_scene"])
+        if not quiet_steps:
+            if decision.inner:
+                await self.remember_speech_decision(state, target, decision, trigger="plan", outcome=outcome, drafts=[])
+            return None
+        return plan
 
     async def note_expression(self, state, outcome, raw, lines, *, target, trigger):
         """Annotate the existing action protocol without removing its tool chain."""

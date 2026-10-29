@@ -499,6 +499,10 @@ class TickMixin:
         if self._running_action_invalid_reason(state, action):
             return False
         definition = self.world.action_map().get(action_id)
+        # Quiet resumption preserves prior online effort without replaying its
+        # clock or during-effects. Completion includes all actual segments.
+        completion_ticks = max(0, int(action.get("elapsed_ticks") or 0)) + max(
+            0, int(action.get("resumed_elapsed_ticks") or 0))
 
         # 这个动作是在哪个会话里被安排的：续说/结果那句话回那儿说。
         # （私聊里让她做饭，做完那句就回私聊，不会跑到群里）
@@ -558,7 +562,7 @@ class TickMixin:
             handled_followup = True
 
         effects = (definition.on_complete.effects if definition else {}) or {}
-        self._apply_life_completion(state, definition, elapsed_minutes=int(action.get("elapsed_ticks", 0)) * self.tick_seconds / 60)
+        self._apply_life_completion(state, definition, elapsed_minutes=completion_ticks * self.tick_seconds / 60)
         if effects:
             self.dynamics.apply_effects(state, effects, world=self.world, now=self._now())
         # 持续型亲密动作（靠着、按摩这类）做完也算安抚，同上
@@ -573,12 +577,14 @@ class TickMixin:
         # 按「实际持续时间」缩放的效果：例如小睡 30 分钟 → 精力 +0.002×30
         per_minute = (definition.on_complete.effects_per_minute if definition else {}) or {}
         if per_minute:
-            if action.get("effects_settled_minutes"):
+            settled_minutes = max(0, float(action.get("effects_settled_minutes") or 0)) + max(
+                0, float(action.get("resumed_effects_settled_minutes") or 0))
+            if settled_minutes:
                 deferred = {k: v for k, v in per_minute.items() if not str(v).strip().startswith(("+", "-"))}
                 self.dynamics.apply_effects(state, deferred, world=self.world, now=self._now())
                 per_minute = {k: v for k, v in per_minute.items() if k not in deferred}
-            elapsed_seconds = int(action.get("elapsed_ticks", 0)) * self.tick_seconds
-            minutes = max(0.0, elapsed_seconds / 60.0 - float(action.get("effects_settled_minutes", 0)))
+            elapsed_seconds = completion_ticks * self.tick_seconds
+            minutes = max(0.0, elapsed_seconds / 60.0 - settled_minutes)
             if minutes > 0:
                 self.dynamics.apply_effects(
                     state, per_minute, world=self.world, scale=minutes, now=self._now()
@@ -636,7 +642,7 @@ class TickMixin:
                 "type": action_id,
                 "desc": ((definition.name if definition else "") or action_id) if action_id == "life_simulation"
                 else action.get("desc") or (definition.name if definition else "") or action_id,
-                "elapsed_ticks": int(action.get("elapsed_ticks", 0)),
+                "elapsed_ticks": completion_ticks,
                 "tool_result": _clip_text(action.get("tool_result"), 200),
             },
             outcome=outcome,
