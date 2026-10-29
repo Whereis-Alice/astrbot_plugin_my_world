@@ -9266,7 +9266,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.clock.set_struct(datetime(2026, 9, 10, 12, 0))
 
         # 第一次分享应当发出
-        await self.engine.tick()
+        await self._settled_tick()
         self.assertIn("今天天气真好", self.messenger.flat_messages)
         state = await self.get_state()
         self.assertEqual(state.share_count_hour, 1)
@@ -9296,7 +9296,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.store.save_schedules(raw)
         self.engine.reload_config()
         self.clock.set_struct(datetime(2026, 9, 10, 12, 30))
-        await self.engine.tick()
+        await self._settled_tick()
         self.assertNotIn("又想说一句", self.messenger.flat_messages)
 
     async def test_snapshot_contains_expected_fields(self):
@@ -9750,6 +9750,25 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
     def set_schedules(self, schedules: list[dict]) -> None:
         self.store.save_schedules({"schedules": schedules})
 
+    async def _settled_tick(self) -> list[TickOutcome]:
+        """Finish this simulated heartbeat before asserting scheduled effects."""
+        outcomes = await self.engine.tick()
+        jobs = list(getattr(self.engine, "_life_delivery_jobs", set()))
+        schedule = getattr(self.engine, "_schedule_delivery_job", None)
+        if schedule is not None:
+            jobs.append(schedule)
+        if jobs:
+            await asyncio.wait_for(asyncio.gather(*jobs), timeout=5)
+        model = getattr(self.engine, "_schedule_model_job", None)
+        if model is not None and model.done() and not model.cancelled() and model.exception() is None:
+            outcomes.extend(row for row in model.result() if all(row is not prior for prior in outcomes))
+        # A scan skips a busy life-clock lock. Retry at the same simulated
+        # moment after that clock has settled; do not advance another minute.
+        for row in await self.engine.run_schedules():
+            await self.engine._deliver(row)
+            outcomes.append(row)
+        return outcomes
+
     async def test_template_action_uses_bot_name_and_applies_effects(self):
         """互动类动作走模板：{bot} 换成 bot 名称，并带上数值联动。"""
 
@@ -9801,25 +9820,6 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_cook_action_uses_llm_duration_and_shares(self):
         """做饭：时长由大模型定，做完把经历讲成人话。"""
 
-        import asyncio
-
-        async def settled_tick():
-            await self.engine.tick()
-            # A tick yields slow inference/delivery after 150 ms. Finish that
-            # work before advancing another simulated minute or checking speech.
-            jobs = list(getattr(self.engine, "_life_delivery_jobs", set()))
-            schedule = getattr(self.engine, "_schedule_delivery_job", None)
-            if schedule is not None:
-                jobs.append(schedule)
-            if jobs:
-                await asyncio.wait_for(asyncio.gather(*jobs), timeout=5)
-
-            # A schedule scan intentionally skips a busy life-clock lock. Retry
-            # at this same simulated moment after the clock has settled, before
-            # advancing the next minute in this focused cooking scenario.
-            for row in await self.engine.run_schedules():
-                await self.engine._deliver(row)
-
         self.set_schedules(
             [
                 {
@@ -9838,9 +9838,9 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         )
         self.engine.reload_config()
         self.clock.set_struct(datetime(2026, 9, 10, 18, 0))
-        await settled_tick()  # 触发日程：开始走向厨房
+        await self._settled_tick()  # 触发日程：开始走向厨房
         for _ in range(3):
-            await settled_tick()  # 书房 -> 大厅 -> 吧台 -> 厨房
+            await self._settled_tick()  # 书房 -> 大厅 -> 吧台 -> 厨房
         state = await self.get_state()
         self.assertEqual(state.node_id, "kitchen")
         self.assertEqual((state.current_action or {}).get("type"), "cook")
@@ -9848,7 +9848,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((state.current_action or {}).get("duration_ticks"), 30)
         self.assertEqual(state.state, "cooking")
         for _ in range(30):
-            await settled_tick()
+            await self._settled_tick()
         self.assertIn("有人在吗？", self.messenger.flat_messages)
 
     async def test_overview_lists_every_session_position(self):
@@ -11336,10 +11336,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.engine._run_chain = counted
         try:
             self.clock.set_struct(datetime(2026, 9, 15, 12, 0))
-            outcomes = await self.engine.tick()
-            await self.engine._schedule_delivery_job
-            if not any('日程 both_chats' in note for row in outcomes for note in row.notes):
-                outcomes += self.engine._schedule_model_job.result()
+            outcomes = await self._settled_tick()
         finally:
             self.engine._run_chain = original
         outcome = await self.schedule_outcome(outcomes, "both_chats")
