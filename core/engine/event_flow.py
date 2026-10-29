@@ -453,6 +453,7 @@ class EventFlowMixin:
         picked = self.resolve_send_to(state, raw, fallback="")
         if picked:
             outcome.session_id = picked
+            outcome.speech_home = picked
 
     @model_operation("event", "未结束的事件需要提醒")
     async def _compose_remind_line(

@@ -139,6 +139,7 @@ class TickOutcome:
     contact_tokens: dict[str, str] = field(default_factory=dict)
     contact_people: set[str] = field(default_factory=set)
     speech_people: dict[str, list[tuple[str, ...]]] = field(default_factory=dict)
+    speech_origins: dict[str, list[str]] = field(default_factory=dict)
     image_people: dict[str, list[tuple[str, ...]]] = field(default_factory=dict)
     native_events: dict[str, Any] = field(default_factory=dict, repr=False)
     delivered_messages: dict[str, list[str]] = field(default_factory=dict)
@@ -167,7 +168,7 @@ class TickOutcome:
             return
         if session_id is None:
             return
-        target = str(session_id or "").strip()
+        target = str(session_id or (self.session_id if self.broadcast_targets else self.home())).strip()
         key = "" if not target or target == str(self.session_id) else target
         bucket = self.messages if not key else self.routed.setdefault(key, [])
         kinds = self.speech_kinds.setdefault(key, [])
@@ -192,6 +193,9 @@ class TickOutcome:
         people = self.speech_people.setdefault(key, [])
         people.extend([tuple(sorted(self.contact_people))] * max(0, len(bucket) - len(people)))
         people.append(tuple(sorted(self.contact_people)))
+        origins = self.speech_origins.setdefault(key, [])
+        origins.extend([self.home()] * max(0, len(bucket) - len(origins)))
+        origins.append(target)
         if not target or target == str(self.session_id):
             self.messages.append(body)
             return
@@ -228,6 +232,40 @@ class TickOutcome:
         """Older/custom callers can still queue speech directly without metadata."""
         values = (self.image_people if images else self.speech_people).get(key, [])
         return set(values[index]) if index < len(values) else set(self.contact_people)
+
+    def freeze_speech_targets(self) -> None:
+        """Keep legacy primary buffers at their actual home across a failed flush."""
+        if not self.messages or self.broadcast_targets:
+            return
+        origins = self.speech_origins.get("", [])
+        targets = [origins[i] if i < len(origins) else self.home() for i in range(len(self.messages))]
+        self.speech_origins[""] = targets
+        moved: dict[str, list[int]] = {}
+        kept = []
+        for i, target in enumerate(targets):
+            if target == self.session_id:
+                kept.append(i)
+            else:
+                moved.setdefault(target, []).append(i)
+        if not moved:
+            return
+        previous = {target: list(self.routed.get(target, [])) for target in moved}
+        for metadata, fallback in ((self.speech_kinds, self.speech_kind), (self.speech_ids, ""),
+                                   (self.speech_people, tuple(sorted(self.contact_people))),
+                                   (self.speech_origins, None)):
+            values = list(metadata.get("", []))
+            def value(i):
+                return values[i] if i < len(values) else fallback
+            metadata[""] = [value(i) for i in kept]
+            for target, indices in moved.items():
+                old = metadata.get(target, [])
+                default = target if metadata is self.speech_origins else fallback
+                metadata[target] = [value(i) for i in indices] + [
+                    old[i] if i < len(old) else default for i in range(len(previous[target]))]
+        for target, indices in moved.items():
+            self.routed[target] = [self.messages[i] for i in indices] + previous[target]
+        self.debug_positions = [sum(i < int(pos) for i in kept) for pos in self.debug_positions]
+        self.messages = [self.messages[i] for i in kept]
 
     def ordered_messages(self) -> list[str]:
         """正式回复 + 调试回显，按实际发生的先后排好。"""

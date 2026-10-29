@@ -197,6 +197,7 @@ class SuccessfulContactTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_plan_metadata_survives_continuation_and_does_not_charge_planning(self):
         await self.prepare(total=1, person=1)
+        contacts = fixtures.EngineTestCase._contact_delivery_records(self)
         plan = create_plan(steps=[{"action": "say", "messages": ["先说一句"]},
                                   {"action": "say", "messages": ["再说一句"]}], world_time=0)
         plan["contact_people"] = ["42"]
@@ -206,9 +207,12 @@ class SuccessfulContactTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.engine.contact_status(S)["left"], 1)
             await self.engine._tick_plan(state, self.engine.node(state.node_id), outcome, depth=0)
         self.assertEqual(outcome.contact_id, plan["id"])
-        self.assertIn("42", outcome.contact_people)
+        self.assertEqual(outcome.speech_people.get(""), [("42",), ("42",)])
         await self.engine._deliver(outcome)
         self.assertEqual(self.engine.contact_status(S)["left"], 0)
+        self.assertEqual(self.engine.contact_status(S, "42")["person_left"], 0)
+        self.assertIn((S, "先说一句", ("42",)), contacts)
+        self.assertIn((S, "再说一句", ()), contacts)
 
     async def test_default_prompt_uses_identity_and_distance_with_optional_authored_notes(self):
         await self.prepare()

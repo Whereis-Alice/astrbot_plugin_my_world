@@ -324,6 +324,10 @@ class SendMixin:
             people = outcome.image_people if images else outcome.speech_people
             people[key] = [tuple(sorted(outcome.speech_recipients(key, i, images=images)))
                            for i, ok in enumerate(mask) if ok]
+            if not images and key in outcome.speech_origins:
+                origins = outcome.speech_origins[key]
+                outcome.speech_origins[key] = [origins[i] if i < len(origins) else key or outcome.home()
+                                               for i, ok in enumerate(mask) if ok]
             return [line for line, ok in zip(lines, mask) if ok]
 
         outcome.messages = keep(outcome.messages, "", outcome.speech_kinds)
@@ -338,6 +342,7 @@ class SendMixin:
     async def _deliver(self, outcome: TickOutcome) -> None:
         if self.messenger is None:
             return
+        outcome.freeze_speech_targets()
         self._filter_proactive_speech(outcome, include_broadcast=True)
         # 已经即时发出去的算"她说过话"（进日志、进聊天上下文、算主动发言冷却），
         # 但不再发一遍。
@@ -616,6 +621,7 @@ class SendMixin:
                 speech_kinds={"": list(outcome.speech_kinds.get("", []))},
                 speech_ids={"": list(outcome.speech_ids.get("", []))},
                 speech_people={"": list(outcome.speech_people.get("", []))},
+                speech_origins={"": list(outcome.speech_origins.get("", []))},
                 image_kinds={"": list(outcome.image_kinds.get("", []))},
                 image_ids={"": list(outcome.image_ids.get("", []))},
                 image_people={"": list(outcome.image_people.get("", []))})
@@ -629,6 +635,7 @@ class SendMixin:
                 speech_kinds={"": list(outcome.speech_kinds.get(target, []))},
                 speech_ids={"": list(outcome.speech_ids.get(target, []))},
                 speech_people={"": list(outcome.speech_people.get(target, []))},
+                speech_origins={"": list(outcome.speech_origins.get(target, []))},
                 image_kinds={"": list(outcome.image_kinds.get(target, []))},
                 image_ids={"": list(outcome.image_ids.get(target, []))},
                 image_people={"": list(outcome.image_people.get(target, []))})

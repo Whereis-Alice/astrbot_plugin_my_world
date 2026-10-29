@@ -3167,6 +3167,16 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
 
     # ---------------- S3：自主行为 ----------------
 
+    def _contact_delivery_records(self):
+        from core.speech_policy import contact_targets
+        send = self.messenger.send_text
+        records = []
+        async def record(session, messages):
+            records.extend((session, text, contact_targets(session, i)) for i, text in enumerate(messages))
+            return await send(session, messages)
+        self.messenger.send_text = record
+        return records
+
     async def test_autonomous_loneliness_makes_her_find_people_and_speak(self):
         """孤独并进"主动找他"：想念还没到平时的门槛，孤独高也照样让她去找他。
 
@@ -3195,11 +3205,14 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             '"send_to":"群 1001"}],"valid_until":1800,"reason":"想找他说句话",'
             '"inner":"有点想听听他的声音。","intent":"outreach","reply_to":""}'
         ]
+        contacts = self._contact_delivery_records()
         outcome = await self.engine.maybe_decide(SESSION, force=True)
         state = await self.get_state()
         self.assertEqual(state.miss_push_count, 1)
         self.assertIn("一个人待着有点闷，你在吗", self.messenger.flat_messages)
-        self.assertEqual(outcome.contact_people, {"42"})
+        self.assertEqual(outcome.speech_people.get(""), [("42",)])
+        self.assertIn((SESSION, "一个人待着有点闷，你在吗", ("42",)), contacts)
+        self.assertEqual(self.engine.profiles.proactive_quota_left(SESSION, "42"), 1)
         self.assertFalse(outcome.reply_targets)
 
     async def test_hourly_autonomous_limit(self):
@@ -7379,6 +7392,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             '"valid_until":1800,"reason":"想他了就去找他说一句",'
             '"inner":"突然想听听他今天过得怎么样。","intent":"outreach","reply_to":""}'
         ]
+        contacts = self._contact_delivery_records()
         outcome = await self.engine.maybe_decide(SESSION, force=True)
         self.assertIsNotNone(outcome)
         self.assertTrue(
@@ -7389,7 +7403,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.miss.get("42", 0.0), 0.0)
         self.assertEqual(state.miss_push_count, 1)
         self.assertEqual(self.engine.profiles.proactive_quota_left(SESSION, "42"), 1)
-        self.assertEqual(outcome.contact_people, {"42"})
+        self.assertEqual(outcome.speech_people.get(""), [("42",)])
+        self.assertIn((SESSION, "突然有点想你了", ("42",)), contacts)
         self.assertFalse(outcome.reply_targets)
         events = await self.db.call("query_events", session_id=SESSION, limit=20)
         self.assertTrue(any(item["event_type"] == "miss_push" for item in events))
@@ -7434,6 +7449,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             '"valid_until":1800,"reason":"想他了就去找他说一句",'
             '"inner":"还是有点想他。","intent":"outreach","reply_to":""}'
         ]
+        contacts = self._contact_delivery_records()
         outcome = await self.engine.maybe_decide(SESSION, force=True)
         self.assertIsNotNone(outcome)
         self.assertTrue(
@@ -7444,7 +7460,9 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.miss.get("42", 0.0), 0.0)
         self.assertEqual(state.miss_push_count, 1)
         self.assertIn("突然有点想你了", self.messenger.flat_messages)
-        self.assertEqual(outcome.contact_people, {"42"})
+        self.assertEqual(outcome.speech_people.get(""), [("42",)])
+        self.assertIn((SESSION, "突然有点想你了", ("42",)), contacts)
+        self.assertEqual(self.engine.profiles.proactive_quota_left(SESSION, "42"), 1)
         self.assertFalse(outcome.reply_targets)
         events = await self.db.call("query_events", session_id=SESSION, limit=20)
         self.assertTrue(any(item["event_type"] == "miss_push" for item in events))
@@ -9795,6 +9813,12 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
                 jobs.append(schedule)
             if jobs:
                 await asyncio.wait_for(asyncio.gather(*jobs), timeout=5)
+
+            # A schedule scan intentionally skips a busy life-clock lock. Retry
+            # at this same simulated moment after the clock has settled, before
+            # advancing the next minute in this focused cooking scenario.
+            for row in await self.engine.run_schedules():
+                await self.engine._deliver(row)
 
         self.set_schedules(
             [
