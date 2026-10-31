@@ -11927,6 +11927,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         await self.set_state(node_id="study", chat_note="大家在聊周末去哪玩")
         self.clock.set_struct(datetime(2026, 9, 15, 12, 0))
         await self.tick_until(lambda: bool(self.tools.calls))
+        await self.finish_schedule_tick()
         # 只补意图：跑的必须还是日程里配的那个动作
         self.assertEqual(self.tools.calls[0][0], "search_news")
         self.assertNotIn("web_search", [name for name, _p in self.tools.calls])
