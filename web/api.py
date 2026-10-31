@@ -48,6 +48,7 @@ from ..core.timeline import build_timeline
 from ..core.tool_import import build_drafts as build_tool_action_drafts
 from ..core.tool_import import merge_drafts as merge_tool_action_drafts
 from .life_api import LifeApiMixin
+from .visits_api import register_visit_apis
 
 
 def _generation_timeout_seconds(config: Any) -> float:
@@ -443,6 +444,7 @@ class WebApiMixin(LifeApiMixin):
             "通讯录画像：删除一条或多条画像",
         )
         register(f"/{p}/extensions", self.api_extensions, ["GET", "POST"], "扩展包：设置与数据")
+        register_visit_apis(self, plugin_id)
 
     # ---------------- 通讯录（用户画像）----------------
 

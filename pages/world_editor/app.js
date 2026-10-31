@@ -10,6 +10,7 @@ import { memorySearchFields } from "./memory-settings.js";
 import { familiarityDescriptionEditor, relationshipPromptEditor } from "./relationship-prompt.js";
 import { thoughtDate, updateThoughtDates } from "./thought-history.js";
 import { mountLifeWorkspace } from "./life-workspace.js";
+import { createVisitsPage } from "./visits.js?v=1";
 import { openBrowseSettings } from "./browse-settings.js?v=4.34.7";
 import { personAvatar, personColor, bindPeopleSort } from "./people-ui.js";
 import { openRelationshipRulesEditor } from "./relationship-rules.js";
@@ -3865,6 +3866,8 @@ function showTab(name, button) {
   updateWorkspaceContext();
   syncTopbarHeight();
   if (name === "status") refreshStatus();
+  if (name === "visits") visitsPage.reload();
+  else visitsPage.clearSecrets();
   if (name === "events") loadEvents();
   if (name === "contacts") loadContacts();
   if (name === "relationships") relationshipsPage.reload();
@@ -21614,6 +21617,12 @@ const lifePage = createLifePage({root: $("tab-life"), apiGet, apiPost, el, toast
     $("memory-keyword").value = text;
     showTab("memories");
   },
+});
+const visitsPage = createVisitsPage({root: $("tab-visits"), apiGet, apiPost, el, toast,
+  getSession: () => $("status-session").value, confirm: confirmDialog});
+$("status-session").addEventListener("change", () => {
+  visitsPage.clearSecrets();
+  if ($("tab-visits").classList.contains("active")) visitsPage.reload();
 });
 $("status-session").addEventListener("change", () => {
   if (!$("tab-life").classList.contains("active")) return;

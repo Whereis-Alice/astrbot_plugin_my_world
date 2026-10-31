@@ -12,6 +12,14 @@ from tests.test_dialogue_inject import Event
 
 
 class IntegrationIntegrityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_world_visit_does_not_retry_or_drop_output_cap(self):
+        model_calls = importlib.import_module(self.module.__name__ + ".core.model_calls")
+        self.plugin.context.llm_generate = AsyncMock(side_effect=TypeError("unexpected keyword argument 'max_tokens'"))
+        with model_calls.model_context("world_visit", "邀请友邻", self.session):
+            result = await self.generate(max_tokens=240)
+        self.assertFalse(result.ok)
+        self.plugin.context.llm_generate.assert_awaited_once()
+
     async def test_poke_fallback_stops_when_authorization_is_revoked(self):
         policy = importlib.import_module(self.module.__name__ + ".core.speech_policy")
         allowed = True

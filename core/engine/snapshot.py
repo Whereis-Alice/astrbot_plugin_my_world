@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .speech_receipts import scoped_thought
+from ..visit_presence import active_visit, presence_text
 
 from datetime import date, datetime, timedelta
 from hashlib import sha256
@@ -236,12 +237,13 @@ class SnapshotMixin:
                 state = await self.load_state(session_id, cold_start=False)
         _, event_persona = await self._journal_persona(session_id)
         event_help = self._pending_event_help(state, event_persona)
+        visit = active_visit(self, session_id)
         return {
             "session_id": session_id,
             "world_time": state.world_time,
             "tick_seconds": self.tick_seconds,
             "node_id": state.node_id,
-            "node_name": node.name if node else "",
+            "node_name": presence_text(visit) if visit else node.name if node else "",
             "state": state.state,
             # 扩展想显示的状态（例如"兴奋中"）：只给编辑器看，不进群名片
             "extension_status": self.extensions.status_text(state, session_id),
@@ -740,6 +742,7 @@ class SnapshotMixin:
                     state = await self.load_state(session_id, cold_start=False)
                     node = self.node(state.node_id)
                     activity = self.activity_view(state)
+                    visit = active_visit(self, session_id)
             except Exception:
                 continue
             result.append(
@@ -747,7 +750,7 @@ class SnapshotMixin:
                     "session_id": session_id,
                     "state_key": self.state_key(session_id),
                     "node_id": state.node_id,
-                    "node_name": node.name if node is not None else state.node_id,
+                    "node_name": presence_text(visit) if visit else node.name if node is not None else state.node_id,
                     "state": state.state,
                     "mood": state.mood,
                     "world_time": state.world_time,

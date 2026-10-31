@@ -135,6 +135,9 @@ from .adapters.profile_commands import (
 )
 from .adapters.profile_weaver_tools import register_profile_tools, unregister_profile_tools
 from .adapters.tools import AstrBotTools, _clip_brief, _tool_result_text
+from .adapters.visits import VisitActorPort
+from .adapters.visit_tools import register_visit_tools, unregister_visit_tools
+from .core.visits import VisitConfig, VisitService
 from .adapters.vision import AstrBotVision, _images_head
 from .web.api import WebApiMixin
 from .web.auth import EditorAuth
@@ -448,6 +451,9 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
         )
         self.engine.profile_weaver_service = self.profile_weaver_service
         self.engine.media = self.proactive_media
+        self.visits = VisitService(self.db, VisitConfig.from_mapping(config), VisitActorPort(self))
+        self.engine.visits = self.visits
+        self.db.on_close(self.visits.close)
         # 别的插件的数据目录在同一个 plugin_data 下（心迹画像的同步要用）
         self.engine.external_data_root = str(self.store.data_dir.parent)
         # 调试回显实时发：工具/指令调用在发生的那一下就走这条通道，
@@ -488,6 +494,9 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
             self.logger.info("[my_world] 插件已禁用（enabled=false）")
             return
         self._sync_schedule_tools()
+        await self.visits.start()
+        if not getattr(self, "_owned_visit_tools", None):
+            register_visit_tools(self)
         if self._tick_task is None or self._tick_task.done():
             self._tick_task = asyncio.create_task(self._tick_loop())
         self.logger.info(
@@ -601,10 +610,12 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
         if extraction is not None:
             await extraction.close()
         await self.engine.close_background()
+        await self.visits.close()
         media = getattr(self, "proactive_media", None)
         if media is not None:
             media.close()
         unregister_profile_tools(self)
+        unregister_visit_tools(self)
         try:
             await self.db.close()
         except Exception:
@@ -630,6 +641,8 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
                     # 落后太多（宿主机卡顿 / 长时间睡眠）就重新对齐，别追赶
                     next_at = time.time() + self.tick_interval
                 await self.engine.tick()
+                if self.visits.config.enabled:
+                    self.engine.queue_background("world_visits", self.visits.tick)
                 # tick 的逐拍明细不再写后台日志（翻起来全是「t=1902 node=…」），
                 # 只留在引擎的内存环里，编辑器「运行记录」页读它。
                 # 一个会话组只催一次决策：按"会话"逐个催的话，同一个她会被催好几遍，
@@ -2326,6 +2339,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
         # 上一条回复可能还占着管线（AstrBot 里那条管线是串行的），等她登记时
         # 早就过了安静期，两条消息就各回一次了。
         if self._should_expect_reply(event):
+            self.visits.touch(self.engine.state_key(session_id))
             try:
                 raw_text = event.get_message_str() or ""
                 event.set_extra(

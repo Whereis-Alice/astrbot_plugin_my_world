@@ -128,6 +128,11 @@ class AstrBotLLM:
                     response = await invoke(**options)
                     break
                 except Exception as exc:
+                    if call_context().get("purpose") == "world_visit":
+                        # A trip allocates one request per decision. Retrying a
+                        # rejected shape would spend an unreserved call or drop
+                        # the configured output cap. Let this step fail safely.
+                        return LLMReply(ok=False, error=str(exc))
                     if toolset:
                         # A retry of the whole loop could repeat tool side effects.
                         return LLMReply(ok=False, error=str(exc))

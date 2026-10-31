@@ -13,6 +13,81 @@
     "type": "bool",
     "default": true
   },
+  "visits_enabled": {
+    "description": "启用友邻世界与串门",
+    "hint": "默认关闭。开启后在小世界页面「友邻与串门」配对双方世界，先提出邀请、对方接受后才到访。只开放专用串门接口。修改通信配置后重载插件。",
+    "type": "bool", "default": false, "obvious_hint": true
+  },
+  "visits_listen_host": {
+    "description": "串门监听地址",
+    "hint": "默认 0.0.0.0；域名反向代理在本机时可设为 127.0.0.1。关闭串门时不监听。",
+    "type": "string", "default": "0.0.0.0"
+  },
+  "visits_listen_port": {
+    "description": "串门专用端口",
+    "hint": "默认 38471。直连填写服务器 IP:38471；域名可反向代理到本端口。与 AstrBot 面板端口独立。",
+    "type": "int", "default": 38471, "obvious_hint": true
+  },
+  "visits_public_url": {
+    "description": "串门对外地址",
+    "hint": "填写对方可访问的 http://服务器IP:38471 或 https://你的域名，支持反向代理路径前缀。它是自己的接待地址；对方地址在友邻配对页填写。",
+    "type": "string", "default": "", "obvious_hint": true
+  },
+  "visits_auto_enabled": {
+    "description": "允许她自主提出串门邀请",
+    "hint": "总开关开启且存在已配对友邻时生效。每天首次空闲机会只抽一次概率，抽中后由她决定是否邀请；睡觉或忙碌时不强行出门。",
+    "type": "bool", "default": true
+  },
+  "visits_auto_probability": {
+    "description": "每日自主邀请概率",
+    "hint": "0～1，默认 0.05（5%）。每天最多抽一次，失败、拒绝和重启都不会反复抽取；自然语言邀请跳过概率。",
+    "type": "float", "default": 0.05
+  },
+  "visits_weekly_limit": {
+    "description": "每周自主邀请上限",
+    "hint": "默认每个独立生活每周最多一次；已发起的失败邀请也占次数。自然语言邀请仍受旅程预算限制。",
+    "type": "int", "default": 1
+  },
+  "visits_duration_minutes": {
+    "description": "单次串门最长停留分钟",
+    "hint": "默认 30 分钟。她们可以提前告别，真人可以自然语言叫她回家；中断仅保留已确认经过。",
+    "type": "int", "default": 30
+  },
+  "visits_turns_per_actor": {
+    "description": "每方主要发言次数上限",
+    "hint": "默认各三次。一起活动时到节点才思考，等待期间不持续调用模型。",
+    "type": "int", "default": 3
+  },
+  "visits_max_calls": {
+    "description": "每趟模型调用总上限",
+    "hint": "默认双方合计十二次，邀请、事件与失败均计入。手动邀请后的角色互聊同样受限制，并遵守各服务器原有后台预算。",
+    "type": "int", "default": 12
+  },
+  "visits_max_output_tokens": {
+    "description": "串门单次模型输出上限",
+    "hint": "默认 240 Token，台词、动作和自己的感受在同次输出中给出。小模型需足够空间生成有效 JSON。",
+    "type": "int", "default": 240
+  },
+  "visits_timeout_seconds": {
+    "description": "串门网络与模型等待上限秒",
+    "hint": "默认 45 秒。失败有限重试，重发已生成结果时不重复调用模型。",
+    "type": "int", "default": 45
+  },
+  "visits_actor": {
+    "description": "谁可以自然语言安排串门",
+    "hint": "admin=仅管理员（默认）；all=当前已启用会话的用户。只能邀请已经管理员配对的友邻。",
+    "type": "string", "default": "admin", "options": ["admin", "all"]
+  },
+  "visits_reception_start": {
+    "description": "串门接待开始小时",
+    "hint": "按接待方当地时间，默认 8 点。与结束小时相同表示全天，跨午夜也支持；仍尊重实际睡眠和忙碌状态。",
+    "type": "int", "default": 8
+  },
+  "visits_reception_end": {
+    "description": "串门接待结束小时",
+    "hint": "默认 22 点，结束小时不包含在内。时间窗只控制邀请与接待，不会把既有旅程强行改写成已完成。",
+    "type": "int", "default": 22
+  },
   "reply_mode": {
     "invisible": true,
     "description": "回复方式",

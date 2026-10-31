@@ -2,3 +2,5 @@
 holidays>=0.60,<1
 # Windows 与精简容器中的 IANA 时区数据兜底。
 tzdata>=2024.1
+# Optional world visits use an independent bounded HTTP listener and client.
+aiohttp>=3.10,<4

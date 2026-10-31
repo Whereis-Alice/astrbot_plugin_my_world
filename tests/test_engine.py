@@ -11675,8 +11675,6 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_schedule_start_can_be_echoed_to_the_group(self):
         """勾了「日程开始执行」这一档，就会把这一行发到群里。"""
 
-        import asyncio
-
         raw = self.store.raw_world()
         raw["echo_types"] = ["schedule"]
         self.store.save_world(raw)
@@ -11687,9 +11685,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             action_chain=[{"type": "say", "messages": ["看新闻了"]}],
         )
         self.clock.set_struct(datetime(2026, 9, 15, 12, 0))
-        await self.engine.tick()
-        # Slower ticks intentionally return before scheduled delivery finishes.
-        await asyncio.wait_for(self.engine._schedule_delivery_job, timeout=5)
+        await self.finish_schedule_tick()
         self.assertTrue(
             any("news" in line and "📅" in line for line in self.messenger.flat_messages),
             self.messenger.flat_messages,

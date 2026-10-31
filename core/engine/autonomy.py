@@ -17,6 +17,7 @@ from ..state import STATE_DROWSY, WorldState
 from .models import TickOutcome
 from .util import _clip_text
 from .life_inference import life_work
+from ..visit_presence import active_visit
 
 
 class AutonomyMixin:
@@ -35,6 +36,8 @@ class AutonomyMixin:
 
         if not self.is_enabled(session_id):
             return None
+        if active_visit(self, session_id):
+            return None
         await self.advance_life_matters(session_id)
         now = self._now()
         # 节流按"这一整个她"算，不按会话：同一个组的几个会话共用一个她
@@ -48,6 +51,8 @@ class AutonomyMixin:
         outcome.place = session_id
         pushed = False
         async with self.session_state(session_id) as state:
+            if active_visit(self, session_id):
+                return None
             echo_marker = await self._event_marker(state)
             node = self.node(state.node_id) or self.node(self.default_node_id())
             self.resume_life(state)

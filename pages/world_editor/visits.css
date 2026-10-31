@@ -1,0 +1,36 @@
+.visits-heading {display:flex; justify-content:space-between; gap:20px; align-items:center; margin-bottom:18px;}
+.visits-heading h2 {font-size:clamp(23px, 3vw, 32px); margin:8px 0;}
+.visits-heading p {max-width:680px; line-height:1.7; margin-bottom:0;}
+.visits-notice {padding:14px 18px; border:1px solid var(--line); border-radius:14px; line-height:1.7; overflow-wrap:anywhere;}
+.visits-current {padding:22px; margin:20px 0 28px;}
+.visits-current h3 {margin:12px 0;}
+.visits-peer-grid {display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap:16px; margin-bottom:24px;}
+.visits-peer {padding:20px; min-width:0;}
+.visits-peer h4 {font-size:18px; margin:0 0 9px;}
+.visits-address {overflow-wrap:anywhere; font-size:12px;}
+.visits-peer .field {margin:16px 0;}
+.visits-peer .toolbar {flex-wrap:wrap; gap:8px;}
+.visits-pairing {padding:18px 22px; margin:24px 0;}
+.visits-pairing > summary {cursor:pointer; font-weight:600;}
+.visits-pair-body {padding-top:12px;}
+.visits-pair-body > p {line-height:1.7;}
+.visits-pair-body .field {max-width:680px; margin:14px 0;}
+.visits-pair-form {border-top:1px solid var(--line); padding-top:14px; margin-top:22px;}
+.visits-visit {min-width:0;}
+.visits-history > details {border:1px solid var(--line); border-radius:12px; padding:14px 18px; margin:10px 0;}
+.visits-history summary {cursor:pointer; line-height:1.6; overflow-wrap:anywhere;}
+.visits-visit-body {padding-top:8px;}
+.visits-visit-body > p {line-height:1.7; overflow-wrap:anywhere;}
+.visits-scene {font-weight:600;}
+.visits-transcript {padding:0; list-style:none; display:grid; gap:12px; max-width:900px;}
+.visits-transcript li {padding:12px 15px; background:var(--bg); border-left:2px solid var(--line); border-radius:4px 10px 10px 4px; min-width:0;}
+.visits-transcript small {margin-left:12px;}
+.visits-transcript p {line-height:1.7; margin:6px 0 0; white-space:pre-wrap; overflow-wrap:anywhere;}
+@media(max-width:760px) {
+  .visits-heading {align-items:flex-start; flex-direction:column; gap:12px;}
+  .visits-current, .visits-pairing, .visits-peer {padding:16px;}
+  .visits-peer-grid {grid-template-columns:minmax(0, 1fr);}
+  .visits-pair-body input {min-width:0; width:100%;}
+  .visits-transcript small {display:block; margin:4px 0;}
+}
+

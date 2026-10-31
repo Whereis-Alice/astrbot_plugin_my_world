@@ -22,6 +22,7 @@ from ..timeline import render_event
 from .models import TickOutcome
 from .util import _clip_text
 from .life_inference import life_work
+from ..visit_presence import active_visit
 
 
 class ScheduleMixin:
@@ -649,13 +650,15 @@ class ScheduleMixin:
     @life_work([])
     async def _run_schedule_scope(self, session_id: str, once_done: set) -> list[TickOutcome]:
         outcomes: list[TickOutcome] = []
-        if self.schedules is None:
+        if self.schedules is None or active_visit(self, session_id):
             return outcomes
         # 她的一天只过一遍：同一个她（会话组）只检查一次日程
         for session_id in [session_id]:
             if self.is_busy(session_id):
                 continue  # A delayed decision in one life must not stop the global clock.
             async with self.session_state(session_id) as state:
+                if active_visit(self, session_id):
+                    continue
                 now = self.local_now()
                 seconds = now.timestamp()
                 day_key = now.strftime("%Y-%m-%d")

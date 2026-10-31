@@ -38,9 +38,9 @@ class BackgroundMixin:
         # Reserve room for every per-character family and each global task. Keep
         # this aligned with the queue sites in main.py and engine mixins: decision,
         # participation, chat_browse, memory, life_seed, matter, social; plus
-        # weather, daily_schedule, profile_sync and calendar_diary.
+        # weather, daily_schedule, profile_sync, calendar_diary and world_visits.
         concurrency = self._background_concurrency()
-        capacity = max(8, concurrency * 6, len(self.tick_session_ids()) * 7 + 4)
+        capacity = max(8, concurrency * 6, len(self.tick_session_ids()) * 7 + 5)
         live = sum(not task.done() for task in jobs.values())
         if live >= capacity:
             return None

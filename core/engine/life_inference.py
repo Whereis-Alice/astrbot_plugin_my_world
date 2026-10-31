@@ -10,6 +10,7 @@ import copy
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from functools import wraps
+from ..visit_presence import active_visit
 
 LIFE_WORK = ContextVar("my_world_life_work", default=False)
 STATE_LEASE = ContextVar("my_world_state_lease", default=None)
@@ -82,7 +83,8 @@ def owned_life_lease() -> dict | None:
 async def validate_life_preparation(engine) -> None:
     """Keep a prepared request's original world and character before admission."""
     lease = owned_life_lease()
-    if lease and (engine.world is not lease["world"] or engine.schedules is not lease["schedules"]
+    if lease and (active_visit(engine, lease["origin"])
+                  or engine.world is not lease["world"] or engine.schedules is not lease["schedules"]
                   or engine.sessions is not lease["sessions"] or not engine.is_enabled(lease["origin"])
                   or engine.state_key(lease["origin"]) != lease["state"].session_id
                   or engine.local_now().date() != lease["day"]
@@ -126,7 +128,8 @@ async def released_life_lock(engine):
             before_decision, after_decision = decision_state(before), decision_state(after)
             changed_fields = sorted(k for k in before_decision.keys() | after_decision.keys()
                                     if before_decision.get(k) != after_decision.get(k))
-            stale = (engine.world is not world or engine.state_key(origin) != key
+            stale = (active_visit(engine, origin)
+                     or engine.world is not world or engine.state_key(origin) != key
                      or not engine.is_enabled(origin) or engine.local_now().date() != day
                      or engine.world.model_dump(mode="json") != world_config
                      or (engine.sessions.model_dump(mode="json") if engine.sessions else None) != sessions_config

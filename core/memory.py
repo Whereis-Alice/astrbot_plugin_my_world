@@ -306,9 +306,9 @@ class MemoryEngine:
         for item in candidates:
             prior = life_memory_metadata(str(item.get("source") or ""), item.get("context"))
             if (origin or prior) and (source, origin.get("persona_key", ""), origin.get("matter_id", ""),
-                                     origin.get("kind", ""), origin.get("emotion_user", "")) != (
+                                     origin.get("kind", ""), origin.get("emotion_user", ""), origin.get("visit_id", "")) != (
                     item.get("source"), prior.get("persona_key", ""), prior.get("matter_id", ""),
-                    prior.get("kind", ""), prior.get("emotion_user", "")):
+                    prior.get("kind", ""), prior.get("emotion_user", ""), prior.get("visit_id", "")):
                 continue
             other = _normalize(str(item.get("content", "")))
             if not other:

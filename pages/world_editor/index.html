@@ -11,6 +11,7 @@
     <link rel="stylesheet" href="./people.css?v=4.29.0" />
     <link rel="stylesheet" href="./model-calls.css?v=4.29.0" />
     <link rel="stylesheet" href="./life.css?v=4.33.0" />
+    <link rel="stylesheet" href="./visits.css?v=1" />
     <link rel="stylesheet" href="./social-learning.css?v=4.29.0" />
     <link rel="stylesheet" href="./observatory.css?v=4.34.4" />
     <!-- 主题在解析样式前就定下来，避免刷新时先闪一下浅色 -->
@@ -58,6 +59,7 @@
           <span class="nav-group">观察</span>
           <button data-tab="status" class="active" title="控制台">控制台</button>
           <button data-tab="life" title="生活">生活</button>
+          <button data-tab="visits" title="友邻与串门">友邻与串门</button>
           <button data-tab="thoughts" title="内心活动">内心活动</button>
           <button data-tab="contacts" title="通讯录">通讯录</button>
           <button data-tab="relationships" title="关系与好感">关系与好感</button>
@@ -130,6 +132,7 @@
         </header>
 
         <main>
+        <section id="tab-visits" class="tab"></section>
         <section id="tab-life" class="tab">
           <div class="life-toolbar">
             <strong>生活的下文</strong><small id="life-count"></small><span class="life-spacer"></span>

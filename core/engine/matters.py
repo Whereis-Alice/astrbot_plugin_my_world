@@ -22,6 +22,7 @@ from ..planner import create_plan
 from ..recovery import recovery_needed
 from ..state import WorldState
 from .models import TickOutcome
+from ..visit_presence import active_visit
 
 
 class MattersMixin:
@@ -91,6 +92,8 @@ class MattersMixin:
     async def seed_life_matter(self, session_id: str) -> None:
         """At most one quiet personal suggestion per day, after her first six lived hours."""
         if not self.is_enabled(session_id) or not self.world.limits.life_matter_enabled or not self.world.limits.life_matter_self_start:
+            return
+        if active_visit(self, session_id):
             return
         world = self.world
         state_key = self.state_key(session_id)
@@ -381,6 +384,8 @@ class MattersMixin:
     async def advance_life_matters(self, session_id: str) -> None:
         if not self.is_enabled(session_id) or not self.world.limits.life_matter_enabled:
             return
+        if active_visit(self, session_id):
+            return
         try:
             await self.note_life_progress(session_id)
         except Exception as exc:
@@ -522,6 +527,7 @@ class MattersMixin:
         current_persona = await self._persona_text(session_id)
         return (self.world is world and self.state_key(session_id) == state_key
                 and self.is_enabled(session_id) and self.world.limits.life_matter_enabled
+                and not active_visit(self, session_id)
                 and current_persona == persona and (not day or self._today_key(self._now()) == day))
 
     async def note_life_progress(self, session_id: str) -> None:

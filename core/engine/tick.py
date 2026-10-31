@@ -40,6 +40,7 @@ from .models import TickOutcome
 from .util import (
     _clip_text,
 )
+from ..visit_presence import active_visit, presence_text
 
 
 class TickMixin:
@@ -162,6 +163,11 @@ class TickMixin:
             await self._validate_running_life(state)
             elapsed = self.reconcile_life_time(state)
             state.world_time += 1
+            visit = active_visit(self, session_id)
+            if visit:
+                await self._tick_visit_presence(state, elapsed, visit)
+                return TickOutcome(session_id=session_id, notes=[presence_text(visit)],
+                                   summary={"world_time": state.world_time, "visiting": True})
             if (state.current_action or {}).get("offline_recovery_complete"):
                 await self._tick_continuous(state, self.node(state.node_id), TickOutcome(session_id=session_id))
             action = state.current_action
@@ -188,6 +194,13 @@ class TickMixin:
             node = self.node(state.node_id) or self.node(self.default_node_id())
             elapsed_life = self.reconcile_life_time(state)
             state.world_time += 1
+            visit = active_visit(self, session_id)
+            if visit:
+                await self._tick_visit_presence(state, elapsed_life, visit)
+                outcome.notes.append(presence_text(visit))
+                outcome.summary = {"world_time": state.world_time, "visiting": True,
+                                   "node_id": state.node_id, "node_name": presence_text(visit)}
+                return outcome
             if not self.world.is_home_zone(state.node_id):
                 # 人就在外面：一直记着"最近出过门"，回家以后那句提醒才准
                 state.last_outdoor_at = self._now()
@@ -381,6 +394,20 @@ class TickMixin:
                 self.mark_chat_replied(state, target)
             await self._echo_events_since(state, outcome, echo_marker)
         return outcome
+
+    async def _tick_visit_presence(self, state: WorldState, elapsed: float, visit: dict) -> None:
+        """Needs keep time; home practice, plans and events do not run twice."""
+        self._settle_idle_practice(state, at=float(visit.get("arrived_at") or self._now()))
+        state.idle_activity = {}
+        current = state.current_action
+        try:
+            state.current_action = None
+            self.dynamics.tick(state, node=None, elapsed_seconds=elapsed,
+                               world=self.world, now=self._now())
+        finally:
+            state.current_action = current
+        state.mood = self.dynamics.derive_mood(state)
+        await self._record_history(state, None)
 
     async def _tick_continuous(
         self, state: WorldState, node: NodeDef | None, outcome: TickOutcome
