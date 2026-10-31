@@ -32,11 +32,9 @@ class VisitJournal:
                 self._state.setdefault(name, default)
             self._loaded = True
             # An inference interrupted by process exit must never be regenerated.
-            for visit in self._state["visits"].values():
+            for visit in list(self._state["visits"].values()):
                 if visit.pop("model_pending", None):
-                    visit["status"] = "interrupted"
-                    visit["ended_at"] = self._now()
-                    visit["end_reason"] = "上次思考被中断，只保留已确认经过"
+                    await self._finish(visit, "interrupted", "上次思考被中断，只保留已确认经过")
             await self._save()
 
     async def _save(self):
@@ -113,12 +111,17 @@ class VisitJournal:
         total = visit["max_calls"]
         return total // 2 + (total % 2 if actor_id == visit["host_id"] else 0)
 
-    async def _finish(self, visit, status, reason=""):
+    async def _finish(self, visit, status, reason="", *, notify=True):
+        contacted = visit.get("contacted") or visit.get("arrived_at") or visit["status"] == "offered"
         visit["status"], visit["end_reason"] = status, reason
         visit["ended_at"] = self._now()
         visit.pop("model_pending", None)
         visit.pop("outbox", None)
         visit.pop("unsent_turn", None)
+        if notify and contacted:
+            visit["end_pending"] = {"attempts": 0, "next_at": self._now()}
+        else:
+            visit.pop("end_pending", None)
         await self._save()
 
     async def _remember(self, visit_id):
@@ -130,6 +133,7 @@ class VisitJournal:
         await self.actor_port.remember(snapshot["scope"], snapshot)
         async with self._lock:
             visit = self._state["visits"].get(visit_id)
-            if visit:
+            if visit and all(visit.get(key) == snapshot.get(key)
+                             for key in ("log", "status", "end_reason")):
                 visit["remembered"] = True
                 await self._save()

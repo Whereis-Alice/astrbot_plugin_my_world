@@ -92,7 +92,7 @@ class VisitService(VisitFlow, VisitJournal):
         await self._load()
         async with self._lock:
             self._peer(scope, peer_id)
-            for visit in self._state["visits"].values():
+            for visit in list(self._state["visits"].values()):
                 if visit["scope"] == scope and visit["remote"]["id"] == peer_id and visit["status"] in RESERVED:
                     await self._finish(visit, "interrupted", "已解除配对")
             self._state["peers"].pop(peer_id)
@@ -108,10 +108,7 @@ class VisitService(VisitFlow, VisitJournal):
         async with self._lock:
             cached = self._state["receipts"].get(receipt_key)
             if cached:
-                verify(body, cached["key"], self._now(), fresh=False)
-                if digest(body["payload"]) != cached["digest"]:
-                    raise ValueError("重复编号的消息内容发生变化")
-                return copy.deepcopy(cached["response"])
+                return self._cached_response(body, cached)
         if str(body.get("target", "")).startswith("pair:"):
             return await self._receive_pair(body, receipt_key)
         peer = self._state["peers"].get(body.get("sender"))
@@ -125,9 +122,19 @@ class VisitService(VisitFlow, VisitJournal):
         async with self._lock:
             # A concurrent duplicate may have entered while describe was awaiting.
             if receipt_key in self._state["receipts"]:
-                return copy.deepcopy(self._state["receipts"][receipt_key]["response"])
+                return self._cached_response(body, self._state["receipts"][receipt_key])
+            current_peer = self._state["peers"].get(body["sender"])
+            if (not current_peer or current_peer["scope"] != peer["scope"]
+                    or current_peer["secret"] != peer["secret"]):
+                raise ValueError("友邻配对已变化，请重新联系")
             result = await self._inbox(peer, local, payload)
             return await self._receipt(body, result, peer["secret"], actor["id"], receipt_key)
+
+    def _cached_response(self, body, cached):
+        verify(body, cached["key"], self._now(), fresh=False)
+        if digest(body["payload"]) != cached["digest"]:
+            raise ValueError("重复编号的消息内容发生变化")
+        return copy.deepcopy(cached["response"])
 
     async def _receive_pair(self, body, receipt_key):
         async with self._lock:
@@ -146,7 +153,7 @@ class VisitService(VisitFlow, VisitJournal):
             raise ValueError("不能配对自己")
         async with self._lock:
             if receipt_key in self._state["receipts"]:
-                return copy.deepcopy(self._state["receipts"][receipt_key]["response"])
+                return self._cached_response(body, self._state["receipts"][receipt_key])
             if body["target"][5:] not in self._state["codes"]:
                 raise ValueError("配对码已经使用")
             self._add_peer(scope, local, remote, url, derive_key(code, actor["id"], remote["id"]))
@@ -171,8 +178,6 @@ class VisitService(VisitFlow, VisitJournal):
                 if visit["remote"]["id"] != peer["id"]:
                     raise ValueError("旅程身份冲突")
                 return {"visit": self._wire(visit)}
-            if self.active(peer["scope"]):
-                raise ValueError("她现在已有邀请或串门，稍后再约")
             role = payload.get("role")
             if role not in {"host", "guest"}:
                 raise ValueError("无效到访方向")
@@ -190,6 +195,7 @@ class VisitService(VisitFlow, VisitJournal):
                 raise ValueError("无效停留期限")
             visit["expires_at"] = self._now() + min(duration, self.config.duration_minutes * 60)
             visit["status"] = "offered"
+            visit["contacted"] = True
             visit["calls"][peer["id"]] = 1
             invitation = payload.get("invitation")
             if invitation is not None:
@@ -198,11 +204,43 @@ class VisitService(VisitFlow, VisitJournal):
                         or not isinstance(invitation.get("text"), str) or len(invitation["text"]) > 500):
                     raise ValueError("邀请来源无效")
                 visit["log"] = [copy.deepcopy(invitation)]
+            current = self.active(peer["scope"])
+            if current:
+                # Crossing proposals must settle on the same invitation on both
+                # servers. Random IDs make the choice fair without a third arbiter.
+                crossing = (current["status"] == "inviting" and not current.get("arrived_at")
+                            and current["remote"]["id"] == peer["id"])
+                if not crossing:
+                    raise ValueError("她现在已有邀请或串门，稍后再约")
+                if visit_id >= current["id"]:
+                    return {"declined": True, "reason": "双方同时提出邀请，接续另一条邀请"}
+                await self._finish(self._state["visits"][current["id"]], "declined",
+                                   "双方同时提出邀请，接续对方的邀请", notify=False)
             self._state["visits"][visit_id] = visit
             return {"visit": self._wire(visit)}
         visit = self._state["visits"].get(visit_id)
         if not visit or visit["remote"]["id"] != peer["id"]:
             raise ValueError("找不到本友邻的旅程")
+        if op == "end":
+            previous = (copy.deepcopy(visit["log"]), visit["status"], visit.get("end_reason"))
+            remote = payload.get("visit")
+            if remote is not None and (not isinstance(remote, dict) or remote.get("id") != visit_id):
+                raise ValueError("无效告别旅程快照")
+            if visit["role"] == "guest" and remote is not None:
+                if remote.get("status") not in TERMINAL:
+                    raise ValueError("对方尚未确认结束本次相见")
+                self._synchronize(visit, remote, peer["id"], allow_terminal=True)
+            if visit["status"] not in TERMINAL:
+                status = "completed" if (visit.get("arrived_at") and isinstance(remote, dict)
+                                          and remote.get("status") == "completed") else "interrupted"
+                await self._finish(visit, status, "对方已告别或结束本次联系", notify=False)
+            if (visit["log"], visit["status"], visit.get("end_reason")) != previous:
+                visit.pop("remembered", None)
+            visit.pop("end_pending", None)
+            visit.pop("model_pending", None)
+            visit.pop("outbox", None)
+            visit.pop("unsent_turn", None)
+            return {"visit": self._wire(visit)}
         if visit["status"] in TERMINAL:
             return {"visit": self._wire(visit)}
         if visit["expires_at"] <= self._now():
@@ -212,9 +250,7 @@ class VisitService(VisitFlow, VisitJournal):
         if type(calls) is not int or not 0 <= calls <= self._allocation(visit, peer["id"]):
             raise ValueError("旅程调用额度无效")
         visit["calls"][peer["id"]] = max(visit["calls"][peer["id"]], calls)
-        if op == "end":
-            await self._finish(visit, "interrupted", "对方已告别或结束本次联系")
-        elif op == "step":
+        if op == "step":
             self._receive_step(visit, peer["id"], payload)
         elif op == "sync":
             self._synchronize(visit, payload.get("visit"), peer["id"])
@@ -233,6 +269,7 @@ class VisitService(VisitFlow, VisitJournal):
             if not outgoing:
                 outgoing = envelope(peer["secret"], self._local_id(visit), peer["id"], payload, self._now())
                 visit["outbox"] = outgoing
+                visit["contacted"] = True
                 await self._save()
             peer = copy.deepcopy(peer)
         response = await self.transport.request(peer["url"], outgoing)
@@ -266,9 +303,6 @@ class VisitService(VisitFlow, VisitJournal):
         async with self._lock:
             current = self._state["visits"][visit["id"]]
             await self._finish(current, "interrupted", "真人要求告别归家")
-        try:
-            await self._send(visit["id"], {"op": "end"})
-        except ValueError:
-            pass
+        await self._notify_end(visit["id"])
         await self._remember(visit["id"])
         return {"ok": True, "status": "interrupted"}

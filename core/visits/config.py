@@ -65,7 +65,9 @@ class VisitConfig:
     listen_port: int = DEFAULT_PORT
     public_url: str = ""
     auto_enabled: bool = True
-    auto_probability: float = .05
+    auto_probability: float = 1.0
+    daily_peer_limit: int = 1
+    auto_interval_minutes: int = 60
     weekly_limit: int = 1
     duration_minutes: int = 30
     turns_per_actor: int = 3
@@ -97,7 +99,12 @@ class VisitConfig:
             public_url=public_url,
             error=error,
             auto_enabled=_boolean(values.get("visits_auto_enabled"), True),
-            auto_probability=_number(values.get("visits_auto_probability"), .05, 0, 1),
+            auto_probability=_number(values.get("visits_auto_probability"), 1, 0, 1),
+            # AstrBot fills new schema defaults before constructing the plugin.
+            # The old explicit zero must still keep autonomous visits disabled.
+            daily_peer_limit=(0 if number("weekly_limit", 1, 0, 7) == 0
+                              else number("daily_peer_limit", 1, 0, 5)),
+            auto_interval_minutes=number("auto_interval_minutes", 60, 0, 1440),
             weekly_limit=number("weekly_limit", 1, 0, 7),
             duration_minutes=number("duration_minutes", 30, 5, 60),
             turns_per_actor=number("turns_per_actor", 3, 1, 5),

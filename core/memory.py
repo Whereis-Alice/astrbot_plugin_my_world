@@ -182,6 +182,12 @@ class MemoryEngine:
 
     # ---------------- 创建 ----------------
 
+    def remember_visit(self, *, confirmed_log: list[dict], idempotency_key: str, **kwargs) -> int | None:
+        """Extend one trip's confirmed memory without replacing user edits."""
+        from .visit_memory import remember_visit
+        return remember_visit(self, confirmed_log=confirmed_log,
+                              idempotency_key=idempotency_key, **kwargs)
+
     def remember(self, *, evidence: list[dict] | None = None, idempotency_key: str = "", **kwargs) -> int | None:
         import json
         from .evidence import source_snapshot

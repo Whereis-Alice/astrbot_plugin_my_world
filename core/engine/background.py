@@ -15,6 +15,7 @@ from ..background_budget import BackgroundReservation
 from ..model_calls import call_context
 from ..model_call_runtime import safe_error
 from .life_inference import LIFE_WORK, released_life_lock, validate_life_preparation
+from ..visit_presence import active_visit
 
 CRITICAL_TICK = ContextVar("world_critical_tick", default=False)
 
@@ -181,6 +182,12 @@ class BackgroundMixin:
         gap = min(elapsed, 24 * 3600)
         missing_ticks = max(0, int(gap / self.tick_seconds) - 1)
         old_tick = state.world_time
+        if active_visit(self, state.session_id):
+            # An accepted visit pauses the home action, including home recovery.
+            # A slow clock does not prove that any of that work happened. Only
+            # the bounded elapsed needs/visit clock is handed to the caller.
+            state.world_time += missing_ticks
+            return min(gap, 6 * 3600)
         self._settle_idle_practice(state, at=previous)
         state.idle_activity = {}
         state.world_time += missing_ticks

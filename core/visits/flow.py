@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import copy
-from datetime import datetime, timezone
 from typing import Any
 
 from .protocol import RESERVED, TERMINAL, clean_decision, clean_scene, new_id, public_actor
+from .rhythm import VisitRhythm
 
 
-class VisitFlow:
+class VisitFlow(VisitRhythm):
     def _new_visit(self, scope, peer, local, visit_id, role, reason, automatic):
         own = self._state["instance_id"] + ":" + local["actor_id"]
         host, guest = (own, peer["id"]) if role == "host" else (peer["id"], own)
@@ -76,6 +76,9 @@ class VisitFlow:
                 raise ValueError("她已经有邀请或串门，先等这次结束")
             if local["persona_key"] != peer["local"]["persona_key"]:
                 raise ValueError("人设已变化，请重新配对")
+            if automatic and not self._admit_automatic(scope, peer, local):
+                await self._save()
+                raise ValueError("今天先留在自己的世界，稍后再看其他友邻")
             visit_id = new_id()
             visit = self._new_visit(scope, peer, local, visit_id,
                                     "guest" if direction == "outgoing" else "host", reason, automatic)
@@ -84,6 +87,8 @@ class VisitFlow:
         result = await self._decide(visit_id, "propose")
         async with self._lock:
             visit = self._state["visits"][visit_id]
+            if visit["status"] in TERMINAL or self._closed:
+                return self._visible(visit)
             if not result or not result["accept"] or result["leave"]:
                 if visit["status"] not in TERMINAL:
                     await self._finish(visit, "declined", "现在不方便，稍后再约")
@@ -99,6 +104,8 @@ class VisitFlow:
             reply = await self._send(visit_id, offer)
             async with self._lock:
                 visit = self._state["visits"][visit_id]
+                if visit["status"] in TERMINAL:
+                    return self._visible(visit)
                 if reply.get("declined"):
                     await self._finish(visit, "declined", str(reply.get("reason") or "对方暂时不方便"))
                 else:
@@ -128,14 +135,17 @@ class VisitFlow:
             self._append(visit, visit["guest_id"], "say", intro)
         visit["next_at"] = self._now() + self.config.poll_seconds
 
-    def _synchronize(self, visit, remote, sender):
+    def _synchronize(self, visit, remote, sender, *, allow_terminal=False):
         if not isinstance(remote, dict) or remote.get("id") != visit["id"]:
             raise ValueError("无效旅程快照")
         for key in ("host_id", "guest_id"):
             if remote.get(key) != visit[key]:
                 raise ValueError("旅程参与者不一致")
-        if visit["status"] in TERMINAL:
+        if visit["status"] in TERMINAL and not allow_terminal:
             return
+        if allow_terminal and (visit["role"] != "guest" or sender != visit["host_id"]
+                               or remote.get("status") not in TERMINAL):
+            raise ValueError("结束后的确认只能来自东道主的最终经过")
         if remote.get("status") in {"offered", "inviting"}:
             return  # Their pending acceptance does not turn our proposal into a received invitation.
         if visit["role"] == "host":
@@ -156,15 +166,59 @@ class VisitFlow:
         for index, row in enumerate(logs):
             if not isinstance(row, dict) or row.get("seq") != index + 1 or row.get("actor_id") not in {visit["host_id"], visit["guest_id"]}:
                 raise ValueError("旅程经过来源无效")
+        calls = remote.get("calls", {})
+        if not isinstance(calls, dict):
+            raise ValueError("东道主调用额度无效")
+        remote_calls = calls.get(sender, 0)
+        if type(remote_calls) is not int or not 0 <= remote_calls <= self._allocation(visit, sender):
+            raise ValueError("东道主调用额度无效")
         own_calls = visit["calls"][self._local_id(visit)]
         for key in ("status", "arrived_at", "scene", "log", "next_actor", "next_at", "turns", "event_stage", "ended_at", "end_reason"):
             if key in remote:
                 visit[key] = copy.deepcopy(remote[key])
-        remote_calls = remote.get("calls", {}).get(sender, 0)
-        if type(remote_calls) is not int or not 0 <= remote_calls <= self._allocation(visit, sender):
-            raise ValueError("东道主调用额度无效")
         visit["calls"][sender] = max(visit["calls"][sender], remote_calls)
         visit["calls"][self._local_id(visit)] = own_calls
+
+    async def _notify_end(self, visit_id):
+        """Deliver a bounded durable goodbye without keeping the local life suspended."""
+        async with self._lock:
+            visit = self._state["visits"].get(visit_id)
+            notice = visit.get("end_pending") if visit else None
+            if not notice or notice.get("next_at", 0) > self._now() or self._closed:
+                return
+            if (visit["remote"]["id"] not in self._state["peers"]
+                    or notice["attempts"] >= 3):
+                visit.pop("end_pending", None)
+                visit.pop("outbox", None)
+                await self._save()
+                return
+            notice["attempts"] += 1
+            notice["next_at"] = self._now() + min(600, 60 * 2 ** notice["attempts"])
+            payload = {"op": "end", "visit": self._wire(visit)}
+            await self._save()
+        try:
+            reply = await self._send(visit_id, payload)
+            async with self._lock:
+                visit = self._state["visits"].get(visit_id)
+                if not visit:
+                    return
+                remote = reply.get("visit")
+                if visit["role"] == "guest" and isinstance(remote, dict) and remote.get("status") in TERMINAL:
+                    prior = (copy.deepcopy(visit["log"]), visit["status"], visit.get("end_reason"))
+                    self._synchronize(visit, remote, visit["host_id"], allow_terminal=True)
+                    if (visit["log"], visit["status"], visit.get("end_reason")) != prior:
+                        visit.pop("remembered", None)
+                visit.pop("end_pending", None)
+                await self._save()
+        except ValueError:
+            async with self._lock:
+                visit = self._state["visits"].get(visit_id)
+                notice = visit.get("end_pending") if visit else None
+                if notice and notice["attempts"] >= 3:
+                    visit.pop("end_pending", None)
+                    visit.pop("outbox", None)
+                    await self._save()
+            return
 
     def _receive_step(self, visit, sender, payload):
         if visit["role"] != "host" or sender != visit["guest_id"] or visit["status"] != "active":
@@ -198,11 +252,13 @@ class VisitFlow:
                 if not visit:
                     continue
                 if visit["status"] in TERMINAL:
+                    await self._notify_end(visit_id)
                     await self._remember(visit_id)
                     continue
                 if visit["expires_at"] <= self._now():
                     async with self._lock:
                         await self._finish(visit, "expired", "本次停留到期，保留已确认经过")
+                    await self._notify_end(visit_id)
                     await self._remember(visit_id)
                     continue
                 if max(visit["next_at"], self._touched.get(visit["scope"], 0)) > self._now():
@@ -229,6 +285,8 @@ class VisitFlow:
         if visit["status"] == "offered":
             result = await self._decide(visit_id, "receive")
             async with self._lock:
+                if visit["status"] in TERMINAL or self._closed:
+                    return
                 if not result or not result["accept"] or result["leave"]:
                     if visit["status"] not in TERMINAL:
                         await self._finish(visit, "declined", result["say"] if result else "稍后再约")
@@ -263,6 +321,8 @@ class VisitFlow:
             if not result:
                 return
             async with self._lock:
+                if visit["status"] in TERMINAL or self._closed:
+                    return
                 visit["unsent_turn"] = True
                 await self._save()
                 step = {"op": "step", "seq": len(visit["log"]), "decision":
@@ -284,7 +344,7 @@ class VisitFlow:
             return
         result = await self._decide(visit_id, "turn")
         async with self._lock:
-            if not result:
+            if not result or visit["status"] in TERMINAL or self._closed:
                 return
             self._record_turn(visit, visit["host_id"], result)
             if result["leave"] or visit["turns"][visit["host_id"]] >= visit["turn_limit"]:
@@ -306,7 +366,7 @@ class VisitFlow:
             await self._save()
         result = await self._decide(visit_id, "scene")
         async with self._lock:
-            if not result:
+            if not result or visit["status"] in TERMINAL or self._closed:
                 return
             if stage == "event_offer":
                 event = result["scene"]["event"]
@@ -319,34 +379,3 @@ class VisitFlow:
                 self._append(visit, visit["host_id"], "result", result["outcome"])
             visit["next_at"] = self._now() + self.config.poll_seconds
             await self._save()
-
-    async def _automatic(self):
-        if not self.config.auto_enabled or not self.config.weekly_limit:
-            return
-        for scope in {peer["scope"] for peer in self._state["peers"].values()}:
-            if self.active(scope) or self._touched.get(scope, 0) > self._now():
-                continue
-            local = await self.actor_port.describe(scope)
-            if not local["ready"] or local.get("chat_busy") or not local.get("reception_open", True):
-                continue
-            date = str(local.get("local_date") or datetime.fromtimestamp(self._now(), timezone.utc).date())
-            week = datetime.fromisoformat(date).strftime("%G-%V")
-            async with self._lock:
-                record = self._state["draws"].setdefault(scope, {})
-                if record.get("day") == date:
-                    continue
-                if record.get("week") != week:
-                    record.update(week=week, count=0)
-                record["day"] = date
-                picked = record.get("count", 0) < self.config.weekly_limit and self._random() < self.config.auto_probability
-                if picked:
-                    record["count"] = record.get("count", 0) + 1
-                await self._save()
-                peers = [p for p in self._state["peers"].values() if p["scope"] == scope and p["url"]]
-                peers.sort(key=lambda peer: max((v["created_at"] for v in self._state["visits"].values()
-                    if v["scope"] == scope and v["remote"]["id"] == peer["id"]), default=0))
-            if picked and peers:
-                try:
-                    await self.invite(scope, peers[0]["id"], automatic=True)
-                except ValueError:
-                    pass

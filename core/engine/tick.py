@@ -399,13 +399,15 @@ class TickMixin:
         """Needs keep time; home practice, plans and events do not run twice."""
         self._settle_idle_practice(state, at=float(visit.get("arrived_at") or self._now()))
         state.idle_activity = {}
-        current = state.current_action
+        current, home_state = state.current_action, state.state
         try:
             state.current_action = None
+            state.state = "idle"
             self.dynamics.tick(state, node=None, elapsed_seconds=elapsed,
                                world=self.world, now=self._now())
         finally:
             state.current_action = current
+            state.state = home_state
         state.mood = self.dynamics.derive_mood(state)
         await self._record_history(state, None)
 

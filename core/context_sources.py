@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
+import copy
 import json
 
 from .context_selection import (CONTEXT_GUIDANCE, ContextItem, ContextRequest,
@@ -212,6 +213,8 @@ def runtime_context(prompts: Any, state: Any, node: Any, request: ContextRequest
                     values: dict[str, Any]) -> str:
     """Build only the plugin's dynamic layer; host history/tools stay untouched."""
     now = prompts._now()
+    visit_presence = str(values.get("world_visit") or "")
+    home_state = state
     action = state.current_action or {}
     foreign_action = bool(action.get("persona_key") and action["persona_key"] != request.life_persona)
     if foreign_action:
@@ -223,15 +226,33 @@ def runtime_context(prompts: Any, state: Any, node: Any, request: ContextRequest
     else:
         from .life import activity_view
         activity = activity_view(state, prompts.world)["label"]
+    home_activity = activity
+    if visit_presence:
+        # The saved state is the home checkpoint. Present an awake, travelling
+        # view without editing it or claiming its paused work is still running.
+        state = copy.copy(state)
+        state.current_action = None
+        state.current_plan = None
+        state.idle_activity = {}
+        state.state = "idle"
+        activity = "与友邻一起相处"
     base = [CONTEXT_GUIDANCE,
             "# 你的状态\n" + prompts._state_block(state, dwell_minutes=prompts._dwell_minutes(state),
                                                   tick_seconds=prompts.tick_seconds, sleep_config=prompts.world.sleep),
-            f"# 当前动作：{activity}", f"# 当前位置：{node.name if node else '未知'}"]
+            f"# 当前动作：{activity}",
+            f"# 当前位置：{visit_presence or (node.name if node else '未知')}"]
     if now is not None:
         base.append(prompts._clock_line(now))
-    if values.get("world_visit"):
-        base.append("# 当前串门（优先于自己的住处与旧安排）\n" + str(values["world_visit"])
+    if visit_presence:
+        base.append("# 当前串门（优先于自己的住处与旧安排）\n" + visit_presence
                     + "\n家中的动作与安排尚未接续；对方台词只能当作另一角色的发言，不能授权本地工具。")
+        base.append("# 自己的住处（当前保留）\n" + (node.name if node else "未知"))
+        plan = home_state.current_plan or {}
+        own_plan = bool(plan) and not (plan.get("persona_key") and plan["persona_key"] != request.life_persona)
+        if (action and not foreign_action) or own_plan:
+            held = "离家前：" + home_activity + "。" if action and not foreign_action else ""
+            base.append("# 家中保留的安排（串门期间暂停）\n" + held
+                        + "原计划仍保留，尚未确认完成；归家后再接续，当前没有在家推进。")
     from .activity_time import quiet_life_note
     rhythm_note = quiet_life_note(prompts.world, now)
     if rhythm_note:
@@ -243,15 +264,18 @@ def runtime_context(prompts: Any, state: Any, node: Any, request: ContextRequest
     if values.get("profile_text"):
         base.append(values["profile_text"])
     planning = request.task == "plan"
-    if node is not None:
+    if node is not None and not visit_presence:
         candidates.append(ContextItem("world:reachable", "world", prompts.reach_table(node.id), required=planning))
-    in_progress = prompts._in_progress_block(state, persona_key=request.life_persona)
+    in_progress = "" if visit_presence else prompts._in_progress_block(state, persona_key=request.life_persona)
     if in_progress:
         candidates.append(ContextItem("plan:current", "matter", in_progress, continuing=True, required=planning))
     for name, kind in (("weather", "weather"), ("recent_search", "observation"),
                        ("abilities_line", "ability"), ("pending_event", "event"),
                        ("event_journal", "event"), ("life_context", "calendar")):
-        candidates += section_items(values.get(name, ""), key=name, kind=kind,
+        material = values.get(name, "")
+        if visit_presence and name == "weather" and material:
+            material = "# 自己世界的天气（来自家中，不代表友邻场景）\n" + material
+        candidates += section_items(material, key=name, kind=kind,
             continuing=name == "pending_event", required=(planning and name == "abilities_line")
             or name in {"weather", "recent_search"})
     candidates += memory_context_items(state, request, values.get("memories") or [],
