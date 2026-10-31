@@ -694,7 +694,7 @@ input:focus, select:focus, textarea:focus { box-shadow: 0 0 0 3px var(--accent-s
   .sidebar { padding-top: 17px; gap: 12px; }.sidebar .brand { padding-bottom: 15px; }.sidebar .tabs button { height: 32px; }.sidebar .tabs .nav-group { margin-top: 9px; margin-bottom: 4px; }.sidebar-foot { padding-top: 12px; }
 }
 @media (min-width: 761px) and (max-height: 720px) {
-  .sidebar { gap: 7px; }.sidebar .brand { padding-bottom: 10px; }.sidebar .tabs { gap: 1px; }.sidebar .tabs button { height: 27px; }.sidebar .tabs .nav-group { margin-top: 5px; margin-bottom: 2px; }
+  .sidebar { gap: 7px; }.sidebar .brand { padding-bottom: 10px; }.sidebar .tabs { gap: 0; }.sidebar .tabs button { height: 27px; }.sidebar .tabs .nav-group { margin-top: 5px; margin-bottom: 2px; }
 }
 @media (max-width: 1200px) {
   .topbar { padding-inline: 18px; }.topbar-left { gap: 10px; }.topbar .field select { max-width: 160px; }.topbar .field-scope select { max-width: 130px; }
