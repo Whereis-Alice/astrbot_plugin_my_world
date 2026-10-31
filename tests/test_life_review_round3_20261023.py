@@ -166,14 +166,15 @@ class ReadingIntentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.messenger.sent, [])
         self.assertEqual(len(self.llm.calls), 2)
 
-    async def test_already_considered_scene_records_skip_without_a_new_model_choice(self):
+    async def test_observed_scene_can_record_a_real_reading_choice(self):
         action = await self.prepare(reply_enabled=True)
         async with self.engine.session_state(S) as state:
             state.participation[S] = {"checked_seq": action["browse_rows"][-1]["seq"]}
-        state = await self.complete(action)
+        state = await self.complete(action, decision='{"intent":"listen","motivation":"读完后仍想留着自己的感受。"}')
         thought = next(t for t in state.thoughts if t.get("browse_id") == action["id"])
-        self.assertEqual((thought["detail"].get("browse_reply") or {}).get("status"), "already_considered")
-        self.assertEqual(len(self.llm.calls), 1)
+        self.assertEqual(thought["detail"]["speech"]["intent"], "listen")
+        self.assertEqual(thought["detail"]["speech"]["motivation"], "读完后仍想留着自己的感受。")
+        self.assertEqual(len(self.llm.calls), 2)
 
     async def test_disabled_reply_is_recorded_without_claiming_she_chose_silence(self):
         action = await self.prepare(reply_enabled=False)

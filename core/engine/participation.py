@@ -440,10 +440,17 @@ class ParticipationMixin:
             if browse_ticket is not None:
                 status, reason = browse_ticket.error(self, state)
                 if status:
-                    self.note_browse_reply_gate(state, session_id, browse_id, status, reason)
+                    # A duplicate callback must not overwrite the original
+                    # failure/result or invalidate its still-running inference.
+                    if status != "already_considered":
+                        self.note_browse_reply_gate(state, session_id, browse_id, status, reason)
                     return None
                 rows = browse_ticket.eligible(rows)
-            new = [r for r in rows if int(r.get("seq") or 0) > observation.get("checked_seq", 0)]
+            # A completed reading is its own opportunity. The message observer
+            # may already have listened to these messages without replying;
+            # that observation does not consume the newly grounded reading.
+            new = rows if source == "browse" else [
+                r for r in rows if int(r.get("seq") or 0) > observation.get("checked_seq", 0)]
             if browse_ticket is not None:
                 rows = new
             if source == "browse":
@@ -497,9 +504,17 @@ class ParticipationMixin:
                     self.note_browse_reply_gate(state, session_id, browse_id, "unavailable", "没有可用的主模型，未能判断是否接话")
                 return outcome
             now = self._now()
-            observation.update(checked_seq=max(int(r.get("seq") or 0) for r in rows),
-                               checked_at=now, evaluated_at=now, decision="considering", reason="正在考虑是否接话",
+            observation.update(checked_at=now, evaluated_at=now, decision="considering", reason="正在考虑是否接话",
                                request_id=outcome.speech_receipt_batch)
+            if source == "browse":
+                # Persist admission on this reading before releasing the lock
+                # for inference. Failure/cancellation cannot replay it, while
+                # a later reading remains independent of message checked_seq.
+                thought = next(item for item in reversed(state.thoughts)
+                               if item.get("browse_id") == browse_id and item.get("browse_session") == session_id)
+                thought["browse_reply_started_at"] = now
+            else:
+                observation["checked_seq"] = max(int(r.get("seq") or 0) for r in rows)
             observation["attempts"] = [at for at in observation.get("attempts", []) if 0 <= now - at < 3600][-119:]
             if source == "message":
                 observation["attempts"].append(now)

@@ -141,7 +141,7 @@ class BrowseFollowupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.thoughts[-1]["detail"]["browse_reply"]["status"], "paused")
 
     async def test_disabled_reading_and_changed_persona_end_the_wait(self):
-        for change in ("enabled", "persona", "source", "replacement", "checked", "rest"):
+        for change in ("enabled", "persona", "source", "replacement", "replied", "rest"):
             with self.subTest(change=change):
                 await self.asyncSetUp()
                 _, owner, release = await self.blocked_reading()
@@ -154,8 +154,8 @@ class BrowseFollowupTests(unittest.IsolatedAsyncioTestCase):
                         self.engine.world.chat_browse.sessions = [G]
                     elif change == "replacement":
                         state.chat_browsing["sessions"][S]["browse_id"] = "new-reading"
-                    elif change == "checked":
-                        state.participation[S] = {"checked_seq": state.chat_seq}
+                    elif change == "replied":
+                        self.engine.mark_chat_replied(state, S)
                     else:
                         state.energy = .1
                 release.set()
@@ -163,9 +163,9 @@ class BrowseFollowupTests(unittest.IsolatedAsyncioTestCase):
                 await self.settled()
                 self.assertEqual(len(self.llm.calls), 1)
                 self.assertEqual(self.messenger.sent, [])
-                if change == "checked":
+                if change == "replied":
                     state = await self.engine.load_state(S)
-                    self.assertEqual(state.thoughts[-1]["detail"]["browse_reply"]["status"], "already_considered")
+                    self.assertEqual(state.thoughts[-1]["detail"]["browse_reply"]["status"], "no_scene")
 
     async def test_clearing_chat_or_reading_cancels_waiting(self):
         for clear in ("chat", "thought"):
@@ -212,17 +212,23 @@ class BrowseFollowupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["thoughts"][0]["detail"]["browse_reply"]["status"], "expired")
         self.assertEqual((await self.engine.load_state(S)).thoughts[-1]["detail"]["browse_reply"]["status"], "waiting")
 
-    async def test_ordinary_opportunity_covering_scene_prevents_duplicate_browse_judgement(self):
-        _, owner, release = await self.blocked_reading()
+    async def test_ordinary_observation_does_not_consume_independent_browse_judgement(self):
+        action, owner, release = await self.blocked_reading()
         self.engine.world.decider.settle_seconds = 0
         self.engine.queue_participation(S)
         self.engine.participation_sample = lambda *args: True
-        self.llm.replies = ['{"inner":"先听他们继续。","intent":"listen"}']
+        self.llm.replies = ['{"inner":"先听他们继续。","intent":"listen"}',
+                            '{"inner":"刚读完，留着这个感受。","intent":"listen"}']
         release.set()
         await owner
         await self.settled()
-        self.assertEqual(len(self.llm.calls), 2)
+        self.assertEqual(len(self.llm.calls), 3)
         self.assertEqual(self.messenger.sent, [])
+        state = await self.engine.load_state(S)
+        thought = next(row for row in state.thoughts if row.get("browse_id") == action["id"])
+        self.assertEqual(thought["detail"]["speech"]["intent"], "listen")
+        await self.engine.maybe_participate(S, source="browse", browse_id=action["id"])
+        self.assertEqual(len(self.llm.calls), 3)
 
     async def test_brief_activity_finishes_before_rechecking_the_same_reading(self):
         from core.engine.participation_queue import wake

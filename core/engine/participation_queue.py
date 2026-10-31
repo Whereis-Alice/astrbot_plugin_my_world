@@ -160,13 +160,12 @@ async def settle_browse(engine, ticket: BrowseReply) -> float | None:
             status, reason = ticket.error(engine, state)
             if not status:
                 rows = ticket.eligible(available_rows(engine, state, target))
-                checked = (state.participation.get(target) or {}).get("checked_seq", 0)
-                if not any(int(row.get("seq") or 0) > checked for row in rows):
-                    status, reason = (("already_considered", "原消息已判断，本次不重复接话") if rows
-                                      else ("no_scene", "原消息已回应或现场已结束，本次不再接话"))
+                if not rows:
+                    status, reason = "no_scene", "原消息已回应或现场已结束，本次不再接话"
             gate = engine.participation_gate(state, target, source="browse") if not status else ""
             if status:
-                engine.note_browse_reply_gate(state, target, ticket.browse_id, status, reason)
+                if status != "already_considered":
+                    engine.note_browse_reply_gate(state, target, ticket.browse_id, status, reason)
                 return None
             if gate in RETRYABLE:
                 return min(5, max(.01, ticket.remaining(engine._now())))

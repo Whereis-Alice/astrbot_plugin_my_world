@@ -72,8 +72,8 @@ class BrowseReply:
                         if row.get("browse_id") == self.browse_id and row.get("browse_session") == self.target), None)
         if progress.get("browse_id") != self.browse_id or thought is None:
             return "cancelled", "本次阅读记录已清除或被新阅读替代"
-        if (thought.get("detail") or {}).get("speech"):
-            return "already_considered", "本次阅读已经有发言决定，不重复判断"
+        if "browse_reply_started_at" in thought or (thought.get("detail") or {}).get("speech"):
+            return "already_considered", "本次阅读已进入发言判断，不重复判断"
         return "", ""
 
 
