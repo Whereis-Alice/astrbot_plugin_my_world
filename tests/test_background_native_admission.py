@@ -16,15 +16,16 @@ class BackgroundNativeAdmissionTests(unittest.IsolatedAsyncioTestCase):
         engine = self.plugin.engine
         return await self.plugin.db.call("background_status", engine._today_key(engine._now()))
 
-    async def generate(self, prepare, *, busy=False):
+    async def generate(self, prepare, *, busy=False, allow_tools=False):
         engine = self.plugin.engine
         engine.world.limits.background_pacing = False
+        engine.world.decider.proactive_tools = allow_tools
         channel = self.adapter_module.AstrBotLLM(self.plugin, provider_id="provider-a")
         runtime = importlib.import_module(self.module.__name__ + ".core.speech_runtime")
         calls = importlib.import_module(self.module.__name__ + ".core.model_calls")
         budget = importlib.import_module(self.module.__name__ + ".core.background_budget")
         native = importlib.import_module(self.module.__name__ + ".adapters.proactive_context")
-        token = runtime.SPEECH_REQUEST.set({"target": self.session, "rows": [], "allow_tools": False,
+        token = runtime.SPEECH_REQUEST.set({"target": self.session, "rows": [], "allow_tools": allow_tools,
                                           "state": await engine.load_state(self.session)})
         try:
             with patch.object(native.ProactiveContext, "prepare", prepare), \
@@ -166,3 +167,34 @@ class BackgroundNativeAdmissionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.plugin.db.call("background_status", previous_day))["calls"], 0)
         self.plugin.context.tool_loop_agent.assert_not_awaited()
         self.assertFalse(engine._background_failures)
+
+    async def test_tool_agent_dispatch_is_charged_and_recorded_with_conservative_usage(self):
+        from tests.test_proactive_runner import ProactiveRunnerTests
+        agent = importlib.import_module(self.module.__name__ + ".adapters.proactive_agent")
+        self.plugin.context.tool_loop_agent = AsyncMock()
+        self.plugin.context.provider_manager = SimpleNamespace(get_provider_by_id=AsyncMock(return_value=object()))
+        result = self.response("ok", usage={"prompt_tokens": 7, "completion_tokens": 3})
+        runner = SimpleNamespace(reset=AsyncMock(), get_final_llm_resp=lambda: result)
+
+        async def steps(_):
+            yield None
+
+        runner.step_until_done = steps
+
+        async def prepare(owner, options):
+            self.assertIsInstance(owner.tool_agent, agent.ProactiveAgent)
+            owner.tool_agent.event = SimpleNamespace(unified_msg_origin=self.session)
+            owner.toolset = SimpleNamespace(get_tool=lambda _: None)
+            owner.request = SimpleNamespace(func_tool=owner.toolset, extra_user_content_parts=[], contexts=[])
+            return options
+
+        with ProactiveRunnerTests().sdk(runner), patch.object(agent.ProactiveAgent, "valid", AsyncMock(return_value=True)):
+            reply, admission = await self.generate(prepare, allow_tools=True)
+        self.assertTrue(reply.ok, reply.error)
+        self.assertTrue(admission.started)
+        self.assertFalse(admission.deferred)
+        status = await self.status()
+        self.assertEqual((status["calls"], status["unknown"]), (1, 1))
+        self.assertGreater(status["reserved"], 0)
+        self.assertEqual((await self.plugin.db.call("model_calls"))["summary"]["calls"], 1)
+        self.assertNotIn("before_request", runner.reset.await_args.kwargs)

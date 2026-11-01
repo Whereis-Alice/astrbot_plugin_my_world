@@ -140,7 +140,7 @@ class ProactiveAgent:
         return ToolSet([GuardedTool(name=t.name, description=t.description,
             parameters=copy.deepcopy(t.parameters)) for t in selected.values()])
 
-    async def invoke(self, toolset, *, runner_options=None, request=None, **options):
+    async def invoke(self, toolset, *, runner_options=None, request=None, before_request=None, **options):
         from astrbot.core.astr_agent_context import AstrAgentContext
         from ..core.llm_usage import record_llm_usage
         owner = self
@@ -162,6 +162,7 @@ class ProactiveAgent:
         result = await run_agent(self.plugin.context,
             event=self.event, tools=toolset, max_steps=config.proactive_tool_steps,
             request=request,
+            before_request=before_request,
             tool_call_timeout=config.proactive_tool_timeout,
             agent_context=AstrAgentContext(context=scoped_context, event=self.event),
             chat_provider_id=options["chat_provider_id"], prompt=options["prompt"],
