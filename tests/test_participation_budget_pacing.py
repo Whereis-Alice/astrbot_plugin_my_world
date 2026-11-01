@@ -267,6 +267,54 @@ class BrowseBudgetPacingTests(unittest.IsolatedAsyncioTestCase):
     prepare = browsing.ChatBrowseTests.prepare
     complete = browsing.ChatBrowseTests.complete
 
+    async def test_new_message_observation_preserved_while_unstarted_reading_marker_is_withdrawn(self):
+        from core.browse_reply import BrowseReply
+        from core.engine.life_inference import released_life_lock
+        action = await self.prepare(message_id="old-reading", reply_enabled=True)
+        newer = {"request_id": "newer", "checked_seq": 99, "attempts": [1, 2], "decision": "listening"}
+        self.engine._background_budget_status = AsyncMock(return_value={"allowed": True})
+
+        async def replace():
+            async with self.engine.session_state(browsing.S) as current:
+                current.participation[browsing.S] = dict(newer)
+
+        async def prepare_then_change(state, *args, **kwargs):
+            async with released_life_lock(self.engine):
+                await asyncio.create_task(replace())
+            return "", ""
+
+        self.engine.participation_text = prepare_then_change
+        state = await self.complete(action)
+        thought = next(row for row in state.thoughts if row.get("browse_id") == action["id"])
+        self.assertEqual(state.participation[browsing.S], newer)
+        self.assertNotIn("browse_reply_started_at", thought)
+        ticket = BrowseReply.capture(self.engine, state, browsing.S, action["id"])
+        self.assertEqual(ticket.error(self.engine, state), ("", ""))
+
+    async def test_new_observation_does_not_withdraw_already_started_reading(self):
+        from core.browse_reply import BrowseReply
+        from core.engine.life_inference import released_life_lock
+        action = await self.prepare(message_id="started-reading", reply_enabled=True)
+        newer = {"request_id": "newer", "checked_seq": 99, "decision": "listening"}
+
+        async def replace():
+            async with self.engine.session_state(browsing.S) as current:
+                current.participation[browsing.S] = dict(newer)
+
+        async def requested_then_change(state, *args, **kwargs):
+            record_background_admission(started=True)
+            async with released_life_lock(self.engine):
+                await asyncio.create_task(replace())
+            return "", ""
+
+        self.engine.participation_text = requested_then_change
+        state = await self.complete(action)
+        thought = next(row for row in state.thoughts if row.get("browse_id") == action["id"])
+        self.assertEqual(state.participation[browsing.S], newer)
+        self.assertIn("browse_reply_started_at", thought)
+        ticket = BrowseReply.capture(self.engine, state, browsing.S, action["id"])
+        self.assertEqual(ticket.error(self.engine, state)[0], "already_considered")
+
     async def test_reading_waits_with_original_deadline_and_unstarted_marker_then_can_reply(self):
         action = await self.prepare(message_id="original", reply_enabled=True)
         self.engine._background_budget_status = AsyncMock(return_value={

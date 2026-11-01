@@ -467,6 +467,13 @@ class ParticipationMixin:
     def restore_unstarted_participation(state: WorldState, target: str, request_id: str, previous: dict,
                                        *, source: str, browse_id: str, started_at: float) -> bool:
         """Withdraw only this observation; a newer request keeps its own cursor."""
+        if source == "browse":
+            # A new message observation owns a different cursor, while this
+            # reading still owns its own unstarted marker after lock rejoin.
+            thought = next((row for row in reversed(state.thoughts)
+                            if row.get("browse_id") == browse_id and row.get("browse_session") == target), None)
+            if thought is not None and thought.get("browse_reply_started_at") == started_at:
+                thought.pop("browse_reply_started_at", None)
         current = state.participation.get(target) or {}
         if current.get("request_id") != request_id:
             return False
@@ -475,11 +482,6 @@ class ParticipationMixin:
                 current[name] = previous[name]
             else:
                 current.pop(name, None)
-        if source == "browse":
-            thought = next((row for row in reversed(state.thoughts)
-                            if row.get("browse_id") == browse_id and row.get("browse_session") == target), None)
-            if thought is not None and thought.get("browse_reply_started_at") == started_at:
-                thought.pop("browse_reply_started_at", None)
         return True
 
     @session_scoped
