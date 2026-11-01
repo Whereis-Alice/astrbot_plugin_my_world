@@ -7,7 +7,8 @@ import inspect
 async def run_agent(context, *, event, chat_provider_id, prompt=None,
                     image_urls=None, audio_urls=None, extra_user_content_parts=None,
                     tools=None, system_prompt=None, contexts=None, max_steps=1,
-                    tool_call_timeout=120, agent_context=None, request=None, **options):
+                    tool_call_timeout=120, agent_context=None, request=None,
+                    before_request=None, **options):
     helper = context.tool_loop_agent
     arguments = dict(event=event, chat_provider_id=chat_provider_id, prompt=prompt,
         image_urls=image_urls, audio_urls=audio_urls,
@@ -15,6 +16,8 @@ async def run_agent(context, *, event, chat_provider_id, prompt=None,
         system_prompt=system_prompt, contexts=contexts, max_steps=max_steps,
         tool_call_timeout=tool_call_timeout, agent_context=agent_context, **options)
     if request is None and (not extra_user_content_parts or "extra_user_content_parts" in inspect.signature(helper).parameters):
+        if before_request is not None:
+            await before_request()
         return await helper(**arguments)
 
     # AstrBot 4.28.2 accepts these parts through **kwargs but sends them only
@@ -67,6 +70,8 @@ async def run_agent(context, *, event, chat_provider_id, prompt=None,
         tool_executor=FunctionToolExecutor(),
         agent_hooks=options.pop("agent_hooks", None) or BaseAgentRunHooks(),
         streaming=options.pop("stream", False), **options)
+    if before_request is not None:
+        await before_request()
     async for _ in runner.step_until_done(max_steps):
         pass
     response = runner.get_final_llm_resp()

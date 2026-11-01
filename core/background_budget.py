@@ -63,7 +63,7 @@ async def _finish_write(task: asyncio.Task) -> Any:
 
 
 class BackgroundReservation:
-    """Refund only work that never entered the model channel; retain unknown usage."""
+    """Refund unstarted dispatches; retain conservative usage after model entry."""
 
     def __init__(self, db: Any, day: str, *, calls: int, tokens: int, reserve: int,
                  window: dict[str, Any] | None = None, on_change: Callable[[], None] | None = None) -> None:

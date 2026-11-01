@@ -7,7 +7,7 @@ import time
 from ..config_scope import session_scoped
 from ..model_calls import model_operation
 from ..participation import build_participation_prompt
-from ..state import STATE_DROWSY
+from ..state import STATE_DROWSY, WorldState
 from .life_inference import life_work
 from .models import TickOutcome
 
@@ -463,6 +463,25 @@ class ParticipationMixin:
                 if thought is not None:
                     thought["detail"]["browse_reply"]["until"] = browse_ticket.deadline
 
+    @staticmethod
+    def restore_unstarted_participation(state: WorldState, target: str, request_id: str, previous: dict,
+                                       *, source: str, browse_id: str, started_at: float) -> bool:
+        """Withdraw only this observation; a newer request keeps its own cursor."""
+        current = state.participation.get(target) or {}
+        if current.get("request_id") != request_id:
+            return False
+        for name in ("checked_at", "evaluated_at", "checked_seq", "attempts"):
+            if name in previous:
+                current[name] = previous[name]
+            else:
+                current.pop(name, None)
+        if source == "browse":
+            thought = next((row for row in reversed(state.thoughts)
+                            if row.get("browse_id") == browse_id and row.get("browse_session") == target), None)
+            if thought is not None and thought.get("browse_reply_started_at") == started_at:
+                thought.pop("browse_reply_started_at", None)
+        return True
+
     @session_scoped
     @life_work()
     @model_operation("participation", "听完近期群聊，决定是否自然接一句")
@@ -586,29 +605,24 @@ class ParticipationMixin:
                     message, reply_to = await self.participation_text(state, session_id,
                         source=source, browse_id=browse_id, outcome=outcome, browse_ticket=browse_ticket)
             except asyncio.CancelledError:
+                if not admission.started:
+                    self.restore_unstarted_participation(state, session_id, outcome.speech_receipt_batch,
+                        previous, source=source, browse_id=browse_id, started_at=now)
                 self.finish_participation_observation(state, session_id, outcome.speech_receipt_batch,
                     "cancelled", "接话推理已取消，等待最新现场")
                 raise
             except Exception as exc:
+                if not admission.started:
+                    self.restore_unstarted_participation(state, session_id, outcome.speech_receipt_batch,
+                        previous, source=source, browse_id=browse_id, started_at=now)
                 self.finish_participation_observation(state, session_id, outcome.speech_receipt_batch,
                     "failed", f"接话判断未完成（{type(exc).__name__}）")
                 raise
             if admission.deferred and not admission.started:
                 # Another life may consume the shared allowance after preflight.
                 # Roll back only our own admission, never a newer observation.
-                current = state.participation.get(session_id) or {}
-                if current.get("request_id") == outcome.speech_receipt_batch:
-                    for name in ("checked_at", "evaluated_at", "checked_seq", "attempts"):
-                        if name in previous:
-                            current[name] = previous[name]
-                        else:
-                            current.pop(name, None)
-                    if source == "browse":
-                        thought = next((row for row in reversed(state.thoughts)
-                                        if row.get("browse_id") == browse_id
-                                        and row.get("browse_session") == session_id), None)
-                        if thought is not None and thought.get("browse_reply_started_at") == now:
-                            thought.pop("browse_reply_started_at", None)
+                if self.restore_unstarted_participation(state, session_id, outcome.speech_receipt_batch,
+                        previous, source=source, browse_id=browse_id, started_at=now):
                     self.defer_participation_budget(state, session_id, reason=admission.reason,
                         next_at=admission.next_at, source=source, browse_ticket=browse_ticket)
                 return outcome

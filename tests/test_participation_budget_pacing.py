@@ -107,6 +107,62 @@ class ParticipationBudgetPacingTests(unittest.IsolatedAsyncioTestCase):
         state = await self.engine.load_state(GROUP, cold_start=False)
         self.assertEqual(state.participation[GROUP], newer)
 
+    async def test_unstarted_cancellation_preserves_live_message_for_next_judgment(self):
+        await self.chat(message_id="cancel-before-dispatch")
+        entered = asyncio.Event()
+
+        async def preparing(*args, **kwargs):
+            entered.set()
+            await asyncio.Event().wait()
+
+        original = self.engine.participation_text
+        self.engine.participation_text = preparing
+        task = asyncio.create_task(self.engine.maybe_participate(GROUP))
+        await asyncio.wait_for(entered.wait(), 2)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        state = await self.engine.load_state(GROUP, cold_start=False)
+        self.assertFalse(state.participation[GROUP].get("checked_seq"))
+        self.assertFalse(state.participation[GROUP].get("attempts"))
+        self.engine.participation_text = original
+        await self.engine.maybe_participate(GROUP)
+        self.assertEqual(len(self.llm.calls), 1)
+        self.assertTrue(self.messenger.sent)
+
+    async def test_started_cancellation_consumes_observation_without_replaying_model(self):
+        await self.chat(message_id="cancel-after-dispatch")
+        entered = asyncio.Event()
+
+        async def requested(*args, **kwargs):
+            record_background_admission(started=True)
+            entered.set()
+            await asyncio.Event().wait()
+
+        self.engine.participation_text = requested
+        task = asyncio.create_task(self.engine.maybe_participate(GROUP))
+        await asyncio.wait_for(entered.wait(), 2)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        state = await self.engine.load_state(GROUP, cold_start=False)
+        self.assertGreater(state.participation[GROUP]["checked_seq"], 0)
+        self.assertEqual(len(state.participation[GROUP]["attempts"]), 1)
+        self.assertIsNone(await self.engine.maybe_participate(GROUP))
+
+    async def test_unstarted_cancellation_cannot_restore_over_newer_observation(self):
+        await self.chat(message_id="newer-cancel")
+        newer = {"checked_seq": 99, "attempts": [1, 2], "request_id": "newer", "decision": "listening"}
+
+        async def cancelled(state, *args, **kwargs):
+            state.participation[GROUP] = dict(newer)
+            raise asyncio.CancelledError()
+
+        self.engine.participation_text = cancelled
+        with self.assertRaises(asyncio.CancelledError):
+            await self.engine.maybe_participate(GROUP)
+        self.assertEqual((await self.engine.load_state(GROUP, cold_start=False)).participation[GROUP], newer)
+
     async def test_started_bad_output_is_consumed_even_when_its_repair_is_denied(self):
         self.engine.world.limits.background_daily_calls = 1
         self.llm.replies = ['{"intent":"join_chat","say":"试试看。"}']

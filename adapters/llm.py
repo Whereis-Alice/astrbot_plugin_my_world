@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+from collections.abc import Awaitable, Callable
 from uuid import uuid4
 
 from ..core.model_calls import call_context
@@ -70,10 +71,17 @@ class AstrBotLLM:
         """Keep the provider admitted by the background scheduler for this request."""
         return await self.generate(_resolved_provider_id=resolved_provider_id, **kwargs)
 
+    async def generate_admitted(self, *, resolved_provider_id: str,
+                                before_request: Callable[[], Awaitable[None]], **kwargs: Any) -> LLMReply:
+        """Report dispatch after local/native preparation, including cancellation."""
+        return await self.generate(_resolved_provider_id=resolved_provider_id,
+                                   _before_request=before_request, **kwargs)
+
     async def generate(self, *, session_id: str, system_prompt: str, prompt: str,
                        contexts: list[dict] | None = None, temperature: float | None = None,
                        max_tokens: int | None = None, image_urls: list[str] | None = None,
-                       _resolved_provider_id: str | None = None) -> LLMReply:
+                       _resolved_provider_id: str | None = None,
+                       _before_request: Callable[[], Awaitable[None]] | None = None) -> LLMReply:
         context = self.plugin.context
         try:
             provider_id = (_resolved_provider_id if _resolved_provider_id is not None
@@ -107,6 +115,8 @@ class AstrBotLLM:
                 trace_id=trace_id, attempt=attempt, retry_reason=retry_reason,
                 invoke=(lambda **kw: agent.invoke(toolset, runner_options=native.runner_options,
                     request=native.request, **kw)) if toolset else native.invoke if native else None,
+                before_request=_before_request,
+                deferred_dispatch=native is not None,
                 coverage="agent_final" if toolset else "direct", **options)
 
         options = dict(chat_provider_id=provider_id, prompt=prompt, system_prompt=system_prompt,

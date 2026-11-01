@@ -59,13 +59,27 @@ async def save_call(plugin, *, response=None, error="", status="success", starte
 
 async def tracked_generate(plugin, *, session_id="", purpose="", reason="", role="",
                            trace_id="", attempt=1, retry_reason="", coverage="direct",
-                           invoke=None, **kwargs):
+                           invoke=None, before_request=None, deferred_dispatch=False, **kwargs):
     started = time.time()
     clock = time.monotonic()
     response = None
     status, error = "success", ""
+    dispatched = False
+
+    async def begin():
+        nonlocal dispatched
+        if before_request is not None:
+            await before_request()
+        dispatched = True
+
     try:
-        response = await (invoke or plugin.context.llm_generate)(**kwargs)
+        if not deferred_dispatch:
+            await begin()
+            response = await (invoke or plugin.context.llm_generate)(**kwargs)
+        else:
+            # Native invocation still contains local guards and runner.reset().
+            # It reports dispatch only once that preparation has succeeded.
+            response = await invoke(before_request=begin, **kwargs)
         if getattr(response, "role", "") == "err":
             status, error = "error", "Provider 返回错误响应"
         record_llm_usage(getattr(response, "usage", None))
@@ -77,11 +91,12 @@ async def tracked_generate(plugin, *, session_id="", purpose="", reason="", role
         status, error = "error", exc
         raise
     finally:
-        await save_call(plugin, response=response, error=error, status=status,
-            started_at=started, duration_ms=max(0, round((time.monotonic() - clock) * 1000)),
-            session_id=session_id, provider_id=kwargs.get("chat_provider_id", ""),
-            purpose=purpose, reason=reason, role=role, trace_id=trace_id,
-            attempt=attempt, retry_reason=retry_reason, coverage=coverage)
+        if dispatched:
+            await save_call(plugin, response=response, error=error, status=status,
+                started_at=started, duration_ms=max(0, round((time.monotonic() - clock) * 1000)),
+                session_id=session_id, provider_id=kwargs.get("chat_provider_id", ""),
+                purpose=purpose, reason=reason, role=role, trace_id=trace_id,
+                attempt=attempt, retry_reason=retry_reason, coverage=coverage)
 
 
 async def observe_native_response(plugin, event, response, turn) -> None:

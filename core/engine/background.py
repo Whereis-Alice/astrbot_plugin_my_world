@@ -158,6 +158,7 @@ class BackgroundMixin:
         session = str(kwargs.get("session_id") or call_context().get("session_id") or "")
         provider_id = str(getattr(channel, "provider_id", "") or "")
         generate, generation_kwargs = channel.generate, kwargs
+        admitted_generate = None
         timeout = min(2, self.world.limits.background_llm_timeout_seconds) if CRITICAL_TICK.get() and not LIFE_WORK.get() else self.world.limits.background_llm_timeout_seconds
         resolver = getattr(channel, "resolve_provider_id", None)
         if callable(resolver):
@@ -169,6 +170,7 @@ class BackgroundMixin:
             if callable(resolved_generate):
                 generate = resolved_generate
                 generation_kwargs = {**kwargs, "resolved_provider_id": provider_id}
+            admitted_generate = getattr(channel, "generate_admitted", None)
             await validate_life_preparation(self)
         now = self._now()
         day = self._today_key(now)
@@ -185,6 +187,7 @@ class BackgroundMixin:
         if active >= self.world.limits.background_concurrency:
             return LLMReply(ok=False, error="后台通道忙，留待下一次")
         self._background_active = active + 1
+        budget = None
         try:
             async with BackgroundReservation(self.db, day,
                     calls=self.world.limits.background_daily_calls,
@@ -202,9 +205,28 @@ class BackgroundMixin:
                                 reason = "世界日期已变化，本次后台准备取消，稍后重新考虑"
                                 record_background_admission(deferred=True, reason=reason, next_at=self._now())
                                 return LLMReply(ok=False, error=reason)
-                            budget.started = True
-                            record_background_admission(started=True)
-                            reply = await generate(**generation_kwargs)
+                            async def begin_request():
+                                await validate_life_preparation(self)
+                                if day != self._today_key(self._now()):
+                                    reason = "世界日期已变化，本次后台准备取消，稍后重新考虑"
+                                    record_background_admission(deferred=True, reason=reason, next_at=self._now())
+                                    raise RuntimeError(reason)
+                                budget.started = True
+                                record_background_admission(started=True)
+
+                            if callable(admitted_generate):
+                                reply = await admitted_generate(resolved_provider_id=provider_id,
+                                    before_request=begin_request, **kwargs)
+                            else:
+                                # Third-party ports without a dispatch boundary
+                                # retain conservative accounting on channel entry.
+                                await begin_request()
+                                reply = await generate(**generation_kwargs)
+                            if not budget.started:
+                                reason = safe_error(getattr(reply, "error", "")) or "后台请求尚未发出，留待重新准备"
+                                record_background_admission(deferred=True, reason=reason,
+                                                            next_at=self._now() + self.tick_seconds)
+                                return reply if reply is not None and not getattr(reply, "ok", True) else LLMReply(ok=False, error=reason)
             if reply is None or not getattr(reply, "ok", True):
                 raise RuntimeError(str(getattr(reply, "error", "") or "后台模型未返回有效内容")[:500])
             failures.pop(failure_key, None)
@@ -214,6 +236,11 @@ class BackgroundMixin:
         except LifeWorkDiscarded:
             raise
         except Exception as exc:
+            if budget is not None and not budget.started:
+                reason = safe_error(exc) or type(exc).__name__
+                record_background_admission(deferred=True, reason=reason,
+                                            next_at=self._now() + self.tick_seconds)
+                return LLMReply(ok=False, error=reason)
             count = min(8, int(failure.get("count", 0)) + 1)
             failures[failure_key] = {"count": count, "until": self._now() + min(3600, 30 * 2 ** (count - 1)),
                                      "error": safe_error(exc) or type(exc).__name__}
