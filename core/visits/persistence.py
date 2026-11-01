@@ -42,9 +42,16 @@ class VisitJournal(WorldConnections):
                     if visit.get("arrived_at"):
                         self._mark_arrival(visit)
             self._loaded = True
-            # An inference interrupted by process exit must never be regenerated.
+            # Unknown in-flight inference cannot be regenerated. A paid candidate
+            # under read-only verification can resume its existing recovery phase.
             for visit in list(self._state["visits"].values()):
-                if visit.pop("model_pending", None):
+                retry = visit.get("model_retry")
+                retry = retry if isinstance(retry, dict) else {}
+                phase = retry.get("phase")
+                verifying_candidate = (phase in {"propose", "receive", "turn", "scene"}
+                                       and isinstance(retry.get("candidate"), dict)
+                                       and valid_retry(visit, self._decision_cursor(visit, phase)))
+                if visit.pop("model_pending", None) and not verifying_candidate:
                     await self._finish(visit, "interrupted", "上次思考被中断，只保留已确认经过")
                 elif visit.get("proposal_stage") == "pending" and (
                         visit.get("decision_cursor") != self._decision_cursor(visit, "propose")

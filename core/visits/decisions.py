@@ -1,8 +1,30 @@
 """Local decision failures have fixed diagnostics, never provider response bodies."""
 from __future__ import annotations
 
-from typing import Literal
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Iterator, Literal
 import copy
+
+
+_CANDIDATE: ContextVar[dict | None] = ContextVar("world_visit_decision_candidate", default=None)
+
+
+@contextmanager
+def capture_decision_candidate() -> Iterator[dict]:
+    """Keep a parsed result available when the outer deadline cancels verification."""
+    captured = {}
+    token = _CANDIDATE.set(captured)
+    try:
+        yield captured
+    finally:
+        _CANDIDATE.reset(token)
+
+
+def record_decision_candidate(candidate: dict) -> None:
+    captured = _CANDIDATE.get()
+    if captured is not None:
+        captured["candidate"] = copy.deepcopy(candidate)
 
 
 FAILURES = {

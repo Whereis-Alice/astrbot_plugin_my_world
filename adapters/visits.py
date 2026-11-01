@@ -17,7 +17,7 @@ from ..core.model_calls import model_context
 from ..core.life_matters import stable_interests
 from ..core.state import STATE_DROWSY
 from ..core.visit_presence import active_visit, presence_text
-from ..core.visits.decisions import VisitDecisionError
+from ..core.visits.decisions import VisitDecisionError, record_decision_candidate
 from ..core.background_budget import capture_background_admission
 
 
@@ -184,12 +184,15 @@ class VisitActorPort:
                 if phase in {"turn", "scene"}:
                     raise VisitDecisionError("life_busy", request_started=False)
                 return {"accept": False, "say": local["ready_reason"], "leave": True,
-                        "thought": local["ready_reason"], "reflection": "", "contact_kind": "contact_status"}
+                        "thought": local["ready_reason"], "reflection": "", "contact_kind": "contact_status",
+                        "_request_started": False}
             if phase in {"propose", "receive"} and not local["reception_open"]:
                 return {"accept": False, "say": "现在不在接待时间，稍后再约", "leave": True,
-                        "thought": "现在不在接待时间，稍后再约", "reflection": "", "contact_kind": "contact_status"}
+                        "thought": "现在不在接待时间，稍后再约", "reflection": "", "contact_kind": "contact_status",
+                        "_request_started": False}
             if phase == "receive" and local["chat_busy"]:
-                return {"accept": False, "say": "正在接眼前的交谈，稍后再约", "leave": True, "contact_kind": "contact_status"}
+                return {"accept": False, "say": "正在接眼前的交谈，稍后再约", "leave": True,
+                        "contact_kind": "contact_status", "_request_started": False}
             persona = await engine._persona_text(scope)
             state = await engine.load_state(scope, cold_start=False)
             remote = visit.get("remote") or {}
@@ -266,10 +269,21 @@ class VisitActorPort:
                 error.request_started = admission.started
                 raise error
             result = self._parse_decision(phase, reply.text)
-            if (not engine.is_enabled(scope) or engine.state_key(scope) != scope
-                    or await engine._persona_text(scope) != persona):
-                raise VisitDecisionError("identity")
-            latest = await self.describe(scope)
+            record_decision_candidate(result)
+            try:
+                if (not engine.is_enabled(scope) or engine.state_key(scope) != scope
+                        or await engine._persona_text(scope) != persona):
+                    raise VisitDecisionError("identity")
+                latest = await self.describe(scope)
+                if any(latest[key] != local[key] for key in ("actor_id", "persona_key")):
+                    raise VisitDecisionError("identity")
+            except asyncio.CancelledError:
+                raise
+            except VisitDecisionError:
+                raise
+            except Exception as exc:
+                category = "timeout" if isinstance(exc, TimeoutError) else "provider"
+                raise VisitDecisionError(category, candidate=result) from exc
             if not latest["ready"]:
                 raise VisitDecisionError("life_busy", candidate=result)
             if phase in {"propose", "receive"} and not latest["reception_open"]:

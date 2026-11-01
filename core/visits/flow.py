@@ -9,7 +9,7 @@ from .protocol import RESERVED, TERMINAL, clean_decision, clean_scene, new_id, p
 from .rhythm import VisitRhythm
 from .snapshots import validate_snapshot
 from .transport import VisitTransportError
-from .decisions import VisitDecisionError
+from .decisions import VisitDecisionError, capture_decision_candidate
 from .model_retry import defer_decision, valid_retry
 
 
@@ -115,27 +115,31 @@ class VisitFlow(VisitRhythm):
                 await self._save()  # Admission, including failure, is durable before inference.
         if receive_cache is not None:
             return await self._resume_invitation_decision(visit_id, *receive_cache, phase=phase)
+        generated = {}
         try:
-            async with asyncio.timeout(self.config.timeout_seconds):
-                if candidate is None:
-                    raw = await self.actor_port.decide(snapshot["scope"], phase, snapshot)
-                else:
-                    current = await self.actor_port.describe(snapshot["scope"])
-                    if any(current[key] != snapshot["local"][key] for key in ("actor_id", "persona_key")):
-                        raise VisitDecisionError("identity", request_started=False)
-                    if not current["ready"]:
-                        raise VisitDecisionError("life_busy", request_started=False, candidate=candidate)
-                    if phase in {"propose", "receive"} and not current.get("reception_open", True):
-                        raw = {"accept": False, "leave": True, "say": "现在不在接待时间，稍后再约",
-                               "contact_kind": "contact_status"}
-                    elif phase == "receive" and current.get("chat_busy"):
-                        raw = {"accept": False, "leave": True, "say": "正在接眼前的交谈，稍后再约",
-                               "contact_kind": "contact_status"}
+            with capture_decision_candidate() as generated:
+                async with asyncio.timeout(self.config.timeout_seconds):
+                    if candidate is None:
+                        raw = await self.actor_port.decide(snapshot["scope"], phase, snapshot)
                     else:
-                        raw = candidate
-                result = clean_decision(raw)
-                result["contact_kind"] = ("contact_status" if isinstance(raw, dict)
-                                          and raw.get("contact_kind") == "contact_status" else "contact_reply")
+                        current = await self.actor_port.describe(snapshot["scope"])
+                        if any(current[key] != snapshot["local"][key] for key in ("actor_id", "persona_key")):
+                            raise VisitDecisionError("identity", request_started=False)
+                        if not current["ready"]:
+                            raise VisitDecisionError("life_busy", request_started=False, candidate=candidate)
+                        if phase in {"propose", "receive"} and not current.get("reception_open", True):
+                            raw = {"accept": False, "leave": True, "say": "现在不在接待时间，稍后再约",
+                                   "contact_kind": "contact_status"}
+                        elif phase == "receive" and current.get("chat_busy"):
+                            raw = {"accept": False, "leave": True, "say": "正在接眼前的交谈，稍后再约",
+                                   "contact_kind": "contact_status"}
+                        else:
+                            raw = candidate
+                    result = clean_decision(raw)
+                    # Only trusted local prechecks can explicitly refund a successful status result.
+                    request_started = not isinstance(raw, dict) or raw.get("_request_started") is not False
+                    result["contact_kind"] = ("contact_status" if isinstance(raw, dict)
+                                              and raw.get("contact_kind") == "contact_status" else "contact_reply")
         except asyncio.CancelledError:
             raise
         except Exception as error:
@@ -160,8 +164,11 @@ class VisitFlow(VisitRhythm):
                         return None
                     category = (error.category if isinstance(error, VisitDecisionError) else
                                 "timeout" if isinstance(error, TimeoutError) else "provider")
+                    saved_candidate = getattr(error, "candidate", None)
+                    if saved_candidate is None:
+                        saved_candidate = candidate if candidate is not None else generated.get("candidate")
                     if defer_decision(visit, cursor, category=category, now=self._now(),
-                                      candidate=getattr(error, "candidate", None)):
+                                      candidate=saved_candidate):
                         await self._save()
                         return None
                     if budget is not None:
@@ -175,6 +182,8 @@ class VisitFlow(VisitRhythm):
             visit = self._state["visits"][visit_id]
             if visit.get("model_pending") != token or visit["status"] in TERMINAL or self._closed:
                 return None
+            if charged and not request_started:
+                visit["calls"][own] = max(0, visit["calls"][own] - 1)
             if visit["expires_at"] <= self._now():
                 await self._finish(visit, "expired", "思考期间本次停留到期，旧决定作废")
                 return None

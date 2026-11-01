@@ -277,13 +277,20 @@ class VisitService(VisitFlow, VisitJournal):
                 if type(value) is not int or not (2 if name == "max_calls" else 1) <= value <= 20:
                     raise ValueError("旅程预算不兼容")
                 visit[name] = min(value, upper)
+            calls = payload.get("calls", 1)  # Older offers carried one successful proposal implicitly.
+            if type(calls) is not int or not 0 <= calls <= 20:
+                raise ValueError("邀请调用额度无效")
+            if calls > self._allocation(visit, peer["id"]):
+                reason = "这次邀请已用的模型额度超过双方可用预算，稍后再约"
+                return {"declined": True, "reason": reason,
+                        "contact": {"kind": "contact_status", "text": reason}}
             duration = payload.get("duration")
             if type(duration) is not int or not 60 <= duration <= 3600:
                 raise ValueError("无效停留期限")
             visit["expires_at"] = self._now() + min(duration, self.config.duration_minutes * 60)
             visit["status"] = "offered"
             visit["contacted"] = True
-            visit["calls"][peer["id"]] = 1
+            visit["calls"][peer["id"]] = calls
             invitation = payload.get("invitation")
             if invitation is not None:
                 if (not isinstance(invitation, dict) or type(invitation.get("seq")) is not int or invitation["seq"] != 1
@@ -415,6 +422,8 @@ class VisitService(VisitFlow, VisitJournal):
                     if type(value) is not int or not (2 if name == "max_calls" else 1) <= value <= visit[name]:
                         raise ValueError("对方返回不兼容的旅程预算")
                     candidate[name] = value
+            if any(count > self._allocation(candidate, actor) for actor, count in candidate["calls"].items()):
+                raise ValueError("对方的旅程预算不足以容纳已发出的调用")
             if remote is not None:
                 validate_snapshot(candidate, remote, now=self._now())
             if result.get("declined") is True and outgoing["payload"]["op"] == "offer":
