@@ -114,6 +114,9 @@ class VisitToolTests(unittest.IsolatedAsyncioTestCase):
         for message, evidence in (
             ("不要去晴空世界找她玩一会儿", "去晴空世界找她玩一会儿"),
             ("不用邀请她来自己家坐坐", "邀请她来自己家坐坐"),
+            ("今天不想去晴空世界找她玩一会儿", "去晴空世界找她玩一会儿"),
+            ("这次不去了，别催我", "去"),
+            ("暂时别串门", "串门"),
             ("取消串门", "串门"),
         ):
             with self.subTest(message=message):

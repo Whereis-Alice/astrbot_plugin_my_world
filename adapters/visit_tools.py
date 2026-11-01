@@ -14,7 +14,9 @@ from ..core.evidence import direct_text
 TOOL_NAMES = ("mw_world_friends", "mw_world_visit", "mw_world_return")
 _INVITATION = re.compile(r"串门|拜访|做客|作客|邀请|见个面|见面|去趟|请.{0,20}(来|过来)|去.{0,30}(找|看|玩|坐坐|聚|世界|家)|visit|invite", re.I)
 _RETURN = re.compile(r"回家|回来|回去|(?:结束|取消|撤回).{0,10}(串门|拜访|做客|邀请)|return|come back", re.I)
-_NEGATIVE = r"(?:不要|不用|不必|不许|不准|禁止|暂不|先不|别|do\s+not|don't|never)\s*(?:再|现在|今天|马上|立刻|又)?\s*"
+_NEGATIVE = (r"(?:不要|不用|不必|不许|不准|不想|不愿|不打算|没打算|无需|禁止|"
+             r"暂时不|暂时别|暂不|先不|先别|不|别|do\s+not|don't|never)\s*"
+             r"(?:再|现在|今天|马上|立刻|又)?\s*")
 _INVITATION_DENIED = re.compile(_NEGATIVE + r"(?:串门|拜访|做客|作客|邀请|见面|去|请|visit|invite)"
                                 r"|(?:取消|撤回|终止|结束).{0,20}(?:串门|邀请|拜访|做客)|cancel.{0,20}(?:visit|invite)", re.I)
 _RETURN_DENIED = re.compile(_NEGATIVE + r"(?:回家|回来|回去|结束|取消|撤回|return|come\s+back)", re.I)
