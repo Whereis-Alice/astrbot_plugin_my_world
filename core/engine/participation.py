@@ -422,6 +422,10 @@ class ParticipationMixin:
                 live_window=window, reply_seqs=reply_seqs,
                 targets=targets, allowed=allowed, recorded_inner=recorded_inner, strict_reply=source == "browse")
         if decision.error:
+            from ..background_budget import current_background_admission
+            admission = current_background_admission()
+            if admission and admission.deferred and not admission.started:
+                return "", ""  # The caller restores its unstarted observation.
             self.decision_trace(target, "participation", "failed", decision.error)
             state.participation[target] = {**state.participation.get(target, {}),
                                            "decision": "failed", "reason": decision.error}
@@ -434,6 +438,30 @@ class ParticipationMixin:
     def queue_participation(self, session_id: str) -> None:
         from .participation_queue import queue_message
         queue_message(self, session_id)
+
+    def defer_participation_budget(self, state, target: str, *, reason: str,
+                                   next_at: float, source: str, browse_ticket=None) -> None:
+        """Unstarted model work remains an observation opportunity, never a choice."""
+        from .participation_queue import budget_policy, queue_browse
+        observation = state.participation.setdefault(target, {})
+        observation.update(decision="deferred", reason=reason, budget_next_at=next_at,
+                           budget_policy=budget_policy(self), budget_source=source,
+                           budget_browse_id=browse_ticket.browse_id if browse_ticket else "")
+        self.decision_trace(target, "participation", "deferred", reason, next_at=next_at)
+        if source == "browse" and browse_ticket is not None:
+            # A reading keeps its original short deadline; waiting for tomorrow's
+            # allowance cannot turn it into a reply to an old conversation.
+            waiting = (next_at > self._now() and next_at < browse_ticket.deadline
+                       and browse_ticket.remaining(self._now()) > 0
+                       and (browse_ticket.deferred or queue_browse(self, browse_ticket)))
+            self.note_browse_reply_gate(state, target, browse_ticket.browse_id,
+                                       "waiting" if waiting else "budget", reason)
+            if waiting:
+                thought = next((row for row in reversed(state.thoughts)
+                                if row.get("browse_id") == browse_ticket.browse_id
+                                and row.get("browse_session") == target), None)
+                if thought is not None:
+                    thought["detail"]["browse_reply"]["until"] = browse_ticket.deadline
 
     @session_scoped
     @life_work()
@@ -519,7 +547,16 @@ class ParticipationMixin:
                 if source == "browse":
                     self.note_browse_reply_gate(state, session_id, browse_id, "unavailable", "没有可用的主模型，未能判断是否接话")
                 return outcome
+            budget = await self._background_budget_status(purpose="participation")
+            if not budget["allowed"]:
+                self.defer_participation_budget(state, session_id, reason=budget["reason"],
+                    next_at=float(budget.get("next_at") or 0), source=source, browse_ticket=browse_ticket)
+                return outcome
+            for name in ("budget_next_at", "budget_policy", "budget_source", "budget_browse_id"):
+                observation.pop(name, None)
             now = self._now()
+            previous = {name: observation[name] for name in
+                        ("checked_at", "evaluated_at", "checked_seq", "attempts") if name in observation}
             observation.update(checked_at=now, evaluated_at=now, decision="considering", reason="正在考虑是否接话",
                                request_id=outcome.speech_receipt_batch)
             if source == "browse":
@@ -544,8 +581,10 @@ class ParticipationMixin:
             if browse_ticket is not None and browse_ticket.deferred:
                 outcome.chat_expires_at[session_id] = min(outcome.chat_expires_at[session_id], browse_ticket.deadline)
             try:
-                message, reply_to = await self.participation_text(state, session_id,
-                    source=source, browse_id=browse_id, outcome=outcome, browse_ticket=browse_ticket)
+                from ..background_budget import capture_background_admission
+                with capture_background_admission() as admission:
+                    message, reply_to = await self.participation_text(state, session_id,
+                        source=source, browse_id=browse_id, outcome=outcome, browse_ticket=browse_ticket)
             except asyncio.CancelledError:
                 self.finish_participation_observation(state, session_id, outcome.speech_receipt_batch,
                     "cancelled", "接话推理已取消，等待最新现场")
@@ -554,6 +593,25 @@ class ParticipationMixin:
                 self.finish_participation_observation(state, session_id, outcome.speech_receipt_batch,
                     "failed", f"接话判断未完成（{type(exc).__name__}）")
                 raise
+            if admission.deferred and not admission.started:
+                # Another life may consume the shared allowance after preflight.
+                # Roll back only our own admission, never a newer observation.
+                current = state.participation.get(session_id) or {}
+                if current.get("request_id") == outcome.speech_receipt_batch:
+                    for name in ("checked_at", "evaluated_at", "checked_seq", "attempts"):
+                        if name in previous:
+                            current[name] = previous[name]
+                        else:
+                            current.pop(name, None)
+                    if source == "browse":
+                        thought = next((row for row in reversed(state.thoughts)
+                                        if row.get("browse_id") == browse_id
+                                        and row.get("browse_session") == session_id), None)
+                        if thought is not None and thought.get("browse_reply_started_at") == now:
+                            thought.pop("browse_reply_started_at", None)
+                    self.defer_participation_budget(state, session_id, reason=admission.reason,
+                        next_at=admission.next_at, source=source, browse_ticket=browse_ticket)
+                return outcome
             if source == "browse" and not outcome.speech_decisions:
                 reason = str((state.participation.get(session_id) or {}).get("reason") or "未取得有效的接话决定")
                 self.note_browse_reply_gate(state, session_id, browse_id, "failed", reason)

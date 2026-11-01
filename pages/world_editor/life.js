@@ -459,10 +459,11 @@ export function openLifeSettings({world, el, openCustomDialog, markDirty, isCurr
       const wrap = el("label", "field"), input = el("input"); input.type = "number"; input.min = min; input.max = max; input.value = limits[key] ?? fallback;
       wrap.append(el("span", "", label), input); body.append(wrap); controls.push(() => { if (!input.checkValidity()) throw new Error(`${label}超出范围`); limits[key] = Number(input.value); });
     }
-    for (const [object, key, label, fallback] of [[limits, "life_matter_enabled", "自动推进生活事项", true], [limits, "life_matter_self_start", "空闲时会自己产生个人打算", true]]) {
+    for (const [object, key, label, fallback] of [[limits, "life_matter_enabled", "自动推进生活事项", true], [limits, "life_matter_self_start", "空闲时会自己产生个人打算", true], [limits, "background_pacing", "按全天节奏使用后台预算", true]]) {
       const wrap = el("label", "field memory-toggle"), input = el("input"); input.type = "checkbox"; input.checked = object[key] ?? fallback; wrap.append(el("span", "", label), input); body.append(wrap); controls.push(() => { object[key] = input.checked; });
     }
     body.append(el("p", "muted", "Token 缺失时保留保守的预算占位，界面仍标为未知。记忆与模型检索请在「设置 → 记忆与资料」调整。"));
+    body.append(el("p", "muted", "后台额度随当地一天逐渐释放，未用部分累积到稍后；正常聊天和串门交流照常。"));
     body.append(el("p", "muted", "生活事项在角色世界内模拟推进，无需电脑环境。日程、睡眠、精力和后台预算共同决定她何时继续。"));
   }, onSubmit: () => { if (!isCurrent()) throw new Error("配置范围已改变，请重新打开设置"); controls.forEach(read => read()); world.limits = limits; markDirty(); return true; }});
 }

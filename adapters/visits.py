@@ -85,6 +85,24 @@ class VisitActorPort:
                 return ""
             return engine.local_now().date().isoformat()
 
+    async def automatic_budget(self, scope: str) -> dict[str, Any]:
+        """Read admission limits before an automatic call contacts another world."""
+        engine = self.engine
+        scope = engine.state_key(scope)
+        with engine.config_scope(scope):
+            day = engine._today_key(engine._now())
+            limits = engine.world.limits
+            calls, tokens = limits.background_daily_calls, limits.background_daily_tokens
+            status = await engine.db.call("background_status", day)
+            exhausted = ((calls > 0 and status["calls"] >= calls)
+                         or (tokens > 0 and status["tokens"] + status["reserved"] >= tokens))
+            # An earlier token reservation can exceed the remaining allowance
+            # before either hard limit is reached. Its failed invitation waits
+            # for this budget or its configuration to change, including next day.
+            snapshot = [day, calls, tokens, status["calls"], status["tokens"],
+                        status["reserved"], status["unknown"]]
+            return {"allowed": not exhausted, "snapshot": snapshot}
+
     async def describe(self, scope: str) -> dict[str, Any]:
         engine = self.engine
         scope = engine.state_key(scope)

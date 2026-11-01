@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .background_rhythm import background_admission
+
 
 class BackgroundStoreMixin:
     @staticmethod
@@ -18,12 +20,14 @@ class BackgroundStoreMixin:
             else self._background_defaults()
         )
 
-    def reserve_background(self, day: str, *, calls: int, tokens: int, reserve: int) -> dict[str, Any]:
+    def reserve_background(self, day: str, *, calls: int, tokens: int, reserve: int,
+                           window: dict[str, Any] | None = None) -> dict[str, Any]:
         key = "background_budget:" + day
         with self.atomic():
             item = self._load_background(day)
-            if (calls and item["calls"] >= calls) or (tokens and item["tokens"] + item["reserved"] + reserve > tokens):
-                return {**item, "allowed": False, "reason": "今日后台预算已用完，生活规则继续运行"}
+            admission = background_admission(item, calls=calls, tokens=tokens, reserve=reserve, window=window)
+            if not admission["allowed"]:
+                return admission
             item["calls"] += 1
             item["reserved"] += reserve
             self._execute("INSERT INTO kv(key,value,updated_at) VALUES(?,?,strftime('%s','now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",

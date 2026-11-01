@@ -51,16 +51,89 @@ class NativeContextTests(unittest.IsolatedAsyncioTestCase):
     asyncSetUp = integration.IntegrationIntegrityTests.asyncSetUp
     response = integration.IntegrationIntegrityTests.response
 
-    async def generate_native(self, prepare):
+    async def generate_native(self, prepare, *, resolved_provider_id=None, allow_tools=False):
         runtime = importlib.import_module(self.module.__name__ + ".core.speech_runtime")
         native = importlib.import_module(self.module.__name__ + ".adapters.proactive_context")
         adapter = self.adapter_module.AstrBotLLM(self.plugin, provider_id="provider-a", role="main")
-        token = runtime.SPEECH_REQUEST.set({"target": self.session, "rows": [], "allow_tools": False})
+        token = runtime.SPEECH_REQUEST.set({"target": self.session, "rows": [], "allow_tools": allow_tools})
         try:
             with patch.object(native.ProactiveContext, "prepare", prepare):
+                if resolved_provider_id is not None:
+                    return await adapter.generate_resolved(resolved_provider_id=resolved_provider_id,
+                        session_id=self.session, system_prompt="人设", prompt="主动判断")
                 return await adapter.generate(session_id=self.session, system_prompt="人设", prompt="主动判断")
         finally:
             runtime.SPEECH_REQUEST.reset(token)
+
+    async def test_pinned_provider_change_stops_before_model_and_releases_native_context(self):
+        native = importlib.import_module(self.module.__name__ + ".adapters.proactive_context")
+        self.plugin.context.tool_loop_agent = AsyncMock()
+        self.plugin.context.llm_generate = AsyncMock()
+        cleanup = AsyncMock()
+
+        async def prepare(owner, options):
+            self.assertEqual(options["chat_provider_id"], "provider-a")
+            return {**options, "chat_provider_id": "provider-b"}
+
+        with patch.object(native.ProactiveContext, "close", cleanup):
+            reply = await self.generate_native(prepare, resolved_provider_id="provider-a")
+        self.assertFalse(reply.ok)
+        self.assertEqual(reply.error, "主动上下文的模型路由已变化，留待重新准备")
+        self.plugin.context.tool_loop_agent.assert_not_awaited()
+        self.plugin.context.llm_generate.assert_not_awaited()
+        cleanup.assert_awaited_once()
+        self.assertFalse(self.plugin.in_self_initiated_call())
+
+    async def test_pinned_provider_change_also_stops_tool_agent_before_any_generation(self):
+        native = importlib.import_module(self.module.__name__ + ".adapters.proactive_context")
+        agent = importlib.import_module(self.module.__name__ + ".adapters.proactive_agent")
+        self.plugin.engine.world.decider.proactive_tools = True
+        self.plugin.context.tool_loop_agent = AsyncMock()
+        self.plugin.context.llm_generate = AsyncMock()
+        cleanup, invoke = AsyncMock(), AsyncMock()
+
+        async def prepare(owner, options):
+            self.assertIsInstance(owner.tool_agent, agent.ProactiveAgent)
+            owner.toolset = object()
+            return {**options, "chat_provider_id": "provider-b"}
+
+        with patch.object(native.ProactiveContext, "close", cleanup), patch.object(agent.ProactiveAgent, "invoke", invoke):
+            reply = await self.generate_native(prepare, resolved_provider_id="provider-a", allow_tools=True)
+        self.assertFalse(reply.ok)
+        self.assertEqual(reply.error, "主动上下文的模型路由已变化，留待重新准备")
+        invoke.assert_not_awaited()
+        self.plugin.context.tool_loop_agent.assert_not_awaited()
+        self.plugin.context.llm_generate.assert_not_awaited()
+        cleanup.assert_awaited_once()
+        self.assertFalse(self.plugin.in_self_initiated_call())
+
+    async def test_unpinned_native_request_keeps_host_provider_change(self):
+        self.plugin.context.tool_loop_agent = AsyncMock(return_value=self.response("切换后生成"))
+
+        async def prepare(owner, options):
+            return {**options, "chat_provider_id": "provider-b"}
+
+        reply = await self.generate_native(prepare)
+        self.assertTrue(reply.ok, reply.error)
+        self.assertEqual(reply.text, "切换后生成")
+        self.plugin.context.tool_loop_agent.assert_awaited_once()
+        self.assertEqual(self.plugin.context.tool_loop_agent.await_args.kwargs["chat_provider_id"], "provider-b")
+        self.assertFalse(self.plugin.in_self_initiated_call())
+
+    async def test_unchanged_pinned_native_provider_can_generate(self):
+        self.plugin.context.tool_loop_agent = AsyncMock(return_value=self.response("按准入模型生成"))
+
+        async def prepare(owner, options):
+            return options
+
+        resolver = AsyncMock(side_effect=AssertionError("pinned provider must not be resolved again"))
+        with patch.object(self.adapter_module.AstrBotLLM, "resolve_provider_id", resolver):
+            reply = await self.generate_native(prepare, resolved_provider_id="provider-a")
+        self.assertTrue(reply.ok, reply.error)
+        resolver.assert_not_awaited()
+        self.plugin.context.tool_loop_agent.assert_awaited_once()
+        self.assertEqual(self.plugin.context.tool_loop_agent.await_args.kwargs["chat_provider_id"], "provider-a")
+        self.assertFalse(self.plugin.in_self_initiated_call())
 
     async def test_motion_response_hook_is_released_with_both_arguments_after_one_attempt(self):
         from tests.test_dialogue_inject import Event

@@ -5,6 +5,20 @@ from datetime import datetime, timezone
 
 
 class VisitRhythm:
+    async def _automatic_budget_snapshot(self, scope):
+        # Optional adapter capability: protocol-only implementations retain
+        # their existing behaviour without knowing the local model scheduler.
+        getter = getattr(self.actor_port, "automatic_budget", None)
+        return await getter(scope) if callable(getter) else None
+
+    async def _automatic_budget_available(self, scope):
+        budget = await self._automatic_budget_snapshot(scope)
+        if budget is None:
+            return True
+        async with self._lock:
+            hold = self._state["draws"].get(scope, {}).get("budget_hold")
+            return bool(budget.get("allowed")) and budget.get("snapshot") != hold
+
     @staticmethod
     def _has_daily_opportunity(record, peer_id, day, limit):
         entry = record.get("peer_days", {}).get(peer_id, {}).get("days", {}).get(day)
@@ -161,6 +175,8 @@ class VisitRhythm:
                                                                    self.config.daily_peer_limit)
                                        for peer in candidates):
                         continue
+            if not await self._automatic_budget_available(scope):
+                continue
             local = await self.actor_port.describe(scope)
             if not local["ready"] or local.get("chat_busy") or not local.get("reception_open", True):
                 continue

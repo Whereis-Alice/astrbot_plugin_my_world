@@ -527,7 +527,7 @@ class SnapshotMixin:
         action = state.current_action or {}
         label = self.world.action_map().get(str(action.get("type") or ""))
         current = "正在睡觉" if state.is_sleeping else (label.name if label else "安静活动或休息")
-        background = await self.db.call("background_status", day=self._today_key(self._now()))
+        background = await self._background_budget_status()
         call_limit = max(0, int(self.world.limits.background_daily_calls))
         token_limit = max(0, int(self.world.limits.background_daily_tokens))
         calls_exhausted = bool(call_limit and int(background.get("calls") or 0) >= call_limit)
@@ -536,9 +536,12 @@ class SnapshotMixin:
             and int(background.get("tokens") or 0) + int(background.get("reserved") or 0) >= token_limit
         )
         autonomous_exhausted = calls_exhausted or tokens_exhausted
+        pacing_wait = bool(background.get("paced") and not background.get("allowed"))
         message = (
             "生活时钟正常；自主模型预算已用完，规则生活继续"
             if recent and enabled and autonomous_exhausted
+            else "生活时钟正常；为后续时段保留模型余量，规则生活继续"
+            if recent and enabled and pacing_wait
             else "生活时钟正常"
             if recent and enabled
             else "此会话尚未启用生活"
@@ -554,7 +557,7 @@ class SnapshotMixin:
             "last_tick_at": state.life_updated_at, "last_plan_at": state.last_llm_plan_at,
             "last_thought_at": max((float(row.get("at") or 0) for row in rows), default=0.0),
             "thought_count": len(rows),
-            "autonomous_generation": "budget_exhausted" if autonomous_exhausted else "available",
+            "autonomous_generation": "budget_exhausted" if autonomous_exhausted else "budget_waiting" if pacing_wait else "available",
             "background_budget": {
                 **background,
                 "call_limit": call_limit,

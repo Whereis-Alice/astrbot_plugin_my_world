@@ -41,7 +41,7 @@ class SpeechFailureTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(state.thoughts)
 
     async def test_backoff_reports_the_gate_without_another_provider_call(self):
-        self.engine._background_failures = {(id(self.llm), "participation"): {
+        self.engine._background_failures = {(id(self.llm), "participation", GROUP, ""): {
             "until": self.clock.now() + 60, "error": "Provider 限流", "count": 1,
         }}
         await self.chat()

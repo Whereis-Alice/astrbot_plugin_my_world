@@ -11,16 +11,36 @@ from contextvars import ContextVar
 from typing import Any
 
 from ..llm_usage import collect_llm_usage
-from ..background_budget import BackgroundReservation
+from ..background_budget import BackgroundReservation, record_background_admission
+from ..background_rhythm import background_admission, background_window
 from ..model_calls import call_context
 from ..model_call_runtime import safe_error
-from .life_inference import LIFE_WORK, released_life_lock, validate_life_preparation
+from .life_inference import LIFE_WORK, LifeWorkDiscarded, released_life_lock, validate_life_preparation
 from ..visit_presence import active_visit
 
 CRITICAL_TICK = ContextVar("world_critical_tick", default=False)
 
 
 class BackgroundMixin:
+    def _background_budget_window(self, purpose: str = "") -> dict[str, Any]:
+        local = self.local_at(self._now())
+        if local.tzinfo is None:
+            local = local.replace(tzinfo=self._resolve_tz())
+        return background_window(local,
+            calls=self.world.limits.background_daily_calls,
+            tokens=self.world.limits.background_daily_tokens,
+            enabled=self.world.limits.background_pacing and purpose != "world_visit")
+
+    async def _background_budget_status(self, *, purpose: str = "") -> dict[str, Any]:
+        """Check routine allowance without occupying a model slot or spending it."""
+        day = self._today_key(self._now())
+        item = await self.db.call("background_status", day)
+        # A midnight crossed during the read must not apply yesterday's usage.
+        if day != self._today_key(self._now()):
+            item = await self.db.call("background_status", self._today_key(self._now()))
+        return background_admission(item, calls=self.world.limits.background_daily_calls,
+            tokens=self.world.limits.background_daily_tokens, window=self._background_budget_window(purpose))
+
     def _background_concurrency(self) -> int:
         # The shared worker pool belongs to global settings; each scoped model
         # channel still applies its own inference limit in _budgeted_generate.
@@ -116,18 +136,8 @@ class BackgroundMixin:
         if interactive:
             async with asyncio.timeout(self.world.limits.background_llm_timeout_seconds):
                 return await channel.generate(**kwargs)
-        now = self._now()
-        failures = getattr(self, "_background_failures", {})
-        self._background_failures = failures
-        failure_key = (id(channel), purpose)
-        failure = failures.get(failure_key, {})
-        if failure.get("until", 0) > now:
-            reason = str(failure.get("error") or "")
-            return LLMReply(ok=False, error="后台模型暂时退避，规则继续运行" + (f"；上次失败：{reason}" if reason else ""))
-        active = getattr(self, "_background_active", 0)
-        if active >= self.world.limits.background_concurrency:
-            return LLMReply(ok=False, error="后台通道忙，留待下一次")
-        self._background_active = active + 1
+        # Preparation must not occupy a slot or spend a reservation. A malformed
+        # option, unavailable tool context or failed routing lookup stays local.
         reserve = (len(str(kwargs.get("system_prompt", ""))) + len(str(kwargs.get("prompt", "")))
                    + len(str(kwargs.get("contexts") or "")) + len(str(kwargs.get("func_tool") or ""))
                    + int(kwargs.get("max_tokens") or 2048))
@@ -140,26 +150,62 @@ class BackgroundMixin:
         if (speech and speech.get("allow_tools") and available and self.world.decider.proactive_tools
                 and getattr(channel, "role", "") == "main" and callable(getattr(context, "tool_loop_agent", None))):
             reserve *= self.world.decider.proactive_tool_steps + 1
+        session = str(kwargs.get("session_id") or call_context().get("session_id") or "")
+        provider_id = str(getattr(channel, "provider_id", "") or "")
+        generate, generation_kwargs = channel.generate, kwargs
+        timeout = min(2, self.world.limits.background_llm_timeout_seconds) if CRITICAL_TICK.get() and not LIFE_WORK.get() else self.world.limits.background_llm_timeout_seconds
+        resolver = getattr(channel, "resolve_provider_id", None)
+        if callable(resolver):
+            async with asyncio.timeout(timeout):
+                provider_id = await resolver(session)
+            if not isinstance(provider_id, str):
+                raise ValueError("后台模型 Provider 解析结果无效")
+            resolved_generate = getattr(channel, "generate_resolved", None)
+            if callable(resolved_generate):
+                generate = resolved_generate
+                generation_kwargs = {**kwargs, "resolved_provider_id": provider_id}
+            await validate_life_preparation(self)
+        now = self._now()
         day = self._today_key(now)
+        window = self._background_budget_window(purpose)
+        failures = getattr(self, "_background_failures", {})
+        self._background_failures = failures
+        failure_key = (id(channel), purpose, session, provider_id)
+        failure = failures.get(failure_key, {})
+        if failure.get("until", 0) > now:
+            reason = str(failure.get("error") or "")
+            return LLMReply(ok=False, error="后台模型暂时退避，规则继续运行" + (f"；上次失败：{reason}" if reason else ""))
+        # No await may separate this shared slot check from its admission.
+        active = getattr(self, "_background_active", 0)
+        if active >= self.world.limits.background_concurrency:
+            return LLMReply(ok=False, error="后台通道忙，留待下一次")
+        self._background_active = active + 1
         try:
             async with BackgroundReservation(self.db, day,
                     calls=self.world.limits.background_daily_calls,
-                    tokens=self.world.limits.background_daily_tokens, reserve=reserve) as budget:
+                    tokens=self.world.limits.background_daily_tokens, reserve=reserve, window=window) as budget:
                 if not budget.allowed:
                     return LLMReply(ok=False, error=budget.reason)
                 with collect_llm_usage(propagate=True) as usage:
                     budget.usage = usage
                     # Tick never spends a full provider timeout holding a character lock.
-                    timeout = min(2, self.world.limits.background_llm_timeout_seconds) if CRITICAL_TICK.get() and not LIFE_WORK.get() else self.world.limits.background_llm_timeout_seconds
                     async with released_life_lock(self):
                         async with asyncio.timeout(timeout):
+                            await validate_life_preparation(self)
+                            if day != self._today_key(self._now()):
+                                reason = "世界日期已变化，本次后台准备取消，稍后重新考虑"
+                                record_background_admission(deferred=True, reason=reason, next_at=self._now())
+                                return LLMReply(ok=False, error=reason)
                             budget.started = True
-                            reply = await channel.generate(**kwargs)
+                            record_background_admission(started=True)
+                            reply = await generate(**generation_kwargs)
             if reply is None or not getattr(reply, "ok", True):
                 raise RuntimeError(str(getattr(reply, "error", "") or "后台模型未返回有效内容")[:500])
             failures.pop(failure_key, None)
             return reply
         except asyncio.CancelledError:
+            raise
+        except LifeWorkDiscarded:
             raise
         except Exception as exc:
             count = min(8, int(failure.get("count", 0)) + 1)

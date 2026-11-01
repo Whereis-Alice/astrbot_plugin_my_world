@@ -66,12 +66,18 @@ class AstrBotLLM:
             provider_id = await self.plugin.context.get_current_chat_provider_id(session_id)
         return provider_id
 
+    async def generate_resolved(self, *, resolved_provider_id: str, **kwargs: Any) -> LLMReply:
+        """Keep the provider admitted by the background scheduler for this request."""
+        return await self.generate(_resolved_provider_id=resolved_provider_id, **kwargs)
+
     async def generate(self, *, session_id: str, system_prompt: str, prompt: str,
                        contexts: list[dict] | None = None, temperature: float | None = None,
-                       max_tokens: int | None = None, image_urls: list[str] | None = None) -> LLMReply:
+                       max_tokens: int | None = None, image_urls: list[str] | None = None,
+                       _resolved_provider_id: str | None = None) -> LLMReply:
         context = self.plugin.context
         try:
-            provider_id = await self.resolve_provider_id(session_id)
+            provider_id = (_resolved_provider_id if _resolved_provider_id is not None
+                           else await self.resolve_provider_id(session_id))
         except Exception as exc:
             return LLMReply(ok=False, error=f"没有可用的 LLM Provider: {exc}")
         kwargs: dict[str, Any] = {}
@@ -120,6 +126,11 @@ class AstrBotLLM:
                         agent = ProactiveAgent(self.plugin, speech)
                         native.tool_agent = agent
                     options = await native.prepare(options)
+                    if (_resolved_provider_id is not None
+                            and options.get("chat_provider_id") != _resolved_provider_id):
+                        # The native builder may change the provider; retry
+                        # admission with that route before making a request.
+                        return LLMReply(ok=False, error="主动上下文的模型路由已变化，留待重新准备")
                     toolset = native.toolset
                 except Exception as exc:
                     return LLMReply(ok=False, error=f"主动上下文准备失败：{type(exc).__name__}: {exc}")

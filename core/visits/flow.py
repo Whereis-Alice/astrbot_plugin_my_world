@@ -114,9 +114,19 @@ class VisitFlow(VisitRhythm):
         except asyncio.CancelledError:
             raise
         except Exception as error:
+            budget = None
+            if isinstance(error, VisitDecisionError) and error.category == "budget" and snapshot["automatic"]:
+                try:
+                    budget = await self._automatic_budget_snapshot(snapshot["scope"])
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    pass  # The confirmed failure still needs its normal settlement.
             async with self._lock:
                 visit = self._state["visits"][visit_id]
                 if visit.get("model_pending") == token and not self._closed:
+                    if budget is not None:
+                        self._state["draws"].setdefault(visit["scope"], {})["budget_hold"] = budget["snapshot"]
                     reason = str(error) if isinstance(error, VisitDecisionError) else (
                         str(VisitDecisionError("timeout")) if isinstance(error, TimeoutError) else
                         "这次思考未完成，只保留已确认经过")
@@ -151,6 +161,8 @@ class VisitFlow(VisitRhythm):
             raise ValueError("请选择去做客或邀请来访")
         if automatic and self.config.auto_probability <= 0:
             raise ValueError("自主邀请概率为 0，今天先留在自己的世界")
+        if automatic and not await self._automatic_budget_available(scope):
+            raise VisitDecisionError("budget")
         peer_id = await self._prepare_peer(scope, peer_id)
         local = await self.actor_port.describe(scope)
         async with self._lock:

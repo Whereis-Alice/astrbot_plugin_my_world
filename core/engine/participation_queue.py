@@ -7,6 +7,22 @@ import time
 from ..browse_reply import BrowseReply, RETRYABLE, available_rows, reply_status
 
 
+def budget_policy(engine) -> list:
+    limits = engine.world.limits
+    return [limits.background_daily_calls, limits.background_daily_tokens,
+            bool(limits.background_pacing), engine.world.timezone]
+
+
+def budget_delay(engine, state, target: str, *, source: str, browse_id: str = "") -> float:
+    """Reuse a known release time without re-reading the budget while it is held."""
+    observation = state.participation.get(target) or {}
+    if (observation.get("decision") != "deferred" or observation.get("budget_source") != source
+            or observation.get("budget_browse_id", "") != browse_id
+            or observation.get("budget_policy") != budget_policy(engine)):
+        return 0.
+    return max(0., float(observation.get("budget_next_at") or 0) - engine._now())
+
+
 def registries(engine):
     for name in ("_participation_pending", "_participation_browses", "_participation_settlers", "_participation_wakeups"):
         if not hasattr(engine, name):
@@ -65,10 +81,10 @@ def ensure_collector(engine, key: str) -> None:
     task.add_done_callback(finished)
 
 
-async def wait_for_change(engine, key: str, delay: float) -> bool:
+async def wait_for_change(engine, key: str, delay: float, *, max_wait: float = 5) -> bool:
     event = engine._participation_wakeups[key]
     try:
-        await asyncio.wait_for(event.wait(), max(.01, min(delay, 5)))
+        await asyncio.wait_for(event.wait(), max(.01, min(delay, max_wait)))
     except TimeoutError:
         return False
     event.clear()
@@ -77,13 +93,19 @@ async def wait_for_change(engine, key: str, delay: float) -> bool:
 
 async def settle(engine, key: str) -> None:
     pending, browses, _ = registries(engine)
-    started, retry_at = time.monotonic(), {}
+    started, retry_at, retry_config = time.monotonic(), {}, {}
     while pending.get(key) or browses.get(key):
         arrivals = {sid: ticket.started for sid, ticket in browses.get(key, {}).items()}
         arrivals.update(pending.get(key, {}))
         target = min(arrivals, key=lambda sid: (retry_at.get(sid, 0), arrivals[sid]))
         arrived = pending.get(key, {}).get(target)
         with engine.config_scope(target):
+            current_config = (id(engine.world), budget_policy(engine))
+            if target in retry_config and current_config != retry_config[target]:
+                retry_at.pop(target, None)
+                retry_config.pop(target, None)
+            if not engine.is_enabled(target) or not engine.proactive_chat_allowed(target):
+                retry_at.pop(target, None)
             delay = (min(engine.world.decider.settle_seconds - (time.monotonic() - arrived),
                          12 - (time.monotonic() - started)) if arrived is not None else 0)
         delay = max(delay, retry_at.get(target, 0) - time.monotonic())
@@ -99,8 +121,9 @@ async def settle(engine, key: str) -> None:
         if ticket:
             delay = min(delay, max(0, ticket.remaining(engine._now())))
         if delay > 0:
-            if await wait_for_change(engine, key, delay):
+            if await wait_for_change(engine, key, delay, max_wait=30 if target in retry_config else 5):
                 retry_at.pop(target, None)
+                retry_config.pop(target, None)
             continue
         active = getattr(engine, "_background_jobs", {}).get("participation:" + key)
         if active and not active.done():
@@ -115,9 +138,13 @@ async def settle(engine, key: str) -> None:
                 browses[key].pop(target, None)
         if retry is None:
             retry_at.pop(target, None)
+            retry_config.pop(target, None)
             started = time.monotonic()
         else:
             retry_at[target] = time.monotonic() + retry
+            if retry > 5:
+                with engine.config_scope(target):
+                    retry_config[target] = (id(engine.world), budget_policy(engine))
 
 
 async def settle_message(engine, key: str, target: str, arrived: float) -> float | None:
@@ -137,17 +164,31 @@ async def settle_message(engine, key: str, target: str, arrived: float) -> float
             if gate:
                 engine.note_participation_waiting(state, target, gate)
                 return 5
+            held = budget_delay(engine, state, target, source="message")
+            if held:
+                expires = max(float(row.get("at") or 0) for row in rows) + engine.world.decider.live_window_seconds
+                return max(.01, min(held, expires - engine._now() + .01))
     task = engine.queue_background("participation:" + key, lambda: engine.maybe_participate(target, sample=True))
     if task is None:
         return 5
     await asyncio.shield(task)
-    async with engine.session_state(target) as state:
-        observation = state.participation.get(target) or {}
-        choice = observation.get("opportunity") or {}
-        if observation.get("decision") == "deferred":
-            return max(1, min(30, float(choice.get("due_at") or 0) - engine._now()))
-        if observation.get("decision") == "waiting":
-            return 5
+    with engine.config_scope(target):
+        async with engine.session_state(target) as state:
+            observation = state.participation.get(target) or {}
+            choice = observation.get("opportunity") or {}
+            if observation.get("decision") == "deferred":
+                held = budget_delay(engine, state, target, source="message")
+                if held:
+                    rows = engine.live_chat(state, target)
+                    if not rows:
+                        pending.get(key, {}).pop(target, None)
+                        observation.update(decision="idle", reason="现场已结束，等待新的消息")
+                        return None
+                    expires = max(float(row.get("at") or 0) for row in rows) + engine.world.decider.live_window_seconds
+                    return max(.01, min(held, expires - engine._now() + .01))
+                return max(1, min(30, float(choice.get("due_at") or 0) - engine._now()))
+            if observation.get("decision") == "waiting":
+                return 5
     if pending.get(key, {}).get(target) == arrived:
         pending[key].pop(target, None)
     return None
@@ -169,6 +210,11 @@ async def settle_browse(engine, ticket: BrowseReply) -> float | None:
                 return None
             if gate in RETRYABLE:
                 return min(5, max(.01, ticket.remaining(engine._now())))
+            held = budget_delay(engine, state, target, source="browse", browse_id=ticket.browse_id)
+            if held and reply_status(state, ticket) == "waiting":
+                return min(held, max(.01, ticket.remaining(engine._now())))
+            if held and reply_status(state, ticket) == "budget":
+                return None
     # Recheck inside the worker too: admission can race with a new native reply.
     task = engine.queue_background("participation:" + ticket.life,
         lambda: engine.maybe_participate(target, source="browse", browse_id=ticket.browse_id, browse_ticket=ticket))
@@ -187,6 +233,9 @@ async def settle_browse(engine, ticket: BrowseReply) -> float | None:
     await task
     with engine.config_scope(target):
         async with engine.session_state(target) as state:
+            held = budget_delay(engine, state, target, source="browse", browse_id=ticket.browse_id)
+            if held and reply_status(state, ticket) == "waiting":
+                return min(held, max(.01, ticket.remaining(engine._now())))
             if reply_status(state, ticket) in RETRYABLE:
                 return min(5, max(.01, ticket.remaining(engine._now())))
     return None

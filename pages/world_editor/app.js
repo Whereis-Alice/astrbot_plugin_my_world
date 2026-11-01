@@ -18596,6 +18596,9 @@ function renderSettings() {
   living._fields.appendChild(el("p", "muted", "完成小步后，在空闲时记下具体所得和未解点，保留跨天安排；小结不会自动发送到聊天。"));
   form.appendChild(living);
   const background = settingsSection("后台预算", "生活规划、事件和复盘共用的模型额度；原生聊天的模型与工具由 AstrBot 管理。", "0 表示不设每日调用或 Token 上限；计划决策次数为 0 则关闭该类模型规划。");
+  background._fields.appendChild(checkboxField("按全天节奏使用后台预算", world.limits.background_pacing !== false,
+    value => { world.limits.background_pacing = value; },
+    {hint: "额度逐渐释放，未用部分留到稍后；正常聊天与串门中的交流照常。"}));
   for (const [key, label, fallback, min, max] of [
     ["background_daily_calls", "每天后台调用预算", 1000, 0, 10000], ["background_daily_tokens", "每天后台 token 预算", 0, 0, 100000000],
     ["background_concurrency", "同时运行的后台模型请求", 1, 1, 12], ["background_llm_timeout_seconds", "后台模型等待上限（秒）", 120, 1, 1800],
