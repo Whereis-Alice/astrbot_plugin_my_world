@@ -70,8 +70,18 @@
   },
   "visits_max_calls": {
     "description": "每趟模型调用总上限",
-    "hint": "默认双方合计十二次，邀请、事件与失败均计入。手动邀请后的角色互聊同样受限制，并遵守各服务器原有后台预算。",
+    "hint": "默认双方合计十二次，已发出的邀请、事件与失败请求均计入。手动串门同样受限制，使用该生活独立的串门日预算；日常后台不会消耗此额度。",
     "type": "int", "default": 12
+  },
+  "visits_daily_calls": {
+    "description": "每份生活每日串门模型调用上限",
+    "hint": "默认24次，1～240。去做客和接待来访共用，只计算这份生活的串门请求；共享生活的会话不重复领额度。与日常后台及每日成功邀请次数分开。",
+    "type": "int", "default": 24
+  },
+  "visits_daily_tokens": {
+    "description": "每份生活每日串门 Token 上限",
+    "hint": "默认0，不额外限制 Token；每趟请求次数和单次输出上限仍生效。设为正数时，未返回完整用量的请求保留保守占位。",
+    "type": "int", "default": 0
   },
   "visits_max_output_tokens": {
     "description": "串门单次模型输出上限",

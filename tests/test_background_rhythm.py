@@ -63,6 +63,10 @@ class BackgroundRhythmTests(unittest.IsolatedAsyncioTestCase):
         day = self.engine._today_key(self.clock.now())
         for _ in range(22):
             await self.db.call("reserve_background", day, calls=24, tokens=0, reserve=1)
+        self.assertTrue((await self.generate("world_visit")).ok)
+        visit_budget = await self.engine._background_budget_status(purpose="world_visit", session_id=fixture.SESSION)
+        for _ in range(22):
+            await self.db.call("reserve_background", visit_budget["ledger"], calls=24, tokens=0, reserve=1)
         self.assertFalse((await self.generate("world_visit")).ok)
         self.assertTrue((await self.generate("chat")).ok)
 

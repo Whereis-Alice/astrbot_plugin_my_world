@@ -13,6 +13,7 @@ import unittest
 from core.model_calls import model_context
 from core.ports import LLMReply
 from core.visit_presence import active_visit
+from core.visits.decisions import VisitDecisionError
 from tests import test_engine as fixture
 
 
@@ -22,7 +23,7 @@ package = types.ModuleType("visit_adapter_fixture")
 package.__path__ = [str(Path(__file__).resolve().parents[1])]
 sys.modules[package.__name__] = package
 sys.modules[package.__name__ + ".core"] = importlib.import_module("core")
-for module_name in ("json_actions", "memory", "model_calls", "state", "visit_presence", "visits.decisions"):
+for module_name in ("background_budget", "json_actions", "memory", "model_calls", "state", "visit_presence", "visits.decisions"):
     sys.modules[package.__name__ + ".core." + module_name] = importlib.import_module("core." + module_name)
 VisitActorPort = importlib.import_module(package.__name__ + ".adapters.visits").VisitActorPort
 
@@ -99,22 +100,26 @@ class VisitActorTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((await self.port.describe(fixture.SESSION))["chat_busy"])
         self.assertTrue((await self.port.decide(fixture.SESSION, "receive", self.visit))["accept"])
 
-    async def test_visit_uses_main_provider_and_background_budget_inside_a_human_tool(self):
-        self.engine.world.limits.background_daily_calls = 1
+    async def test_visit_uses_main_provider_and_visit_budget_inside_a_human_tool(self):
+        self.engine.visits.config.daily_calls = 1
         with model_context("reply", "用户邀请", fixture.SESSION):
             value = await self.port.decide(fixture.SESSION, "propose", self.visit)
             self.assertTrue(value["accept"])
             with self.assertRaises(ValueError):
                 await self.port.decide(fixture.SESSION, "turn", self.visit)
         self.assertEqual(len(self.llm.calls), 1)
-        status = await self.db.call("background_status", self.engine._today_key(self.clock.now()))
+        status = await self.engine._background_budget_status(purpose="world_visit", session_id=fixture.SESSION)
         self.assertEqual(status["calls"], 1)
+        ordinary = await self.db.call("background_status", self.engine._today_key(self.clock.now()))
+        self.assertEqual(ordinary["calls"], 0)
         self.assertEqual(self.llm.calls[0]["session_id"], fixture.SESSION)
 
     async def test_boolean_strings_do_not_accept_or_leave(self):
         self.llm.default_reply = '{"accept":"false","leave":"false","say":"等等"}'
-        value = await self.port.decide(fixture.SESSION, "propose", self.visit)
-        self.assertIs(value["accept"], False)
+        with self.assertRaises(VisitDecisionError) as error:
+            await self.port.decide(fixture.SESSION, "propose", self.visit)
+        self.assertEqual(error.exception.category, "format")
+        value = await self.port.decide(fixture.SESSION, "turn", self.visit)
         self.assertIs(value["leave"], False)
 
     async def test_prompt_excludes_private_chat_and_unrelated_memories(self):
@@ -134,8 +139,9 @@ class VisitActorTests(unittest.IsolatedAsyncioTestCase):
             self.persona.text = "现在换了角色"
             return LLMReply(text='{"accept":true}', ok=True)
         self.llm.generate = change
-        with self.assertRaisesRegex(ValueError, "作废"):
+        with self.assertRaises(VisitDecisionError) as error:
             await self.port.decide(fixture.SESSION, "propose", self.visit)
+        self.assertEqual(error.exception.category, "identity")
 
     async def test_accepted_trip_keeps_needs_moving_and_freezes_home_action(self):
         self.engine.world.actions.append(fixture.ActionDef(id="visit_home_work", name="家里的阅读",

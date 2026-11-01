@@ -17,7 +17,7 @@ class VisitDecisionAdapterTests(unittest.IsolatedAsyncioTestCase):
     asyncSetUp = actor_fixture.VisitActorTests.asyncSetUp
 
     async def test_exhausted_budget_has_a_distinct_reason_and_no_model_call(self):
-        self.engine.world.limits.background_daily_calls = 1
+        self.engine.visits.config.daily_calls = 1
         await self.port.decide(engine_fixture.SESSION, "propose", self.visit)
         with self.assertRaises(VisitDecisionError) as error:
             await self.port.decide(engine_fixture.SESSION, "propose", self.visit)
@@ -70,6 +70,17 @@ class VisitDecisionAdapterTests(unittest.IsolatedAsyncioTestCase):
 class VisitDecisionEndingTests(unittest.IsolatedAsyncioTestCase):
     asyncSetUp = protocol_fixture.VisitProtocolTests.asyncSetUp
 
+    async def finish_waiting(self, pending):
+        self.assertEqual(pending["status"], "inviting")
+        for _ in range(3):
+            current = self.a._state["visits"][pending["id"]]
+            if current["status"] == "interrupted":
+                return (await self.a.overview("life-a"))["visits"][0]
+            self.assertIn("model_retry", current)
+            self.now = max(self.now + 1, current["model_retry"]["next_at"] + 1)
+            await self.a.tick()
+        self.fail("persistent inference failure must stop after bounded retries")
+
     async def test_safe_model_failure_ends_without_inviting_or_counting_success(self):
         async def exhausted(*args, **kwargs):
             raise VisitDecisionError("budget")
@@ -87,6 +98,7 @@ class VisitDecisionEndingTests(unittest.IsolatedAsyncioTestCase):
             raise RuntimeError("private provider body")
         self.a_actor.decide = failed
         pending = await self.a.invite("life-a", self.peer)
+        pending = await self.finish_waiting(pending)
         self.assertEqual(pending["status"], "interrupted")
         self.assertNotIn("private", pending["end_reason"])
         self.assertIn("思考未完成", pending["end_reason"])
@@ -124,6 +136,7 @@ class VisitDecisionEndingTests(unittest.IsolatedAsyncioTestCase):
         self.a_actor.decide = stalled
         self.a.config = replace(self.a.config, timeout_seconds=.02)
         ended = await self.a.invite("life-a", self.peer)
+        ended = await self.finish_waiting(ended)
         self.assertEqual(ended["status"], "interrupted")
         self.assertIn("回应超时", ended["end_reason"])
         self.assertFalse(self.b._state["visits"])

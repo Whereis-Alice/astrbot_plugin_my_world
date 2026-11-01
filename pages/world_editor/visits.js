@@ -153,6 +153,9 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     if (live && typeof visit.contact_error === "string" && visit.contact_error.trim()) {
       body.append(el("p", "visits-channel-status muted", `通道状态：${visit.contact_error.trim()}`));
     }
+    if (live && visit.model_wait?.reason) {
+      body.append(el("p", "visits-channel-status muted", `相处状态：${visit.model_wait.reason}`));
+    }
     const endReason = typeof visit.end_reason === "string" ? visit.end_reason.trim() : "";
     if (!live || endReason) {
       const ending = el("div", "visits-end-reason");

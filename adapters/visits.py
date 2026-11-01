@@ -18,6 +18,7 @@ from ..core.life_matters import stable_interests
 from ..core.state import STATE_DROWSY
 from ..core.visit_presence import active_visit, presence_text
 from ..core.visits.decisions import VisitDecisionError
+from ..core.background_budget import capture_background_admission
 
 
 def _text(value: Any, limit: int) -> str:
@@ -90,18 +91,14 @@ class VisitActorPort:
         engine = self.engine
         scope = engine.state_key(scope)
         with engine.config_scope(scope):
-            day = engine._today_key(engine._now())
-            limits = engine.world.limits
-            calls, tokens = limits.background_daily_calls, limits.background_daily_tokens
-            status = await engine.db.call("background_status", day)
-            exhausted = ((calls > 0 and status["calls"] >= calls)
-                         or (tokens > 0 and status["tokens"] + status["reserved"] >= tokens))
+            status = await engine._background_budget_status(purpose="world_visit", session_id=scope)
+            calls, tokens = status["call_limit"], status["token_limit"]
             # An earlier token reservation can exceed the remaining allowance
             # before either hard limit is reached. Its failed invitation waits
             # for this budget or its configuration to change, including next day.
-            snapshot = [day, calls, tokens, status["calls"], status["tokens"],
+            snapshot = [status["ledger"], calls, tokens, status["calls"], status["tokens"],
                         status["reserved"], status["unknown"]]
-            return {"allowed": not exhausted, "snapshot": snapshot}
+            return {"allowed": status["allowed"], "snapshot": snapshot}
 
     async def describe(self, scope: str) -> dict[str, Any]:
         engine = self.engine
@@ -180,10 +177,12 @@ class VisitActorPort:
             local = await self.describe(scope)
             expected = visit.get("local") or {}
             if expected.get("persona_key") and expected["persona_key"] != local["persona_key"]:
-                raise ValueError("串门期间人设已变化，旧决定作废")
+                raise VisitDecisionError("identity", request_started=False)
             if expected.get("actor_id") and expected["actor_id"] != local["actor_id"]:
-                raise ValueError("串门期间角色已变化，旧决定作废")
+                raise VisitDecisionError("identity", request_started=False)
             if not local["ready"]:
+                if phase in {"turn", "scene"}:
+                    raise VisitDecisionError("life_busy", request_started=False)
                 return {"accept": False, "say": local["ready_reason"], "leave": True,
                         "thought": local["ready_reason"], "reflection": "", "contact_kind": "contact_status"}
             if phase in {"propose", "receive"} and not local["reception_open"]:
@@ -251,7 +250,7 @@ class VisitActorPort:
             )
             cfg = getattr(getattr(engine, "visits", None), "config", None)
             output_limit = max(64, min(512, int(getattr(cfg, "max_output_tokens", 240))))
-            with model_context("world_visit", "友邻串门：" + phase, scope):
+            with model_context("world_visit", "友邻串门：" + phase, scope), capture_background_admission() as admission:
                 try:
                     reply = await engine._budgeted_generate(engine.llm, session_id=scope,
                         system_prompt=persona[:6000] + "\n\n" + rules,
@@ -259,32 +258,44 @@ class VisitActorPort:
                 except asyncio.CancelledError:
                     raise
                 except TimeoutError as exc:
-                    raise VisitDecisionError("timeout") from exc
+                    raise VisitDecisionError("timeout", request_started=admission.started) from exc
                 except Exception as exc:
-                    raise VisitDecisionError("provider") from exc
+                    raise VisitDecisionError("provider", request_started=admission.started) from exc
             if not reply or not reply.ok:
-                raise VisitDecisionError.unavailable(getattr(reply, "error", ""))
+                error = VisitDecisionError.unavailable(getattr(reply, "error", ""))
+                error.request_started = admission.started
+                raise error
+            result = self._parse_decision(phase, reply.text)
             if (not engine.is_enabled(scope) or engine.state_key(scope) != scope
                     or await engine._persona_text(scope) != persona):
-                raise ValueError("思考期间生活或人设已变化，旧串门决定作废")
+                raise VisitDecisionError("identity")
             latest = await self.describe(scope)
             if not latest["ready"]:
-                raise ValueError("思考期间手头的安排已变化，旧串门决定作废")
+                raise VisitDecisionError("life_busy", candidate=result)
             if phase in {"propose", "receive"} and not latest["reception_open"]:
                 return {"accept": False, "say": "现在不在接待时间，稍后再约", "leave": True,
                         "contact_kind": "contact_status"}
             if phase == "receive" and latest["chat_busy"]:
                 return {"accept": False, "say": "正在接眼前的交谈，稍后再约", "leave": True, "contact_kind": "contact_status"}
-            value = extract_json_object(reply.text)
-            if not isinstance(value, dict):
-                raise VisitDecisionError("format")
-            scene = value.get("scene") if isinstance(value.get("scene"), dict) else {}
-            return {"accept": value.get("accept") is True, "leave": value.get("leave") is True,
-                    **{name: _text(value.get(name), limit) for name, limit in
-                       (("say", 400), ("action", 200), ("thought", 240),
-                        ("reflection", 500), ("promise", 180), ("outcome", 500))},
-                    "scene": {name: _text(scene.get(name), limit)
-                              for name, limit in (("place", 80), ("activity", 120), ("event", 240))}}
+            return result
+
+    @staticmethod
+    def _parse_decision(phase: str, text: str) -> dict[str, Any]:
+        value = extract_json_object(text)
+        if not isinstance(value, dict) or (phase in {"propose", "receive"} and type(value.get("accept")) is not bool):
+            raise VisitDecisionError("format")
+        scene = value.get("scene") if isinstance(value.get("scene"), dict) else {}
+        result = {"accept": value.get("accept") is True, "leave": value.get("leave") is True,
+                  **{name: _text(value.get(name), limit) for name, limit in
+                     (("say", 400), ("action", 200), ("thought", 240),
+                      ("reflection", 500), ("promise", 180), ("outcome", 500))},
+                  "scene": {name: _text(scene.get(name), limit)
+                            for name, limit in (("place", 80), ("activity", 120), ("event", 240))}}
+        if phase not in {"propose", "receive"} and not (result["leave"] or any(
+                result[name] for name in ("say", "action", "thought", "reflection", "promise", "outcome"))
+                or any(result["scene"].values())):
+            raise VisitDecisionError("format")
+        return result
 
     async def remember(self, scope: str, visit: dict) -> None:
         """Write one receipt per trip; speculative summaries cannot replace facts."""

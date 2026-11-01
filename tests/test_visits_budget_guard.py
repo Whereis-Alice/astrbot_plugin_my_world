@@ -47,8 +47,11 @@ class VisitBudgetGuardTests(unittest.IsolatedAsyncioTestCase):
         self.llm.default_reply = '{"accept":false,"say":"今天先留在家里。"}'
 
     async def reserve(self, *, calls=0, tokens=0, reserve=50):
-        day = self.engine._today_key(self.clock.now())
-        return await self.db.call("reserve_background", day, calls=calls, tokens=tokens, reserve=reserve)
+        pool = self.engine._background_budget_pool(purpose="world_visit", session_id=S)
+        return await self.db.call("reserve_background", pool["ledger"], calls=calls, tokens=tokens, reserve=reserve)
+
+    def limits(self, **changes):
+        self.engine.visits.config = replace(self.engine.visits.config, **changes)
 
     async def retry_ticks(self, count=3):
         for _ in range(count):
@@ -56,7 +59,7 @@ class VisitBudgetGuardTests(unittest.IsolatedAsyncioTestCase):
             await self.a.tick()
 
     async def test_exhausted_calls_skip_network_journal_and_daily_chances(self):
-        self.engine.world.limits.background_daily_calls = 1
+        self.limits(daily_calls=1)
         await self.reserve(calls=1)
         await self.retry_ticks()
         self.assertEqual(self.requests, [])
@@ -69,7 +72,7 @@ class VisitBudgetGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.requests, [])
 
     async def test_exhausted_tokens_skip_preparation_without_an_attempt(self):
-        self.engine.world.limits.background_daily_tokens = 50
+        self.limits(daily_tokens=50)
         await self.reserve(tokens=50)
         await self.retry_ticks()
         self.assertFalse(self.requests)
@@ -77,7 +80,7 @@ class VisitBudgetGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.llm.calls)
 
     async def test_manual_contact_still_explains_why_its_model_could_not_start(self):
-        self.engine.world.limits.background_daily_calls = 1
+        self.limits(daily_calls=1)
         await self.reserve(calls=1)
         ended = await self.a.invite(S, self.peer)
         self.assertEqual(ended["status"], "interrupted")
@@ -86,14 +89,14 @@ class VisitBudgetGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.llm.calls)
 
     async def test_limit_change_and_next_local_day_restore_automatic_contact(self):
-        self.engine.world.limits.background_daily_calls = 1
+        self.limits(daily_calls=1)
         await self.reserve(calls=1)
         await self.a.tick()
         self.assertFalse(self.requests)
-        self.engine.world.limits.background_daily_calls = 2
+        self.limits(daily_calls=2)
         await self.a.tick()
         self.assertEqual(len(self.llm.calls), 1)
-        self.engine.world.limits.background_daily_calls = 1
+        self.limits(daily_calls=1)
         self.clock.advance(86400)
         await self.a.tick()
         self.assertEqual(len(self.llm.calls), 2)
@@ -101,7 +104,7 @@ class VisitBudgetGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(not v.get("arrived_at") for v in self.a._state["visits"].values()))
 
     async def test_known_token_shortage_waits_across_ticks_and_reload(self):
-        self.engine.world.limits.background_daily_tokens = 10
+        self.limits(daily_tokens=10)
         await self.a.tick()
         self.assertEqual(len(self.a._state["visits"]), 1)
         first_requests = list(self.requests)
@@ -119,13 +122,13 @@ class VisitBudgetGuardTests(unittest.IsolatedAsyncioTestCase):
         await resumed.tick()
         self.assertEqual(len(resumed._state["visits"]), 1)
         self.assertFalse(self.llm.calls)
-        self.engine.world.limits.background_daily_tokens = 50000
+        self.limits(daily_tokens=50000)
         await resumed.tick()
         self.assertEqual(len(self.llm.calls), 1)
         self.assertEqual(len(resumed._state["visits"]), 2)
 
     async def test_release_of_other_work_reopens_a_known_token_shortage(self):
-        self.engine.world.limits.background_daily_tokens = 10000
+        self.limits(daily_tokens=10000)
         await self.reserve(tokens=10000, reserve=9900)
         await self.a.tick()
         self.assertEqual(len(self.a._state["visits"]), 1)
@@ -133,7 +136,8 @@ class VisitBudgetGuardTests(unittest.IsolatedAsyncioTestCase):
         self.clock.advance(3601)
         await self.a.tick()
         self.assertEqual(len(self.a._state["visits"]), 1)
-        await self.db.call("release_background", self.engine._today_key(self.clock.now()), reserve=9900)
+        pool = self.engine._background_budget_pool(purpose="world_visit", session_id=S)
+        await self.db.call("release_background", pool["ledger"], reserve=9900)
         await self.a.tick()
         self.assertEqual(len(self.a._state["visits"]), 2)
         self.assertEqual(len(self.llm.calls), 1)

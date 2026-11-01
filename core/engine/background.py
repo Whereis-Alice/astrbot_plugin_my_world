@@ -5,6 +5,7 @@ from ..recovery import sleep_action_kind
 
 import asyncio
 import time
+from hashlib import sha256
 from collections import deque
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
@@ -19,6 +20,8 @@ from .life_inference import LIFE_WORK, LifeWorkDiscarded, released_life_lock, va
 from ..visit_presence import active_visit
 
 CRITICAL_TICK = ContextVar("world_critical_tick", default=False)
+VISIT_EXHAUSTED = "今日串门预算已用完，先休息一下，明天再联系友邻"
+VISIT_UNOWNED = "串门缺少可用的生活归属，留待重新准备"
 
 
 class BackgroundMixin:
@@ -36,15 +39,62 @@ class BackgroundMixin:
             tokens=self.world.limits.background_daily_tokens,
             enabled=self.world.limits.background_pacing and purpose != "world_visit")
 
-    async def _background_budget_status(self, *, purpose: str = "") -> dict[str, Any]:
-        """Check routine allowance without occupying a model slot or spending it."""
-        day = self._today_key(self._now())
-        item = await self.db.call("background_status", day)
-        # A midnight crossed during the read must not apply yesterday's usage.
-        if day != self._today_key(self._now()):
-            item = await self.db.call("background_status", self._today_key(self._now()))
-        return background_admission(item, calls=self.world.limits.background_daily_calls,
-            tokens=self.world.limits.background_daily_tokens, window=self._background_budget_window(purpose))
+    def _visit_budget_scope(self, session_id: str) -> str:
+        """Only an explicit, enabled life can own a visit reservation."""
+        if not str(session_id or "").strip():
+            return ""
+        scope = self.state_key(self.scope_session(str(session_id)))
+        with self.config_scope(scope):
+            return scope if self.is_enabled(scope) else ""
+
+    def _background_budget_pool(self, *, purpose: str = "", session_id: str = "") -> dict[str, Any] | None:
+        """Routine work shares the instance day; visits share their actual life."""
+        if purpose != "world_visit":
+            day = self._today_key(self._now())
+            return {"day": day, "ledger": day, "scope": "",
+                    "call_limit": self.world.limits.background_daily_calls,
+                    "token_limit": self.world.limits.background_daily_tokens,
+                    "window": self._background_budget_window(purpose)}
+        scope = self._visit_budget_scope(session_id)
+        if not scope:
+            return None
+        config = getattr(getattr(self, "visits", None), "config", None)
+        calls = max(0, int(getattr(config, "daily_calls", 24)))
+        tokens = max(0, int(getattr(config, "daily_tokens", 0)))
+        with self.config_scope(scope):
+            local = self.local_at(self._now())
+            if local.tzinfo is None:
+                local = local.replace(tzinfo=self._resolve_tz())
+            day = local.date().isoformat()
+            window = background_window(local, calls=calls, tokens=tokens, enabled=False)
+        # The store's existing atomic reserve/settle/refund methods all receive
+        # this same suffix. Normal daily keys remain exactly YYYY-MM-DD.
+        ledger = "world_visit:" + day + ":" + sha256(scope.encode()).hexdigest()
+        return {"day": day, "ledger": ledger, "scope": scope,
+                "call_limit": calls, "token_limit": tokens, "window": window}
+
+    async def _background_budget_status(self, *, purpose: str = "", session_id: str = "") -> dict[str, Any]:
+        """Read the selected allowance and its owner without spending a call."""
+        pool = self._background_budget_pool(purpose=purpose, session_id=session_id)
+        if pool is None:
+            return {"day": "", "ledger": "", "scope": "", "call_limit": 0, "token_limit": 0,
+                    "calls": 0, "tokens": 0, "reserved": 0, "unknown": 0,
+                    "allowed": False, "reason": VISIT_UNOWNED, "paced": False, "next_at": 0.}
+        item = await self.db.call("background_status", pool["ledger"])
+        # A midnight or life ownership change during the read cannot apply an
+        # earlier ledger to the newly selected life.
+        latest = self._background_budget_pool(purpose=purpose, session_id=session_id)
+        if latest is None:
+            return {**pool, **item, "allowed": False, "reason": VISIT_UNOWNED,
+                    "paced": False, "next_at": 0.}
+        if latest["ledger"] != pool["ledger"]:
+            item = await self.db.call("background_status", latest["ledger"])
+        pool = latest
+        admission = background_admission(item, calls=pool["call_limit"], tokens=pool["token_limit"],
+                                         window=pool["window"])
+        if purpose == "world_visit" and not admission["allowed"]:
+            admission["reason"] = VISIT_EXHAUSTED
+        return {**pool, **admission}
 
     def _background_concurrency(self) -> int:
         # The shared worker pool belongs to global settings; each scoped model
@@ -130,6 +180,7 @@ class BackgroundMixin:
         from ..ports import LLMReply
         context = call_context()
         purpose = str(context.get("purpose") or "other")
+        request_session = str(context.get("session_id") or "")
         # Calls caused by a person are not part of the autonomous background
         # allowance. In particular, post-chat reflection is what keeps the
         # "inner thoughts" page updating; a busy conversation must not let other
@@ -141,6 +192,20 @@ class BackgroundMixin:
         if interactive:
             async with asyncio.timeout(self.world.limits.background_llm_timeout_seconds):
                 return await channel.generate(**kwargs)
+        session = str(kwargs.get("session_id") or request_session or "")
+        visit_scope = ""
+        if purpose == "world_visit":
+            visit_scope = self._visit_budget_scope(session)
+            if (not visit_scope or request_session
+                    and self._visit_budget_scope(request_session) != visit_scope):
+                record_background_admission(deferred=True, reason=VISIT_UNOWNED)
+                return LLMReply(ok=False, error=VISIT_UNOWNED)
+
+        def visit_owned():
+            return (purpose != "world_visit" or
+                    self._visit_budget_scope(session) == visit_scope and
+                    (not request_session or self._visit_budget_scope(request_session) == visit_scope))
+
         # Preparation must not occupy a slot or spend a reservation. A malformed
         # option, unavailable tool context or failed routing lookup stays local.
         reserve = (len(str(kwargs.get("system_prompt", ""))) + len(str(kwargs.get("prompt", "")))
@@ -155,7 +220,6 @@ class BackgroundMixin:
         if (speech and speech.get("allow_tools") and available and self.world.decider.proactive_tools
                 and getattr(channel, "role", "") == "main" and callable(getattr(context, "tool_loop_agent", None))):
             reserve *= self.world.decider.proactive_tool_steps + 1
-        session = str(kwargs.get("session_id") or call_context().get("session_id") or "")
         provider_id = str(getattr(channel, "provider_id", "") or "")
         generate, generation_kwargs = channel.generate, kwargs
         admitted_generate = None
@@ -173,8 +237,14 @@ class BackgroundMixin:
             admitted_generate = getattr(channel, "generate_admitted", None)
             await validate_life_preparation(self)
         now = self._now()
-        day = self._today_key(now)
-        window = self._background_budget_window(purpose)
+        if not visit_owned():
+            record_background_admission(deferred=True, reason=VISIT_UNOWNED)
+            return LLMReply(ok=False, error=VISIT_UNOWNED)
+        pool = self._background_budget_pool(purpose=purpose, session_id=session)
+        if pool is None:
+            record_background_admission(deferred=True, reason=VISIT_UNOWNED)
+            return LLMReply(ok=False, error=VISIT_UNOWNED)
+        ledger, window = pool["ledger"], pool["window"]
         failures = getattr(self, "_background_failures", {})
         self._background_failures = failures
         failure_key = (id(channel), purpose, session, provider_id)
@@ -189,10 +259,10 @@ class BackgroundMixin:
         self._background_active = active + 1
         budget = None
         try:
-            async with BackgroundReservation(self.db, day,
-                    calls=self.world.limits.background_daily_calls,
-                    tokens=self.world.limits.background_daily_tokens, reserve=reserve, window=window,
-                    on_change=self._background_budget_changed) as budget:
+            async with BackgroundReservation(self.db, ledger,
+                    calls=pool["call_limit"], tokens=pool["token_limit"], reserve=reserve, window=window,
+                    on_change=self._background_budget_changed,
+                    exhausted_reason=VISIT_EXHAUSTED if purpose == "world_visit" else "") as budget:
                 if not budget.allowed:
                     return LLMReply(ok=False, error=budget.reason)
                 with collect_llm_usage(propagate=True) as usage:
@@ -201,14 +271,21 @@ class BackgroundMixin:
                     async with released_life_lock(self):
                         async with asyncio.timeout(timeout):
                             await validate_life_preparation(self)
-                            if day != self._today_key(self._now()):
-                                reason = "世界日期已变化，本次后台准备取消，稍后重新考虑"
+                            def current_ledger():
+                                latest = self._background_budget_pool(purpose=purpose, session_id=session)
+                                return visit_owned() and latest and latest["ledger"] == ledger
+
+                            changed_reason = ("世界日期或生活归属已变化，本次后台准备取消，稍后重新考虑"
+                                              if purpose == "world_visit" else
+                                              "世界日期已变化，本次后台准备取消，稍后重新考虑")
+                            if not current_ledger():
+                                reason = changed_reason
                                 record_background_admission(deferred=True, reason=reason, next_at=self._now())
                                 return LLMReply(ok=False, error=reason)
                             async def begin_request():
                                 await validate_life_preparation(self)
-                                if day != self._today_key(self._now()):
-                                    reason = "世界日期已变化，本次后台准备取消，稍后重新考虑"
+                                if not current_ledger():
+                                    reason = changed_reason
                                     record_background_admission(deferred=True, reason=reason, next_at=self._now())
                                     raise RuntimeError(reason)
                                 budget.started = True

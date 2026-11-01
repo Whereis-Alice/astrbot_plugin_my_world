@@ -10,6 +10,7 @@ from .rhythm import VisitRhythm
 from .snapshots import validate_snapshot
 from .transport import VisitTransportError
 from .decisions import VisitDecisionError
+from .model_retry import defer_decision, valid_retry
 
 
 class VisitFlow(VisitRhythm):
@@ -84,6 +85,13 @@ class VisitFlow(VisitRhythm):
                 await self._finish(visit, "expired", "本次停留已经到期，旧决定作废")
                 return None
             cursor = self._decision_cursor(visit, phase)
+            retry = visit.get("model_retry") or {}
+            if retry and not valid_retry(visit, cursor):
+                visit.pop("model_retry", None)
+                retry = {}
+            if retry and retry["next_at"] > self._now():
+                return None
+            candidate = copy.deepcopy(retry.get("candidate"))
             resumable = phase in {"receive", "turn", "scene"} or (
                 phase == "propose" and visit.get("proposal_stage") == "pending")
             if (resumable and visit.get("decision_cursor") == cursor
@@ -93,21 +101,38 @@ class VisitFlow(VisitRhythm):
                 receive_cache = (cursor, visit["scope"])
             else:
                 own = self._local_id(visit)
-                if visit["calls"][own] >= self._allocation(visit, own):
+                if candidate is None and visit["calls"][own] >= self._allocation(visit, own):
                     await self._finish(visit, "completed" if visit.get("arrived_at") else "declined", "本次相见的预算已用完")
                     return None
                 if visit.get("model_pending"):
                     return None
                 token = new_id()
                 visit["model_pending"] = token
-                visit["calls"][own] += 1
+                charged = candidate is None
+                if charged:
+                    visit["calls"][own] += 1
                 snapshot = copy.deepcopy(visit)
                 await self._save()  # Admission, including failure, is durable before inference.
         if receive_cache is not None:
             return await self._resume_invitation_decision(visit_id, *receive_cache, phase=phase)
         try:
             async with asyncio.timeout(self.config.timeout_seconds):
-                raw = await self.actor_port.decide(snapshot["scope"], phase, snapshot)
+                if candidate is None:
+                    raw = await self.actor_port.decide(snapshot["scope"], phase, snapshot)
+                else:
+                    current = await self.actor_port.describe(snapshot["scope"])
+                    if any(current[key] != snapshot["local"][key] for key in ("actor_id", "persona_key")):
+                        raise VisitDecisionError("identity", request_started=False)
+                    if not current["ready"]:
+                        raise VisitDecisionError("life_busy", request_started=False, candidate=candidate)
+                    if phase in {"propose", "receive"} and not current.get("reception_open", True):
+                        raw = {"accept": False, "leave": True, "say": "现在不在接待时间，稍后再约",
+                               "contact_kind": "contact_status"}
+                    elif phase == "receive" and current.get("chat_busy"):
+                        raw = {"accept": False, "leave": True, "say": "正在接眼前的交谈，稍后再约",
+                               "contact_kind": "contact_status"}
+                    else:
+                        raw = candidate
                 result = clean_decision(raw)
                 result["contact_kind"] = ("contact_status" if isinstance(raw, dict)
                                           and raw.get("contact_kind") == "contact_status" else "contact_reply")
@@ -125,6 +150,20 @@ class VisitFlow(VisitRhythm):
             async with self._lock:
                 visit = self._state["visits"][visit_id]
                 if visit.get("model_pending") == token and not self._closed:
+                    if visit["status"] in TERMINAL:
+                        return None
+                    visit.pop("model_pending", None)
+                    if charged and isinstance(error, VisitDecisionError) and not error.request_started:
+                        visit["calls"][own] = max(0, visit["calls"][own] - 1)
+                    if self._decision_cursor(visit, phase) != cursor:
+                        await self._save()
+                        return None
+                    category = (error.category if isinstance(error, VisitDecisionError) else
+                                "timeout" if isinstance(error, TimeoutError) else "provider")
+                    if defer_decision(visit, cursor, category=category, now=self._now(),
+                                      candidate=getattr(error, "candidate", None)):
+                        await self._save()
+                        return None
                     if budget is not None:
                         self._state["draws"].setdefault(visit["scope"], {})["budget_hold"] = budget["snapshot"]
                     reason = str(error) if isinstance(error, VisitDecisionError) else (
@@ -144,6 +183,7 @@ class VisitFlow(VisitRhythm):
                 await self._save()
                 return None  # Another confirmed step has already advanced this phase.
             visit["private"] = {key: result[key] for key in ("thought", "reflection", "promise")}
+            visit.pop("model_retry", None)
             # Durable output lets a request retry reuse this decision.
             visit["decision"] = result
             if resumable:
@@ -444,6 +484,8 @@ class VisitFlow(VisitRhythm):
             async with self._lock:
                 if visit["status"] != "offered" or self._closed or not self.config.enabled:
                     return
+                if not result and visit.get("model_retry"):
+                    return
                 if not result or not result["accept"] or result["leave"]:
                     if visit["status"] not in TERMINAL:
                         if result:
@@ -463,7 +505,7 @@ class VisitFlow(VisitRhythm):
                 if visit.get("model_pending"):
                     return
                 if (visit.get("decision_cursor") == self._decision_cursor(visit, "propose")
-                        and isinstance(visit.get("decision"), dict)):
+                        and isinstance(visit.get("decision"), dict)) or valid_retry(visit, self._decision_cursor(visit, "propose")):
                     result = await self._decide(visit_id, "propose")
                     await self._submit_proposal(visit_id, result)
                 return
@@ -508,6 +550,10 @@ class VisitFlow(VisitRhythm):
                 self._synchronize(visit, reply["visit"], visit["host_id"])
                 visit.pop("unsent_turn", None)
                 await self._save()
+            return
+        retry = visit.get("model_retry") or {}
+        if retry.get("phase") == "scene" and valid_retry(visit, self._decision_cursor(visit, "scene")):
+            await self._scene(visit_id, retry["cursor"].get("scene_stage", ""))
             return
         if visit["event_stage"] == "offered" and len(visit.get("action_plans", {})) == 2:
             await self._scene(visit_id, "event_resolve")

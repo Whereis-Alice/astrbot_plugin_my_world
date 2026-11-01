@@ -9,6 +9,7 @@ from astrbot.api import logger
 
 from .connections import WorldConnections
 from .protocol import RESERVED, TERMINAL, new_id, public_actor
+from .model_retry import valid_retry, visible_wait
 
 KEY = "world_visits.v1"
 
@@ -47,7 +48,7 @@ class VisitJournal(WorldConnections):
                     await self._finish(visit, "interrupted", "上次思考被中断，只保留已确认经过")
                 elif visit.get("proposal_stage") == "pending" and (
                         visit.get("decision_cursor") != self._decision_cursor(visit, "propose")
-                        or not isinstance(visit.get("decision"), dict)):
+                        or not isinstance(visit.get("decision"), dict)) and not valid_retry(visit, self._decision_cursor(visit, "propose")):
                     await self._finish(visit, "interrupted", "上次邀请尚未形成可确认的决定，这次联系结束")
             await self._save()
 
@@ -127,6 +128,7 @@ class VisitJournal(WorldConnections):
                       remote=copy.deepcopy(visit["remote"]),
                       calls_used=sum(visit["calls"].values()),
                       contact_error=visit.get("contact_error", ""))
+        result["model_wait"] = visible_wait(visit) if visit["status"] in RESERVED else {}
         return result
 
     async def overview(self, scope: str = "") -> dict[str, Any]:
@@ -162,6 +164,7 @@ class VisitJournal(WorldConnections):
         visit["status"], visit["end_reason"] = status, reason
         visit["ended_at"] = self._now()
         visit.pop("model_pending", None)
+        visit.pop("model_retry", None)
         visit.pop("outbox", None)
         visit.pop("unsent_turn", None)
         visit.pop("proposal_offer", None)

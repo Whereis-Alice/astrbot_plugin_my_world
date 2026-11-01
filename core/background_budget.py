@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterator
 from typing import Any
 
 from .llm_usage import LLMUsage
+from .background_rhythm import EXHAUSTED
 
 
 @dataclass
@@ -66,11 +67,13 @@ class BackgroundReservation:
     """Refund unstarted dispatches; retain conservative usage after model entry."""
 
     def __init__(self, db: Any, day: str, *, calls: int, tokens: int, reserve: int,
-                 window: dict[str, Any] | None = None, on_change: Callable[[], None] | None = None) -> None:
+                 window: dict[str, Any] | None = None, on_change: Callable[[], None] | None = None,
+                 exhausted_reason: str = "") -> None:
         self.db, self.day, self.reserve = db, day, reserve
         self.calls, self.tokens = calls, tokens
         self.window = window
         self.on_change = on_change
+        self.exhausted_reason = exhausted_reason
         self.allowed = False
         self.reason = ''
         self.next_at = 0.
@@ -98,6 +101,8 @@ class BackgroundReservation:
             await _finish_write(asyncio.create_task(withdraw()))
             raise
         self.allowed, self.reason = budget['allowed'], budget.get('reason', '')
+        if self.reason == EXHAUSTED and self.exhausted_reason:
+            self.reason = self.exhausted_reason
         self.next_at = float(budget.get('next_at') or 0)
         if self.allowed:
             self._changed()
