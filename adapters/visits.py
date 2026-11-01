@@ -115,13 +115,26 @@ class VisitActorPort:
                     "ready_reason": reason if persona.strip() else "还没有可用的人设",
                     "local_date": str(engine.local_now().date()),
                     "reception_open": self._reception_open(),
-                    "chat_busy": engine.native_turn_busy(scope) or any(isinstance(row, dict) and not row.get("is_self")
-                                     and not row.get("internal")
-                                     and (row.get("addressing") == "me" or not engine.chat_is_group(scope))
-                                     and float(row.get("at") or 0) > engine._now() - 120
-                                     for row in state.recent_chat),
+                    "chat_busy": self._chat_busy(scope, state),
                     "home_node": state.node_id,
                     "place": _text(node.name if node else "", 80)}
+
+    def _chat_busy(self, scope: str, state) -> bool:
+        """Shared lives keep each chat's source type and enabled membership."""
+        engine = self.engine
+        if engine.native_turn_busy(scope):
+            return True
+        sources, cutoff = set(engine.group_sessions(scope)), engine._now() - 120
+        for row in state.recent_chat:
+            if not isinstance(row, dict) or row.get("is_self") or row.get("internal"):
+                continue
+            origin = engine._chat_origin(row, state)
+            if origin not in sources or not engine.is_enabled(origin):
+                continue
+            if ((row.get("addressing") == "me" or not engine.chat_is_group(origin))
+                    and float(row.get("at") or 0) > cutoff):
+                return True
+        return False
 
     def _reception_open(self) -> bool:
         cfg = getattr(getattr(self.engine, "visits", None), "config", None)

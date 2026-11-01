@@ -10,7 +10,7 @@ from .rhythm import VisitRhythm
 from .snapshots import validate_snapshot
 from .transport import VisitTransportError
 from .decisions import VisitDecisionError, capture_decision_candidate
-from .model_retry import defer_decision, valid_retry
+from .model_retry import DELAYS, defer_decision, valid_retry
 
 
 class VisitFlow(VisitRhythm):
@@ -286,7 +286,9 @@ class VisitFlow(VisitRhythm):
                 visit.pop("proposal_offer", None)
                 visit.pop("proposal_cursor", None)
                 if reply.get("declined"):
-                    await self._finish(visit, "declined", str(reply.get("reason") or "对方暂时不方便"))
+                    # The signed refusal already settles this contact. The
+                    # receiver may never have created a journey to say goodbye to.
+                    await self._finish(visit, "declined", str(reply.get("reason") or "对方暂时不方便"), notify=False)
                 else:
                     offered = reply.get("visit") or {}
                     visit["max_calls"] = min(visit["max_calls"], offered.get("max_calls", visit["max_calls"]))
@@ -326,6 +328,7 @@ class VisitFlow(VisitRhythm):
     def _synchronize(self, visit, remote, sender, *, allow_terminal=False):
         validate_snapshot(visit, remote, now=self._now())
         if visit["status"] in TERMINAL and not allow_terminal:
+            self._clear_decision_wait(visit)
             return
         if allow_terminal and (visit["role"] != "guest" or sender != visit["host_id"]
                                or remote.get("status") not in TERMINAL):
@@ -341,6 +344,7 @@ class VisitFlow(VisitRhythm):
                 visit["ended_at"] = remote.get("ended_at", self._now())
                 if not visit.get("arrived_at"):
                     visit["log"] = copy.deepcopy(remote.get("log", []))
+                self._clear_decision_wait(visit)
             return
         if sender != visit["host_id"] or remote.get("status") not in RESERVED | TERMINAL:
             raise ValueError("无效东道主状态")
@@ -366,6 +370,8 @@ class VisitFlow(VisitRhythm):
         visit["calls"][sender] = max(visit["calls"][sender], remote_calls)
         visit["calls"][self._local_id(visit)] = own_calls
         self._mark_arrival(visit)
+        if visit["status"] in TERMINAL:
+            self._clear_decision_wait(visit)
 
     async def _notify_end(self, visit_id):
         """Deliver a bounded durable goodbye without keeping the local life suspended."""
@@ -420,6 +426,7 @@ class VisitFlow(VisitRhythm):
         if result["leave"]:
             visit["status"], visit["ended_at"] = "completed", self._now()
             visit["end_reason"] = "访客已告别归家"
+            self._clear_decision_wait(visit)
 
     def _record_turn(self, visit, sender, result):
         self._append(visit, sender, "say", result["say"])
@@ -456,11 +463,32 @@ class VisitFlow(VisitRhythm):
                     async with self._lock:
                         await self._finish(visit, "interrupted", "这个生活已关闭串门或归属发生变化")
                     continue
-                if max(visit["next_at"], self._touched.get(visit["scope"], 0)) > self._now():
+                if max(visit["next_at"], (visit.get("state_retry") or {}).get("next_at", 0),
+                       self._touched.get(visit["scope"], 0)) > self._now():
                     continue
-                current = await self.actor_port.describe(visit["scope"])
+                try:
+                    async with asyncio.timeout(self.config.timeout_seconds):
+                        current = await self.actor_port.describe(visit["scope"])
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    async with self._lock:
+                        if self._closed or not self.config.enabled or visit["status"] in TERMINAL:
+                            continue
+                        failures = visit.get("state_retry", {}).get("attempts", 0) + 1
+                        if failures > len(DELAYS):
+                            await self._finish(visit, "interrupted", "暂时无法确认当前生活状态，只保留已确认经过")
+                        else:
+                            next_at = self._now() + DELAYS[failures - 1]
+                            visit["state_retry"] = {"attempts": failures, "next_at": next_at}
+                            visit["next_at"] = max(visit["next_at"], next_at)
+                            await self._save()
+                    continue
                 if self._closed or not self.config.enabled or visit["status"] in TERMINAL:
                     continue
+                async with self._lock:
+                    if visit.pop("state_retry", None) is not None:
+                        await self._save()
                 if current["persona_key"] != visit["local"]["persona_key"] or current["actor_id"] != visit["local"]["actor_id"]:
                     async with self._lock:
                         await self._finish(visit, "interrupted", "生活身份变化，本次联系结束")
@@ -526,7 +554,7 @@ class VisitFlow(VisitRhythm):
                 if self._closed or visit["status"] in TERMINAL:
                     return
                 if reply.get("declined"):
-                    await self._finish(visit, "declined", str(reply.get("reason", "稍后再约")))
+                    await self._finish(visit, "declined", str(reply.get("reason", "稍后再约")), notify=False)
                 elif "visit" in reply:
                     self._synchronize(visit, reply["visit"], visit["remote"]["id"])
                     await self._save()

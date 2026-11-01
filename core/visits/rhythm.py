@@ -1,6 +1,7 @@
 """One daily successful invitation per local life and neighbouring server."""
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 
@@ -177,7 +178,19 @@ class VisitRhythm:
                         continue
             if not await self._automatic_budget_available(scope):
                 continue
-            local = await self.actor_port.describe(scope)
+            try:
+                async with asyncio.timeout(self.config.timeout_seconds):
+                    local = await self.actor_port.describe(scope)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                async with self._lock:
+                    if self._automatic_available(scope):
+                        record = self._state["draws"].setdefault(scope, {})
+                        record["next_auto_at"] = max(record.get("next_auto_at", 0),
+                                                     self._now() + max(60, self.config.poll_seconds))
+                        await self._save()
+                continue
             if not local["ready"] or local.get("chat_busy") or not local.get("reception_open", True):
                 continue
             async with self._lock:

@@ -7,7 +7,7 @@ import unittest
 from dataclasses import replace
 
 from tests import test_visits_protocol as protocol_tests
-from core.visits.protocol import envelope, new_id
+from core.visits.protocol import envelope, new_id, verify
 from core.visits import VisitService
 
 
@@ -115,8 +115,10 @@ class VisitReviewTests(unittest.IsolatedAsyncioTestCase):
         current = self.b.active("life-b")
         self.assertIsNotNone(current)
         self.assertTrue(current.get("arrived_at"))
-        with self.assertRaisesRegex(ValueError, "已有邀请或串门"):
-            await self.b.receive(self.offer())
+        response = await self.b.receive(self.offer())
+        reply = verify(response, self.a._state["peers"][self.peer]["secret"], self.now)
+        self.assertTrue(reply["declined"])
+        self.assertEqual(reply["contact"], {"kind": "contact_status", "text": reply["reason"]})
         self.assertEqual(self.b.active("life-b")["id"], current["id"])
         self.assertEqual(self.b.active("life-b")["log"], current["log"])
 
@@ -128,8 +130,10 @@ class VisitReviewTests(unittest.IsolatedAsyncioTestCase):
         visit = self.b._new_visit("life-b", peer, local, new_id(), "guest", "一起读书", False)
         self.b._state["visits"][visit["id"]] = visit
         await self.b._save()
-        with self.assertRaisesRegex(ValueError, "已有邀请或串门"):
-            await self.b.receive(self.offer())
+        response = await self.b.receive(self.offer())
+        reply = verify(response, self.a._state["peers"][self.peer]["secret"], self.now)
+        self.assertTrue(reply["declined"])
+        self.assertEqual(reply["contact"], {"kind": "contact_status", "text": reply["reason"]})
         self.assertEqual(self.b.active("life-b")["id"], visit["id"])
         self.assertEqual(visit["status"], "inviting")
 

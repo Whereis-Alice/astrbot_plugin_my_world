@@ -296,12 +296,19 @@ class WorldConnections:
                     raise ValueError("这位友邻暂未开启联系")
                 bound_key = self._bound_key(anchor, remote["id"], remote_token, result["actor"]["id"], result["actor_token"])
                 active = self.active(scope)
-                if active and (not existing or not self._visit_belongs(active, existing) or existing["secret"] != bound_key
-                                          or existing["local"]["persona_key"] != local["persona_key"]):
-                    raise ValueError("这份生活正在串门，稍后再建立新的角色联系")
-                peer = self._add_peer(scope, local, remote, current["url"],
-                                     bound_key, register=False)
-                peer.update(connection_id=conn["id"], anchor_digest=digest(anchor))
+                if active:
+                    # An unchanged friend can still call while another visit owns
+                    # the life. Revalidate its binding without changing any key;
+                    # the offer then receives an authenticated availability reply.
+                    if (not existing or not self._peer_trusted(existing) or not self._binding_current(existing)
+                            or existing["secret"] != bound_key
+                            or existing["local"]["actor_id"] != local["actor_id"]
+                            or existing["local"]["persona_key"] != local["persona_key"]):
+                        raise ValueError("这份生活正在串门，稍后再建立新的角色联系")
+                else:
+                    peer = self._add_peer(scope, local, remote, current["url"],
+                                         bound_key, register=False)
+                    peer.update(connection_id=conn["id"], anchor_digest=digest(anchor))
             return await self._receipt(body, result, anchor["secret"], anchor["local_id"], receipt_key)
 
     async def _control_request(self, cid, payload):

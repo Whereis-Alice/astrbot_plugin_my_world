@@ -65,6 +65,11 @@ class VisitSettlementTests(unittest.IsolatedAsyncioTestCase):
             await remember(scope, snapshot)
 
         self.a_actor.remember = failing
+        # End the old shared visit before calling again; its independent memory
+        # failure can remain pending without making the friend falsely available.
+        await self.a._notify_end(old)
+        self.assertIsNone(self.b.active("life-b"))
+        self.assertNotIn(old, self.a_actor.memories)
         pending = await self.a.invite("life-a", self.peer)
         await self.advance()
         newer = self.a._state["visits"][pending["id"]]

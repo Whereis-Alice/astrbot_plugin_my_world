@@ -305,7 +305,10 @@ class VisitService(VisitFlow, VisitJournal):
                 crossing = (current["status"] == "inviting" and not current.get("arrived_at")
                             and current["remote"]["id"] == peer["id"])
                 if not crossing:
-                    raise ValueError("她现在已有邀请或串门，稍后再约")
+                    reason = ("我现在正和友邻相处，稍后再约" if current.get("arrived_at") else
+                              "我还有一通联系在等回应，稍后再约")
+                    return {"declined": True, "reason": reason,
+                            "contact": {"kind": "contact_status", "text": reason}}
                 if visit_id >= current["id"]:
                     return {"declined": True, "reason": "双方同时提出邀请，接续另一条邀请"}
                 await self._finish(self._state["visits"][current["id"]], "declined",
@@ -329,11 +332,13 @@ class VisitService(VisitFlow, VisitJournal):
             if visit["status"] not in TERMINAL:
                 status = "completed" if (visit.get("arrived_at") and isinstance(remote, dict)
                                           and remote.get("status") == "completed") else "interrupted"
-                await self._finish(visit, status, "对方已告别或结束本次联系", notify=False)
+                reason = (remote.get("end_reason") if isinstance(remote, dict)
+                          and remote.get("status") in TERMINAL else "")
+                await self._finish(visit, status, reason or "对方已告别或结束本次联系", notify=False)
             if (visit["log"], visit["status"], visit.get("end_reason")) != previous:
                 self._invalidate_memory(visit)
             visit.pop("end_pending", None)
-            visit.pop("model_pending", None)
+            self._clear_decision_wait(visit)
             visit.pop("outbox", None)
             visit.pop("unsent_turn", None)
             return {"visit": self._wire(visit)}

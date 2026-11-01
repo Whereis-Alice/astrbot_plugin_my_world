@@ -45,6 +45,12 @@ class VisitJournal(WorldConnections):
             # Unknown in-flight inference cannot be regenerated. A paid candidate
             # under read-only verification can resume its existing recovery phase.
             for visit in list(self._state["visits"].values()):
+                if visit["status"] in TERMINAL:
+                    # A confirmed goodbye wins over stale inference markers.
+                    self._clear_decision_wait(visit)
+                    if "proposal_stage" in visit:
+                        visit["proposal_stage"] = "done"
+                    continue
                 retry = visit.get("model_retry")
                 retry = retry if isinstance(retry, dict) else {}
                 phase = retry.get("phase")
@@ -101,6 +107,12 @@ class VisitJournal(WorldConnections):
     @staticmethod
     def _invalidate_memory(visit: dict) -> None:
         for key in ("remembered", "remember_failures", "remember_retry_at", "remember_error"):
+            visit.pop(key, None)
+
+    @staticmethod
+    def _clear_decision_wait(visit: dict) -> None:
+        """Discard local inference waits without disturbing goodbye delivery."""
+        for key in ("model_pending", "model_retry", "state_retry"):
             visit.pop(key, None)
 
     def _mark_arrival(self, visit) -> None:
@@ -170,8 +182,7 @@ class VisitJournal(WorldConnections):
         contacted = visit.get("contacted") or visit.get("arrived_at") or visit["status"] == "offered"
         visit["status"], visit["end_reason"] = status, reason
         visit["ended_at"] = self._now()
-        visit.pop("model_pending", None)
-        visit.pop("model_retry", None)
+        self._clear_decision_wait(visit)
         visit.pop("outbox", None)
         visit.pop("unsent_turn", None)
         visit.pop("proposal_offer", None)

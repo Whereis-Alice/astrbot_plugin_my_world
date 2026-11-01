@@ -38,6 +38,11 @@ def defer_decision(visit: dict, cursor: dict, *, category: str, now: float, cand
 
 
 def visible_wait(visit: dict) -> dict:
+    state = visit.get("state_retry") or {}
+    if (type(state.get("attempts")) is int and 1 <= state["attempts"] <= len(DELAYS)
+            and type(state.get("next_at")) in {int, float} and math.isfinite(state["next_at"])):
+        return {"reason": "暂时无法确认当前生活状态，稍后继续", "attempts": state["attempts"],
+                "next_at": state["next_at"]}
     retry = visit.get("model_retry") or {}
     if retry.get("category") not in WAITING or type(retry.get("attempts")) is not int:
         return {}
