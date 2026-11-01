@@ -10756,6 +10756,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_action_event_contains_what_she_said(self):
         """互动类动作（模板）也要在日志里留下"她发了什么"。"""
 
+        from tests.schedule_delivery import settled_schedule_outcomes
+
         self.set_schedules(
             [
                 {
@@ -10771,7 +10773,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         )
         self.engine.reload_config()
         self.clock.set_struct(datetime(2026, 9, 10, 17, 30))
-        await self.engine.tick()
+        await settled_schedule_outcomes(self.engine, await self.engine.tick())
         events = await self.db.call("query_events", session_id=SESSION, limit=20)
         actions = [item for item in events if item["event_type"] == "action"]
         self.assertTrue(actions)
@@ -10780,6 +10782,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def test_skipped_action_is_logged(self):
         """工具型动作缺必填参数就跳过，跳过原因要写进日志。"""
+
+        from tests.schedule_delivery import settled_schedule_outcomes
 
         self.tools._tools = {"get_current_weather": "查天气"}
         self.engine.tools.schemas["web_search"] = {
@@ -10807,7 +10811,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         )
         self.engine.reload_config()
         self.clock.set_struct(datetime(2026, 9, 10, 19, 0))
-        await self.engine.tick()
+        await settled_schedule_outcomes(self.engine, await self.engine.tick())
         events = await self.db.call("query_events", session_id=SESSION, limit=20)
         skips = [item for item in events if item["event_type"] == "skip"]
         self.assertTrue(skips)
