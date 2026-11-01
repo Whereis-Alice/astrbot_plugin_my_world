@@ -79,7 +79,8 @@ def remember_visit(memory, *, confirmed_log: list[dict], idempotency_key: str, *
                     or not isinstance(previous, list) or not previous
                     or len(previous) > len(hashes) or hashes[:len(previous)] != previous):
                 return memory_id
-            if len(previous) == len(hashes) and old_meta.get("status") == meta["status"]:
+            if (len(previous) == len(hashes) and old_meta.get("status") == meta["status"]
+                    and old_meta.get("end_reason", "") == meta.get("end_reason", "")):
                 return memory_id
         else:
             # A pre-upgrade receipt has no fingerprints. Upgrade only when its

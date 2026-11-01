@@ -22,7 +22,7 @@ package = types.ModuleType("visit_adapter_fixture")
 package.__path__ = [str(Path(__file__).resolve().parents[1])]
 sys.modules[package.__name__] = package
 sys.modules[package.__name__ + ".core"] = importlib.import_module("core")
-for module_name in ("json_actions", "memory", "model_calls", "state", "visit_presence"):
+for module_name in ("json_actions", "memory", "model_calls", "state", "visit_presence", "visits.decisions"):
     sys.modules[package.__name__ + ".core." + module_name] = importlib.import_module("core." + module_name)
 VisitActorPort = importlib.import_module(package.__name__ + ".adapters.visits").VisitActorPort
 

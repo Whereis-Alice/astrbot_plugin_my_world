@@ -17,6 +17,7 @@ from ..core.model_calls import model_context
 from ..core.life_matters import stable_interests
 from ..core.state import STATE_DROWSY
 from ..core.visit_presence import active_visit, presence_text
+from ..core.visits.decisions import VisitDecisionError
 
 
 def _text(value: Any, limit: int) -> str:
@@ -233,11 +234,18 @@ class VisitActorPort:
             cfg = getattr(getattr(engine, "visits", None), "config", None)
             output_limit = max(64, min(512, int(getattr(cfg, "max_output_tokens", 240))))
             with model_context("world_visit", "友邻串门：" + phase, scope):
-                reply = await engine._budgeted_generate(engine.llm, session_id=scope,
-                    system_prompt=persona[:6000] + "\n\n" + rules,
-                    prompt=json.dumps(materials, ensure_ascii=False), max_tokens=output_limit)
+                try:
+                    reply = await engine._budgeted_generate(engine.llm, session_id=scope,
+                        system_prompt=persona[:6000] + "\n\n" + rules,
+                        prompt=json.dumps(materials, ensure_ascii=False), max_tokens=output_limit)
+                except asyncio.CancelledError:
+                    raise
+                except TimeoutError as exc:
+                    raise VisitDecisionError("timeout") from exc
+                except Exception as exc:
+                    raise VisitDecisionError("provider") from exc
             if not reply or not reply.ok:
-                raise ValueError("串门模型暂时没有可用回应")
+                raise VisitDecisionError.unavailable(getattr(reply, "error", ""))
             if (not engine.is_enabled(scope) or engine.state_key(scope) != scope
                     or await engine._persona_text(scope) != persona):
                 raise ValueError("思考期间生活或人设已变化，旧串门决定作废")
@@ -251,7 +259,7 @@ class VisitActorPort:
                 return {"accept": False, "say": "正在接眼前的交谈，稍后再约", "leave": True, "contact_kind": "contact_status"}
             value = extract_json_object(reply.text)
             if not isinstance(value, dict):
-                raise ValueError("串门模型没有返回有效选择")
+                raise VisitDecisionError("format")
             scene = value.get("scene") if isinstance(value.get("scene"), dict) else {}
             return {"accept": value.get("accept") is True, "leave": value.get("leave") is True,
                     **{name: _text(value.get(name), limit) for name, limit in
@@ -292,25 +300,28 @@ class VisitActorPort:
                 return "说话人未确认" if speaker == "unknown" else owner + "说"
             return ("提出者未确认的方案" if speaker == "unknown" else owner + "当时提出的方案") + "（尚未证明完成）"
 
-        facts = [f"[{fact_label(row)}] {_text(row.get('text'), 400)}"
-                 for row in rows[-12:] if _text(row.get("text"), 400)]
+        # The protocol already bounds confirmed logs to 40 rows of 500 chars.
+        # Durable memory keeps that evidence; bounded recall is a separate step.
+        facts = [f"[{fact_label(row)}] {_text(row.get('text'), 500)}"
+                 for row in rows if _text(row.get("text"), 500)]
         if not facts:
             return
         private = visit.get("private") or {}
         reflection = _text(visit.get("reflection") or private.get("reflection") or private.get("thought"), 500)
+        end_reason = _text(visit.get("end_reason"), 500)
         content = f"与{world}的{who}串门相处。已经确认的经过：" + "；".join(facts)
         content += "。" + ("这次已告别归家。" if visit["status"] == "completed" else
-                             "本次相处已结束：" + _text(visit.get("end_reason"), 160) + "；只记已确认的部分。")
+                             "本次相处已结束：" + end_reason + "；只记已确认的部分。")
         if reflection:
             content += "我当时的感受（主观）：" + reflection
         meta = {"kind": "world_visit", "visit_id": key, "peer_id": peer_id,
                 "peer_world": world, "persona_key": persona_key,
-                "status": visit["status"], "confirmed": True}
+                "status": visit["status"], "end_reason": end_reason, "confirmed": True}
         with engine.config_scope(scope):
             await engine.db.run(engine.memory.remember_visit, confirmed_log=rows,
                 idempotency_key="world_visit:" + scope + ":" + key,
                 session_id=scope, persona_id=persona_key, node_id=str(local.get("home_node") or ""),
-                content=content[:6500], memory_type=EVENT, scope=SCOPE_GROUP_PERSONA,
+                content=content, memory_type=EVENT, scope=SCOPE_GROUP_PERSONA,
                 related_users=[], participants=["world_actor:" + peer_id], source="life_event",
                 context=json.dumps(meta, ensure_ascii=False), keywords=[who, world, "串门"], weight=.65)
 

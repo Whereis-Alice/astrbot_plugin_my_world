@@ -5,7 +5,7 @@ import math
 from .protocol import RESERVED, TERMINAL
 
 
-def validate_snapshot(visit: dict, remote: dict) -> None:
+def validate_snapshot(visit: dict, remote: dict, *, now: float | None = None) -> None:
     if not isinstance(remote, dict) or remote.get("id") != visit["id"]:
         raise ValueError("无效旅程快照")
     actors = {visit["host_id"], visit["guest_id"]}
@@ -25,6 +25,9 @@ def validate_snapshot(visit: dict, remote: dict) -> None:
             value = remote[name]
             if type(value) not in {int, float} or not math.isfinite(value) or value < 0:
                 raise ValueError("旅程时间无效")
+    if (remote.get("arrived_at") and not visit.get("arrived_at")
+            and (visit["status"] in TERMINAL or now is not None and visit["expires_at"] <= now)):
+        raise ValueError("已经结束或到期的邀请不能再确认到访")
     if status in {"active", "finishing"} and not remote.get("arrived_at"):
         raise ValueError("旅程尚未确认到访")
     if "next_actor" in remote and (not isinstance(remote["next_actor"], str)

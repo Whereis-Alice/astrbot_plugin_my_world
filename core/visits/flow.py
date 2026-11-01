@@ -9,6 +9,7 @@ from .protocol import RESERVED, TERMINAL, clean_decision, clean_scene, new_id, p
 from .rhythm import VisitRhythm
 from .snapshots import validate_snapshot
 from .transport import VisitTransportError
+from .decisions import VisitDecisionError
 
 
 class VisitFlow(VisitRhythm):
@@ -112,11 +113,14 @@ class VisitFlow(VisitRhythm):
                                           and raw.get("contact_kind") == "contact_status" else "contact_reply")
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as error:
             async with self._lock:
                 visit = self._state["visits"][visit_id]
                 if visit.get("model_pending") == token and not self._closed:
-                    await self._finish(visit, "interrupted", "这次思考未完成，只保留已确认经过")
+                    reason = str(error) if isinstance(error, VisitDecisionError) else (
+                        str(VisitDecisionError("timeout")) if isinstance(error, TimeoutError) else
+                        "这次思考未完成，只保留已确认经过")
+                    await self._finish(visit, "interrupted", reason)
             return None
         async with self._lock:
             visit = self._state["visits"][visit_id]
@@ -259,7 +263,7 @@ class VisitFlow(VisitRhythm):
         visit["next_at"] = self._now() + self.config.poll_seconds
 
     def _synchronize(self, visit, remote, sender, *, allow_terminal=False):
-        validate_snapshot(visit, remote)
+        validate_snapshot(visit, remote, now=self._now())
         if visit["status"] in TERMINAL and not allow_terminal:
             return
         if allow_terminal and (visit["role"] != "guest" or sender != visit["host_id"]

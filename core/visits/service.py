@@ -312,7 +312,7 @@ class VisitService(VisitFlow, VisitJournal):
             previous = (copy.deepcopy(visit["log"]), visit["status"], visit.get("end_reason"))
             remote = payload.get("visit")
             if remote is not None:
-                validate_snapshot(visit, remote)
+                validate_snapshot(visit, remote, now=self._now())
             if visit["role"] == "guest" and remote is not None:
                 if remote.get("status") not in TERMINAL:
                     raise ValueError("对方尚未确认结束本次相见")
@@ -368,6 +368,9 @@ class VisitService(VisitFlow, VisitJournal):
             local = await self.actor_port.describe(visit["scope"])
             if local["actor_id"] != visit["local"]["actor_id"] or local["persona_key"] != visit["local"]["persona_key"]:
                 raise ValueError("生活身份已变化，旧联系作废")
+            if payload.get("op") != "end" and visit["expires_at"] <= self._now():
+                await self._finish(visit, "expired", "本次停留已经到期，旧联系作废")
+                raise ValueError("本次停留已经到期，旧动作不再发送")
             if not peer["url"]:
                 raise ValueError("对方未提供可访问的串门地址，请补填对外地址后重新配对")
             payload = {**payload, "id": visit_id, "calls": visit["calls"][self._local_id(visit)]}
@@ -393,6 +396,9 @@ class VisitService(VisitFlow, VisitJournal):
             local = await self.actor_port.describe(visit["scope"])
             if local["actor_id"] != visit["local"]["actor_id"] or local["persona_key"] != visit["local"]["persona_key"]:
                 raise ValueError("生活身份已变化，旧答复作废")
+            if outgoing["payload"]["op"] != "end" and visit["expires_at"] <= self._now():
+                await self._finish(visit, "expired", "本次停留已经到期，旧答复作废")
+                raise ValueError("本次停留已经到期，旧答复作废")
             if (visit.get("outbox") or {}).get("message_id") != outgoing["message_id"]:
                 raise ValueError("本次联系已被更新，旧答复作废")
             self._enabled()
@@ -410,7 +416,7 @@ class VisitService(VisitFlow, VisitJournal):
                         raise ValueError("对方返回不兼容的旅程预算")
                     candidate[name] = value
             if remote is not None:
-                validate_snapshot(candidate, remote)
+                validate_snapshot(candidate, remote, now=self._now())
             if result.get("declined") is True and outgoing["payload"]["op"] == "offer":
                 contact = result.get("contact")
                 if contact is None:  # Older neighbours return only their availability reason.
@@ -433,10 +439,10 @@ class VisitService(VisitFlow, VisitJournal):
 
     async def return_home(self, scope: str) -> dict[str, Any]:
         await self._load()
-        visit = self.active(scope)
-        if not visit:
-            return {"ok": True, "status": "completed"}
         async with self._lock:
+            visit = self.active(scope)
+            if not visit:
+                return {"ok": True, "status": "completed"}
             current = self._state["visits"][visit["id"]]
             await self._finish(current, "interrupted", "真人要求告别归家")
         await self._notify_end(visit["id"])
