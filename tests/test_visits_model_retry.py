@@ -373,4 +373,3 @@ class VisitActorFormatTests(unittest.TestCase):
         with self.assertRaises(VisitDecisionError) as error:
             VisitActorPort._parse_decision("turn", "{}")
         self.assertEqual(error.exception.category, "format")
-

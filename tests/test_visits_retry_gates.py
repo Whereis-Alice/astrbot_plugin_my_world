@@ -110,4 +110,3 @@ class VisitRetryGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(visit["status"], "offered")
         self.assertEqual(visit["model_retry"]["category"], "timeout")
         self.assertIn("回应超时", self.b._visible(visit)["model_wait"]["reason"])
-
