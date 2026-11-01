@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -66,6 +67,48 @@ class IdleVisitCostTests(unittest.IsolatedAsyncioTestCase):
             await self.service._automatic()
         self.service.actor_port.describe.assert_not_awaited()
         self.service.invite.assert_not_awaited()
+
+    async def test_zero_probability_avoids_preparation_and_keeps_existing_daily_record(self):
+        for probability in (0, -.1):
+            for picked in (False, True):
+                with self.subTest(probability=probability, picked=picked):
+                    service = RhythmHarness()
+                    service.consume()
+                    service.config = replace(service.config, auto_probability=probability)
+                    entry = service._state["draws"]["life"]["peer_days"]["friend"]["days"][service.day]
+                    entry.update(picked=picked, attempts=0, successes=0)
+                    before = copy.deepcopy(service._state)
+                    for _ in range(3):
+                        await service._automatic()
+                        service.now += 3601
+                    service.actor_port.describe.assert_not_awaited()
+                    service.invite.assert_not_awaited()
+                    service._save.assert_not_awaited()
+                    self.assertEqual(service._state, before)
+
+    async def test_zero_probability_does_not_migrate_or_draw_and_reenable_can_contact(self):
+        self.service.config = replace(self.service.config, auto_probability=0)
+        self.service._state["draws"].clear()
+        self.service._random = Mock(side_effect=AssertionError("Zero probability needs no draw"))
+        await self.service._automatic()
+        self.service.actor_port.describe.assert_not_awaited()
+        self.service.invite.assert_not_awaited()
+        self.service._random.assert_not_called()
+        self.assertEqual(self.service._state["draws"], {})
+        self.service.config = replace(self.service.config, auto_probability=1)
+        self.service._random = lambda: 0
+        await self.service._automatic()
+        self.service.invite.assert_awaited_once_with("life", "friend", automatic=True)
+
+    async def test_zero_probability_readmission_cannot_reuse_an_earlier_picked_day(self):
+        self.service.consume()
+        self.service.config = replace(self.service.config, auto_probability=0)
+        entry = self.service._state["draws"]["life"]["peer_days"]["friend"]["days"][self.service.day]
+        entry.update(picked=True, attempts=0, successes=0)
+        before = copy.deepcopy(self.service._state)
+        self.assertFalse(self.service._admit_automatic("life", self.service._state["peers"]["friend"],
+                                                      self.service.description()))
+        self.assertEqual(self.service._state, before)
 
     async def test_rejected_daily_draw_is_also_exhausted(self):
         self.service.consume()
@@ -157,7 +200,7 @@ class IdleVisitCostTests(unittest.IsolatedAsyncioTestCase):
         self.service.invite.assert_awaited_once()
 
     async def test_close_or_config_change_during_describe_cannot_invite_or_migrate(self):
-        for condition in ("close", "disabled", "auto_disabled", "backlog", "life_disabled"):
+        for condition in ("close", "disabled", "auto_disabled", "zero_probability", "backlog", "life_disabled"):
             with self.subTest(condition=condition):
                 service = RhythmHarness()
                 service._state["draws"].clear()
@@ -169,6 +212,8 @@ class IdleVisitCostTests(unittest.IsolatedAsyncioTestCase):
                         service.config = replace(service.config, enabled=False)
                     elif condition == "auto_disabled":
                         service.config = replace(service.config, auto_enabled=False)
+                    elif condition == "zero_probability":
+                        service.config = replace(service.config, auto_probability=0)
                     elif condition == "life_disabled":
                         service._state["enabled_scopes"].clear()
                     else:

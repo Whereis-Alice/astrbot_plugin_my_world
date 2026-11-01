@@ -99,6 +99,7 @@ class VisitRhythm:
     def _admit_automatic(self, scope, peer, local):
         """Reserve an attempt's cooldown under the caller's invitation lock."""
         if (not self.config.auto_enabled or not self.config.daily_peer_limit
+                or self.config.auto_probability <= 0
                 or not local["ready"] or local.get("chat_busy")
                 or not local.get("reception_open", True)):
             return False
@@ -127,12 +128,14 @@ class VisitRhythm:
 
     def _automatic_available(self, scope):
         return (not self._closed and self.config.enabled and self.config.auto_enabled
-                and self.config.daily_peer_limit and self._life_enabled(scope) and not self.active(scope)
+                and self.config.daily_peer_limit and self.config.auto_probability > 0
+                and self._life_enabled(scope) and not self.active(scope)
                 and self._touched.get(scope, 0) <= self._now()
                 and not self._settlement_backlog_full(scope))
 
     async def _automatic(self):
-        if self._closed or not self.config.enabled or not self.config.auto_enabled or not self.config.daily_peer_limit:
+        if (self._closed or not self.config.enabled or not self.config.auto_enabled
+                or not self.config.daily_peer_limit or self.config.auto_probability <= 0):
             return
         scopes = sorted(self._participating())
         for scope in scopes:

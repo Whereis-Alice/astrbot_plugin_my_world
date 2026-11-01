@@ -5,6 +5,7 @@ import copy
 import unittest
 
 from tests import test_visits_protocol as fixture
+from tests import test_visits_actor as actor_fixture
 
 
 class VisitContactTests(unittest.IsolatedAsyncioTestCase):
@@ -45,6 +46,50 @@ class VisitContactTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.a_actor.memories, {})
         self.assertEqual(self.b_actor.memories, {})
 
+    async def test_empty_receiver_refusal_keeps_a_public_reason_in_both_directions(self):
+        async def silent_refusal(scope, phase, visit):
+            return {"accept": False, "say": "", "leave": True, "thought": "私有拒绝想法"}
+
+        self.b_actor.decide = silent_refusal
+        for direction in ("outgoing", "incoming"):
+            with self.subTest(direction=direction):
+                pending = await self.a.invite("life-a", self.peer, direction=direction)
+                await self.advance(4)
+                for service in (self.a, self.b):
+                    visit = service._state["visits"][pending["id"]]
+                    self.assertEqual(visit["status"], "declined")
+                    self.assertEqual(visit["end_reason"], "现在不方便，稍后再约")
+                    self.assertNotIn("私有拒绝想法", str(service._visible(visit)))
+                self.assertEqual(self.a._state["visits"][pending["id"]]["log"],
+                                 self.b._state["visits"][pending["id"]]["log"])
+
+    async def test_guest_goodbye_keeps_its_words_and_reason_in_both_directions(self):
+        originals = {actor: actor.decide for actor in (self.a_actor, self.b_actor)}
+        for direction in ("outgoing", "incoming"):
+            with self.subTest(direction=direction):
+                for actor, decide in originals.items():
+                    actor.decide = decide
+                guest = self.a_actor if direction == "outgoing" else self.b_actor
+
+                async def goodbye(scope, phase, visit):
+                    result = await originals[guest](scope, phase, visit)
+                    if phase == "turn":
+                        result.update(say="我先回去收好书，下次再见。", leave=True)
+                    return result
+
+                guest.decide = goodbye
+                pending = await self.a.invite("life-a", self.peer, direction=direction)
+                await self.advance(4)
+                local = self.a._state["visits"][pending["id"]]
+                remote = self.b._state["visits"][pending["id"]]
+                for visit in (local, remote):
+                    self.assertEqual(visit["status"], "completed")
+                    self.assertEqual(visit["end_reason"], "访客已告别归家")
+                    self.assertEqual([row["text"] for row in visit["log"]
+                                      if row["actor_id"] == visit["guest_id"] and row["kind"] == "say"][-1],
+                                     "我先回去收好书，下次再见。")
+                self.assertEqual(local["log"], remote["log"])
+
     async def test_phone_decline_reply_retry_does_not_duplicate_the_transcript(self):
         self.b_actor.ready = False
         visit = await self.a.invite("life-a", self.peer)
@@ -71,3 +116,43 @@ class VisitContactTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(visit["status"], "inviting")
         self.assertEqual(len(visit["log"]), 1)
         self.assertNotIn("forged", str(visit))
+
+
+class VisitReceptionStatusTests(unittest.IsolatedAsyncioTestCase):
+    node_id = "study"
+    asyncSetUp = actor_fixture.VisitActorTests.asyncSetUp
+
+    async def test_closed_reception_returns_public_status_without_a_model(self):
+        from unittest.mock import patch
+        from tests.test_engine import SESSION
+
+        with patch.object(self.port, "_reception_open", return_value=False):
+            for phase in ("propose", "receive"):
+                with self.subTest(phase=phase):
+                    result = await self.port.decide(SESSION, phase, self.visit)
+                    self.assertFalse(result["accept"])
+                    self.assertTrue(result["leave"])
+                    self.assertEqual(result["say"], "现在不在接待时间，稍后再约")
+                    self.assertEqual(result["contact_kind"], "contact_status")
+        self.assertEqual(self.llm.calls, [])
+
+    async def test_reception_closing_during_thought_discards_acceptance_with_public_status(self):
+        from unittest.mock import patch
+        from tests.test_engine import SESSION
+
+        closed = False
+        original = self.llm.generate
+
+        async def close_after_generation(**kwargs):
+            nonlocal closed
+            result = await original(**kwargs)
+            closed = True
+            return result
+
+        self.llm.generate = close_after_generation
+        with patch.object(self.port, "_reception_open", side_effect=lambda: not closed):
+            result = await self.port.decide(SESSION, "receive", self.visit)
+        self.assertFalse(result["accept"])
+        self.assertEqual(result["say"], "现在不在接待时间，稍后再约")
+        self.assertEqual(result["contact_kind"], "contact_status")
+        self.assertEqual(len(self.llm.calls), 1)

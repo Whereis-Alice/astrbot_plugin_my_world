@@ -168,7 +168,7 @@ class VisitActorPort:
                 return {"accept": False, "say": local["ready_reason"], "leave": True,
                         "thought": local["ready_reason"], "reflection": "", "contact_kind": "contact_status"}
             if phase in {"propose", "receive"} and not local["reception_open"]:
-                return {"accept": False, "say": "", "leave": True,
+                return {"accept": False, "say": "现在不在接待时间，稍后再约", "leave": True,
                         "thought": "现在不在接待时间，稍后再约", "reflection": "", "contact_kind": "contact_status"}
             if phase == "receive" and local["chat_busy"]:
                 return {"accept": False, "say": "正在接眼前的交谈，稍后再约", "leave": True, "contact_kind": "contact_status"}
@@ -244,6 +244,9 @@ class VisitActorPort:
             latest = await self.describe(scope)
             if not latest["ready"]:
                 raise ValueError("思考期间手头的安排已变化，旧串门决定作废")
+            if phase in {"propose", "receive"} and not latest["reception_open"]:
+                return {"accept": False, "say": "现在不在接待时间，稍后再约", "leave": True,
+                        "contact_kind": "contact_status"}
             if phase == "receive" and latest["chat_busy"]:
                 return {"accept": False, "say": "正在接眼前的交谈，稍后再约", "leave": True, "contact_kind": "contact_status"}
             value = extract_json_object(reply.text)

@@ -344,6 +344,24 @@ class GlobalPairingTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await pending
         self.assertIn(self.connection["id"], self.a._state["connections"])
+        self.assertIn("未通过确认", self.a._state["connections"][self.connection["id"]]["catalog_error"])
+
+    async def test_catalog_network_failure_keeps_pairing_and_does_not_claim_an_old_server(self):
+        from unittest.mock import AsyncMock, patch
+        before = copy.deepcopy(self.a._state["connections"][self.connection["id"]])
+        async def disconnected(*args):
+            # The HTTP transport deliberately wraps connection failures in
+            # ValueError; presentation must retain that underlying cause.
+            raise ValueError("暂时联系不上对方，请检查串门服务") from TimeoutError()
+        with patch.object(self.a, "_control_request", AsyncMock(side_effect=disconnected)):
+            with self.assertRaises(ValueError):
+                await self.a.refresh_connection(self.connection["id"])
+        after = self.a._state["connections"][self.connection["id"]]
+        self.assertEqual(after["anchors"], before["anchors"])
+        self.assertEqual(after["actors"], before["actors"])
+        self.assertIn("联系不上", after["catalog_error"])
+        self.assertNotIn("旧版", after["catalog_error"])
+        self.assertGreater(after["next_catalog_at"], self.now)
 
 
 class LegacyGlobalMigrationTests(unittest.IsolatedAsyncioTestCase):

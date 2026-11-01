@@ -33,6 +33,7 @@
 .visits-history > p {font-size:13px; line-height:1.7;}
 .visits-history > details {border:1px solid var(--line); border-radius:12px; padding:13px 17px; margin:9px 0; background:var(--panel);}
 .visits-history summary {cursor:pointer; font-size:13px; line-height:1.6; overflow-wrap:anywhere;}
+.visits-history-time {margin-left:12px; font-size:11px; white-space:nowrap;}
 .visits-visit {min-width:0;}
 .visits-visit-body {padding-top:8px;}
 .visits-visit-body > p {line-height:1.7; overflow-wrap:anywhere; font-size:13px;}

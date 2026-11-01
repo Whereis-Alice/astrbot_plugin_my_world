@@ -135,7 +135,13 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
   function visitCard(visit, live = false) {
     const card = el(live ? "div" : "details", "visits-visit");
     const label = `${visit.peer_name || visit.peer?.name || visit.remote?.name || "友邻世界"} · ${STATUS[visit.status] || visit.status || "等待答复"}`;
-    card.append(el(live ? "h3" : "summary", "", label));
+    const summary = el(live ? "h3" : "summary", "", label);
+    if (!live) {
+      card.dataset.visitId = visit.id;
+      const date = stamp(visit.started_at || visit.created_at);
+      if (date) summary.append(el("small", "visits-history-time muted", date));
+    }
+    card.append(summary);
     const body = el("div", "visits-visit-body"), scene = visit.scene;
     const endReason = typeof visit.end_reason === "string" ? visit.end_reason.trim() : "";
     if (!live || endReason) {
@@ -262,6 +268,7 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     body.append(actions); phone.append(body, el("p", "visits-phone-hint muted")); controls();
   }
   function renderLife(result) {
+    const opened = new Set([...history.querySelectorAll("details[open]")].map(card => card.dataset.visitId));
     lifeData = result; current.replaceChildren(); history.replaceChildren();
     current.append(el("span", "people-eyebrow", "当前生活"));
     if (!getSession()) current.append(el("p", "muted", "在上方选择生活后，可以查看她的串门经历并提出邀请。"));
@@ -271,7 +278,9 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
       : "这个生活尚未参与串门。在「友邻与生活设置」中勾选并保存后，即可与友邻相见。"));
     history.append(el("h3", "", "通话与相见记录"));
     const past = result.history || result.visits || [];
-    for (const visit of past.filter(item => item.id !== result.active?.id).slice(0, 20)) history.append(visitCard(visit));
+    for (const visit of past.filter(item => item.id !== result.active?.id).slice(0, 20)) {
+      const card = visitCard(visit); card.open = opened.has(visit.id); history.append(card);
+    }
     if (!history.querySelector("details")) history.append(el("p", "muted", "共同经历会在这里留下记录，也会成为她自己的生活记忆。"));
     controls();
     clearTimeout(refreshTimer);

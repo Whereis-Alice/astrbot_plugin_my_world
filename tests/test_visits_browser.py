@@ -84,6 +84,25 @@ class VisitsBrowserTests(unittest.TestCase):
         expect(self.page.get_by_role('button', name='打电话', exact=True)).to_have_attribute('aria-expanded', 'false')
         self.assertEqual(self.errors, [])
 
+    def test_reading_history_survives_refresh_but_does_not_follow_a_life_switch(self):
+        self.page.evaluate("""() => {
+          visitData.history=[{id:'past-call',status:'completed',created_at:1761990000,
+            remote:{id:'friend',name:'爱丽丝'},end_reason:'告别归家',
+            log:[{actor_id:'friend',kind:'say',text:'下次一起喝茶。'}]}];
+        }""")
+        refresh = self.page.locator('#tab-visits').get_by_role('button', name='刷新', exact=True)
+        refresh.click()
+        card = self.page.locator('.visits-history details[data-visit-id="past-call"]')
+        expect(card.locator('summary .visits-history-time')).not_to_have_text('')
+        card.locator('summary').click()
+        expect(card.locator('.visits-visit-body')).to_be_visible()
+        refresh.click()
+        expect(card.locator('.visits-visit-body')).to_be_visible()
+        self.page.locator('#status-session').select_option('test:GroupMessage:200')
+        self.page.wait_for_function("visitReads.at(-1).session==='test:GroupMessage:200'")
+        expect(card.locator('.visits-visit-body')).not_to_be_visible()
+        self.assertEqual(self.errors, [])
+
     def test_invite_both_directions_and_preserve_life_scope(self):
         self.open_phone()
         self.assertEqual(self.page.get_by_label('去见哪位朋友', exact=True).count(), 0)

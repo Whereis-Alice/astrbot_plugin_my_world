@@ -8,6 +8,8 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+import aiohttp
+
 from .config import normalize_url
 from .protocol import ID, RESERVED, code_id, derive_key, digest, envelope, new_id, public_actor, text, validate_actor, verify
 
@@ -100,8 +102,11 @@ class WorldConnections:
         # One candidate per neighbouring server; different remote lives share
         # this local life's daily success allowance for that neighbour.
         selected = []
+        candidates = {}
+        for peer in self._scoped_candidates(scope):
+            candidates.setdefault(peer["connection_id"], []).append(peer)
         for conn in self._state.get("connections", {}).values():
-            rows = [p for p in self._scoped_candidates(scope) if p["connection_id"] == conn["id"]]
+            rows = candidates.get(conn["id"], [])
             if rows:
                 selected.append(next((p for p in rows if p["id"] == conn.get("default_actor")), rows[0]))
             elif not conn.get("actors") and self._life_enabled(scope) and conn.get("enabled", True) and conn.get("url") \
@@ -320,11 +325,15 @@ class WorldConnections:
         try:
             result, anchor = await self._control_request(cid, {"op": "world_catalog"})
             cards = self._validate_catalog(result.get("actors"), cid)
-        except (ValueError, ConnectionError, TimeoutError, OSError):
+        except (ValueError, ConnectionError, TimeoutError, OSError) as exc:
             async with self._lock:
                 conn = self._state["connections"].get(cid)
                 if conn and not self._closed:
-                    conn.update(catalog_error="暂未取得最新角色目录；原配对保留，对方旧版需升级以开放其他生活",
+                    reason = ("暂时联系不上对方，尚未取得最新角色目录；原配对与已有角色保留"
+                              if isinstance(exc, (ConnectionError, TimeoutError, OSError))
+                              or isinstance(exc.__cause__, (aiohttp.ClientError, TimeoutError, OSError)) else
+                              "对方角色目录未通过确认；原配对与已有角色保留，可刷新或检查双方版本")
+                    conn.update(catalog_error=reason,
                                 next_catalog_at=self._now() + max(60, self.config.auto_interval_minutes * 60))
                     await self._save()
             raise

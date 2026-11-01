@@ -11,6 +11,50 @@ from .snapshots import validate_snapshot
 
 
 class VisitFlow(VisitRhythm):
+    @staticmethod
+    def _decision_cursor(visit, phase):
+        return {"phase": phase, "status": visit["status"], "log_seq": len(visit["log"]),
+                "turns": copy.deepcopy(visit["turns"]), "event_stage": visit["event_stage"],
+                "scene_stage": visit.get("scene_stage", ""), "next_actor": visit["next_actor"]}
+
+    async def _resume_receive(self, visit_id, cursor, scope):
+        try:
+            current = await self.actor_port.describe(scope)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            current = None
+        async with self._lock:
+            visit = self._state["visits"].get(visit_id)
+            if not visit or self._closed or not self.config.enabled or visit["status"] in TERMINAL:
+                return None
+            if (self._decision_cursor(visit, "receive") != cursor
+                    or visit.get("decision_cursor") != cursor):
+                return None
+            if visit["expires_at"] <= self._now():
+                await self._finish(visit, "expired", "确认接待状态期间本次停留到期，旧决定作废")
+                return None
+            if not self._life_enabled(scope):
+                await self._finish(visit, "interrupted", "这个生活已关闭串门或归属发生变化")
+                return None
+            if current is None:
+                await self._finish(visit, "interrupted", "暂时无法确认接待状态，这次联系结束")
+                return None
+            if any(current[key] != visit["local"][key] for key in ("persona_key", "actor_id")):
+                await self._finish(visit, "interrupted", "生活身份变化，本次联系结束")
+                return None
+            reason = (current.get("ready_reason") or "现在不方便，稍后再约") if not current["ready"] else ""
+            if not reason and not current.get("reception_open", True):
+                reason = "现在不在接待时间，稍后再约"
+            if not reason and current.get("chat_busy"):
+                reason = "正在接眼前的交谈，稍后再约"
+            if reason:
+                decision = clean_decision({"accept": False, "say": reason, "leave": True})
+                decision["contact_kind"] = "contact_status"
+                visit["decision"] = decision
+                await self._save()
+            return copy.deepcopy(visit["decision"])
+
     def _new_visit(self, scope, peer, local, visit_id, role, reason, automatic):
         own = self._state["instance_id"] + ":" + local["actor_id"]
         host, guest = (own, peer["id"]) if role == "host" else (peer["id"], own)
@@ -25,21 +69,35 @@ class VisitFlow(VisitRhythm):
                 "next_actor": guest, "next_at": self._now(), "event_stage": "none"}
 
     async def _decide(self, visit_id, phase):
+        receive_cache = None
         async with self._lock:
             visit = self._state["visits"][visit_id]
             if visit["status"] in TERMINAL or self._closed:
                 return None
-            own = self._local_id(visit)
-            if visit["calls"][own] >= self._allocation(visit, own):
-                await self._finish(visit, "completed" if visit.get("arrived_at") else "declined", "本次相见的预算已用完")
+            if visit["expires_at"] <= self._now():
+                await self._finish(visit, "expired", "本次停留已经到期，旧决定作废")
                 return None
-            if visit.get("model_pending"):
-                return None
-            token = new_id()
-            visit["model_pending"] = token
-            visit["calls"][own] += 1
-            snapshot = copy.deepcopy(visit)
-            await self._save()  # Admission, including failure, is durable before inference.
+            cursor = self._decision_cursor(visit, phase)
+            resumable = phase in {"receive", "turn", "scene"}
+            if (resumable and visit.get("decision_cursor") == cursor
+                    and isinstance(visit.get("decision"), dict)):
+                if phase != "receive":
+                    return copy.deepcopy(visit["decision"])
+                receive_cache = (cursor, visit["scope"])
+            else:
+                own = self._local_id(visit)
+                if visit["calls"][own] >= self._allocation(visit, own):
+                    await self._finish(visit, "completed" if visit.get("arrived_at") else "declined", "本次相见的预算已用完")
+                    return None
+                if visit.get("model_pending"):
+                    return None
+                token = new_id()
+                visit["model_pending"] = token
+                visit["calls"][own] += 1
+                snapshot = copy.deepcopy(visit)
+                await self._save()  # Admission, including failure, is durable before inference.
+        if receive_cache is not None:
+            return await self._resume_receive(visit_id, *receive_cache)
         try:
             async with asyncio.timeout(self.config.timeout_seconds):
                 raw = await self.actor_port.decide(snapshot["scope"], phase, snapshot)
@@ -62,9 +120,16 @@ class VisitFlow(VisitRhythm):
                 await self._finish(visit, "expired", "思考期间本次停留到期，旧决定作废")
                 return None
             visit.pop("model_pending", None)
+            if self._decision_cursor(visit, phase) != cursor:
+                await self._save()
+                return None  # Another confirmed step has already advanced this phase.
             visit["private"] = {key: result[key] for key in ("thought", "reflection", "promise")}
             # Durable output lets a request retry reuse this decision.
             visit["decision"] = result
+            if resumable:
+                visit["decision_cursor"] = cursor
+            else:
+                visit.pop("decision_cursor", None)
             await self._save()
         return result
 
@@ -74,6 +139,8 @@ class VisitFlow(VisitRhythm):
         await self._load()
         if direction not in {"outgoing", "incoming"}:
             raise ValueError("请选择去做客或邀请来访")
+        if automatic and self.config.auto_probability <= 0:
+            raise ValueError("自主邀请概率为 0，今天先留在自己的世界")
         peer_id = await self._prepare_peer(scope, peer_id)
         local = await self.actor_port.describe(scope)
         async with self._lock:
@@ -248,6 +315,7 @@ class VisitFlow(VisitRhythm):
         self._record_turn(visit, sender, result)
         if result["leave"]:
             visit["status"], visit["ended_at"] = "completed", self._now()
+            visit["end_reason"] = "访客已告别归家"
 
     def _record_turn(self, visit, sender, result):
         self._append(visit, sender, "say", result["say"])
@@ -312,13 +380,13 @@ class VisitFlow(VisitRhythm):
         if visit["status"] == "offered":
             result = await self._decide(visit_id, "receive")
             async with self._lock:
-                if visit["status"] in TERMINAL or self._closed:
+                if visit["status"] != "offered" or self._closed or not self.config.enabled:
                     return
                 if not result or not result["accept"] or result["leave"]:
                     if visit["status"] not in TERMINAL:
                         if result:
                             self._append(visit, self._local_id(visit), result["contact_kind"], result["say"])
-                        await self._finish(visit, "declined", result["say"] if result else "稍后再约")
+                        await self._finish(visit, "declined", result["say"] if result and result["say"] else "现在不方便，稍后再约")
                     return
                 visit["intro"] = result["say"]
                 if visit["role"] == "host":
