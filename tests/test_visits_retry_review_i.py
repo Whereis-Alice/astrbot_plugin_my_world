@@ -78,7 +78,7 @@ class VisitRetryReviewTests(unittest.IsolatedAsyncioTestCase):
         self.fail_one_status_read(TimeoutError("temporary status verification timeout"))
         self.now += 30
         await self.b._advance(visit_id)
-        self.assertEqual(visit["model_retry"]["category"], "timeout")
+        self.assertEqual(visit["model_retry"]["category"], "state")
         self.now += 60
         await self.b._advance(visit_id)
         self.assertEqual(visit["status"], "active")
@@ -174,7 +174,7 @@ class VisitRetryReviewTests(unittest.IsolatedAsyncioTestCase):
         await self.b._advance(visit_id)
         self.assertTrue(blocked.is_set(), "the deadline must cancel the final state read")
         self.assertEqual(visit["status"], "active")
-        self.assertEqual(visit["model_retry"]["category"], "timeout")
+        self.assertEqual(visit["model_retry"]["category"], "state")
         self.assertEqual(visit["model_retry"].get("candidate", {}).get("say"), "茶还温着，我们继续聊。")
         self.assertEqual(len(self.llm.calls), 1)
         own = visit["host_id"]
@@ -266,10 +266,10 @@ class VisitActorVerificationReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(budget["calls"], 1)
 
     async def test_paid_result_survives_post_model_status_read_failure(self):
-        await self.assert_postread_failure(OSError("temporary post-model state read failure"), "provider")
+        await self.assert_postread_failure(OSError("temporary post-model state read failure"), "state")
 
     async def test_paid_result_survives_post_model_status_timeout(self):
-        await self.assert_postread_failure(TimeoutError("temporary post-model status timeout"), "timeout")
+        await self.assert_postread_failure(TimeoutError("temporary post-model status timeout"), "state")
 
     async def test_persona_switch_during_final_status_read_discards_result(self):
         from tests import test_engine as engine_fixture

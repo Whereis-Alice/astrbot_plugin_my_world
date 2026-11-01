@@ -161,19 +161,20 @@ class TickMixin:
             return None
         async with self.session_state(session_id) as state:
             await self._validate_running_life(state)
-            elapsed = self.reconcile_life_time(state)
+            elapsed = self.reconcile_life_time(state, stay_up_costs=False)
             state.world_time += 1
             visit = active_visit(self, session_id)
             if visit:
                 await self._tick_visit_presence(state, elapsed, visit)
                 return TickOutcome(session_id=session_id, notes=[presence_text(visit)],
                                    summary={"world_time": state.world_time, "visiting": True})
-            if (state.current_action or {}).get("offline_recovery_complete"):
+            if any((state.current_action or {}).get(flag) for flag in ("offline_wake", "offline_recovery_complete")):
                 await self._tick_continuous(state, self.node(state.node_id), TickOutcome(session_id=session_id))
             action = state.current_action
             if action and not action.pop("offline_tick_settled", False):
                 action["elapsed_ticks"] = min(int(action.get("duration_ticks", 1)), int(action.get("elapsed_ticks", 0)) + 1)
-            self.dynamics.tick(state, node=self.node(state.node_id), elapsed_seconds=elapsed, world=self.world, now=self._now())
+            self._settle_elapsed_needs(state, node=self.node(state.node_id), elapsed_seconds=elapsed,
+                                       now=self._now(), stay_up_costs=False)
             if action:
                 self.settle_recovery_progress(state, action)
             state.mood = self.dynamics.derive_mood(state)
@@ -220,11 +221,11 @@ class TickMixin:
                     "label": info.label if info is not None else "",
                     "hint": info.hint if info is not None else "",
                 })
-            mood_reset = self.dynamics.tick(state, node=node, elapsed_seconds=elapsed_life,
-                                            world=self.world, now=self._now())
+            had_visit_segments = hasattr(state, "_visit_need_segments")
+            mood_reset = self._settle_elapsed_needs(state, node=node, elapsed_seconds=elapsed_life, now=self._now())
             state.mood = self.dynamics.derive_mood(state)
             penalty = self._stay_up_penalty(state)
-            if penalty > 1.0:
+            if penalty > 1.0 and not had_visit_segments:
                 extra = (float(self.world.state_dynamics.energy_decay_per_min)
                          * (penalty - 1.0) * (elapsed_life / 60.0))
                 state.energy = max(0.0, float(state.energy) - max(0.0, extra))

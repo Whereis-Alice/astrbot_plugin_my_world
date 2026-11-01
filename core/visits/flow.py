@@ -10,7 +10,8 @@ from .rhythm import VisitRhythm
 from .snapshots import validate_snapshot
 from .transport import VisitTransportError
 from .decisions import VisitDecisionError, capture_decision_candidate
-from .model_retry import DELAYS, defer_decision, valid_retry
+from .model_retry import clear_state_read, defer_decision, defer_state_read, valid_retry
+from .ports import VisitStateError
 
 
 class VisitFlow(VisitRhythm):
@@ -25,8 +26,15 @@ class VisitFlow(VisitRhythm):
 
     async def _resume_invitation_decision(self, visit_id, cursor, scope, phase="receive"):
         """Recheck local invitation gates before consuming a saved choice."""
+        async with self._lock:
+            visit = self._state["visits"].get(visit_id)
+            if not visit or self._closed or not self.config.enabled or visit["status"] in TERMINAL:
+                return None
+            if valid_retry(visit, cursor) and visit["model_retry"]["next_at"] > self._now():
+                return None
         try:
-            current = await self.actor_port.describe(scope)
+            async with asyncio.timeout(self.config.timeout_seconds):
+                current = await self.actor_port.describe(scope)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -45,7 +53,11 @@ class VisitFlow(VisitRhythm):
                 await self._finish(visit, "interrupted", "这个生活已关闭串门或归属发生变化")
                 return None
             if current is None:
-                await self._finish(visit, "interrupted", "暂时无法确认接待状态，这次联系结束")
+                if defer_decision(visit, cursor, category="state", now=self._now(),
+                                  candidate=visit["decision"]):
+                    await self._save()
+                else:
+                    await self._finish(visit, "interrupted", str(VisitDecisionError("state")))
                 return None
             if any(current[key] != visit["local"][key] for key in ("persona_key", "actor_id")):
                 await self._finish(visit, "interrupted", "生活身份变化，本次联系结束")
@@ -59,6 +71,8 @@ class VisitFlow(VisitRhythm):
                 decision = clean_decision({"accept": False, "say": reason, "leave": True})
                 decision["contact_kind"] = "contact_status"
                 visit["decision"] = decision
+                await self._save()
+            if visit.pop("model_retry", None) is not None:
                 await self._save()
             return copy.deepcopy(visit["decision"])
 
@@ -162,11 +176,12 @@ class VisitFlow(VisitRhythm):
                     if self._decision_cursor(visit, phase) != cursor:
                         await self._save()
                         return None
-                    category = (error.category if isinstance(error, VisitDecisionError) else
-                                "timeout" if isinstance(error, TimeoutError) else "provider")
                     saved_candidate = getattr(error, "candidate", None)
                     if saved_candidate is None:
                         saved_candidate = candidate if candidate is not None else generated.get("candidate")
+                    category = (error.category if isinstance(error, VisitDecisionError) else
+                                "state" if saved_candidate is not None else
+                                "timeout" if isinstance(error, TimeoutError) else "provider")
                     if defer_decision(visit, cursor, category=category, now=self._now(),
                                       candidate=saved_candidate):
                         await self._save()
@@ -174,6 +189,7 @@ class VisitFlow(VisitRhythm):
                     if budget is not None:
                         self._state["draws"].setdefault(visit["scope"], {})["budget_hold"] = budget["snapshot"]
                     reason = str(error) if isinstance(error, VisitDecisionError) else (
+                        str(VisitDecisionError("state")) if category == "state" else
                         str(VisitDecisionError("timeout")) if isinstance(error, TimeoutError) else
                         "这次思考未完成，只保留已确认经过")
                     await self._finish(visit, "interrupted", reason)
@@ -296,6 +312,16 @@ class VisitFlow(VisitRhythm):
                     visit["expires_at"] = min(visit["expires_at"], offered.get("expires_at", visit["expires_at"]))
                     visit["next_at"] = self._now() + self.config.poll_seconds
                     await self._save()
+        except VisitStateError:
+            if retry:
+                raise
+            async with self._lock:
+                visit = self._state["visits"].get(visit_id)
+                if visit and visit["status"] not in TERMINAL and not self._closed:
+                    if defer_state_read(visit, now=self._now(), checkpoint="exchange"):
+                        await self._save()
+                    else:
+                        await self._finish(visit, "interrupted", "暂时无法确认当前生活状态，只保留已确认经过")
         except ValueError as error:
             if retry:
                 raise
@@ -475,19 +501,15 @@ class VisitFlow(VisitRhythm):
                     async with self._lock:
                         if self._closed or not self.config.enabled or visit["status"] in TERMINAL:
                             continue
-                        failures = visit.get("state_retry", {}).get("attempts", 0) + 1
-                        if failures > len(DELAYS):
+                        if not defer_state_read(visit, now=self._now(), checkpoint="tick"):
                             await self._finish(visit, "interrupted", "暂时无法确认当前生活状态，只保留已确认经过")
                         else:
-                            next_at = self._now() + DELAYS[failures - 1]
-                            visit["state_retry"] = {"attempts": failures, "next_at": next_at}
-                            visit["next_at"] = max(visit["next_at"], next_at)
                             await self._save()
                     continue
                 if self._closed or not self.config.enabled or visit["status"] in TERMINAL:
                     continue
                 async with self._lock:
-                    if visit.pop("state_retry", None) is not None:
+                    if clear_state_read(visit, checkpoint="tick"):
                         await self._save()
                 if current["persona_key"] != visit["local"]["persona_key"] or current["actor_id"] != visit["local"]["actor_id"]:
                     async with self._lock:
@@ -495,6 +517,14 @@ class VisitFlow(VisitRhythm):
                     continue
                 try:
                     await self._advance(visit_id)
+                except VisitStateError:
+                    async with self._lock:
+                        if visit["status"] in TERMINAL or self._closed:
+                            continue
+                        if defer_state_read(visit, now=self._now(), checkpoint="exchange"):
+                            await self._save()
+                        else:
+                            await self._finish(visit, "interrupted", "暂时无法确认当前生活状态，只保留已确认经过")
                 except ValueError as error:
                     async with self._lock:
                         if visit["status"] in TERMINAL or self._closed:

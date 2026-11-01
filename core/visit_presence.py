@@ -23,6 +23,13 @@ def active_visit(engine: Any, session_id: str) -> dict | None:
     return visit
 
 
+def pause_intervals(engine: Any, session_id: str, start: float, end: float,
+                    *, persona_key: str) -> list[tuple[float, float]]:
+    """Read only retained, confirmed visit windows for this original life."""
+    getter = getattr(getattr(engine, "visits", None), "pause_intervals", None)
+    return getter(engine.state_key(session_id), start, end, persona_key=persona_key) if callable(getter) else []
+
+
 def presence_text(visit: dict) -> str:
     remote = visit.get("remote") or {}
     scene = visit.get("scene") or {}

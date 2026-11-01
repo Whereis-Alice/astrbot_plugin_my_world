@@ -9,6 +9,49 @@ from .decisions import RETRYABLE, WAITING
 DELAYS = (30, 60)
 
 
+def _state_checkpoints(visit: dict) -> dict:
+    """Read bounded step counters, including journals with one legacy counter."""
+    old = visit.get("state_retry") or {}
+    if not isinstance(old, dict):
+        return {}
+    rows = old.get("checkpoints")
+    if not isinstance(rows, dict):
+        checkpoint = old.get("checkpoint", "tick")
+        rows = {checkpoint: old} if isinstance(checkpoint, str) else {}
+    return {key: {"attempts": row["attempts"], "next_at": row["next_at"]}
+            for key, row in rows.items()
+            if key in {"tick", "exchange"} and isinstance(row, dict)
+            and type(row.get("attempts")) is int and 1 <= row["attempts"] <= len(DELAYS)
+            and type(row.get("next_at")) in {int, float}
+            and math.isfinite(row["next_at"]) and row["next_at"] >= 0}
+
+
+def clear_state_read(visit: dict, *, checkpoint: str) -> bool:
+    """A successful read clears only that step's failure streak."""
+    rows = _state_checkpoints(visit)
+    if rows.pop(checkpoint, None) is None:
+        return False
+    if rows:
+        pending = max(rows, key=lambda key: rows[key]["next_at"])
+        visit["state_retry"] = {**rows[pending], "checkpoint": pending, "checkpoints": rows}
+    else:
+        visit.pop("state_retry", None)
+    return True
+
+
+def defer_state_read(visit: dict, *, now: float, checkpoint: str) -> bool:
+    """Keep each read checkpoint's streak across earlier successful prechecks."""
+    rows = _state_checkpoints(visit)
+    attempts = rows.get(checkpoint, {}).get("attempts", 0) + 1
+    if attempts > len(DELAYS):
+        return False
+    next_at = now + DELAYS[attempts - 1]
+    rows[checkpoint] = {"attempts": attempts, "next_at": next_at}
+    visit["state_retry"] = {**rows[checkpoint], "checkpoint": checkpoint, "checkpoints": rows}
+    visit["next_at"] = max(visit["next_at"], next_at)
+    return True
+
+
 def valid_retry(visit: dict, cursor: dict) -> bool:
     retry = visit.get("model_retry")
     if not isinstance(retry, dict) or retry.get("cursor") != cursor:

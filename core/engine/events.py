@@ -237,7 +237,7 @@ class EventsMixin:
             return ""
         return f"距上一件事还不到 {minutes} 分钟"
 
-    def _stay_up_penalty(self, state: WorldState) -> float:
+    def _stay_up_penalty(self, state: WorldState, *, at: float | None = None) -> float:
         """熬夜代价的倍数：**夜里醒着**、或**为事件推迟了睡觉**，取较大值不叠加。
 
         睡整觉、小睡都算休息，不算熬夜；夜里时段和倍数分别在
@@ -250,7 +250,8 @@ class EventsMixin:
         if penalty <= 1.0:
             return 1.0
         awake = str(state.state or "") not in (STATE_SLEEPING, STATE_NAPPING)
-        if awake and self.world.is_night_time(self.local_now().hour):
+        hour = self.local_now().hour if at is None else self.local_at(at).hour
+        if awake and self.world.is_night_time(hour):
             return penalty
         if state.stay_up_until and state.world_time <= int(state.stay_up_until):
             return penalty

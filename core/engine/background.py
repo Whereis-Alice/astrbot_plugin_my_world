@@ -17,7 +17,7 @@ from ..background_rhythm import background_admission, background_window
 from ..model_calls import call_context
 from ..model_call_runtime import safe_error
 from .life_inference import LIFE_WORK, LifeWorkDiscarded, released_life_lock, validate_life_preparation
-from ..visit_presence import active_visit
+from ..visit_presence import active_visit, pause_intervals
 
 CRITICAL_TICK = ContextVar("world_critical_tick", default=False)
 VISIT_EXHAUSTED = "今日串门预算已用完，先休息一下，明天再联系友邻"
@@ -325,7 +325,7 @@ class BackgroundMixin:
         finally:
             self._background_active -= 1
 
-    def reconcile_life_time(self, state) -> float:
+    def reconcile_life_time(self, state, *, stay_up_costs: bool = True) -> float:
         """Reconcile elapsed needs/rest; never execute tools, messages or projects offline."""
         now = self._now()
         previous = float(state.life_updated_at or 0)
@@ -333,6 +333,10 @@ class BackgroundMixin:
         if not previous:
             return self.tick_seconds  # Legacy saves have no reliable life cursor.
         elapsed = max(0, now - previous)
+        pauses = pause_intervals(self, state.session_id, previous, now,
+                                persona_key=self._matter_persona_key(state) or "")
+        if pauses and not active_visit(self, state.session_id):
+            return self._reconcile_return_time(state, previous, now, pauses, stay_up_costs=stay_up_costs)
         if elapsed <= self.tick_seconds * 2.5:
             return self.tick_seconds
         gap = min(elapsed, 24 * 3600)
@@ -396,3 +400,152 @@ class BackgroundMixin:
                                "from_tick": old_tick, "note": "离线期间仅结算时间与休息；没有补发消息或虚构事项进展"}
         self._note_event(state, "offline_recovery", dict(state.life_recovery))
         return remaining
+
+    def _reconcile_return_time(self, state, previous: float, now: float,
+                               pauses: list[tuple[float, float]], *, stay_up_costs: bool = True) -> float:
+        """Only retained visit windows pause home recovery; deadlines keep real time."""
+        elapsed = max(0, now - previous)
+        paused = sum(last - first for first, last in pauses)
+        home = max(0, elapsed - paused)
+        gap, old_tick = min(elapsed, 24 * 3600), state.world_time
+        if elapsed > self.tick_seconds * 2.5:
+            state.world_time += max(0, int(gap / self.tick_seconds) - 1)
+        self._settle_idle_practice(state, at=previous)
+        state.idle_activity = {}
+        current = state.current_action or {}
+        segments = self._visit_segments(previous, now, pauses)
+        definition = self.world.action_map().get(str(current.get("type") or ""))
+        from ..recovery import passive_recovery
+        sleeping = sleep_action_kind(definition)
+        recover = (definition and definition.enabled
+                   and (definition.id == "sleep" or definition.available_in(state.node_id))
+                   and (sleeping or passive_recovery(definition)))
+        if recover:
+            left = max(0, int(current.get("duration_ticks", 0)) - int(current.get("elapsed_ticks", 0)))
+            advanced = min(left, int(home / self.tick_seconds))
+            state._visit_rest_progress = {"action": current, "initial_ticks": int(current.get("elapsed_ticks", 0)),
+                                          "ticks": advanced, "seconds": 0.0}
+            if advanced >= left:
+                before, after, wake_at = self._split_visit_rest(segments, advanced * self.tick_seconds, previous)
+                # Rest keeps its established recovery clock. Awake needs before
+                # and after waking share one six-hour settlement allowance.
+                before = self._bound_visit_segments(before, float("inf"), away_limit=6 * 3600)
+                self._evolve_visit_segments(state, self.node(state.node_id), before, stay_up_costs=stay_up_costs)
+                del state._visit_rest_progress
+                away_used = sum(last - first for first, last, away in before if away)
+                pending = self._bound_visit_segments(after, max(0, 6 * 3600 - away_used))
+                if sleeping:
+                    current["offline_wake"] = True
+                    current["offline_wake_at"] = wake_at
+                    state.goodmorning_day = self._today_key(now)
+                else:
+                    current["offline_recovery_complete"] = True
+            else:
+                pending = self._bound_visit_segments(segments, float("inf"), away_limit=6 * 3600)
+            current["offline_tick_settled"] = True
+        elif current and home <= self.tick_seconds * 2.5:
+            # A just-returned life still owns its quiet work. The last fixed
+            # tick must not claim home activity when no home minute elapsed.
+            pending = self._bound_visit_segments(segments, 6 * 3600, home_limit=min(home, self.tick_seconds))
+            if home < self.tick_seconds:
+                current["offline_tick_settled"] = True
+        else:
+            if current:
+                self.pause_matter_action(state, current, at=previous)
+                state.current_action, state.current_plan, state.state = None, None, "idle"
+            pending = self._bound_visit_segments(segments, 6 * 3600)
+        if state.current_plan and state.current_plan.get("expires_at", now + 1) <= now:
+            state.current_plan = None
+        state.awaiting_reply = False
+        if elapsed > self.tick_seconds * 2.5:
+            state.life_recovery = {"at": now, "elapsed_seconds": elapsed, "settled_seconds": gap,
+                                   "paused_visit_seconds": paused, "home_seconds": home,
+                                   "from_tick": old_tick,
+                                   "note": "在外期间只结算基本需要，家中活动与休息暂停；未补发消息或虚构进展"}
+            self._note_event(state, "offline_recovery", dict(state.life_recovery))
+        # This cursor belongs only to the loaded object. It is consumed after
+        # the normal wake/completion path, and is never part of its saved payload.
+        state._visit_need_segments = pending
+        return sum(last - first for first, last, _ in pending)
+
+    @staticmethod
+    def _visit_segments(previous: float, now: float, pauses: list) -> list:
+        segments, cursor = [], previous
+        for first, last in pauses:
+            if first > cursor:
+                segments.append((cursor, first, False))
+            segments.append((first, last, True))
+            cursor = last
+        if cursor < now:
+            segments.append((cursor, now, False))
+        return segments
+
+    @staticmethod
+    def _split_visit_rest(segments: list, seconds: float, previous: float) -> tuple[list, list, float]:
+        before, after, wake_at = [], [], previous
+        for first, last, away in segments:
+            if seconds <= 0:
+                after.append((first, last, away))
+                continue
+            if away:
+                before.append((first, last, True))
+                continue
+            rest = min(last - first, seconds)
+            before.append((first, first + rest, False))
+            seconds -= rest
+            wake_at = first + rest
+            if wake_at < last:
+                after.append((wake_at, last, False))
+        return before, after, wake_at
+
+    @staticmethod
+    def _bound_visit_segments(segments: list, budget: float, *, home_limit: float = float("inf"),
+                              away_limit: float = float("inf")) -> list:
+        selected = []
+        limits = {False: home_limit, True: away_limit}
+        for first, last, away in segments:
+            seconds = min(last - first, budget, limits[away])
+            if seconds > 0:
+                selected.append((first, first + seconds, away))
+                budget -= seconds
+                limits[away] -= seconds
+        return selected
+
+    def _evolve_visit_segments(self, state, node, segments: list, *, stay_up_costs: bool = True) -> bool:
+        reset = False
+        for first, last, away in segments:
+            current, home_state = state.current_action, state.state
+            try:
+                if away:
+                    state.current_action, state.state = None, "idle"
+                reset = self.dynamics.tick(state, node=None if away else node, elapsed_seconds=last - first,
+                                           world=self.world, now=last) or reset
+                # The ordinary visitor tick returns before home stay-up costs.
+                # Home costs keep their online order before recovery effects.
+                if not away and stay_up_costs:
+                    penalty = self._stay_up_penalty(state, at=last)
+                    if penalty > 1.0:
+                        extra = (float(self.world.state_dynamics.energy_decay_per_min)
+                                 * (penalty - 1.0) * ((last - first) / 60.0))
+                        state.energy = max(0.0, float(state.energy) - max(0.0, extra))
+                progress = getattr(state, "_visit_rest_progress", None)
+                if not away and progress and current is progress["action"]:
+                    progress["seconds"] += last - first
+                    ticks = min(progress["ticks"], int(progress["seconds"] / self.tick_seconds))
+                    current["elapsed_ticks"] = progress["initial_ticks"] + ticks
+                    self.settle_recovery_progress(state, current, at=last)
+            finally:
+                state.current_action, state.state = current, home_state
+        return reset
+
+    def _settle_elapsed_needs(self, state, *, node, elapsed_seconds: float, now: float,
+                              stay_up_costs: bool = True) -> bool:
+        segments = getattr(state, "_visit_need_segments", None)
+        if segments is None:
+            return self.dynamics.tick(state, node=node, elapsed_seconds=elapsed_seconds, world=self.world, now=now)
+        del state._visit_need_segments
+        try:
+            return self._evolve_visit_segments(state, node, segments, stay_up_costs=stay_up_costs)
+        finally:
+            if hasattr(state, "_visit_rest_progress"):
+                del state._visit_rest_progress

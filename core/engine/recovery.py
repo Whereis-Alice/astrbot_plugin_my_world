@@ -29,7 +29,7 @@ class RecoveryMixin:
             return None
         return "full"
 
-    def settle_recovery_progress(self, state, action) -> None:
+    def settle_recovery_progress(self, state, action, *, at: float | None = None) -> None:
         definition = self.world.action_map().get(str(action.get("type") or ""))
         if not definition or not (is_sleep_action(definition) or definition.recovery_kind == "restore"
                                    or restores_energy(definition, energy=state.energy)):
@@ -40,7 +40,8 @@ class RecoveryMixin:
         minutes = max(0, elapsed - float(action.get("effects_settled_minutes") or 0))
         if minutes:
             if effects:
-                self.dynamics.apply_effects(state, effects, world=self.world, scale=minutes, now=self._now())
+                self.dynamics.apply_effects(state, effects, world=self.world, scale=minutes,
+                                            now=self._now() if at is None else at)
             action["effects_settled_minutes"] = elapsed
 
     def sync_activity_recovery(self, state) -> None:

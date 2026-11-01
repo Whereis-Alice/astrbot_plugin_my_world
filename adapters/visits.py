@@ -15,7 +15,8 @@ from ..core.json_actions import extract_json_object
 from ..core.memory import EVENT, SCOPE_GROUP_PERSONA
 from ..core.model_calls import model_context
 from ..core.life_matters import stable_interests
-from ..core.state import STATE_DROWSY
+from ..core.state import STATE_DROWSY, STATE_NAPPING, STATE_SLEEPING
+from ..core.recovery import sleep_action_kind
 from ..core.visit_presence import active_visit, presence_text
 from ..core.visits.decisions import VisitDecisionError, record_decision_candidate
 from ..core.background_budget import capture_background_admission
@@ -106,9 +107,10 @@ class VisitActorPort:
         with engine.config_scope(scope):
             persona, persona_key = await engine._journal_persona(scope)
             state = await engine.load_state(scope, cold_start=False)
-            ready, reason = self._ready(scope, state)
+            actor_id = await self._identity(scope)
+            ready, reason = self._ready(scope, state, actor_id=actor_id, persona_key=persona_key)
             node = engine.node(state.node_id)
-            return {"actor_id": await self._identity(scope),
+            return {"actor_id": actor_id,
                     "name": _text(engine.world.bot_name, 60) or "她",
                     "world": _text(engine.world.name, 80) or "小世界",
                     "persona_key": persona_key, "ready": ready and bool(persona.strip()),
@@ -143,17 +145,28 @@ class VisitActorPort:
             return start == end or (start <= hour < end if start < end else hour >= start or hour < end)
         return True
 
-    def _ready(self, scope: str, state) -> tuple[bool, str]:
+    def _ready(self, scope: str, state, *, actor_id: str, persona_key: str) -> tuple[bool, str]:
         if (not self.plugin.enabled or getattr(self.plugin, "retired", False)
                 or not self.engine.is_enabled(scope)):
             return False, "这个世界还没有启用"
         if self.engine.is_busy(scope):
             return False, "正在回应或处理手头的事"
-        if state.is_sleeping or state.state == STATE_DROWSY or state.energy < .25:
+        visit = active_visit(self.engine, scope)
+        local = (visit or {}).get("local") or {}
+        paused_home = bool(visit and visit.get("arrived_at") and visit.get("scope") == scope
+                           and local.get("actor_id") == actor_id and local.get("persona_key") == persona_key)
+        held = state.current_action if isinstance(state.current_action, dict) else {}
+        definition = (self.engine.world.action_map().get(str(held.get("type") or ""))
+                      if paused_home and state.is_sleeping else None)
+        sleep_kind = {STATE_SLEEPING: "sleep", STATE_NAPPING: "nap"}.get(state.state)
+        paused_sleep = bool(paused_home and sleep_kind and definition and definition.enabled
+                            and sleep_action_kind(definition) == sleep_kind)
+        if (state.is_sleeping and not paused_sleep) or state.state == STATE_DROWSY or state.energy < .25:
             return False, "现在需要休息，稍后再约"
-        if state.current_action is not None:
+        # Arrival pauses home work. It is not work still competing with this visit.
+        if state.current_action is not None and not paused_home:
             return False, "手头的活动还没结束，稍后再约"
-        if state.current_plan is not None:
+        if state.current_plan is not None and not paused_home:
             return False, "还有原先的安排，稍后再约"
         if any(isinstance(row, dict) and row.get("status", "open") == "open"
                and (row.get("critical") or (row.get("root") or {}).get("critical"))
@@ -295,8 +308,7 @@ class VisitActorPort:
             except VisitDecisionError:
                 raise
             except Exception as exc:
-                category = "timeout" if isinstance(exc, TimeoutError) else "provider"
-                raise VisitDecisionError(category, candidate=result) from exc
+                raise VisitDecisionError("state", candidate=result) from exc
             if not latest["ready"]:
                 raise VisitDecisionError("life_busy", candidate=result)
             if phase in {"propose", "receive"} and not latest["reception_open"]:

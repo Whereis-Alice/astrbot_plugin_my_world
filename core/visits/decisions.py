@@ -35,21 +35,23 @@ FAILURES = {
     "provider": "串门模型暂时不可用，请检查本地模型配置与调用记录",
     "format": "串门模型返回的选择不完整或格式无效，这次联系结束",
     "life_busy": "她暂时在处理眼前的事，稍后继续相处",
+    "state": "暂时无法确认接待状态，这次联系结束",
     "identity": "生活归属、角色或人设已变化，这次联系结束",
 }
 
-RETRYABLE = frozenset({"busy", "backoff", "timeout", "provider", "format", "life_busy"})
+RETRYABLE = frozenset({"busy", "backoff", "timeout", "provider", "format", "life_busy", "state"})
 WAITING = {
     "busy": "模型通道暂时忙", "backoff": "模型正在冷却",
     "timeout": "这次模型回应超时", "provider": "模型暂时不可用",
     "format": "这次模型选择不完整", "life_busy": "她正在处理眼前的事",
+    "state": "暂时无法确认接待状态",
 }
 
 
 class VisitDecisionError(ValueError):
     """Expose only a known failure category as the trip's ending reason."""
 
-    def __init__(self, category: Literal["budget", "busy", "backoff", "timeout", "provider", "format", "life_busy", "identity"],
+    def __init__(self, category: Literal["budget", "busy", "backoff", "timeout", "provider", "format", "life_busy", "state", "identity"],
                  *, request_started: bool = True, candidate: dict | None = None):
         self.category = category if category in FAILURES else "provider"
         self.request_started = request_started

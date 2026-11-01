@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import math
 from typing import Any
 
 from astrbot.api import logger
@@ -92,6 +93,34 @@ class VisitJournal(WorldConnections):
     def presence_epoch(self, scope: str) -> int:
         """A persistent arrival cursor, retained when journey history is trimmed."""
         return self._state.get("presence_epochs", {}).get(scope, 0)
+
+    def pause_intervals(self, scope: str, start: float, end: float,
+                        *, persona_key: str) -> list[tuple[float, float]]:
+        """The retained arrival/end facts bound time away from a paused home."""
+        def timestamp(value):
+            return type(value) in {int, float} and math.isfinite(value) and value > 0
+
+        if not persona_key or not timestamp(start) or not timestamp(end) or end <= start:
+            return []
+        windows = []
+        for visit in self._state.get("visits", {}).values():
+            if (visit.get("scope") != scope or visit.get("local", {}).get("persona_key") != persona_key
+                    or visit.get("status") not in {"active", "finishing", "completed", "interrupted", "expired"}):
+                continue
+            arrived, expires = visit.get("arrived_at"), visit.get("expires_at")
+            ended = visit.get("ended_at") if visit.get("status") in TERMINAL else end
+            if not all(timestamp(value) for value in (arrived, expires, ended)):
+                continue
+            first, last = max(start, arrived), min(end, ended, expires)
+            if last > first:
+                windows.append((first, last))
+        merged = []
+        for first, last in sorted(windows):
+            if merged and first <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(last, merged[-1][1]))
+            else:
+                merged.append((first, last))
+        return merged
 
     @staticmethod
     def _settlement_pending(visit: dict) -> bool:

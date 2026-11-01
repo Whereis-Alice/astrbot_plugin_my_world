@@ -8,13 +8,14 @@ import time
 from typing import Any, Callable
 
 from .config import VisitConfig, normalize_url
-from .ports import VisitActorPort
+from .ports import VisitActorPort, VisitStateError
 from .flow import VisitFlow
 from .persistence import VisitJournal
 from .protocol import (RESERVED, TERMINAL, code_id, derive_key, digest, envelope,
                        new_id, public_actor, text, validate_actor, verify)
 from .transport import VisitTransport
 from .snapshots import validate_snapshot
+from .model_retry import clear_state_read
 
 
 class VisitService(VisitFlow, VisitJournal):
@@ -367,6 +368,15 @@ class VisitService(VisitFlow, VisitJournal):
                 and visit["local"]["actor_id"] == peer["local"]["actor_id"]
                 and visit["local"]["persona_key"] == peer["local"]["persona_key"])
 
+    async def _exchange_description(self, scope):
+        try:
+            async with asyncio.timeout(self.config.timeout_seconds):
+                return await self.actor_port.describe(scope)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            raise VisitStateError() from error
+
     async def _send(self, visit_id, payload):
         async with self._lock:
             self._enabled()
@@ -377,7 +387,7 @@ class VisitService(VisitFlow, VisitJournal):
             if not peer or not self._peer_trusted(peer) or not self._visit_belongs(visit, peer) \
                     or not self._exchange_allowed(peer, {**payload, "id": visit_id}):
                 raise ValueError("生活或配对已变化，旧联系作废")
-            local = await self.actor_port.describe(visit["scope"])
+            local = await self._exchange_description(visit["scope"])
             if local["actor_id"] != visit["local"]["actor_id"] or local["persona_key"] != visit["local"]["persona_key"]:
                 raise ValueError("生活身份已变化，旧联系作废")
             if payload.get("op") != "end" and visit["expires_at"] <= self._now():
@@ -405,7 +415,7 @@ class VisitService(VisitFlow, VisitJournal):
                     or not self._visit_belongs(visit, current_peer)
                     or (visit["status"] in TERMINAL and outgoing["payload"]["op"] != "end")):
                 raise ValueError("世界或旅程已结束，旧答复作废")
-            local = await self.actor_port.describe(visit["scope"])
+            local = await self._exchange_description(visit["scope"])
             if local["actor_id"] != visit["local"]["actor_id"] or local["persona_key"] != visit["local"]["persona_key"]:
                 raise ValueError("生活身份已变化，旧答复作废")
             if outgoing["payload"]["op"] != "end" and visit["expires_at"] <= self._now():
@@ -443,6 +453,7 @@ class VisitService(VisitFlow, VisitJournal):
             if isinstance(expires, (int, float)):
                 candidate["expires_at"] = min(visit["expires_at"], expires)
             candidate.pop("outbox", None)
+            clear_state_read(candidate, checkpoint="exchange")
             candidate["network_failures"] = 0
             candidate.pop("contact_error", None)
             visit.clear()
