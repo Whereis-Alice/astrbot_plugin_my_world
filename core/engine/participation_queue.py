@@ -10,7 +10,8 @@ from ..browse_reply import BrowseReply, RETRYABLE, available_rows, reply_status
 def budget_policy(engine) -> list:
     limits = engine.world.limits
     return [limits.background_daily_calls, limits.background_daily_tokens,
-            bool(limits.background_pacing), engine.world.timezone]
+            bool(limits.background_pacing), engine.world.timezone,
+            getattr(engine, "_background_budget_revision", 0)]
 
 
 def budget_delay(engine, state, target: str, *, source: str, browse_id: str = "") -> float:

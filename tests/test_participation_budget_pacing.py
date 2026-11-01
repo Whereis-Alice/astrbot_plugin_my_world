@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime
 import time
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
 from core.background_budget import record_background_admission
@@ -158,6 +159,48 @@ class ParticipationBudgetPacingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.participation[GROUP]["decision"], "idle")
         self.assertFalse(self.llm.calls)
         self.assertEqual(self.engine._background_budget_status.await_count, 1)
+
+    async def test_unstarted_request_refund_invalidates_cached_wait_and_rechecks_live_scene(self):
+        self.engine.world.limits.background_daily_calls = 1
+        await self.chat(message_id="still-live")
+        entered = asyncio.Event()
+
+        @asynccontextmanager
+        async def not_started(_engine):
+            entered.set()
+            await asyncio.Event().wait()
+            yield
+
+        pending, _, _ = registries(self.engine)
+        key, arrived = self.engine.state_key(GROUP), time.monotonic()
+        pending[key] = {GROUP: arrived}
+        budget_wakeup = asyncio.Event()
+        self.engine._participation_wakeups[key] = budget_wakeup
+        self.engine._background_budget_status = AsyncMock(wraps=self.engine._background_budget_status)
+        with patch("core.engine.background.released_life_lock", not_started):
+            reserved = asyncio.create_task(self.engine._budgeted_generate(self.llm,
+                session_id=GROUP, system_prompt="hold", prompt="unstarted", max_tokens=10))
+            try:
+                await asyncio.wait_for(entered.wait(), 3)
+                delay = await settle_message(self.engine, key, GROUP, arrived)
+                self.assertGreater(delay, 30)
+                state = await self.engine.load_state(GROUP, cold_start=False)
+                previous_policy = list(state.participation[GROUP]["budget_policy"])
+                self.assertFalse(self.llm.calls)
+                budget_wakeup.clear()
+            finally:
+                reserved.cancel()
+                await asyncio.gather(reserved, return_exceptions=True)
+        # Cancellation completes the real SQLite refund and the engine's change
+        # callback. No synthetic revision bump or fresh message wakes this scene.
+        budget = await self.db.call("background_status", self.engine._today_key(self.clock.now()))
+        self.assertEqual(budget["calls"], 0)
+        self.assertNotEqual(previous_policy[-1], self.engine._background_budget_revision)
+        self.assertTrue(budget_wakeup.is_set())
+        await settle_message(self.engine, key, GROUP, arrived)
+        self.assertEqual(self.engine._background_budget_status.await_count, 2)
+        self.assertEqual(len(self.llm.calls), 1)
+        self.assertEqual(self.messenger.sent, [(GROUP, ["那个我也想试试。"])])
 
 
 class BrowseBudgetPacingTests(unittest.IsolatedAsyncioTestCase):

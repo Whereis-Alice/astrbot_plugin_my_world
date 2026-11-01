@@ -22,6 +22,11 @@ CRITICAL_TICK = ContextVar("world_critical_tick", default=False)
 
 
 class BackgroundMixin:
+    def _background_budget_changed(self) -> None:
+        self._background_budget_revision = getattr(self, "_background_budget_revision", 0) + 1
+        for event in getattr(self, "_participation_wakeups", {}).values():
+            event.set()
+
     def _background_budget_window(self, purpose: str = "") -> dict[str, Any]:
         local = self.local_at(self._now())
         if local.tzinfo is None:
@@ -183,7 +188,8 @@ class BackgroundMixin:
         try:
             async with BackgroundReservation(self.db, day,
                     calls=self.world.limits.background_daily_calls,
-                    tokens=self.world.limits.background_daily_tokens, reserve=reserve, window=window) as budget:
+                    tokens=self.world.limits.background_daily_tokens, reserve=reserve, window=window,
+                    on_change=self._background_budget_changed) as budget:
                 if not budget.allowed:
                     return LLMReply(ok=False, error=budget.reason)
                 with collect_llm_usage(propagate=True) as usage:
