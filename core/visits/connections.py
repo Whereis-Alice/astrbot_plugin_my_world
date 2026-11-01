@@ -110,10 +110,10 @@ class WorldConnections:
                                  "url": conn["url"], "enabled": True, "virtual": True})
         return selected
 
-    async def global_overview(self, scope=""):
+    async def global_overview(self, scope: str = "") -> dict[str, Any]:
         return await self.overview(scope)
 
-    async def set_enabled_scopes(self, scopes):
+    async def set_enabled_scopes(self, scopes: list[str]) -> dict[str, Any]:
         self._enabled()
         await self._load()
         if not isinstance(scopes, list) or len(scopes) > MAX_LIVES or any(not isinstance(s, str) or not s for s in scopes):
@@ -174,7 +174,7 @@ class WorldConnections:
             await self._save()
         return {"code": code, "expires_at": self._now() + 3600, "url": self.config.public_url}
 
-    async def pair_world(self, url, code, alias=""):
+    async def pair_world(self, url: str, code: str, alias: str = "") -> dict[str, Any]:
         self._enabled()
         await self._load()
         url = normalize_url(url)
@@ -316,7 +316,7 @@ class WorldConnections:
             raise ValueError("全局配对已变化，旧答复作废")
         return result, anchor
 
-    async def refresh_connection(self, cid):
+    async def refresh_connection(self, cid: str) -> dict[str, Any]:
         try:
             result, anchor = await self._control_request(cid, {"op": "world_catalog"})
             cards = self._validate_catalog(result.get("actors"), cid)
@@ -439,7 +439,7 @@ class WorldConnections:
             if peer.get("connection_id") == cid:
                 self._state["peers"].pop(key)
 
-    async def remove_connection(self, cid):
+    async def remove_connection(self, cid: str) -> dict[str, Any]:
         await self._load()
         async with self._lock:
             if cid not in self._state["connections"]:
