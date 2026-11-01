@@ -31,6 +31,7 @@ class QueuedVisitDeliveryTests(unittest.IsolatedAsyncioTestCase):
         await self.engine._deliver(outcome)
         self.assertEqual(self.messenger.sent, [])
         self.assertEqual(outcome.speech_decisions[0]["status"], "not_sent")
+        self.assertTrue(any("串门经历已变化" in note for note in outcome.notes))
 
     async def test_return_before_delivery_does_not_resurrect_prepared_comment(self):
         presence = self.visits()
@@ -38,6 +39,16 @@ class QueuedVisitDeliveryTests(unittest.IsolatedAsyncioTestCase):
         presence["epoch"] = 1
         await self.engine._deliver(outcome)
         self.assertEqual(self.messenger.sent, [])
+        self.assertTrue(any("串门经历已变化" in note for note in outcome.notes))
+
+    async def test_legacy_comment_reports_current_visit_without_an_arrival_cursor(self):
+        presence = self.visits()
+        outcome, _ = await self.pending_comment()
+        outcome.chat_presence_epochs.clear()
+        presence.update(epoch=1, active={"status": "active"})
+        await self.engine._deliver(outcome)
+        self.assertEqual(self.messenger.sent, [])
+        self.assertTrue(any("正在串门" in note for note in outcome.notes))
 
     async def test_new_comment_prepared_after_return_can_still_be_delivered(self):
         presence = self.visits()
@@ -55,6 +66,7 @@ class QueuedVisitDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.engine.reload_config()
         await self.engine._deliver(outcome)
         self.assertEqual(self.messenger.sent, [])
+        self.assertTrue(any("生活归属已变化" in note for note in outcome.notes))
 
     async def test_arrival_during_typing_keeps_first_receipt_and_cancels_remaining_speech(self):
         presence = self.visits()

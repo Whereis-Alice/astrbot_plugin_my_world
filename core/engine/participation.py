@@ -112,25 +112,31 @@ class ParticipationMixin:
                                                        self._watermark(state, target)[1])
 
     def queued_chat_pending(self, outcome, target: str) -> bool:
+        return not self.queued_chat_blocked_reason(outcome, target)
+
+    def queued_chat_blocked_reason(self, outcome, target: str) -> str:
+        """One live check for initial filtering, typing waits and precise receipts."""
         claims = outcome.chat_claims.get(target, [])
         if not claims:
-            return True
+            return ""
         from ..visit_presence import active_visit, presence_epoch
         life = outcome.chat_state_keys.get(target)
         epoch = outcome.chat_presence_epochs.get(target)
-        # The same check runs after typing waits in the transport's segment guard.
-        if (life and self.state_key(target) != life
-                or epoch is not None and presence_epoch(self, target) != epoch
-                or active_visit(self, target)):
-            return False
+        if life and self.state_key(target) != life:
+            return "本轮接话对应的生活归属已变化，取消旧的排队内容"
+        if epoch is not None and presence_epoch(self, target) != epoch:
+            return "本轮接话期间的串门经历已变化，取消旧的排队内容"
+        if active_visit(self, target):
+            return "正在串门，取消旧的排队接话内容"
+        answered = "本轮接话对应的消息已被回应，取消旧的排队内容"
         replied = outcome.chat_replied_seq.get(target, 0)
         quoted = outcome.reply_targets.get(target)
         if quoted:
             scene = outcome.chat_media_scenes.get(target, {})
             referenced = next((r for r in scene.get("rows", []) if str(r.get("message_id") or "") == quoted), None)
             if referenced is not None and int(referenced.get("seq") or 0) <= replied:
-                return False
-        return any(int(seq) > replied for seq in claims)
+                return answered
+        return "" if any(int(seq) > replied for seq in claims) else answered
 
     def queued_chat_media_allowed(self, outcome, target: str) -> bool:
         started = outcome.accepted_speech_at.get(target)
