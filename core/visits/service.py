@@ -188,6 +188,8 @@ class VisitService(VisitFlow, VisitJournal):
             role = payload.get("role")
             if role not in {"host", "guest"}:
                 raise ValueError("无效到访方向")
+            if self._settlement_backlog_full(peer["scope"]):
+                return {"declined": True, "reason": "我想先把前面的几件事收好，稍后再约"}
             if not local["ready"] or local.get("chat_busy") or not local.get("reception_open", True):
                 reason = "现在不在接待时间，稍后再约" if not local.get("reception_open", True) else local.get("ready_reason") or "眼前还有交谈，稍后再约"
                 return {"declined": True, "reason": reason}
@@ -242,7 +244,7 @@ class VisitService(VisitFlow, VisitJournal):
                                           and remote.get("status") == "completed") else "interrupted"
                 await self._finish(visit, status, "对方已告别或结束本次联系", notify=False)
             if (visit["log"], visit["status"], visit.get("end_reason")) != previous:
-                visit.pop("remembered", None)
+                self._invalidate_memory(visit)
             visit.pop("end_pending", None)
             visit.pop("model_pending", None)
             visit.pop("outbox", None)

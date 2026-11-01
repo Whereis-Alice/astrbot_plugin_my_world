@@ -64,23 +64,57 @@ class VisitRhythm:
         record["count"] = record.get("count", 0) + 1  # Legacy diagnostic counter only.
         return True
 
+    def _automatic_available(self, scope):
+        return (not self._closed and self.config.enabled and self.config.auto_enabled
+                and self.config.daily_peer_limit and not self.active(scope)
+                and self._touched.get(scope, 0) <= self._now()
+                and not self._settlement_backlog_full(scope))
+
     async def _automatic(self):
-        if not self.config.auto_enabled or not self.config.daily_peer_limit:
+        if self._closed or not self.config.enabled or not self.config.auto_enabled or not self.config.daily_peer_limit:
             return
-        for scope in sorted({peer["scope"] for peer in self._state["peers"].values()}):
-            if self.active(scope) or self._touched.get(scope, 0) > self._now():
-                continue
+        scopes = sorted({peer["scope"] for peer in self._state["peers"].values()
+                         if peer.get("enabled", True) and peer.get("url")})
+        for scope in scopes:
+            async with self._lock:
+                if not self._automatic_available(scope):
+                    continue
+                record = self._state["draws"].get(scope, {})
+                if record.get("next_auto_at", 0) > self._now():
+                    continue
+                candidates = [peer for peer in self._state["peers"].values()
+                              if peer["scope"] == scope and peer.get("enabled", True) and peer.get("url")]
+                if not candidates:
+                    continue
+                day_getter = getattr(self.actor_port, "local_date", None)
+                if record.get("rhythm_version") == 2 and callable(day_getter):
+                    raw_day = day_getter(scope)
+                    if not raw_day:  # The real adapter returns empty for a disabled life.
+                        continue
+                    try:
+                        day = datetime.fromisoformat(str(raw_day)).date().isoformat()
+                    except (TypeError, ValueError):
+                        day = ""  # An unavailable calendar uses the original description path.
+                    if day and not any(self._has_daily_opportunity(record, peer["id"], day,
+                                                                   self.config.daily_peer_limit)
+                                       for peer in candidates):
+                        continue
             local = await self.actor_port.describe(scope)
             if not local["ready"] or local.get("chat_busy") or not local.get("reception_open", True):
                 continue
             async with self._lock:
+                if not self._automatic_available(scope):
+                    continue
+                candidates = [peer for peer in self._state["peers"].values()
+                              if peer["scope"] == scope and peer.get("enabled", True) and peer.get("url")]
+                if not candidates:
+                    continue
                 record = self._daily_record(scope)
                 if record.get("next_auto_at", 0) > self._now():
                     continue
                 day = self._visit_day(local)
-                peers = [peer for peer in self._state["peers"].values()
-                         if peer["scope"] == scope and peer.get("enabled", True) and peer["url"]
-                         and peer["local"]["persona_key"] == local["persona_key"]
+                peers = [peer for peer in candidates
+                         if peer["local"]["persona_key"] == local["persona_key"]
                          and self._has_daily_opportunity(record, peer["id"], day, self.config.daily_peer_limit)]
                 peers.sort(key=lambda peer: (record.get("peer_days", {}).get(peer["id"], {}).get("last_at", 0),
                                             peer["id"]))

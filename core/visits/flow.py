@@ -78,6 +78,8 @@ class VisitFlow(VisitRhythm):
                 raise ValueError("这位友邻暂未开启联系")
             if self.active(scope):
                 raise ValueError("她已经有邀请或串门，先等这次结束")
+            if self._settlement_backlog_full(scope):
+                raise ValueError("还有先前的联系需要收尾，请稍后再邀请")
             if (local["persona_key"] != peer["local"]["persona_key"]
                     or local["actor_id"] != peer["local"]["actor_id"]):
                 raise ValueError("人设已变化，请重新配对")
@@ -212,7 +214,7 @@ class VisitFlow(VisitRhythm):
                     prior = (copy.deepcopy(visit["log"]), visit["status"], visit.get("end_reason"))
                     self._synchronize(visit, remote, visit["host_id"], allow_terminal=True)
                     if (visit["log"], visit["status"], visit.get("end_reason")) != prior:
-                        visit.pop("remembered", None)
+                        self._invalidate_memory(visit)
                 visit.pop("end_pending", None)
                 await self._save()
         except ValueError:

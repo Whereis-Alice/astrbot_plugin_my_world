@@ -32,6 +32,7 @@ class BrowseReply:
     created_at: float
     started: float
     deferred: bool = False
+    presence_epoch: int = 0
 
     @classmethod
     def capture(cls, engine, state, target: str, browse_id: str, *, read_rows=None) -> BrowseReply:
@@ -43,9 +44,11 @@ class BrowseReply:
             read_rows = thought.get("browse_sources") or []
         read_seqs = {int(row.get("seq") or 0) for row in read_rows}
         rows = [row for row in available_rows(engine, state, target) if int(row.get("seq") or 0) in read_seqs]
+        from .visit_presence import presence_epoch
         return cls(state.session_id, target, browse_id,
                    frozenset(message_identity(row) for row in rows),
-                   engine.world.chat_browse.reply_wait_seconds, engine._now(), time.monotonic())
+                   engine.world.chat_browse.reply_wait_seconds, engine._now(), time.monotonic(),
+                   presence_epoch=presence_epoch(engine, target))
 
     def queued(self) -> BrowseReply:
         return replace(self, deferred=True)
@@ -63,6 +66,9 @@ class BrowseReply:
     def error(self, engine, state) -> tuple[str, str]:
         if engine.state_key(self.target) != self.life or state.session_id != self.life:
             return "cancelled", "生活归属已变化，本次阅读机会已结束"
+        from .visit_presence import active_visit, presence_epoch
+        if active_visit(engine, self.target) or presence_epoch(engine, self.target) != self.presence_epoch:
+            return "cancelled", "串门经历已变化，本次阅读机会已结束"
         if self.deferred and self.remaining(engine._now()) <= 0:
             return "expired", "短暂等待已到上限，本次不再接话"
         if not engine.world.chat_browse.enabled or self.target not in engine._browse_sources(state):

@@ -44,7 +44,7 @@ class ProactiveContactMixin:
             return False
         if kind in CHAT_KINDS:
             if not self.queued_chat_pending(outcome, target):
-                note = "本轮接话对应的消息已被回应，取消旧的排队内容"
+                note = "本轮接话对应的生活、串门经历或回应状态已变化，取消旧的排队内容"
                 if note not in outcome.notes:
                     outcome.notes.append(note)
                 return False

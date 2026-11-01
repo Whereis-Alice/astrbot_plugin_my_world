@@ -67,6 +67,8 @@ class TickOutcome:
     chat_media_scenes: dict[str, dict] = field(default_factory=dict)
     """Observed media evidence, retained for policy checks at actual sending."""
     chat_state_keys: dict[str, str] = field(default_factory=dict)
+    chat_presence_epochs: dict[str, int] = field(default_factory=dict)
+    """Arrival history at observation; returning home cannot revive a stale comment."""
     chat_replied_seq: dict[str, int] = field(default_factory=dict)
 
     def take_messages(self) -> list[str]:

@@ -5,6 +5,8 @@ import asyncio
 import copy
 from typing import Any
 
+from astrbot.api import logger
+
 from .protocol import RESERVED, TERMINAL, new_id, public_actor
 
 KEY = "world_visits.v1"
@@ -19,6 +21,7 @@ class VisitJournal:
         self._loaded = False
         self._closed = False
         self._touched: dict[str, float] = {}
+        self._remembering: set[str] = set()
         self.error = ""
 
     async def _load(self):
@@ -51,7 +54,8 @@ class VisitJournal:
         past = sorted((v for v in visits.values() if v["status"] in TERMINAL),
                       key=lambda v: v.get("ended_at", v["created_at"]), reverse=True)
         for visit in past[self.config.history_keep:]:
-            visits.pop(visit["id"], None)
+            if not self._settlement_pending(visit):
+                visits.pop(visit["id"], None)
         await self.db.call("kv_set", KEY, self._state)
 
     def active(self, scope: str) -> dict[str, Any] | None:
@@ -68,6 +72,22 @@ class VisitJournal:
     def presence_epoch(self, scope: str) -> int:
         """A persistent arrival cursor, retained when journey history is trimmed."""
         return self._state.get("presence_epochs", {}).get(scope, 0)
+
+    @staticmethod
+    def _settlement_pending(visit: dict) -> bool:
+        return visit["status"] in TERMINAL and bool(visit.get("end_pending") or
+            (visit.get("arrived_at") and not visit.get("remembered")))
+
+    def _settlement_backlog_full(self, scope: str) -> bool:
+        # Bound protected records during a persistent storage/network failure.
+        # Existing visits can finish; only new invitations wait for settlement.
+        return sum(v["scope"] == scope and self._settlement_pending(v)
+                   for v in self._state["visits"].values()) >= 32
+
+    @staticmethod
+    def _invalidate_memory(visit: dict) -> None:
+        for key in ("remembered", "remember_failures", "remember_retry_at", "remember_error"):
+            visit.pop(key, None)
 
     def _mark_arrival(self, visit) -> None:
         if not visit.get("arrived_at") or visit.get("presence_marked"):
@@ -143,13 +163,45 @@ class VisitJournal:
     async def _remember(self, visit_id):
         async with self._lock:
             visit = self._state["visits"].get(visit_id)
-            if not visit or visit["status"] not in TERMINAL or visit.get("remembered"):
+            if (self._closed or not visit or visit["status"] not in TERMINAL or visit.get("remembered")
+                    or visit_id in self._remembering or visit.get("remember_retry_at", 0) > self._now()):
                 return
             snapshot = copy.deepcopy(visit)
-        await self.actor_port.remember(snapshot["scope"], snapshot)
-        async with self._lock:
-            visit = self._state["visits"].get(visit_id)
-            if visit and all(visit.get(key) == snapshot.get(key)
-                             for key in ("log", "status", "end_reason")):
-                visit["remembered"] = True
-                await self._save()
+            self._remembering.add(visit_id)
+        try:
+            try:
+                await self.actor_port.remember(snapshot["scope"], snapshot)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                async with self._lock:
+                    visit = self._state["visits"].get(visit_id)
+                    if not self._closed and self._same_memory(visit, snapshot):
+                        failures = min(8, visit.get("remember_failures", 0) + 1)
+                        visit.update(remember_failures=failures, remember_error=type(exc).__name__,
+                                     remember_retry_at=self._now() + min(3600, 60 * 2 ** (failures - 1)))
+                        await self._save_memory_progress()
+                return
+            async with self._lock:
+                visit = self._state["visits"].get(visit_id)
+                if not self._closed and self._same_memory(visit, snapshot):
+                    self._invalidate_memory(visit)
+                    visit["remembered"] = True
+                    await self._save_memory_progress()
+        finally:
+            self._remembering.discard(visit_id)
+
+    @staticmethod
+    def _same_memory(visit: dict | None, snapshot: dict) -> bool:
+        return visit is not None and all(visit.get(key) == snapshot.get(key)
+                                        for key in ("log", "status", "end_reason"))
+
+    async def _save_memory_progress(self):
+        # A failed settlement acknowledgement may be retried after restart.
+        # New invitations/model calls still require their normal durable admission.
+        try:
+            await self._save()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("串门记忆入账进度暂未保存（%s），等待后续保存或重载后重试", type(exc).__name__)

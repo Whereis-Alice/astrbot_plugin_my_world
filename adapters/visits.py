@@ -43,6 +43,16 @@ class VisitActorPort:
                 await self.engine.db.call("kv_set", key, actor_id)
             return actor_id
 
+    def local_date(self, scope: str) -> str:
+        """Read the current world's calendar without loading state or identity."""
+        engine = self.engine
+        scope = engine.state_key(scope)
+        with engine.config_scope(scope):
+            if (not self.plugin.enabled or getattr(self.plugin, "retired", False)
+                    or not engine.is_enabled(scope)):
+                return ""
+            return engine.local_now().date().isoformat()
+
     async def describe(self, scope: str) -> dict[str, Any]:
         engine = self.engine
         scope = engine.state_key(scope)

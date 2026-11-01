@@ -95,6 +95,8 @@ class ParticipationMixin:
         outcome.chat_media_scenes[target] = deepcopy({"rows": history,
             "new": rows if media_rows is None else media_rows})
         outcome.chat_state_keys[target] = state.session_id if state else self.state_key(target)
+        from ..visit_presence import presence_epoch
+        outcome.chat_presence_epochs[target] = presence_epoch(self, target)
         if state is not None:
             outcome.chat_replied_seq[target] = self._watermark(state, target)[1]
         from weakref import WeakValueDictionary
@@ -113,6 +115,14 @@ class ParticipationMixin:
         claims = outcome.chat_claims.get(target, [])
         if not claims:
             return True
+        from ..visit_presence import active_visit, presence_epoch
+        life = outcome.chat_state_keys.get(target)
+        epoch = outcome.chat_presence_epochs.get(target)
+        # The same check runs after typing waits in the transport's segment guard.
+        if (life and self.state_key(target) != life
+                or epoch is not None and presence_epoch(self, target) != epoch
+                or active_visit(self, target)):
+            return False
         replied = outcome.chat_replied_seq.get(target, 0)
         quoted = outcome.reply_targets.get(target)
         if quoted:
