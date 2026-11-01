@@ -42,7 +42,9 @@ class VisitService(VisitFlow, VisitJournal):
         if not self.config.enabled or self._closed or self.error:
             raise ValueError(self.error or "串门尚未开启")
 
-    async def create_pair_code(self, scope: str) -> dict[str, Any]:
+    async def create_pair_code(self, scope: str = "") -> dict[str, Any]:
+        if not scope:
+            return await self._global_pair_code()
         self._enabled()
         await self._load()
         actor = await self.actor_port.describe(scope)
@@ -50,7 +52,7 @@ class VisitService(VisitFlow, VisitJournal):
             self._enabled()
             code = new_id() + new_id()
             self._state["codes"] = {key: value for key, value in self._state["codes"].items()
-                                    if value["scope"] != scope}
+                                    if value.get("scope") != scope}
             self._state["codes"][code_id(code)] = {"code": code, "scope": scope, "expires_at": self._now() + 3600}
             await self._save()
             return {"code": code, "expires_at": self._now() + 3600,
@@ -79,16 +81,20 @@ class VisitService(VisitFlow, VisitJournal):
             await self._save()
             return self._safe_peer(peer)
 
-    def _add_peer(self, scope, local, remote, url, secret, alias=""):
-        if len(self._state["peers"]) >= self.config.max_peers and remote["id"] not in self._state["peers"]:
-            raise ValueError("友邻数量已到上限")
-        existing = self._state["peers"].get(remote["id"])
-        if existing and existing["scope"] != scope:
-            raise ValueError("这个友邻已配对本机另一位角色，请先解除原配对")
+    def _add_peer(self, scope, local, remote, url, secret, alias="", *, register=True):
         peer = {"id": remote["id"], "scope": scope, "local": copy.deepcopy(local),
-                "actor": remote, "url": url, "secret": secret, "alias": text(alias, 80),
-                "name": remote["name"], "world": remote["world"], "enabled": True}
-        self._state["peers"][peer["id"]] = peer
+                "actor": copy.deepcopy(remote), "url": url, "secret": secret, "alias": text(alias, 80),
+                "name": remote["name"], "world": remote["world"], "enabled": True,
+                "life_generation": self._state.get("life_generations", {}).get(scope, 0)}
+        if register:
+            self._register_connection(peer, enable_scope=True)
+        # Journey identities stay on the wire as actor IDs. Only the local
+        # binding index needs a scope suffix when several lives know one actor.
+        key = next((key for key, value in self._state["peers"].items()
+                    if value["id"] == remote["id"] and value["scope"] == scope), None)
+        if key is None:
+            key = remote["id"] if remote["id"] not in self._state["peers"] else remote["id"] + "#" + digest(scope)
+        self._state["peers"][key] = peer
         return peer
 
     async def remove_peer(self, scope: str, peer_id: str) -> dict[str, Any]:
@@ -98,7 +104,9 @@ class VisitService(VisitFlow, VisitJournal):
             for visit in list(self._state["visits"].values()):
                 if visit["scope"] == scope and visit["remote"]["id"] == peer_id and visit["status"] in RESERVED:
                     await self._finish(visit, "interrupted", "已解除配对")
-            self._state["peers"].pop(peer_id)
+            key = next(key for key, peer in self._state["peers"].items()
+                       if peer["id"] == peer_id and peer["scope"] == scope)
+            self._state["peers"].pop(key)
             await self._save()
         return {"ok": True}
 
@@ -111,39 +119,105 @@ class VisitService(VisitFlow, VisitJournal):
         async with self._lock:
             cached = self._state["receipts"].get(receipt_key)
             if cached:
-                return self._cached_response(body, cached)
+                return await self._cached_response(body, cached)
         if str(body.get("target", "")).startswith("pair:"):
+            if isinstance(body.get("payload"), dict) and body["payload"].get("op") == "pair_world":
+                return await self._receive_world_pair(body, receipt_key)
             return await self._receive_pair(body, receipt_key)
-        peer = self._state["peers"].get(body.get("sender"))
-        if not peer:
+        if isinstance(body.get("payload"), dict) and body["payload"].get("op") in {"world_catalog", "world_bind"}:
+            return await self._receive_control(body, receipt_key)
+        peer = self._wire_peer(body.get("sender"), body.get("target"))
+        if not peer or not self._peer_trusted(peer):
             raise ValueError("尚未配对的世界")
+        peer = copy.deepcopy(peer)
         payload = verify(body, peer["secret"], self._now())
+        if not self._exchange_allowed(peer, payload):
+            raise ValueError("这个生活已关闭串门或绑定已变化")
         local = await self.actor_port.describe(peer["scope"])
         actor = public_actor(local, self._state["instance_id"])
         if body["target"] != actor["id"] or local["persona_key"] != peer["local"]["persona_key"]:
-            raise ValueError("生活身份已变化，请重新配对")
+            raise ValueError("生活身份已变化，请稍后重新联系")
         async with self._lock:
             # A concurrent duplicate may have entered while describe was awaiting.
             self._enabled()
             if receipt_key in self._state["receipts"]:
-                return self._cached_response(body, self._state["receipts"][receipt_key])
-            current_peer = self._state["peers"].get(body["sender"])
+                return await self._cached_response(body, self._state["receipts"][receipt_key])
+            current_peer = self._find_peer(peer["scope"], body["sender"])
             if (not current_peer or current_peer["scope"] != peer["scope"]
-                    or current_peer["secret"] != peer["secret"]):
-                raise ValueError("友邻配对已变化，请重新联系")
+                    or current_peer["secret"] != peer["secret"] or current_peer["local"] != peer["local"]
+                    or not self._peer_trusted(current_peer) or not self._exchange_allowed(current_peer, payload)):
+                raise ValueError("友邻连接已变化，请稍后重新联系")
+            current_local = await self.actor_port.describe(peer["scope"])
+            if current_local["actor_id"] != local["actor_id"] or current_local["persona_key"] != local["persona_key"]:
+                raise ValueError("生活身份已变化，旧请求作废")
             result = await self._inbox(peer, local, payload)
             return await self._receipt(body, result, peer["secret"], actor["id"], receipt_key)
 
-    def _cached_response(self, body, cached):
+    async def _cached_response(self, body, cached):
         verify(body, cached["key"], self._now(), fresh=False)
-        if digest(body["payload"]) != cached["digest"]:
+        if (digest(body["payload"]) != cached["digest"]
+                or (cached.get("request_digest") and digest(body) != cached["request_digest"])):
             raise ValueError("重复编号的消息内容发生变化")
+        context = await self._receipt_context(body, cached["key"], cached["response"])
+        if cached.get("context") and context != cached["context"]:
+            raise ValueError("生活身份或配对已变化，旧请求作废")
         return copy.deepcopy(cached["response"])
+
+    def _settlement_exchange(self, peer, payload):
+        visit = self._state["visits"].get(payload.get("id"))
+        return bool(visit and visit["status"] in TERMINAL and self._visit_belongs(visit, peer)
+                    and payload.get("op") in {"end", "status", "sync"})
+
+    def _exchange_allowed(self, peer, payload):
+        return (self._canonical_life(peer["scope"]) == peer["scope"]
+                and ((self._life_enabled(peer["scope"]) and self._binding_current(peer))
+                     or self._settlement_exchange(peer, payload)))
+
+    async def _receipt_context(self, request, key, response, *, validate_identity=True):
+        """A receipt remains reusable only while its authenticated identity holds."""
+        op = request["payload"].get("op")
+        peer = None
+        catalog = False
+        if op == "pair_world":
+            conn = self._state["connections"].get(request["sender"])
+            expected = derive_key(key, "world:" + self._state["instance_id"], "world:" + request["sender"])
+            if not conn or not conn.get("enabled", True) or not any(a["secret"] == expected for a in conn["anchors"]):
+                raise ValueError("全局配对已变化，旧配对请求作废")
+            context = [conn["id"], expected]
+            catalog = True
+        elif op in {"world_catalog", "world_bind"}:
+            conn, anchor = self._anchor_for(request)
+            if anchor["secret"] != key:
+                raise ValueError("全局配对已变化，旧管理请求作废")
+            context = [conn["id"], digest(anchor)]
+            catalog = op == "world_catalog"
+            if op == "world_bind":
+                peer = self._wire_peer(request["payload"]["actor"]["id"], response["payload"]["actor"]["id"])
+                if not peer or peer.get("anchor_digest") != digest(anchor):
+                    raise ValueError("角色绑定已变化，旧请求作废")
+        else:
+            target = response["sender"] if op == "pair" else request["target"]
+            peer = self._wire_peer(request["sender"], target)
+            expected = derive_key(key, request["sender"], target) if op == "pair" else key
+            if not peer or peer["secret"] != expected:
+                raise ValueError("角色配对已变化，旧请求作废")
+            context = []
+        if peer is not None:
+            if not self._peer_trusted(peer) or not self._exchange_allowed(peer, request["payload"]):
+                raise ValueError("生活已关闭串门或配对已变化，旧请求作废")
+            local = await self.actor_port.describe(peer["scope"]) if validate_identity else peer["local"]
+            if local["actor_id"] != peer["local"]["actor_id"] or local["persona_key"] != peer["local"]["persona_key"]:
+                raise ValueError("生活身份已变化，旧请求作废")
+            context.append([peer["scope"], local["actor_id"], local["persona_key"], peer["secret"],
+                            peer.get("life_generation", 0)])
+        if catalog:
+            context.append((await self._catalog_snapshot())[1])
+        return digest(context)
 
     async def _receive_pair(self, body, receipt_key):
         async with self._lock:
             item = self._state["codes"].get(body["target"][5:])
-            if not item or item["expires_at"] <= self._now():
+            if not item or item.get("kind") == "world" or not item.get("scope") or item["expires_at"] <= self._now():
                 raise ValueError("配对码已过期或已经使用")
             code, scope = item["code"], item["scope"]
         payload = verify(body, code, self._now())
@@ -158,8 +232,8 @@ class VisitService(VisitFlow, VisitJournal):
         async with self._lock:
             self._enabled()
             if receipt_key in self._state["receipts"]:
-                return self._cached_response(body, self._state["receipts"][receipt_key])
-            if body["target"][5:] not in self._state["codes"]:
+                return await self._cached_response(body, self._state["receipts"][receipt_key])
+            if self._state["codes"].get(body["target"][5:]) != item:
                 raise ValueError("配对码已经使用")
             self._add_peer(scope, local, remote, url, derive_key(code, actor["id"], remote["id"]))
             self._state["codes"].pop(body["target"][5:])
@@ -169,7 +243,8 @@ class VisitService(VisitFlow, VisitJournal):
         result = envelope(key, sender, request["sender"],
                           {**payload, "reply_to": request["message_id"]}, self._now())
         self._state["receipts"][receipt_key] = {"key": key, "at": self._now(),
-            "digest": digest(request["payload"]), "response": result}
+            "digest": digest(request["payload"]), "request_digest": digest(request),
+            "context": await self._receipt_context(request, key, result, validate_identity=False), "response": result}
         await self._save()
         return result
 
@@ -182,7 +257,7 @@ class VisitService(VisitFlow, VisitJournal):
         if op == "offer":
             visit = self._state["visits"].get(visit_id)
             if visit:
-                if visit["remote"]["id"] != peer["id"]:
+                if not self._visit_belongs(visit, peer):
                     raise ValueError("旅程身份冲突")
                 return {"visit": self._wire(visit)}
             role = payload.get("role")
@@ -228,7 +303,7 @@ class VisitService(VisitFlow, VisitJournal):
             self._state["visits"][visit_id] = visit
             return {"visit": self._wire(visit)}
         visit = self._state["visits"].get(visit_id)
-        if not visit or visit["remote"]["id"] != peer["id"]:
+        if not visit or not self._visit_belongs(visit, peer):
             raise ValueError("找不到本友邻的旅程")
         if op == "end":
             previous = (copy.deepcopy(visit["log"]), visit["status"], visit.get("end_reason"))
@@ -270,11 +345,22 @@ class VisitService(VisitFlow, VisitJournal):
         visit.update(candidate)
         return {"visit": self._wire(visit)}
 
+    def _visit_belongs(self, visit, peer):
+        return (visit["scope"] == peer["scope"] and visit["remote"]["id"] == peer["id"]
+                and visit["local"]["actor_id"] == peer["local"]["actor_id"]
+                and visit["local"]["persona_key"] == peer["local"]["persona_key"])
+
     async def _send(self, visit_id, payload):
         async with self._lock:
             self._enabled()
             visit = self._state["visits"][visit_id]
-            peer = self._peer(visit["scope"], visit["remote"]["id"])
+            peer = self._find_peer(visit["scope"], visit["remote"]["id"])
+            if not peer or not self._peer_trusted(peer) or not self._visit_belongs(visit, peer) \
+                    or not self._exchange_allowed(peer, {**payload, "id": visit_id}):
+                raise ValueError("生活或配对已变化，旧联系作废")
+            local = await self.actor_port.describe(visit["scope"])
+            if local["actor_id"] != visit["local"]["actor_id"] or local["persona_key"] != visit["local"]["persona_key"]:
+                raise ValueError("生活身份已变化，旧联系作废")
             if not peer["url"]:
                 raise ValueError("对方未提供可访问的串门地址，请补填对外地址后重新配对")
             payload = {**payload, "id": visit_id, "calls": visit["calls"][self._local_id(visit)]}
@@ -291,10 +377,15 @@ class VisitService(VisitFlow, VisitJournal):
             raise ValueError("串门答复不属于本次联系")
         async with self._lock:
             visit = self._state["visits"].get(visit_id)
-            current_peer = self._state["peers"].get(peer["id"])
+            current_peer = self._find_peer(visit["scope"], peer["id"]) if visit else None
             if (self._closed or not visit or not current_peer or current_peer["secret"] != peer["secret"]
+                    or not self._peer_trusted(current_peer) or not self._exchange_allowed(current_peer, outgoing["payload"])
+                    or not self._visit_belongs(visit, current_peer)
                     or (visit["status"] in TERMINAL and outgoing["payload"]["op"] != "end")):
                 raise ValueError("世界或旅程已结束，旧答复作废")
+            local = await self.actor_port.describe(visit["scope"])
+            if local["actor_id"] != visit["local"]["actor_id"] or local["persona_key"] != visit["local"]["persona_key"]:
+                raise ValueError("生活身份已变化，旧答复作废")
             if (visit.get("outbox") or {}).get("message_id") != outgoing["message_id"]:
                 raise ValueError("本次联系已被更新，旧答复作废")
             self._enabled()

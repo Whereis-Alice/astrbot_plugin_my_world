@@ -34,6 +34,23 @@ class VisitActorPort:
     def engine(self):
         return self.plugin.engine
 
+    def canonical_scope(self, scope: str) -> str:
+        """Resolve a session or group to its one enabled shared life."""
+        engine = self.engine
+        scope = engine.state_key(engine.scope_session(str(scope or "")))
+        with engine.config_scope(scope):
+            return scope if engine.is_enabled(scope) else ""
+
+    def lives(self) -> list[dict[str, str]]:
+        """List selectable lives without loading state or invoking a model."""
+        engine = self.engine
+        result = []
+        for scope in engine.tick_session_ids():
+            group = engine.group_of(scope)
+            label = str(group.name) if group and group.name else engine.session_label(scope)
+            result.append({"scope": scope, "label": label})
+        return result
+
     async def _identity(self, scope: str) -> str:
         key = "visits.actor." + hashlib.sha256(scope.encode()).hexdigest()
         async with self._identity_lock:

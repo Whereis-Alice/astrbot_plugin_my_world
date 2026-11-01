@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock
@@ -37,6 +38,30 @@ class VisitToolTests(unittest.IsolatedAsyncioTestCase):
         self.service.invite.assert_awaited_once_with("one-life", "peer", reason="一起下棋", direction="outgoing")
         self.assertIn("invited", text)
         self.assertIn("待答复", text)
+
+    async def test_global_friends_query_uses_only_current_life_public_fields(self):
+        self.service.global_overview = AsyncMock(return_value={
+            "scope_enabled": True, "peers": [{"id": "peer"}], "active": None,
+            "connections": [{"id": "server", "secret": "hidden"}],
+            "lives": [{"scope": "other-life"}], "enabled_scopes": ["other-life"],
+        })
+        text = await tools.WorldFriendsTool(plugin=self.plugin).call(self.context)
+        self.assertEqual(json.loads(text), {"peers": [{"id": "peer"}], "active": None})
+        self.service.global_overview.assert_awaited_once_with("one-life")
+        self.service.overview.assert_not_awaited()
+        del self.service.overview
+        await self.invite()
+        self.service.invite.assert_awaited_once()
+
+    async def test_global_pairing_does_not_implicitly_enable_a_new_life(self):
+        self.service.global_overview = AsyncMock(return_value={
+            "scope_enabled": False, "peers": [{"id": "peer"}], "active": None})
+        for result in (await tools.WorldFriendsTool(plugin=self.plugin).call(self.context), await self.invite()):
+            self.assertIn("尚未参与", result)
+        self.service.invite.assert_not_awaited()
+        self.event.get_message_str = lambda: "该回家了"
+        await tools.WorldReturnTool(plugin=self.plugin).call(self.context, evidence="该回家了")
+        self.service.return_home.assert_awaited_once_with("one-life")
 
     async def test_current_request_can_invite_friend_instead_of_visiting(self):
         self.event.get_message_str = lambda: "邀请她来自己家坐坐"

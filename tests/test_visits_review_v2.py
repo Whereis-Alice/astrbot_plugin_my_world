@@ -66,8 +66,9 @@ class VisitReviewTests(unittest.IsolatedAsyncioTestCase):
             nonlocal describes
             index = describes
             describes += 1
-            entered[index].set()
-            await release[index].wait()
+            if index < len(entered):
+                entered[index].set()
+                await release[index].wait()
             return await original(scope)
 
         self.b_actor.describe = delayed

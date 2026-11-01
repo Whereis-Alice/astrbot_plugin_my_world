@@ -38,7 +38,7 @@ async def check():
     service = types.SimpleNamespace(config=types.SimpleNamespace(enabled=True, actor="admin"),
         invite=AsyncMock(return_value={"status": "inviting"}),
         return_home=AsyncMock(return_value={"status": "interrupted"}),
-        overview=AsyncMock(return_value={"peers": [{"id": "peer"}], "active": None}))
+        overview=AsyncMock(return_value={"peers": [{"id": "peer"}], "active": None, "scope_enabled": True}))
     plugin = types.SimpleNamespace(enabled=True, retired=False, visits=service,
         engine=types.SimpleNamespace(is_enabled=lambda origin: origin == event.unified_msg_origin,
                                      state_key=lambda origin: "one-life"),

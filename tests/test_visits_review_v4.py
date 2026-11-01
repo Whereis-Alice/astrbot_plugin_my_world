@@ -155,8 +155,9 @@ class VisitProtocolBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
         async def delayed(url, body):
             response = await request(url, body)
-            entered.set()
-            await release.wait()
+            if body["payload"].get("op") == "offer":
+                entered.set()
+                await release.wait()
             return response
 
         self.a.transport.request = delayed

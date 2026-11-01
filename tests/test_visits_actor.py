@@ -225,6 +225,23 @@ class VisitActorTests(unittest.IsolatedAsyncioTestCase):
         self.engine.reload_config()
         self.assertEqual(self.engine.state_key(fixture.SESSION), fixture.OTHER_SESSION)
 
+    async def test_participation_directory_shares_group_life_without_loading_or_inference(self):
+        from unittest.mock import patch
+        self.regroup_visit_owner()
+        before = len(self.llm.calls)
+        with patch.object(self.engine, "load_state", side_effect=AssertionError("Directory must remain read-only")):
+            self.assertEqual(self.port.canonical_scope("shared-life"), fixture.OTHER_SESSION)
+            self.assertEqual(self.port.canonical_scope(fixture.SESSION), fixture.OTHER_SESSION)
+            self.assertEqual(self.port.canonical_scope("missing:GroupMessage:999"), "")
+            self.assertEqual(self.port.lives(), [{"scope": fixture.OTHER_SESSION, "label": "同一份生活"}])
+        self.assertEqual(len(self.llm.calls), before)
+
+    async def test_disabled_group_main_can_select_its_enabled_shared_life(self):
+        self.regroup_visit_owner(disable_main=True)
+        self.assertEqual(self.port.canonical_scope("shared-life"), fixture.OTHER_SESSION)
+        self.assertEqual(self.port.canonical_scope(fixture.SESSION), fixture.OTHER_SESSION)
+        self.assertEqual(self.port.lives(), [{"scope": fixture.OTHER_SESSION, "label": "同一份生活"}])
+
     def confirmed_ending(self, visit):
         final = copy.deepcopy(visit)
         final["status"] = "completed"

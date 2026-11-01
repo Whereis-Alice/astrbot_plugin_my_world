@@ -15,6 +15,7 @@ class VisitFlow(VisitRhythm):
         own = self._state["instance_id"] + ":" + local["actor_id"]
         host, guest = (own, peer["id"]) if role == "host" else (peer["id"], own)
         return {"id": visit_id, "scope": scope, "role": role, "local": copy.deepcopy(local),
+                "connection_id": peer.get("connection_id", peer["actor"]["instance_id"]),
                 "remote": copy.deepcopy(peer["actor"]), "reason": str(reason)[:300],
                 "status": "inviting", "automatic": automatic, "created_at": self._now(),
                 "expires_at": self._now() + self.config.duration_minutes * 60,
@@ -70,6 +71,7 @@ class VisitFlow(VisitRhythm):
         await self._load()
         if direction not in {"outgoing", "incoming"}:
             raise ValueError("请选择去做客或邀请来访")
+        peer_id = await self._prepare_peer(scope, peer_id)
         local = await self.actor_port.describe(scope)
         async with self._lock:
             self._enabled()
@@ -82,7 +84,7 @@ class VisitFlow(VisitRhythm):
                 raise ValueError("还有先前的联系需要收尾，请稍后再邀请")
             if (local["persona_key"] != peer["local"]["persona_key"]
                     or local["actor_id"] != peer["local"]["actor_id"]):
-                raise ValueError("人设已变化，请重新配对")
+                raise ValueError("建立联系期间人设已变化，请稍后重试")
             if automatic and not self._admit_automatic(scope, peer, local):
                 await self._save()
                 raise ValueError("今天先留在自己的世界，稍后再看其他友邻")
@@ -193,7 +195,7 @@ class VisitFlow(VisitRhythm):
             notice = visit.get("end_pending") if visit else None
             if not notice or notice.get("next_at", 0) > self._now() or self._closed:
                 return
-            if (visit["remote"]["id"] not in self._state["peers"]
+            if (self._find_peer(visit["scope"], visit["remote"]["id"]) is None
                     or notice["attempts"] >= 3):
                 visit.pop("end_pending", None)
                 visit.pop("outbox", None)
@@ -269,6 +271,10 @@ class VisitFlow(VisitRhythm):
                         await self._finish(visit, "expired", "本次停留到期，保留已确认经过")
                     await self._notify_end(visit_id)
                     await self._remember(visit_id)
+                    continue
+                if not self._life_enabled(visit["scope"]):
+                    async with self._lock:
+                        await self._finish(visit, "interrupted", "这个生活已关闭串门或归属发生变化")
                     continue
                 if max(visit["next_at"], self._touched.get(visit["scope"], 0)) > self._now():
                     continue

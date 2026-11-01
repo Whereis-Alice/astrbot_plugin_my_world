@@ -34,6 +34,15 @@ def _event(context: Any) -> Any:
     return getattr(getattr(context, "context", None), "event", None)
 
 
+async def _friends(service: Any, scope: str) -> dict[str, Any]:
+    """Only the current participating life receives the global friend directory."""
+    reader = getattr(service, "global_overview", None) or service.overview
+    overview = await reader(scope)
+    if overview.get("scope_enabled") is False:
+        raise ValueError("这个生活尚未参与串门，请管理员在串门页面勾选后再邀请。")
+    return {"peers": overview.get("peers", []), "active": overview.get("active")}
+
+
 def _scope(plugin: Any, event: Any, *, mutate: bool = False) -> str:
     if event is None or plugin.retired or not plugin.enabled:
         raise ValueError("当前没有可用的真人会话。")
@@ -122,15 +131,13 @@ def _invitation_selection(clauses: list[str], peers: list[dict[str, Any]], peer_
 class WorldFriendsTool(FunctionTool[AstrAgentContext]):
     plugin: Any = Field(default=None, repr=False)
     name: str = TOOL_NAMES[0]
-    description: str = "查看当前她的已配对友邻世界及串门状态。要邀请时先查准确的 peer_id。"
+    description: str = "查看当前参与串门的生活可用的友邻角色及状态。全局配对由管理员管理，要邀请时先查准确的 peer_id。"
     parameters: dict[str, Any] = Field(default_factory=lambda: {"type": "object", "properties": {}})
 
     async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs: Any) -> str:
         try:
             scope = _scope(self.plugin, _event(context))
-            overview = await self.plugin.visits.overview(scope)
-            safe = {"peers": overview.get("peers", []), "active": overview.get("active")}
-            return json.dumps(safe, ensure_ascii=False)
+            return json.dumps(await _friends(self.plugin.visits, scope), ensure_ascii=False)
         except ValueError as exc:
             return str(exc)
 
@@ -163,7 +170,7 @@ class WorldVisitTool(FunctionTool[AstrAgentContext]):
             peer_id = str(kwargs.get("peer_id") or "")
             direction = str(kwargs.get("direction") or "outgoing")
             service = self.plugin.visits
-            overview = await service.overview(scope)
+            overview = await _friends(service, scope)
             if _scope(self.plugin, event, mutate=True) != scope or self.plugin.visits is not service:
                 raise ValueError("本轮生活或串门服务已变化，请按当前状态重新提出邀请。")
             _invitation_selection(clauses, overview.get("peers", []), peer_id, direction)

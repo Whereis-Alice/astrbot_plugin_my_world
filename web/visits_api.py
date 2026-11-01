@@ -31,14 +31,24 @@ def _text(payload: dict[str, Any], key: str, *, limit: int = 500, required: bool
     return value
 
 
-def _scope(plugin: Any, payload: dict[str, Any]) -> str:
+def _scope(plugin: Any, payload: dict[str, Any], *, optional: bool = False) -> str:
     raw = _text(payload, "session", limit=500)
     if not raw:
+        if optional:
+            return ""
         raise ValueError("请先选择一个已启用的生活会话")
     session = plugin.engine.scope_session(raw)
     if not plugin.engine.is_enabled(session):
         raise ValueError("这个生活会话尚未启用，或已被停用")
     return plugin.engine.state_key(session)
+
+
+def _enabled_scopes(plugin: Any, payload: dict[str, Any]) -> list[str]:
+    values = payload.get("sessions")
+    if not isinstance(values, list) or len(values) > 256:
+        raise ValueError("参与串门的生活必须是会话列表，最多 256 项")
+    scopes = [_scope(plugin, {"session": value}) for value in values]
+    return list(dict.fromkeys(scopes))
 
 
 def register_visit_apis(plugin: Any, plugin_id: str) -> None:
@@ -48,6 +58,8 @@ def register_visit_apis(plugin: Any, plugin_id: str) -> None:
         "visits/pair-code": ("POST", "生成一次性世界配对码"),
         "visits/pair": ("POST", "配对友邻世界"),
         "visits/remove": ("POST", "解除友邻世界配对"),
+        "visits/scopes": ("POST", "选择参与串门的生活"),
+        "visits/refresh": ("POST", "刷新友邻可见的角色"),
         "visits/invite": ("POST", "提出串门邀请"),
         "visits/return": ("POST", "结束串门并归家"),
     }
@@ -69,20 +81,24 @@ def register_visit_apis(plugin: Any, plugin_id: str) -> None:
         if service is None:
             return error_response("串门模块尚未准备好，请重新加载插件", status_code=503)
         try:
-            scope = _scope(plugin, payload)
             if endpoint == "visits":
-                result = await service.overview(scope)
+                result = await service.global_overview(_scope(plugin, payload, optional=True))
             elif endpoint == "visits/pair-code":
                 # This is the only route permitted to return a pairing credential.
-                result = await service.create_pair_code(scope)
+                result = await service.create_pair_code()
                 return json_response(result if isinstance(result, dict) else {"code": result})
             elif endpoint == "visits/pair":
-                result = await service.pair(scope, _text(payload, "url", required=True),
-                                            _text(payload, "code", limit=256, required=True),
-                                            _text(payload, "alias", limit=80))
+                result = await service.pair_world(_text(payload, "url", required=True),
+                                                  _text(payload, "code", limit=256, required=True),
+                                                  _text(payload, "alias", limit=80))
             elif endpoint == "visits/remove":
-                result = await service.remove_peer(scope, _text(payload, "peer_id", limit=200, required=True))
+                result = await service.remove_connection(_text(payload, "connection_id", limit=200, required=True))
+            elif endpoint == "visits/scopes":
+                result = await service.set_enabled_scopes(_enabled_scopes(plugin, payload))
+            elif endpoint == "visits/refresh":
+                result = await service.refresh_connection(_text(payload, "connection_id", limit=200, required=True))
             elif endpoint == "visits/invite":
+                scope = _scope(plugin, payload)
                 direction = _text(payload, "direction", limit=20) or "outgoing"
                 if direction not in {"outgoing", "incoming"}:
                     raise ValueError("邀请方向必须是去做客或邀请来访")
@@ -90,7 +106,7 @@ def register_visit_apis(plugin: Any, plugin_id: str) -> None:
                                               reason=_text(payload, "reason", limit=300),
                                               direction=direction, automatic=False)
             else:
-                result = await service.return_home(scope)
+                result = await service.return_home(_scope(plugin, payload))
             return json_response(_public(result) if result is not None else {"ok": True})
         except ValueError as exc:
             message = str(exc)

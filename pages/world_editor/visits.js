@@ -14,7 +14,9 @@ function stamp(value) {
 }
 
 export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, confirm}) {
-  let revision = 0, renderedSession = "", busy = false, data = null, refreshTimer;
+  let revision = 0, globalRevision = 0, renderedGlobalRead = 0, secretRevision = 0, busy = false;
+  let data = null, lifeData = null, lifeSession = null, refreshTimer, secretTimer, scopeDraft = null;
+  const friendDrafts = new Map();
   const heading = el("div", "visits-heading");
   const title = el("div"); title.append(el("span", "people-eyebrow", "友邻世界"),
     el("h2", "", "先打个招呼，再去朋友家坐坐"),
@@ -24,11 +26,16 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
   const notice = el("p", "visits-notice muted"); notice.setAttribute("role", "status");
   const current = el("section", "visits-current card"); current.setAttribute("aria-label", "当前串门");
   const peers = el("section", "visits-peers"); peers.setAttribute("aria-label", "友邻世界列表");
+  const lives = el("section", "visits-lives card"); lives.setAttribute("aria-label", "参与串门的生活");
+  const lifeChoices = el("div", "visits-life-choices");
+  const saveScopes = el("button", "primary", "保存参与生活"); saveScopes.type = "button";
+  lives.append(el("h3", "", "哪些生活参与串门"),
+    el("p", "muted", "友邻全局配对一次，再勾选参与的生活。共享生活组只需勾选一项；各自的经历与记忆仍留在自己的生活里。"), lifeChoices, saveScopes);
   const pairing = el("details", "visits-pairing card");
   pairing.append(el("summary", "", "添加一个友邻世界"));
   const pairBody = el("div", "visits-pair-body"), generate = el("button", "ghost", "生成一次性配对码"); generate.type = "button";
   pairBody.append(el("h3", "", "把这边的世界介绍给对方"),
-    el("p", "muted", "选好上方生活会话后生成配对码，把本机串门地址和配对码交给对方管理员。对方只需填一次，双方就会成为友邻。"), generate);
+    el("p", "muted", "生成全局配对码，把本机串门地址和配对码交给对方管理员。双方只需配对一次，再分别选择参与的生活。"), generate);
   function field(label, placeholder, type = "text") {
     const wrap = el("label", "field"), input = el("input"); input.type = type;
     input.setAttribute("aria-label", label); input.placeholder = placeholder;
@@ -48,28 +55,40 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
   pairBody.append(form, el("p", "muted", "串门默认关闭。请在 AstrBot 的小世界插件配置中开启串门并保存、重载。默认监听端口 38471；使用域名时，将域名反向代理到本机该端口。配对码与 AstrBot 管理密钥相互独立。"));
   pairing.append(pairBody);
   const history = el("section", "visits-history"); history.setAttribute("aria-label", "过去的串门");
-  root.append(heading, notice, current, peers, pairing, history);
+  root.append(heading, notice, peers, pairing, lives, current, history);
 
   function clearSecrets() {
     own.input.value = foreign.input.value = ""; ownInfo.textContent = "";
-    clearTimeout(refreshTimer);
+    secretRevision += 1; clearTimeout(secretTimer); clearTimeout(refreshTimer);
   }
   function controls() {
-    const enabled = data?.enabled === true && Boolean(getSession());
+    const enabled = data?.enabled === true;
+    const canInvite = enabled && Boolean(getSession()) && lifeData?.scope_enabled === true;
     generate.disabled = pair.disabled = busy || !enabled;
-    home.disabled = busy || !enabled || !data?.active;
-    refresh.disabled = busy || !getSession();
-    for (const button of peers.querySelectorAll("button")) button.disabled = busy || !enabled;
+    home.disabled = busy || !enabled || !getSession() || !lifeData?.active;
+    refresh.disabled = busy;
+    saveScopes.disabled = busy || !enabled || scopeDraft === null;
+    for (const checkbox of lifeChoices.querySelectorAll("input")) checkbox.disabled = busy || !enabled;
+    for (const button of peers.querySelectorAll("button")) {
+      const invite = button.dataset.visitInvite === "true";
+      const available = (lifeData?.peers || []).some(peer => peer.id === button.dataset.peerId &&
+        peer.connection_id === button.dataset.connectionId && peer.enabled !== false);
+      button.disabled = busy || !enabled || (invite && (!canInvite || !available || Boolean(lifeData?.active)));
+    }
+    for (const select of peers.querySelectorAll("select")) select.disabled = busy || !enabled;
   }
-  async function mutation(endpoint, payload = {}) {
-    if (busy || !getSession()) return null;
-    const session = getSession(); busy = true; controls();
+  async function mutation(endpoint, payload = {}, global = false) {
+    if (busy || (!global && !getSession())) return null;
+    const session = getSession(); busy = true;
+    if (global) globalRevision += 1;
+    controls();
     try {
-      const result = await apiPost(endpoint, {session, ...payload});
-      if (session === getSession()) await reload();
+      const result = await apiPost(endpoint, global ? payload : {session, ...payload});
+      if (endpoint === "visits/scopes") scopeDraft = null;
+      if (global || session === getSession()) await reload();
       return result;
     } catch (error) {
-      if (session === getSession()) toast(error.message || "这次操作未完成");
+      if (global || session === getSession()) toast(error.message || "这次操作未完成");
       return null;
     } finally {busy = false; controls();}
   }
@@ -103,38 +122,84 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     if (metrics.length) body.append(el("p", "muted", metrics.join(" · ")));
     transcript(visit, body); card.append(body); return card;
   }
-  function render(result) {
-    data = result; current.replaceChildren(); peers.replaceChildren(); history.replaceChildren();
+  function renderGlobal(result) {
+    data = result; peers.replaceChildren(); lifeChoices.replaceChildren();
     const listener = result.listener || {port: result.listen_port, public_url: result.public_url, error: result.error};
     notice.textContent = result.enabled
-      ? `已开启串门 · ${listener.public_url || `监听 ${listener.host || "0.0.0.0"}:${listener.port || 38471}`}。空闲时不持续联系其他服务器；来访由双方自行决定。`
+      ? `已开启串门 · ${listener.public_url || `监听 ${listener.host || "0.0.0.0"}:${listener.port || 38471}`}。每个生活每天可向每家友邻自动发起一次成功到访；没有成行时稍后再试。`
       : "串门尚未开启。打开插件配置中的串门开关、保存并重载后，可以在这里配对友邻。";
     if (listener.error) notice.textContent += ` 服务状态：${listener.error}`;
-    current.append(el("span", "people-eyebrow", "此刻"));
-    current.append(result.active ? visitCard(result.active, true) : el("p", "muted", "她正在自己的世界生活，目前没有串门。"));
     peers.append(el("h3", "", "认识的友邻"));
     const list = el("div", "visits-peer-grid");
-    for (const peer of result.peers || []) {
-      const card = el("article", "visits-peer card"), actor = peer.actor || {};
-      card.append(el("h4", "", peer.alias || peer.name || actor.name || "友邻"),
-        el("p", "muted", peer.world || actor.world || ""), el("p", "visits-address muted", peer.url || ""));
+    for (const connection of result.connections || []) {
+      const actors = (connection.actors || []).filter(actor => actor && typeof actor.id === "string" && actor.id);
+      const draft = friendDrafts.get(connection.id) || {actorId: "", reason: ""};
+      if (!actors.some(actor => actor.id === draft.actorId)) draft.actorId = actors[0]?.id || "";
+      friendDrafts.set(connection.id, draft);
+      const card = el("article", "visits-peer card"); card.dataset.connectionId = connection.id;
+      card.append(el("h4", "", connection.alias || connection.name || "友邻世界"),
+        el("p", "visits-address muted", connection.url || ""));
+      if (actors.length === 1) card.append(el("p", "visits-actor", [actors[0].name, actors[0].world].filter(Boolean).join(" · ")));
+      let selector;
+      if (actors.length > 1) {
+        const wrap = el("label", "field"); selector = el("select"); selector.setAttribute("aria-label", "去见哪位朋友");
+        for (const actor of actors) {
+          const option = el("option", "", [actor.name || "朋友", actor.world].filter(Boolean).join(" · "));
+          option.value = actor.id; selector.append(option);
+        }
+        selector.value = draft.actorId; wrap.append(el("span", "", "去见哪位朋友"), selector); card.append(wrap);
+      }
+      if (!actors.length) card.append(el("p", "muted", "对方还没有开启参与串门的生活，可在对方保存后刷新角色。"));
+      if (connection.catalog_error) card.append(el("p", "visits-catalog-error muted", connection.catalog_error));
       const reason = field("这次邀请想一起做什么", "可选，例如一起下完昨天那盘棋"); reason.input.maxLength = 300;
+      reason.input.value = draft.reason; reason.input.oninput = () => {draft.reason = reason.input.value;};
       const actions = el("div", "toolbar");
       for (const [direction, label] of [["outgoing", "邀请去做客"], ["incoming", "邀请她来访"]]) {
         const button = el("button", "ghost small", label); button.type = "button";
+        button.dataset.visitInvite = "true"; button.dataset.connectionId = connection.id; button.dataset.peerId = draft.actorId;
         button.onclick = async () => {
-          const reply = await mutation("visits/invite", {peer_id: peer.id, direction, reason: reason.input.value.trim()});
+          const reply = await mutation("visits/invite", {peer_id: button.dataset.peerId, direction, reason: reason.input.value.trim()});
           if (reply) toast(STATUS[reply.status] || "邀请已提出，等待她们决定");
         }; actions.append(button);
       }
+      if (selector) selector.onchange = () => {
+        draft.actorId = selector.value;
+        for (const button of actions.querySelectorAll('[data-visit-invite="true"]')) button.dataset.peerId = draft.actorId;
+        controls();
+      };
+      const catalog = el("button", "ghost small", "刷新角色"); catalog.type = "button";
+      catalog.onclick = () => mutation("visits/refresh", {connection_id: connection.id}, true); actions.append(catalog);
       const remove = el("button", "ghost small", "解除配对"); remove.type = "button";
       remove.onclick = async () => {
-        if (confirm && !await confirm({title: "解除友邻配对", message: `解除与「${peer.alias || peer.name || actor.name || "这个世界"}」的配对？已发生的经历仍会保留。`, confirmText: "解除配对"})) return;
-        await mutation("visits/remove", {peer_id: peer.id});
+        if (confirm && !await confirm({title: "解除友邻配对", message: `解除与「${connection.alias || connection.name || "这个世界"}」的全局配对？所有生活都会停止与这家友邻的新邀请，已有记忆会保留。`, confirmText: "解除配对"})) return;
+        await mutation("visits/remove", {connection_id: connection.id}, true);
       }; actions.append(remove); card.append(reason.wrap, actions); list.append(card);
     }
-    if (!list.children.length) list.append(el("p", "muted", "还没有友邻。先与另一台服务器上的世界配对，再提出邀请。"));
-    peers.append(list); history.append(el("h3", "", "见过面的日子"));
+    if (!list.children.length) list.append(el("p", "muted", "还没有友邻。先与另一台服务器全局配对，再勾选参与的生活。"));
+    peers.append(list);
+    const selected = scopeDraft === null ? new Set(result.enabled_scopes || []) : scopeDraft;
+    for (const life of result.lives || []) {
+      const row = el("label", "visits-life-choice"), checkbox = el("input"); checkbox.type = "checkbox"; checkbox.value = life.scope;
+      checkbox.checked = selected.has(life.scope); checkbox.setAttribute("aria-label", life.label || life.scope);
+      checkbox.onchange = () => {
+        if (scopeDraft === null) scopeDraft = new Set(result.enabled_scopes || []);
+        if (checkbox.checked) scopeDraft.add(life.scope); else scopeDraft.delete(life.scope);
+        controls();
+      };
+      row.append(checkbox, el("span", "", life.label || life.scope)); lifeChoices.append(row);
+    }
+    if (!lifeChoices.children.length) lifeChoices.append(el("p", "muted", "请先创建并启用一个生活，再在这里选择参与串门。"));
+    controls();
+  }
+  function renderLife(result) {
+    lifeData = result; current.replaceChildren(); history.replaceChildren();
+    current.append(el("span", "people-eyebrow", "当前生活"));
+    if (!getSession()) current.append(el("p", "muted", "在上方选择生活后，可以查看她的串门经历并提出邀请。"));
+    else if (result.active) current.append(visitCard(result.active, true));
+    else current.append(el("p", "muted", result.scope_enabled
+      ? "她正在自己的世界生活，目前没有串门。"
+      : "这个生活尚未参与串门。在上方勾选并保存后，即可与已配对的友邻相见。"));
+    history.append(el("h3", "", "见过面的日子"));
     const past = result.history || result.visits || [];
     for (const visit of past.filter(item => item.id !== result.active?.id).slice(0, 20)) history.append(visitCard(visit));
     if (!history.querySelector("details")) history.append(el("p", "muted", "共同经历会在这里留下记录，也会成为她自己的生活记忆。"));
@@ -145,36 +210,37 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     }, 15000);
   }
   async function reload() {
-    const session = getSession(), request = ++revision;
-    if (session !== renderedSession) {clearSecrets(); renderedSession = session;}
-    if (!session) {
-      data = null; current.replaceChildren(); peers.replaceChildren(); history.replaceChildren();
-      notice.textContent = "请先在上方选择一个已启用的生活会话。"; controls(); return;
+    const session = getSession(), request = ++revision, globalRequest = globalRevision;
+    if (session !== lifeSession) {
+      lifeSession = session; renderLife({scope_enabled: false, active: null, history: []});
     }
+    lifeData = null; controls();
     try {
-      const result = await apiGet("visits", {session});
-      if (request !== revision || session !== getSession()) return;
-      render(result);
+      const result = await apiGet("visits", session ? {session} : {});
+      if (globalRequest === globalRevision && request >= renderedGlobalRead) {renderedGlobalRead = request; renderGlobal(result);}
+      if (request === revision && session === getSession()) renderLife(result);
     } catch (error) {
       if (request === revision && session === getSession()) notice.textContent = error.message || "暂时读不到串门状态";
     }
   }
   refresh.onclick = reload;
+  saveScopes.onclick = () => mutation("visits/scopes", {sessions: [...(scopeDraft || [])]}, true);
   home.onclick = async () => {if (await mutation("visits/return")) toast("这次串门准备结束，保留已确认的经历");};
   generate.onclick = async () => {
-    clearSecrets(); const session = getSession();
-    const result = await mutation("visits/pair-code");
-    if (!result || session !== getSession() || !root.classList.contains("active")) return;
+    clearSecrets(); const secretRequest = secretRevision;
+    const result = await mutation("visits/pair-code", {}, true);
+    if (!result || secretRequest !== secretRevision || !root.classList.contains("active")) return;
     own.input.value = result.code || "";
     ownInfo.textContent = [result.url ? `本机地址：${result.url}` : "将本机公网地址或已配置的域名交给对方。",
       result.expires_at ? `有效至 ${stamp(result.expires_at)}；仅可使用一次。` : "仅可使用一次。"].join(" ");
     own.input.focus(); own.input.select();
+    if (result.expires_at) secretTimer = setTimeout(clearSecrets, Math.max(0, Number(result.expires_at) * 1000 - Date.now()));
   };
   form.onsubmit = async event => {
     event.preventDefault();
     const code = foreign.input.value.trim(); foreign.input.value = "";
-    const result = await mutation("visits/pair", {url: address.input.value.trim(), code, alias: alias.input.value.trim()});
-    if (result) {pairing.open = false; toast("已成为友邻，现在可以提出邀请");}
+    const result = await mutation("visits/pair", {url: address.input.value.trim(), code, alias: alias.input.value.trim()}, true);
+    if (result) {clearSecrets(); pairing.open = false; toast("已全局配对，勾选参与的生活后就可以提出邀请");}
   };
   controls();
   return {reload, clearSecrets};

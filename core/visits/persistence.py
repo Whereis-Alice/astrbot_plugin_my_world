@@ -7,12 +7,13 @@ from typing import Any
 
 from astrbot.api import logger
 
+from .connections import WorldConnections
 from .protocol import RESERVED, TERMINAL, new_id, public_actor
 
 KEY = "world_visits.v1"
 
 
-class VisitJournal:
+class VisitJournal(WorldConnections):
     def __init__(self, db, config, actor_port, clock, random):
         self.db, self.config, self.actor_port = db, config, actor_port
         self._now, self._random = clock, random
@@ -33,6 +34,7 @@ class VisitJournal:
             for name, default in (("instance_id", new_id()), ("peers", {}), ("visits", {}),
                                   ("codes", {}), ("receipts", {}), ("draws", {})):
                 self._state.setdefault(name, default)
+            self._migrate_connections()
             if "presence_epochs" not in self._state:
                 self._state["presence_epochs"] = {}
                 for visit in self._state["visits"].values():
@@ -90,6 +92,7 @@ class VisitJournal:
             visit.pop(key, None)
 
     def _mark_arrival(self, visit) -> None:
+        self._note_automatic_success(visit)
         if not visit.get("arrived_at") or visit.get("presence_marked"):
             return
         epochs = self._state.setdefault("presence_epochs", {})
@@ -97,9 +100,9 @@ class VisitJournal:
         visit["presence_marked"] = True
 
     def _peer(self, scope, peer_id):
-        peer = self._state["peers"].get(peer_id)
-        if not peer or peer["scope"] != scope:
-            raise ValueError("请先选择本生活已配对的友邻")
+        peer = self._find_peer(scope, peer_id)
+        if not peer or not self._peer_trusted(peer) or not self._life_enabled(scope):
+            raise ValueError("请先开启这个生活的串门并选择已配对的友邻")
         return peer
 
     @staticmethod
@@ -130,8 +133,10 @@ class VisitJournal:
             return {"enabled": self.config.enabled, "instance_id": self._state["instance_id"],
                     "listen_port": getattr(getattr(self, "transport", None), "bound_port", self.config.listen_port),
                     "public_url": self.config.public_url, "error": self.error,
-                    "peers": [self._safe_peer(p) for p in self._state["peers"].values()
-                              if not scope or p["scope"] == scope], "visits": visits, "active": current}
+                    "connections": [self._safe_connection(c) for c in self._state["connections"].values()],
+                    "lives": self._available_lives(), "enabled_scopes": self._participating(),
+                    "scope_enabled": self._life_enabled(scope),
+                    "peers": self._scoped_candidates(scope), "visits": visits, "active": current}
 
     def _append(self, visit, actor_id, kind, value):
         from .protocol import text
