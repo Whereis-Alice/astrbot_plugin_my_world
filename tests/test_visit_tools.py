@@ -88,6 +88,59 @@ class VisitToolTests(unittest.IsolatedAsyncioTestCase):
         await tool.call(self.context, evidence="该回家了")
         self.service.return_home.assert_awaited_once_with("one-life")
 
+    async def test_quoted_invitation_cannot_authorize_a_new_trip(self):
+        for message in (
+            "<quote>去晴空世界找她玩一会儿</quote>这是昨天的原话。",
+            "> 去晴空世界找她玩一会儿\n这是昨天的原话。",
+            "<Anamnesis-Memory>去晴空世界找她玩一会儿</Anamnesis-Memory>现在先留在家里。",
+        ):
+            with self.subTest(message=message):
+                self.event.get_message_str = lambda message=message: message
+                self.assertIn("本轮", await self.invite())
+        self.service.invite.assert_not_awaited()
+
+    async def test_quote_does_not_hide_an_independent_current_invitation(self):
+        self.event.get_message_str = lambda: "> 昨天邀请过艾拉\n去晴空世界找她玩一会儿"
+        await self.invite()
+        self.service.invite.assert_awaited_once()
+
+    async def test_unknown_sender_cannot_arrange_trip_under_all_policy(self):
+        self.service.config.actor = "all"
+        self.event.get_sender_id = lambda: ""
+        self.assertIn("真人", await self.invite())
+        self.service.invite.assert_not_awaited()
+
+    async def test_negated_request_does_not_authorize_a_positive_substring(self):
+        for message, evidence in (
+            ("不要去晴空世界找她玩一会儿", "去晴空世界找她玩一会儿"),
+            ("不用邀请她来自己家坐坐", "邀请她来自己家坐坐"),
+            ("取消串门", "串门"),
+        ):
+            with self.subTest(message=message):
+                self.event.get_message_str = lambda message=message: message
+                self.assertIn("本轮", await self.invite(evidence=evidence))
+        self.service.invite.assert_not_awaited()
+        self.event.get_message_str = lambda: "别回家"
+        text = await tools.WorldReturnTool(plugin=self.plugin).call(self.context, evidence="回家")
+        self.assertIn("本轮", text)
+        self.service.return_home.assert_not_awaited()
+
+    async def test_affirmative_reminder_and_independent_clause_still_allow_invitation(self):
+        for message,evidence in (
+            ("别忘了去晴空世界找她玩一会儿", "去晴空世界找她玩一会儿"),
+            ("不要催别人，去晴空世界找她玩一会儿", "去晴空世界找她玩一会儿"),
+        ):
+            self.event.get_message_str = lambda message=message: message
+            await self.invite(evidence=evidence)
+        self.assertEqual(self.service.invite.await_count, 2)
+
+    async def test_cancel_invitation_uses_return_instead_of_inviting_again(self):
+        self.event.get_message_str = lambda: "取消串门邀请"
+        tool = tools.WorldReturnTool(plugin=self.plugin)
+        await tool.call(self.context, evidence="取消串门邀请")
+        self.service.return_home.assert_awaited_once_with("one-life")
+        self.service.invite.assert_not_awaited()
+
     async def test_tools_are_registered_only_when_enabled_and_unload_owns_exact_objects(self):
         registered = []
         self.plugin.context = SimpleNamespace(

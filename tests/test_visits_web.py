@@ -104,3 +104,19 @@ class VisitEditorApiTests(unittest.IsolatedAsyncioTestCase):
         await self.call("visits/return")
         self.service.remove_peer.assert_awaited_once_with("shared-life", "friend")
         self.service.return_home.assert_awaited_once_with("shared-life")
+
+    async def test_retirement_while_request_body_is_read_cannot_modify_the_world(self):
+        async def retired_body(**kwargs):
+            self.plugin.retired = True
+            return {"session": "group", "token": "editor-login", "peer_id": "friend"}
+        request = types.SimpleNamespace(json=retired_body)
+        with patch.object(api, "request", request):
+            result = await self.routes["visits/invite"]()
+        self.assertEqual(result["status_code"], 503)
+        self.service.invite.assert_not_awaited()
+
+    async def test_disabled_plugin_does_not_issue_pairing_credentials(self):
+        self.plugin.enabled = False
+        result = await self.call("visits/pair-code")
+        self.assertEqual(result["status_code"], 503)
+        self.service.create_pair_code.assert_not_awaited()

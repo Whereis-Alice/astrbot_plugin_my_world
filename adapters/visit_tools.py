@@ -9,10 +9,16 @@ from pydantic import Field
 from pydantic.dataclasses import dataclass
 
 from .profile_weaver_tools import FunctionTool, AstrAgentContext, ContextWrapper
+from ..core.evidence import direct_text
 
 TOOL_NAMES = ("mw_world_friends", "mw_world_visit", "mw_world_return")
 _INVITATION = re.compile(r"串门|拜访|做客|作客|邀请|见个面|见面|去趟|请.{0,20}(来|过来)|去.{0,30}(找|看|玩|坐坐|聚|世界|家)|visit|invite", re.I)
-_RETURN = re.compile(r"回家|回来|回去|结束.{0,10}(串门|拜访|做客)|return|come back", re.I)
+_RETURN = re.compile(r"回家|回来|回去|(?:结束|取消|撤回).{0,10}(串门|拜访|做客|邀请)|return|come back", re.I)
+_NEGATIVE = r"(?:不要|不用|不必|不许|不准|禁止|暂不|先不|别|do\s+not|don't|never)\s*(?:再|现在|今天|马上|立刻|又)?\s*"
+_INVITATION_DENIED = re.compile(_NEGATIVE + r"(?:串门|拜访|做客|作客|邀请|见面|去|请|visit|invite)"
+                                r"|(?:取消|撤回|终止|结束).{0,20}(?:串门|邀请|拜访|做客)|cancel.{0,20}(?:visit|invite)", re.I)
+_RETURN_DENIED = re.compile(_NEGATIVE + r"(?:回家|回来|回去|结束|取消|撤回|return|come\s+back)", re.I)
+_CLAUSE_BREAK = re.compile(r"[\n。！？!?；;，,]")
 
 
 def _event(context: Any) -> Any:
@@ -33,15 +39,31 @@ def _scope(plugin: Any, event: Any, *, mutate: bool = False) -> str:
             raise ValueError("此工具需要当前真人明确邀请，后台角色消息不能调用。")
         if service.config.actor != "all" and not plugin._can_admin(event):
             raise ValueError("当前仅管理员可以安排串门。")
-        if str(event.get_sender_id() or "") == str(event.get_self_id() or ""):
+        sender = str(event.get_sender_id() or "").strip()
+        if not sender:
+            raise ValueError("当前没有可确认身份的真人用户，不能安排串门。")
+        if sender == str(event.get_self_id() or "").strip():
             raise ValueError("角色自己的消息不能作为邀请授权。")
     return plugin.engine.state_key(origin)
 
 
 def _evidence(event: Any, evidence: Any, pattern: re.Pattern) -> None:
-    text = str(event.get_message_str() or "")
+    text = direct_text(str(event.get_message_str() or ""))
     quoted = str(evidence or "").strip()
-    if not quoted or len(quoted) > 500 or quoted not in text or not pattern.search(quoted):
+    denied = _INVITATION_DENIED if pattern is _INVITATION else _RETURN_DENIED
+    # Validate the surrounding current-user clause, so selecting just "去…"
+    # from "不要去…" cannot turn a refusal into an invitation. Independent
+    # affirmative clauses and reminders such as "别忘了邀请…" remain valid.
+    matches = list(re.finditer(re.escape(quoted), text)) if quoted else []
+    affirmative = False
+    breaks = list(_CLAUSE_BREAK.finditer(text))
+    for match in matches:
+        start = max((item.end() for item in breaks if item.end() <= match.start()), default=0)
+        end = min((item.start() for item in breaks if item.start() >= match.end()), default=len(text))
+        if not denied.search(text[start:end]):
+            affirmative = True
+            break
+    if not quoted or len(quoted) > 500 or not affirmative or not pattern.search(quoted):
         raise ValueError("请以本轮用户明确邀请或归家的原话为依据，不能从旧记录发起。")
 
 
@@ -99,7 +121,7 @@ class WorldVisitTool(FunctionTool[AstrAgentContext]):
 class WorldReturnTool(FunctionTool[AstrAgentContext]):
     plugin: Any = Field(default=None, repr=False)
     name: str = TOOL_NAMES[2]
-    description: str = "本轮真人明确叫她回家或结束串门时使用；保留已确认经过，结束当前串门。"
+    description: str = "本轮真人明确叫她回家、结束串门或取消邀请时使用；保留已确认经过，结束当前串门。"
     parameters: dict[str, Any] = Field(default_factory=lambda: {
         "type": "object", "properties": {
             "evidence": {"type": "string", "description": "本轮要求归家的真人原话。"}},

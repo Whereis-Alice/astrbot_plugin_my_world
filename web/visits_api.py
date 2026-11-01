@@ -56,6 +56,10 @@ def register_visit_apis(plugin: Any, plugin_id: str) -> None:
         if plugin.retired:
             return error_response("插件已停止，请重新加载后再试", status_code=503)
         payload = (request.query if method == "GET" else await request.json(default={})) or {}
+        if plugin.retired:
+            return error_response("插件已停止，请重新加载后再试", status_code=503)
+        if method != "GET" and not getattr(plugin, "enabled", True):
+            return error_response("插件已停用，启用后再安排串门", status_code=503)
         if not hasattr(payload, "get"):
             return error_response("请求参数必须是对象")
         token = payload.get("token", "")

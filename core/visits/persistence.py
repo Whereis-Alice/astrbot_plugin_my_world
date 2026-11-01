@@ -30,6 +30,11 @@ class VisitJournal:
             for name, default in (("instance_id", new_id()), ("peers", {}), ("visits", {}),
                                   ("codes", {}), ("receipts", {}), ("draws", {})):
                 self._state.setdefault(name, default)
+            if "presence_epochs" not in self._state:
+                self._state["presence_epochs"] = {}
+                for visit in self._state["visits"].values():
+                    if visit.get("arrived_at"):
+                        self._mark_arrival(visit)
             self._loaded = True
             # An inference interrupted by process exit must never be regenerated.
             for visit in list(self._state["visits"].values()):
@@ -59,6 +64,17 @@ class VisitJournal:
     def touch(self, scope: str) -> None:
         if self.config.enabled:
             self._touched[scope] = self._now() + 180
+
+    def presence_epoch(self, scope: str) -> int:
+        """A persistent arrival cursor, retained when journey history is trimmed."""
+        return self._state.get("presence_epochs", {}).get(scope, 0)
+
+    def _mark_arrival(self, visit) -> None:
+        if not visit.get("arrived_at") or visit.get("presence_marked"):
+            return
+        epochs = self._state.setdefault("presence_epochs", {})
+        epochs[visit["scope"]] = epochs.get(visit["scope"], 0) + 1
+        visit["presence_marked"] = True
 
     def _peer(self, scope, peer_id):
         peer = self._state["peers"].get(peer_id)

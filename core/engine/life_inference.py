@@ -10,7 +10,7 @@ import copy
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from functools import wraps
-from ..visit_presence import active_visit
+from ..visit_presence import active_visit, presence_epoch
 
 LIFE_WORK = ContextVar("my_world_life_work", default=False)
 STATE_LEASE = ContextVar("my_world_state_lease", default=None)
@@ -83,14 +83,18 @@ def owned_life_lease() -> dict | None:
 async def validate_life_preparation(engine) -> None:
     """Keep a prepared request's original world and character before admission."""
     lease = owned_life_lease()
-    if lease and (active_visit(engine, lease["origin"])
+    if not lease:
+        return
+    persona = await engine._persona_text(lease["origin"])
+    if (active_visit(engine, lease["origin"])
+                  or presence_epoch(engine, lease["origin"]) != lease["presence_epoch"]
                   or engine.world is not lease["world"] or engine.schedules is not lease["schedules"]
                   or engine.sessions is not lease["sessions"] or not engine.is_enabled(lease["origin"])
                   or engine.state_key(lease["origin"]) != lease["state"].session_id
                   or engine.local_now().date() != lease["day"]
-                  or await engine._persona_text(lease["origin"]) != lease["persona"]):
+                  or persona != lease["persona"]):
         engine.decision_trace(lease["origin"], "life_inference", "discarded",
-                              "准备请求时人设或世界已变化，取消旧决定", phase="before_request")
+                              "准备请求时人设、世界或串门经历已变化，取消旧决定", phase="before_request")
         raise LifeWorkDiscarded()
 
 
@@ -124,17 +128,19 @@ async def released_life_lock(engine):
             lease["released"] = False
             from ..state import WorldState
             latest = WorldState.from_payload(await engine.db.call("get_state", key), key)
+            current_persona = await engine._persona_text(origin)
             after = latest.to_payload()
             before_decision, after_decision = decision_state(before), decision_state(after)
             changed_fields = sorted(k for k in before_decision.keys() | after_decision.keys()
                                     if before_decision.get(k) != after_decision.get(k))
             stale = (active_visit(engine, origin)
+                     or presence_epoch(engine, origin) != lease["presence_epoch"]
                      or engine.world is not world or engine.state_key(origin) != key
                      or not engine.is_enabled(origin) or engine.local_now().date() != day
                      or engine.world.model_dump(mode="json") != world_config
                      or (engine.sessions.model_dump(mode="json") if engine.sessions else None) != sessions_config
                      or (engine.schedules.model_dump() if engine.schedules else None) != schedules
-                     or await engine._persona_text(origin) != persona or changed_fields)
+                     or current_persona != persona or changed_fields)
             if stale:
                 state.__dict__.clear()
                 state.__dict__.update(latest.__dict__)

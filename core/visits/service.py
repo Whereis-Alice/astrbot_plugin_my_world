@@ -14,6 +14,7 @@ from .persistence import VisitJournal
 from .protocol import (RESERVED, TERMINAL, code_id, derive_key, digest, envelope,
                        new_id, public_actor, text, validate_actor, verify)
 from .transport import VisitTransport
+from .snapshots import validate_snapshot
 
 
 class VisitService(VisitFlow, VisitJournal):
@@ -46,6 +47,7 @@ class VisitService(VisitFlow, VisitJournal):
         await self._load()
         actor = await self.actor_port.describe(scope)
         async with self._lock:
+            self._enabled()
             code = new_id() + new_id()
             self._state["codes"] = {key: value for key, value in self._state["codes"].items()
                                     if value["scope"] != scope}
@@ -72,6 +74,7 @@ class VisitService(VisitFlow, VisitJournal):
         if remote["id"] == actor["id"] or response["sender"] != remote["id"]:
             raise ValueError("不能把自己配对为友邻")
         async with self._lock:
+            self._enabled()
             peer = self._add_peer(scope, local, remote, url, derive_key(code, actor["id"], remote["id"]), alias)
             await self._save()
             return self._safe_peer(peer)
@@ -121,6 +124,7 @@ class VisitService(VisitFlow, VisitJournal):
             raise ValueError("生活身份已变化，请重新配对")
         async with self._lock:
             # A concurrent duplicate may have entered while describe was awaiting.
+            self._enabled()
             if receipt_key in self._state["receipts"]:
                 return self._cached_response(body, self._state["receipts"][receipt_key])
             current_peer = self._state["peers"].get(body["sender"])
@@ -152,6 +156,7 @@ class VisitService(VisitFlow, VisitJournal):
         if actor["id"] == remote["id"]:
             raise ValueError("不能配对自己")
         async with self._lock:
+            self._enabled()
             if receipt_key in self._state["receipts"]:
                 return self._cached_response(body, self._state["receipts"][receipt_key])
             if body["target"][5:] not in self._state["codes"]:
@@ -170,9 +175,11 @@ class VisitService(VisitFlow, VisitJournal):
 
     async def _inbox(self, peer, local, payload):
         op, visit_id = payload.get("op"), payload.get("id")
+        if not isinstance(op, str) or op not in {"offer", "end", "step", "sync", "status"}:
+            raise ValueError("未知旅程消息")
+        if not isinstance(visit_id, str) or len(visit_id) != 32:
+            raise ValueError("无效旅程编号")
         if op == "offer":
-            if not isinstance(visit_id, str) or len(visit_id) != 32:
-                raise ValueError("无效旅程编号")
             visit = self._state["visits"].get(visit_id)
             if visit:
                 if visit["remote"]["id"] != peer["id"]:
@@ -187,7 +194,7 @@ class VisitService(VisitFlow, VisitJournal):
             visit = self._new_visit(peer["scope"], peer, local, visit_id, role, payload.get("reason", ""), False)
             for name, upper in (("max_calls", self.config.max_calls), ("turn_limit", self.config.turns_per_actor)):
                 value = payload.get(name)
-                if type(value) is not int or not 1 <= value <= 20:
+                if type(value) is not int or not (2 if name == "max_calls" else 1) <= value <= 20:
                     raise ValueError("旅程预算不兼容")
                 visit[name] = min(value, upper)
             duration = payload.get("duration")
@@ -199,7 +206,7 @@ class VisitService(VisitFlow, VisitJournal):
             visit["calls"][peer["id"]] = 1
             invitation = payload.get("invitation")
             if invitation is not None:
-                if (not isinstance(invitation, dict) or invitation.get("seq") != 1
+                if (not isinstance(invitation, dict) or type(invitation.get("seq")) is not int or invitation["seq"] != 1
                         or invitation.get("kind") != "invitation" or invitation.get("actor_id") != peer["id"]
                         or not isinstance(invitation.get("text"), str) or len(invitation["text"]) > 500):
                     raise ValueError("邀请来源无效")
@@ -224,8 +231,8 @@ class VisitService(VisitFlow, VisitJournal):
         if op == "end":
             previous = (copy.deepcopy(visit["log"]), visit["status"], visit.get("end_reason"))
             remote = payload.get("visit")
-            if remote is not None and (not isinstance(remote, dict) or remote.get("id") != visit_id):
-                raise ValueError("无效告别旅程快照")
+            if remote is not None:
+                validate_snapshot(visit, remote)
             if visit["role"] == "guest" and remote is not None:
                 if remote.get("status") not in TERMINAL:
                     raise ValueError("对方尚未确认结束本次相见")
@@ -249,17 +256,21 @@ class VisitService(VisitFlow, VisitJournal):
         calls = payload.get("calls", 0)
         if type(calls) is not int or not 0 <= calls <= self._allocation(visit, peer["id"]):
             raise ValueError("旅程调用额度无效")
-        visit["calls"][peer["id"]] = max(visit["calls"][peer["id"]], calls)
+        candidate = copy.deepcopy(visit)
         if op == "step":
-            self._receive_step(visit, peer["id"], payload)
+            self._receive_step(candidate, peer["id"], payload)
         elif op == "sync":
-            self._synchronize(visit, payload.get("visit"), peer["id"])
+            self._synchronize(candidate, payload.get("visit"), peer["id"])
         elif op != "status":
             raise ValueError("未知旅程消息")
+        candidate["calls"][peer["id"]] = max(candidate["calls"][peer["id"]], calls)
+        visit.clear()
+        visit.update(candidate)
         return {"visit": self._wire(visit)}
 
     async def _send(self, visit_id, payload):
         async with self._lock:
+            self._enabled()
             visit = self._state["visits"][visit_id]
             peer = self._peer(visit["scope"], visit["remote"]["id"])
             if not peer["url"]:
@@ -277,20 +288,36 @@ class VisitService(VisitFlow, VisitJournal):
         if response["sender"] != peer["id"] or response["target"] != outgoing["sender"] or result.get("reply_to") != outgoing["message_id"]:
             raise ValueError("串门答复不属于本次联系")
         async with self._lock:
-            visit = self._state["visits"][visit_id]
-            if (visit.get("outbox") or {}).get("message_id") == outgoing["message_id"]:
-                visit.pop("outbox", None)
-            visit["network_failures"] = 0
-            remote = result.get("visit") or {}
+            visit = self._state["visits"].get(visit_id)
+            current_peer = self._state["peers"].get(peer["id"])
+            if (self._closed or not visit or not current_peer or current_peer["secret"] != peer["secret"]
+                    or (visit["status"] in TERMINAL and outgoing["payload"]["op"] != "end")):
+                raise ValueError("世界或旅程已结束，旧答复作废")
+            if (visit.get("outbox") or {}).get("message_id") != outgoing["message_id"]:
+                raise ValueError("本次联系已被更新，旧答复作废")
+            self._enabled()
+            candidate = copy.deepcopy(visit)
+            remote = result.get("visit")
+            if remote is None and not (outgoing["payload"]["op"] == "offer"
+                                       and result.get("declined") is True):
+                raise ValueError("对方未提供本次旅程答复")
+            if remote is not None and not isinstance(remote, dict):
+                raise ValueError("对方返回无效旅程快照")
             for name in ("max_calls", "turn_limit"):
-                value = remote.get(name)
+                value = (remote or {}).get(name)
                 if value is not None:
-                    if type(value) is not int or not 1 <= value <= visit[name]:
+                    if type(value) is not int or not (2 if name == "max_calls" else 1) <= value <= visit[name]:
                         raise ValueError("对方返回不兼容的旅程预算")
-                    visit[name] = value
-            expires = remote.get("expires_at")
+                    candidate[name] = value
+            if remote is not None:
+                validate_snapshot(candidate, remote)
+            expires = (remote or {}).get("expires_at")
             if isinstance(expires, (int, float)):
-                visit["expires_at"] = min(visit["expires_at"], expires)
+                candidate["expires_at"] = min(visit["expires_at"], expires)
+            candidate.pop("outbox", None)
+            candidate["network_failures"] = 0
+            visit.clear()
+            visit.update(candidate)
             await self._save()
         result["delivered_op"] = outgoing["payload"]["op"]
         return result

@@ -4,6 +4,13 @@ from __future__ import annotations
 from typing import Any
 
 
+def presence_epoch(engine: Any, session_id: str) -> int:
+    """A scope's persisted arrival generation, including already finished visits."""
+    service = getattr(engine, "visits", None)
+    getter = getattr(service, "presence_epoch", None)
+    return int(getter(engine.state_key(session_id))) if callable(getter) else 0
+
+
 def active_visit(engine: Any, session_id: str) -> dict | None:
     service = getattr(engine, "visits", None)
     getter = getattr(service, "active", None)

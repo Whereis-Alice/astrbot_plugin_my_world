@@ -25,6 +25,7 @@ from ..state import (
 )
 from .util import _as_float
 from .life_inference import STATE_LEASE
+from ..visit_presence import presence_epoch
 
 
 class StateStoreMixin:
@@ -175,6 +176,7 @@ class StateStoreMixin:
                                      "lock": self.lock(key), "origin": session_id, "released": False,
                                      "world": self.world, "schedules": self.schedules, "sessions": self.sessions,
                                      "day": self.local_now().date(),
+                                     "presence_epoch": presence_epoch(self, session_id),
                                      "persona": await self._persona_text(session_id)})
             try:
                 await self._validate_running_life(state)

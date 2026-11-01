@@ -7,6 +7,7 @@ from typing import Any
 
 from .protocol import RESERVED, TERMINAL, clean_decision, clean_scene, new_id, public_actor
 from .rhythm import VisitRhythm
+from .snapshots import validate_snapshot
 
 
 class VisitFlow(VisitRhythm):
@@ -46,7 +47,7 @@ class VisitFlow(VisitRhythm):
         except Exception:
             async with self._lock:
                 visit = self._state["visits"][visit_id]
-                if visit.get("model_pending") == token:
+                if visit.get("model_pending") == token and not self._closed:
                     await self._finish(visit, "interrupted", "这次思考未完成，只保留已确认经过")
             return None
         async with self._lock:
@@ -71,10 +72,14 @@ class VisitFlow(VisitRhythm):
             raise ValueError("请选择去做客或邀请来访")
         local = await self.actor_port.describe(scope)
         async with self._lock:
+            self._enabled()
             peer = self._peer(scope, peer_id)
+            if not peer.get("enabled", True):
+                raise ValueError("这位友邻暂未开启联系")
             if self.active(scope):
                 raise ValueError("她已经有邀请或串门，先等这次结束")
-            if local["persona_key"] != peer["local"]["persona_key"]:
+            if (local["persona_key"] != peer["local"]["persona_key"]
+                    or local["actor_id"] != peer["local"]["actor_id"]):
                 raise ValueError("人设已变化，请重新配对")
             if automatic and not self._admit_automatic(scope, peer, local):
                 await self._save()
@@ -104,7 +109,7 @@ class VisitFlow(VisitRhythm):
             reply = await self._send(visit_id, offer)
             async with self._lock:
                 visit = self._state["visits"][visit_id]
-                if visit["status"] in TERMINAL:
+                if visit["status"] in TERMINAL or self._closed:
                     return self._visible(visit)
                 if reply.get("declined"):
                     await self._finish(visit, "declined", str(reply.get("reason") or "对方暂时不方便"))
@@ -117,8 +122,10 @@ class VisitFlow(VisitRhythm):
                     await self._save()
         except ValueError:
             async with self._lock:
-                self._state["visits"][visit_id]["next_at"] = self._now() + self.config.poll_seconds
-                await self._save()
+                visit = self._state["visits"].get(visit_id)
+                if visit and visit["status"] not in TERMINAL and not self._closed:
+                    visit["next_at"] = self._now() + self.config.poll_seconds
+                    await self._save()
         async with self._lock:
             return self._visible(self._state["visits"][visit_id])
 
@@ -127,6 +134,7 @@ class VisitFlow(VisitRhythm):
             return
         visit["status"] = "active"
         visit["arrived_at"] = self._now()
+        self._mark_arrival(visit)
         if visit["role"] == "host":
             self._append(visit, visit["host_id"], "arrival", "双方接受邀请，开始在东道主世界相处")
             scene = visit["scene"]
@@ -136,11 +144,7 @@ class VisitFlow(VisitRhythm):
         visit["next_at"] = self._now() + self.config.poll_seconds
 
     def _synchronize(self, visit, remote, sender, *, allow_terminal=False):
-        if not isinstance(remote, dict) or remote.get("id") != visit["id"]:
-            raise ValueError("无效旅程快照")
-        for key in ("host_id", "guest_id"):
-            if remote.get(key) != visit[key]:
-                raise ValueError("旅程参与者不一致")
+        validate_snapshot(visit, remote)
         if visit["status"] in TERMINAL and not allow_terminal:
             return
         if allow_terminal and (visit["role"] != "guest" or sender != visit["host_id"]
@@ -178,6 +182,7 @@ class VisitFlow(VisitRhythm):
                 visit[key] = copy.deepcopy(remote[key])
         visit["calls"][sender] = max(visit["calls"][sender], remote_calls)
         visit["calls"][self._local_id(visit)] = own_calls
+        self._mark_arrival(visit)
 
     async def _notify_end(self, visit_id):
         """Deliver a bounded durable goodbye without keeping the local life suspended."""
@@ -200,7 +205,7 @@ class VisitFlow(VisitRhythm):
             reply = await self._send(visit_id, payload)
             async with self._lock:
                 visit = self._state["visits"].get(visit_id)
-                if not visit:
+                if not visit or self._closed:
                     return
                 remote = reply.get("visit")
                 if visit["role"] == "guest" and isinstance(remote, dict) and remote.get("status") in TERMINAL:
@@ -214,7 +219,7 @@ class VisitFlow(VisitRhythm):
             async with self._lock:
                 visit = self._state["visits"].get(visit_id)
                 notice = visit.get("end_pending") if visit else None
-                if notice and notice["attempts"] >= 3:
+                if notice and notice["attempts"] >= 3 and not self._closed:
                     visit.pop("end_pending", None)
                     visit.pop("outbox", None)
                     await self._save()
@@ -248,6 +253,8 @@ class VisitFlow(VisitRhythm):
         async with self._tick_lock:
             ids = list(self._state["visits"])
             for visit_id in ids:
+                if self._closed or not self.config.enabled:
+                    return
                 visit = self._state["visits"].get(visit_id)
                 if not visit:
                     continue
@@ -264,6 +271,8 @@ class VisitFlow(VisitRhythm):
                 if max(visit["next_at"], self._touched.get(visit["scope"], 0)) > self._now():
                     continue
                 current = await self.actor_port.describe(visit["scope"])
+                if self._closed or not self.config.enabled or visit["status"] in TERMINAL:
+                    continue
                 if current["persona_key"] != visit["local"]["persona_key"] or current["actor_id"] != visit["local"]["actor_id"]:
                     async with self._lock:
                         await self._finish(visit, "interrupted", "生活身份变化，本次联系结束")
@@ -272,6 +281,8 @@ class VisitFlow(VisitRhythm):
                     await self._advance(visit_id)
                 except ValueError:
                     async with self._lock:
+                        if visit["status"] in TERMINAL or self._closed:
+                            continue
                         visit["network_failures"] = visit.get("network_failures", 0) + 1
                         visit["next_at"] = self._now() + min(600, 60 * 2 ** visit["network_failures"])
                         if visit["network_failures"] >= 3:
@@ -302,6 +313,8 @@ class VisitFlow(VisitRhythm):
         if visit["status"] == "inviting":
             reply = await self._send(visit_id, {"op": "status"})
             async with self._lock:
+                if self._closed or visit["status"] in TERMINAL:
+                    return
                 if reply.get("declined"):
                     await self._finish(visit, "declined", str(reply.get("reason", "稍后再约")))
                 elif "visit" in reply:
@@ -311,6 +324,8 @@ class VisitFlow(VisitRhythm):
         if visit["role"] == "guest":
             reply = await self._send(visit_id, {"op": "sync", "visit": {**self._wire(visit), "intro": visit.get("intro", "")}})
             async with self._lock:
+                if self._closed or visit["status"] in TERMINAL:
+                    return
                 self._synchronize(visit, reply["visit"], visit["host_id"])
                 if reply.get("delivered_op") == "step":
                     visit.pop("unsent_turn", None)
@@ -329,6 +344,8 @@ class VisitFlow(VisitRhythm):
                         {k: result[k] for k in ("say", "action", "leave")}}
             reply = await self._send(visit_id, step)
             async with self._lock:
+                if self._closed or visit["status"] in TERMINAL:
+                    return
                 self._synchronize(visit, reply["visit"], visit["host_id"])
                 visit.pop("unsent_turn", None)
                 await self._save()
