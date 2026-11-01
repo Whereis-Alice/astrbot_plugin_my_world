@@ -11,7 +11,7 @@ from .snapshots import validate_snapshot
 from .transport import VisitTransportError
 from .decisions import VisitDecisionError, capture_decision_candidate
 from .model_retry import clear_state_read, defer_decision, defer_state_read, valid_retry
-from .ports import VisitStateError
+from .ports import VisitStateError, describe_local
 
 
 class VisitFlow(VisitRhythm):
@@ -24,8 +24,8 @@ class VisitFlow(VisitRhythm):
             cursor["proposal_stage"] = visit.get("proposal_stage", "")
         return cursor
 
-    async def _resume_invitation_decision(self, visit_id, cursor, scope, phase="receive"):
-        """Recheck local invitation gates before consuming a saved choice."""
+    async def _resume_saved_decision(self, visit_id, cursor, scope, phase="receive"):
+        """Recheck current life gates before consuming its paid saved choice."""
         async with self._lock:
             visit = self._state["visits"].get(visit_id)
             if not visit or self._closed or not self.config.enabled or visit["status"] in TERMINAL:
@@ -33,8 +33,7 @@ class VisitFlow(VisitRhythm):
             if valid_retry(visit, cursor) and visit["model_retry"]["next_at"] > self._now():
                 return None
         try:
-            async with asyncio.timeout(self.config.timeout_seconds):
-                current = await self.actor_port.describe(scope)
+            current = await describe_local(self.actor_port, scope, timeout_seconds=self.config.timeout_seconds)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -47,7 +46,7 @@ class VisitFlow(VisitRhythm):
             if (self._decision_cursor(visit, phase) != cursor or visit.get(marker) != cursor):
                 return None
             if visit["expires_at"] <= self._now():
-                await self._finish(visit, "expired", "确认接待状态期间本次停留到期，旧决定作废")
+                await self._finish(visit, "expired", "确认当前生活状态期间本次停留到期，旧决定作废")
                 return None
             if not self._life_enabled(scope):
                 await self._finish(visit, "interrupted", "这个生活已关闭串门或归属发生变化")
@@ -62,6 +61,17 @@ class VisitFlow(VisitRhythm):
             if any(current[key] != visit["local"][key] for key in ("persona_key", "actor_id")):
                 await self._finish(visit, "interrupted", "生活身份变化，本次联系结束")
                 return None
+            if phase in {"turn", "scene"}:
+                if not current["ready"]:
+                    if defer_decision(visit, cursor, category="life_busy", now=self._now(),
+                                      candidate=visit["decision"]):
+                        await self._save()
+                    else:
+                        await self._finish(visit, "interrupted", str(VisitDecisionError("life_busy")))
+                    return None
+                if visit.pop("model_retry", None) is not None:
+                    await self._save()
+                return copy.deepcopy(visit["decision"])
             reason = (current.get("ready_reason") or "现在不方便，稍后再约") if not current["ready"] else ""
             if not reason and not current.get("reception_open", True):
                 reason = "现在不在接待时间，稍后再约"
@@ -90,7 +100,7 @@ class VisitFlow(VisitRhythm):
                 "next_actor": guest, "next_at": self._now(), "event_stage": "none"}
 
     async def _decide(self, visit_id, phase):
-        receive_cache = None
+        saved_choice = None
         async with self._lock:
             visit = self._state["visits"][visit_id]
             if visit["status"] in TERMINAL or self._closed:
@@ -110,9 +120,7 @@ class VisitFlow(VisitRhythm):
                 phase == "propose" and visit.get("proposal_stage") == "pending")
             if (resumable and visit.get("decision_cursor") == cursor
                     and isinstance(visit.get("decision"), dict)):
-                if phase not in {"receive", "propose"}:
-                    return copy.deepcopy(visit["decision"])
-                receive_cache = (cursor, visit["scope"])
+                saved_choice = (cursor, visit["scope"])
             else:
                 own = self._local_id(visit)
                 if candidate is None and visit["calls"][own] >= self._allocation(visit, own):
@@ -127,8 +135,8 @@ class VisitFlow(VisitRhythm):
                     visit["calls"][own] += 1
                 snapshot = copy.deepcopy(visit)
                 await self._save()  # Admission, including failure, is durable before inference.
-        if receive_cache is not None:
-            return await self._resume_invitation_decision(visit_id, *receive_cache, phase=phase)
+        if saved_choice is not None:
+            return await self._resume_saved_decision(visit_id, *saved_choice, phase=phase)
         generated = {}
         try:
             with capture_decision_candidate() as generated:
@@ -280,7 +288,7 @@ class VisitFlow(VisitRhythm):
                 return self._visible(visit)
             cursor = copy.deepcopy(visit.get("proposal_cursor"))
             scope = visit["scope"]
-        result = await self._resume_invitation_decision(visit_id, cursor, scope, phase="propose")
+        result = await self._resume_saved_decision(visit_id, cursor, scope, phase="propose")
         async with self._lock:
             visit = self._state["visits"][visit_id]
             if (not result or self._closed or not self.config.enabled or visit["status"] != "inviting"
@@ -600,7 +608,14 @@ class VisitFlow(VisitRhythm):
                 await self._save()
             if visit["status"] != "active" or visit["next_actor"] != visit["guest_id"] or visit["next_at"] > self._now():
                 return
-            result = visit.get("decision") if visit.get("unsent_turn") else await self._decide(visit_id, "turn")
+            async with self._lock:
+                if visit["status"] in TERMINAL or self._closed:
+                    return
+                if visit.get("unsent_turn") and (visit.get("decision_cursor") != self._decision_cursor(visit, "turn")
+                                                 or not isinstance(visit.get("decision"), dict)):
+                    await self._finish(visit, "interrupted", "待发回合已失去原阶段证明，只保留已确认经过")
+                    return
+            result = await self._decide(visit_id, "turn")
             if not result:
                 return
             async with self._lock:
@@ -619,8 +634,11 @@ class VisitFlow(VisitRhythm):
                 await self._save()
             return
         retry = visit.get("model_retry") or {}
-        if retry.get("phase") == "scene" and valid_retry(visit, self._decision_cursor(visit, "scene")):
-            await self._scene(visit_id, retry["cursor"].get("scene_stage", ""))
+        scene_cursor = self._decision_cursor(visit, "scene")
+        saved_scene = (visit.get("decision_cursor") == scene_cursor and isinstance(visit.get("decision"), dict))
+        if ((retry.get("phase") == "scene" and valid_retry(visit, scene_cursor)) or saved_scene) \
+                and scene_cursor.get("scene_stage") in {"event_offer", "event_resolve"}:
+            await self._scene(visit_id, scene_cursor["scene_stage"])
             return
         if visit["event_stage"] == "offered" and len(visit.get("action_plans", {})) == 2:
             await self._scene(visit_id, "event_resolve")

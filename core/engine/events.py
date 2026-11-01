@@ -257,6 +257,28 @@ class EventsMixin:
             return penalty
         return 1.0
 
+    def _night_segments(self, first: float, last: float) -> list[tuple[float, float]]:
+        """Split real time only at the world's night boundaries, never per minute."""
+        start, end = int(self.world.night.start_hour) % 24, int(self.world.night.end_hour) % 24
+        if start == end or self.world.sleep.mode == "activity" or last <= first:
+            return [(first, last)]
+        periods, cursor = [], first
+        while cursor < last:
+            local = self.local_at(cursor)
+            midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
+            candidates = []
+            for days in (0, 1):
+                for hour in (start, end):
+                    wall = midnight + timedelta(days=days, hours=hour)
+                    stamp = (wall.timestamp() if local.tzinfo is not None else
+                             cursor + (wall - local).total_seconds())
+                    if stamp > cursor:
+                        candidates.append(stamp)
+            stop = min(last, min(candidates))
+            periods.append((cursor, stop))
+            cursor = stop
+        return periods
+
     def _today_key(self, now: float) -> str:
         try:
             return self.local_at(now).date().isoformat()

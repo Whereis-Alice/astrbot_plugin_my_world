@@ -356,9 +356,11 @@ class StateDynamics:
         elapsed_seconds: float,
         world: WorldConfig | None = None,
         now: float | None = None,
+        phase_at: float | None = None,
     ) -> bool:
         """按经过的秒数演化数值。tick 间隔由调用方换算成秒传入。
 
+        phase_at 仅选择困意的昼夜阶段；真实结算游标仍使用 now。
         返回 True 表示这一轮触发了安全阀（调用方可以据此记一条日志）。
         """
 
@@ -370,7 +372,8 @@ class StateDynamics:
 
         # 困意（sleep_pressure）：睡着的分支会提前 return，所以先算它，
         # 这样"睡着时迅速回落"和"醒着时慢慢攒"两条路都走得到。
-        self._tick_sleep_pressure(state, minutes=minutes, world=world, now=now)
+        self._tick_sleep_pressure(state, minutes=minutes, world=world,
+                                  now=now if phase_at is None else phase_at)
         from .life import current_life_role
 
         role, life_scale = current_life_role(state, world)

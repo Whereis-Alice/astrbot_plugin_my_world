@@ -9,6 +9,7 @@ import aiohttp
 from aiohttp import web
 
 from .protocol import MAX_BYTES, canonical
+from .ports import VisitStateError
 
 
 class VisitTransportError(ValueError):
@@ -57,14 +58,19 @@ class VisitTransport:
 
     async def _handle(self, request):
         try:
-            raw = await request.read()
-            if len(raw) > MAX_BYTES:
-                raise ValueError("消息过长")
-            body = json.loads(raw, parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
-            reply = await self.handler(body)
-            return web.Response(body=canonical(reply), content_type="application/json")
+            # One request has one deadline, even if it reads several lives or
+            # rechecks a directory more than once before saving its receipt.
+            async with asyncio.timeout(self.config.timeout_seconds):
+                raw = await request.read()
+                if len(raw) > MAX_BYTES:
+                    raise ValueError("消息过长")
+                body = json.loads(raw, parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
+                reply = await self.handler(body)
+                return web.Response(body=canonical(reply), content_type="application/json")
         except web.HTTPRequestEntityTooLarge:
             return web.json_response({"error": "消息过长"}, status=413)
+        except (TimeoutError, VisitStateError):
+            return web.json_response({"error": "暂时无法确认当前生活状态，请稍后再联系"}, status=503)
         except (ValueError, TypeError, KeyError, RecursionError):
             return web.json_response({"error": "串门请求被拒绝，请检查配对和旅程状态"}, status=400)
 

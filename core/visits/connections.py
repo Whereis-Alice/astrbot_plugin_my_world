@@ -5,6 +5,7 @@ directory/bind requests and derived keys; private scope names never cross the wi
 """
 from __future__ import annotations
 
+import asyncio
 import copy
 from typing import Any
 
@@ -12,6 +13,7 @@ import aiohttp
 
 from .config import normalize_url
 from .protocol import ID, RESERVED, code_id, derive_key, digest, envelope, new_id, public_actor, text, validate_actor, verify
+from .ports import VisitStateError, describe_local
 from .transport import VisitTransportError
 
 MAX_LIVES = 32
@@ -146,11 +148,18 @@ class WorldConnections:
         return cards
 
     async def _catalog_snapshot(self):
+        try:
+            async with asyncio.timeout(self.config.timeout_seconds):
+                return await self._read_catalog_snapshot()
+        except TimeoutError as error:
+            raise VisitStateError() from error
+
+    async def _read_catalog_snapshot(self):
         cards = []
         identities = []
         scopes = self._participating()[:MAX_LIVES]
         for scope in scopes:
-            local = await self.actor_port.describe(scope)
+            local = await describe_local(self.actor_port, scope, timeout_seconds=self.config.timeout_seconds)
             card = public_actor(local, self._state["instance_id"])
             identities.append([scope, card, local.get("persona_key"),
                                self._state.get("life_generations", {}).get(scope, 0)])
@@ -266,7 +275,7 @@ class WorldConnections:
             if remote["instance_id"] != conn["id"]:
                 raise ValueError("角色不属于已经配对的世界")
             for candidate in self._participating():
-                card = await self.actor_port.describe(candidate)
+                card = await describe_local(self.actor_port, candidate, timeout_seconds=self.config.timeout_seconds)
                 if public_actor(card, self._state["instance_id"])["id"] == payload.get("target_actor"):
                     scope, local = candidate, card
                     break
@@ -286,7 +295,7 @@ class WorldConnections:
             if op == "world_catalog" and (await self._catalog_snapshot())[1] != catalog_stamp:
                 raise ValueError("角色目录已变化，旧请求作废，请稍后重试")
             if local:
-                current_local = await self.actor_port.describe(scope)
+                current_local = await describe_local(self.actor_port, scope, timeout_seconds=self.config.timeout_seconds)
                 if (not self._life_enabled(scope) or current_local["actor_id"] != local["actor_id"]
                         or current_local["persona_key"] != local["persona_key"]
                         or self._binding_token(scope, current_local, anchor) != result["actor_token"]):
@@ -364,7 +373,7 @@ class WorldConnections:
     async def _prepare_peer(self, scope, peer_id):
         if not self._life_enabled(scope):
             raise ValueError("这个生活还没有开启串门，请在友邻页勾选参与的生活")
-        local = await self.actor_port.describe(scope)
+        local = await describe_local(self.actor_port, scope, timeout_seconds=self.config.timeout_seconds)
         existing = self._find_peer(scope, peer_id)
         if existing and not existing.get("enabled", True):
             raise ValueError("这位友邻暂未开启联系")
@@ -407,7 +416,7 @@ class WorldConnections:
                 or not isinstance(remote_token, str) or len(remote_token) != 64
                 or any(c not in "0123456789abcdef" for c in remote_token)):
             raise ValueError("友邻绑定返回了其他角色")
-        current = await self.actor_port.describe(scope)
+        current = await describe_local(self.actor_port, scope, timeout_seconds=self.config.timeout_seconds)
         async with self._lock:
             self._enabled()
             live_conn = self._state["connections"].get(conn["id"])

@@ -165,13 +165,13 @@ class TickMixin:
             state.world_time += 1
             visit = active_visit(self, session_id)
             if visit:
-                await self._tick_visit_presence(state, elapsed, visit)
+                await self._tick_visit_presence(state, elapsed, visit, stay_up_costs=False)
                 return TickOutcome(session_id=session_id, notes=[presence_text(visit)],
                                    summary={"world_time": state.world_time, "visiting": True})
-            if any((state.current_action or {}).get(flag) for flag in ("offline_wake", "offline_recovery_complete")):
+            if self._home_completion_pending(state.current_action):
                 await self._tick_continuous(state, self.node(state.node_id), TickOutcome(session_id=session_id))
             action = state.current_action
-            if action and not action.pop("offline_tick_settled", False):
+            if action and not action.pop("offline_tick_settled", False) and not self._home_completion_pending(action):
                 action["elapsed_ticks"] = min(int(action.get("duration_ticks", 1)), int(action.get("elapsed_ticks", 0)) + 1)
             self._settle_elapsed_needs(state, node=self.node(state.node_id), elapsed_seconds=elapsed,
                                        now=self._now(), stay_up_costs=False)
@@ -211,7 +211,7 @@ class TickMixin:
             # loses recovery, and a newly started rest recovers earlier awake time.
             # Offline rest has already been settled by reconcile_life_time; finish
             # it first so only the remaining awake interval is evolved here.
-            if any((state.current_action or {}).get(flag) for flag in ("offline_wake", "offline_recovery_complete")):
+            if self._home_completion_pending(state.current_action):
                 await self._tick_continuous(state, node, outcome)
             was_storm = bool(state.storm)
             if self._roll_day_mood(state, self._now()):
@@ -221,14 +221,8 @@ class TickMixin:
                     "label": info.label if info is not None else "",
                     "hint": info.hint if info is not None else "",
                 })
-            had_visit_segments = hasattr(state, "_visit_need_segments")
             mood_reset = self._settle_elapsed_needs(state, node=node, elapsed_seconds=elapsed_life, now=self._now())
             state.mood = self.dynamics.derive_mood(state)
-            penalty = self._stay_up_penalty(state)
-            if penalty > 1.0 and not had_visit_segments:
-                extra = (float(self.world.state_dynamics.energy_decay_per_min)
-                         * (penalty - 1.0) * (elapsed_life / 60.0))
-                state.energy = max(0.0, float(state.energy) - max(0.0, extra))
             if state.stay_up_until and state.world_time > int(state.stay_up_until):
                 state.stay_up_until = 0
 
@@ -396,19 +390,22 @@ class TickMixin:
             await self._echo_events_since(state, outcome, echo_marker)
         return outcome
 
-    async def _tick_visit_presence(self, state: WorldState, elapsed: float, visit: dict) -> None:
+    async def _tick_visit_presence(self, state: WorldState, elapsed: float, visit: dict,
+                                    *, stay_up_costs: bool = True) -> None:
         """Needs keep time; home practice, plans and events do not run twice."""
         self._settle_idle_practice(state, at=float(visit.get("arrived_at") or self._now()))
         state.idle_activity = {}
         current, home_state = state.current_action, state.state
         try:
-            state.current_action = None
-            state.state = "idle"
-            self.dynamics.tick(state, node=None, elapsed_seconds=elapsed,
-                               world=self.world, now=self._now())
+            if self._home_completion_pending(current):
+                state.current_action, state.state = None, "idle"
+            self._settle_elapsed_needs(state, node=self.node(state.node_id), elapsed_seconds=elapsed,
+                                       now=self._now(), stay_up_costs=stay_up_costs, away=True)
         finally:
             state.current_action = current
             state.state = home_state
+            if current:
+                current.pop("offline_tick_settled", None)
         state.mood = self.dynamics.derive_mood(state)
         await self._record_history(state, None)
 
@@ -420,7 +417,7 @@ class TickMixin:
         if not isinstance(action, dict):
             return
         definition = self.world.action_map().get(str(action.get("type") or ""))
-        if not action.pop("offline_tick_settled", False):
+        if not action.pop("offline_tick_settled", False) and not self._home_completion_pending(action):
             action["elapsed_ticks"] = int(action.get("elapsed_ticks", 0)) + 1
         self.settle_recovery_progress(state, action)
         from ..recovery import restores_energy

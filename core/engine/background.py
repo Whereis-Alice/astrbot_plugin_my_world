@@ -333,16 +333,18 @@ class BackgroundMixin:
         if not previous:
             return self.tick_seconds  # Legacy saves have no reliable life cursor.
         elapsed = max(0, now - previous)
+        visit = active_visit(self, state.session_id)
         pauses = pause_intervals(self, state.session_id, previous, now,
                                 persona_key=self._matter_persona_key(state) or "")
-        if pauses and not active_visit(self, state.session_id):
-            return self._reconcile_return_time(state, previous, now, pauses, stay_up_costs=stay_up_costs)
+        if pauses:
+            return self._reconcile_visit_time(state, previous, now, pauses, visiting=bool(visit),
+                                              stay_up_costs=stay_up_costs)
         if elapsed <= self.tick_seconds * 2.5:
             return self.tick_seconds
         gap = min(elapsed, 24 * 3600)
         missing_ticks = max(0, int(gap / self.tick_seconds) - 1)
         old_tick = state.world_time
-        if active_visit(self, state.session_id):
+        if visit:
             # An accepted visit pauses the home action, including home recovery.
             # A slow clock does not prove that any of that work happened. Only
             # the bounded elapsed needs/visit clock is handed to the caller.
@@ -358,7 +360,8 @@ class BackgroundMixin:
         definition = self.world.action_map().get(str(current.get("type") or ""))
         sleeping = sleep_action_kind(definition)
         can_recover = definition and definition.enabled and (definition.id == "sleep" or definition.available_in(state.node_id))
-        if can_recover and (sleeping or passive_recovery(definition)):
+        completed = self._home_completion_pending(current)
+        if can_recover and (sleeping or passive_recovery(definition)) and not completed:
             left = max(0, int(current.get("duration_ticks", 0)) - int(current.get("elapsed_ticks", 0)))
             slept = min(left, int(elapsed / self.tick_seconds))
             current["elapsed_ticks"] = int(current.get("elapsed_ticks", 0)) + slept
@@ -385,7 +388,7 @@ class BackgroundMixin:
             else:
                 remaining = max(0, gap - sleep_seconds)
             current["offline_tick_settled"] = True
-        elif current:
+        elif current and not completed:
             # Preserve project identity; a missing runtime cannot prove work actually happened.
             self.pause_matter_action(state, current, at=previous)
             state.current_action = None
@@ -401,8 +404,14 @@ class BackgroundMixin:
         self._note_event(state, "offline_recovery", dict(state.life_recovery))
         return remaining
 
-    def _reconcile_return_time(self, state, previous: float, now: float,
-                               pauses: list[tuple[float, float]], *, stay_up_costs: bool = True) -> float:
+    @staticmethod
+    def _home_completion_pending(action) -> bool:
+        return any((action or {}).get(flag) for flag in
+                   ("offline_wake", "offline_recovery_complete", "offline_home_complete"))
+
+    def _reconcile_visit_time(self, state, previous: float, now: float,
+                              pauses: list[tuple[float, float]], *, visiting: bool,
+                              stay_up_costs: bool = True) -> float:
         """Only retained visit windows pause home recovery; deadlines keep real time."""
         elapsed = max(0, now - previous)
         paused = sum(last - first for first, last in pauses)
@@ -420,7 +429,12 @@ class BackgroundMixin:
         recover = (definition and definition.enabled
                    and (definition.id == "sleep" or definition.available_in(state.node_id))
                    and (sleeping or passive_recovery(definition)))
-        if recover:
+        if self._home_completion_pending(current):
+            # A home rest/work already finished before arrival. Preserve its
+            # actual finish marker until returning, without sleeping again.
+            pending = self._bound_visit_segments(segments, 6 * 3600)
+            current["offline_tick_settled"] = True
+        elif recover:
             left = max(0, int(current.get("duration_ticks", 0)) - int(current.get("elapsed_ticks", 0)))
             advanced = min(left, int(home / self.tick_seconds))
             state._visit_rest_progress = {"action": current, "initial_ticks": int(current.get("elapsed_ticks", 0)),
@@ -447,8 +461,20 @@ class BackgroundMixin:
             # A just-returned life still owns its quiet work. The last fixed
             # tick must not claim home activity when no home minute elapsed.
             pending = self._bound_visit_segments(segments, 6 * 3600, home_limit=min(home, self.tick_seconds))
+            if visiting and home >= self.tick_seconds and definition and definition.category == "continuous":
+                self.settle_life_practice(state, current, at=previous)
+                self.settle_matter_work(state, current, at=previous)
+                current["elapsed_ticks"] = min(int(current.get("duration_ticks") or 0),
+                                                int(current.get("elapsed_ticks") or 0) + 1)
+                _, _, progressed_at = self._split_visit_rest(segments, self.tick_seconds, previous)
+                self.settle_life_practice(state, current, at=progressed_at)
+                self.settle_matter_work(state, current, at=progressed_at)
+                if int(current.get("elapsed_ticks") or 0) >= int(current.get("duration_ticks") or 0):
+                    current["offline_home_complete"] = True
             if home < self.tick_seconds:
                 current["offline_tick_settled"] = True
+            else:
+                current.pop("offline_tick_settled", None)
         else:
             if current:
                 self.pause_matter_action(state, current, at=previous)
@@ -513,17 +539,24 @@ class BackgroundMixin:
 
     def _evolve_visit_segments(self, state, node, segments: list, *, stay_up_costs: bool = True) -> bool:
         reset = False
+        periods = []
         for first, last, away in segments:
+            clocks = (self._night_segments(first, last) if away or not state.is_sleeping else [(first, last)])
+            periods.extend((start, end, away) for start, end in clocks)
+        for first, last, away in periods:
             current, home_state = state.current_action, state.state
             try:
                 if away:
                     state.current_action, state.state = None, "idle"
+                phase = (first if self.world.is_night_time(self.local_at(first).hour)
+                         != self.world.is_night_time(self.local_at(last).hour) else None)
+                kwargs = {"phase_at": phase} if phase is not None else {}
                 reset = self.dynamics.tick(state, node=None if away else node, elapsed_seconds=last - first,
-                                           world=self.world, now=last) or reset
+                                           world=self.world, now=last, **kwargs) or reset
                 # The ordinary visitor tick returns before home stay-up costs.
                 # Home costs keep their online order before recovery effects.
                 if not away and stay_up_costs:
-                    penalty = self._stay_up_penalty(state, at=last)
+                    penalty = self._stay_up_penalty(state, at=first)
                     if penalty > 1.0:
                         extra = (float(self.world.state_dynamics.energy_decay_per_min)
                                  * (penalty - 1.0) * ((last - first) / 60.0))
@@ -539,10 +572,11 @@ class BackgroundMixin:
         return reset
 
     def _settle_elapsed_needs(self, state, *, node, elapsed_seconds: float, now: float,
-                              stay_up_costs: bool = True) -> bool:
+                              stay_up_costs: bool = True, away: bool = False) -> bool:
         segments = getattr(state, "_visit_need_segments", None)
         if segments is None:
-            return self.dynamics.tick(state, node=node, elapsed_seconds=elapsed_seconds, world=self.world, now=now)
+            return self._evolve_visit_segments(state, node, [(now - elapsed_seconds, now, away)],
+                                               stay_up_costs=stay_up_costs)
         del state._visit_need_segments
         try:
             return self._evolve_visit_segments(state, node, segments, stay_up_costs=stay_up_costs)

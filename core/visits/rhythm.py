@@ -4,13 +4,23 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 
+from .ports import VisitStateError
+
 
 class VisitRhythm:
     async def _automatic_budget_snapshot(self, scope):
         # Optional adapter capability: protocol-only implementations retain
         # their existing behaviour without knowing the local model scheduler.
         getter = getattr(self.actor_port, "automatic_budget", None)
-        return await getter(scope) if callable(getter) else None
+        if not callable(getter):
+            return None
+        try:
+            async with asyncio.timeout(self.config.timeout_seconds):
+                return await getter(scope)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            raise VisitStateError() from error
 
     async def _automatic_budget_available(self, scope):
         budget = await self._automatic_budget_snapshot(scope)
@@ -176,10 +186,10 @@ class VisitRhythm:
                                                                    self.config.daily_peer_limit)
                                        for peer in candidates):
                         continue
-            if not await self._automatic_budget_available(scope):
-                continue
             try:
                 async with asyncio.timeout(self.config.timeout_seconds):
+                    if not await self._automatic_budget_available(scope):
+                        continue
                     local = await self.actor_port.describe(scope)
             except asyncio.CancelledError:
                 raise

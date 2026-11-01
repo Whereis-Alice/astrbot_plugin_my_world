@@ -8,7 +8,7 @@ import time
 from typing import Any, Callable
 
 from .config import VisitConfig, normalize_url
-from .ports import VisitActorPort, VisitStateError
+from .ports import VisitActorPort, describe_local
 from .flow import VisitFlow
 from .persistence import VisitJournal
 from .protocol import (RESERVED, TERMINAL, code_id, derive_key, digest, envelope,
@@ -48,7 +48,7 @@ class VisitService(VisitFlow, VisitJournal):
             return await self._global_pair_code()
         self._enabled()
         await self._load()
-        actor = await self.actor_port.describe(scope)
+        actor = await self._exchange_description(scope)
         async with self._lock:
             self._enabled()
             code = new_id() + new_id()
@@ -65,7 +65,7 @@ class VisitService(VisitFlow, VisitJournal):
         url = normalize_url(url)
         if not isinstance(code, str) or len(code) != 64 or not all(c in "0123456789abcdef" for c in code):
             raise ValueError("配对码格式无效，请重新生成")
-        local = await self.actor_port.describe(scope)
+        local = await self._exchange_description(scope)
         actor = public_actor(local, self._state["instance_id"])
         request = envelope(code, actor["id"], "pair:" + code_id(code),
                            {"op": "pair", "actor": actor, "url": self.config.public_url}, self._now())
@@ -134,7 +134,7 @@ class VisitService(VisitFlow, VisitJournal):
         payload = verify(body, peer["secret"], self._now())
         if not self._exchange_allowed(peer, payload):
             raise ValueError("这个生活已关闭串门或绑定已变化")
-        local = await self.actor_port.describe(peer["scope"])
+        local = await self._exchange_description(peer["scope"])
         actor = public_actor(local, self._state["instance_id"])
         if body["target"] != actor["id"] or local["persona_key"] != peer["local"]["persona_key"]:
             raise ValueError("生活身份已变化，请稍后重新联系")
@@ -148,10 +148,10 @@ class VisitService(VisitFlow, VisitJournal):
                     or current_peer["secret"] != peer["secret"] or current_peer["local"] != peer["local"]
                     or not self._peer_trusted(current_peer) or not self._exchange_allowed(current_peer, payload)):
                 raise ValueError("友邻连接已变化，请稍后重新联系")
-            current_local = await self.actor_port.describe(peer["scope"])
+            current_local = await self._exchange_description(peer["scope"])
             if current_local["actor_id"] != local["actor_id"] or current_local["persona_key"] != local["persona_key"]:
                 raise ValueError("生活身份已变化，旧请求作废")
-            result = await self._inbox(peer, local, payload)
+            result = await self._inbox(peer, current_local, payload)
             return await self._receipt(body, result, peer["secret"], actor["id"], receipt_key)
 
     async def _cached_response(self, body, cached):
@@ -206,7 +206,7 @@ class VisitService(VisitFlow, VisitJournal):
         if peer is not None:
             if not self._peer_trusted(peer) or not self._exchange_allowed(peer, request["payload"]):
                 raise ValueError("生活已关闭串门或配对已变化，旧请求作废")
-            local = await self.actor_port.describe(peer["scope"]) if validate_identity else peer["local"]
+            local = await self._exchange_description(peer["scope"]) if validate_identity else peer["local"]
             if local["actor_id"] != peer["local"]["actor_id"] or local["persona_key"] != peer["local"]["persona_key"]:
                 raise ValueError("生活身份已变化，旧请求作废")
             context.append([peer["scope"], local["actor_id"], local["persona_key"], peer["secret"],
@@ -226,7 +226,7 @@ class VisitService(VisitFlow, VisitJournal):
         if payload.get("op") != "pair" or remote["id"] != body["sender"]:
             raise ValueError("配对身份不一致")
         url = normalize_url(payload["url"]) if payload.get("url") else ""
-        local = await self.actor_port.describe(scope)
+        local = await self._exchange_description(scope)
         actor = public_actor(local, self._state["instance_id"])
         if actor["id"] == remote["id"]:
             raise ValueError("不能配对自己")
@@ -369,13 +369,7 @@ class VisitService(VisitFlow, VisitJournal):
                 and visit["local"]["persona_key"] == peer["local"]["persona_key"])
 
     async def _exchange_description(self, scope):
-        try:
-            async with asyncio.timeout(self.config.timeout_seconds):
-                return await self.actor_port.describe(scope)
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            raise VisitStateError() from error
+        return await describe_local(self.actor_port, scope, timeout_seconds=self.config.timeout_seconds)
 
     async def _send(self, visit_id, payload):
         async with self._lock:
