@@ -7,8 +7,13 @@ from ..recovery import recovery_mode_allows, sleep_action_kind
 from ..model_calls import model_operation
 
 from datetime import datetime, timedelta
+from contextlib import asynccontextmanager
+import hashlib
+import json
+import math
 import time
 from typing import Any
+from uuid import uuid4
 from ..config_scope import session_scoped
 from ..json_actions import extract_json_object
 from ..models import (
@@ -59,6 +64,7 @@ class ScheduleMixin:
     # 的日程翻出来补跑。
     SCHEDULE_LOOKBACK_SECONDS = 90
     SCHEDULE_MAX_GAP_SECONDS = 600
+    SCHEDULE_RECHECK_KEY = "schedule_rechecks:v1"
 
     max_followup_chars = 800
     """动作结果交给大模型续说前的截断长度（base64 图片地址不能整条塞进提示词）。"""
@@ -108,6 +114,91 @@ class ScheduleMixin:
             # 停了很久（重启、插件没跑）就别把这段时间里的日程全补一遍
             return seconds - self.SCHEDULE_LOOKBACK_SECONDS
         return cursor
+
+    def _schedule_scan_cursor(self, state: WorldState, now: datetime) -> float:
+        """A configuration recheck belongs to this life and its original time."""
+        pending = getattr(self, "_schedule_reset_cursors", {})
+        cursor = pending.get(state.session_id)
+        if cursor is None:
+            return self._schedule_cursor(state, now)
+        seconds = now.timestamp()
+        if cursor > seconds or seconds - cursor > self.SCHEDULE_MAX_GAP_SECONDS:
+            return seconds - self.SCHEDULE_LOOKBACK_SECONDS
+        return cursor
+
+    def _reload_schedule_rechecks(self, signature, previous_lives, had_signature, changed):
+        """Remember a short configuration recheck across a complete plugin reload."""
+        fingerprint = hashlib.sha256(json.dumps(signature, ensure_ascii=True).encode()).hexdigest()
+        lives, moments = {}, {}
+        for session_id in self.tick_session_ids():
+            with self.config_scope(session_id):
+                key = self.state_key(session_id)
+                lives[key], moments[key] = self.config_scope_id, self.local_now().timestamp()
+        with self.db.raw.atomic():
+            saved = self.db.raw.kv_get(self.SCHEDULE_RECHECK_KEY, {})
+            valid = (isinstance(saved, dict) and saved.get("version") == 1
+                     and isinstance(saved.get("fingerprint"), str)
+                     and len(saved["fingerprint"]) == 64
+                     and all(char in "0123456789abcdef" for char in saved["fingerprint"])
+                     and isinstance(saved.get("lives"), dict) and isinstance(saved.get("cursors"), dict))
+            previous = previous_lives if had_signature else saved.get("lives", {}) if valid else {}
+            changed = changed or valid and saved["fingerprint"] != fingerprint
+            pending = saved["cursors"] if valid and not changed else {}
+            cursors = {}
+            for key, owner in lives.items():
+                now = moments[key]
+                if changed or (had_signature or valid) and previous.get(key) != owner:
+                    cursors[key] = now - self.SCHEDULE_LOOKBACK_SECONDS
+                    continue
+                cursor = pending.get(key)
+                if (isinstance(cursor, (int, float)) and not isinstance(cursor, bool)
+                        and math.isfinite(cursor) and 0 <= now - cursor <= self.SCHEDULE_MAX_GAP_SECONDS):
+                    cursors[key] = float(cursor)
+            generation = uuid4().hex
+            self.db.raw.kv_set(self.SCHEDULE_RECHECK_KEY, {
+                "version": 1, "fingerprint": fingerprint, "generation": generation,
+                "lives": lives, "cursors": cursors,
+            })
+        self._schedule_reset_generation = generation
+        self._schedule_reset_cursors = cursors
+        self._schedule_reset_pending = bool(cursors)
+
+    @classmethod
+    def _consume_schedule_recheck(cls, db, generation, key):
+        """Merge one completed life without letting an old revision erase a new one."""
+        with db.atomic():
+            saved = db.kv_get(cls.SCHEDULE_RECHECK_KEY, {})
+            if not isinstance(saved, dict) or saved.get("generation") != generation:
+                return False
+            cursors = saved.get("cursors")
+            if not isinstance(cursors, dict):
+                return False
+            if key in cursors:
+                cursors.pop(key)
+                db.kv_set(cls.SCHEDULE_RECHECK_KEY, saved)
+            return True
+
+    @asynccontextmanager
+    async def _schedule_scan_state(self, session_id: str):
+        """Consume this revision's recheck only after its scan cursor is saved."""
+        signature = self._schedule_signature
+        generation = getattr(self, "_schedule_reset_generation", None)
+        scan = {"checked": False}
+        async with self.session_state(session_id) as state:
+            yield state, scan
+        if scan["checked"] and self._schedule_signature is signature:
+            pending = getattr(self, "_schedule_reset_cursors", {})
+            if state.session_id in pending:
+                try:
+                    consumed = await self.db.run(self._consume_schedule_recheck, self.db.raw,
+                                                 generation, state.session_id)
+                except Exception as error:
+                    # A cleanup error must not discard already completed work.
+                    self._log("warning", f"日程重扫记录暂未收尾：{type(error).__name__}")
+                else:
+                    if consumed and self._schedule_signature is signature:
+                        pending.pop(state.session_id, None)
+                        self._schedule_reset_pending = bool(pending)
 
     def _schedule_reason(self, state: WorldState, conditions: Any) -> str:
         """日程到点却没跑的原因（写进日志，省得用户猜）。"""
@@ -611,7 +702,6 @@ class ScheduleMixin:
             protections = await self._schedule_prune_protections()
             if self._schedule_signature is not signature:
                 return [row for result in results for row in result]
-            self._schedule_reset_pending = False
             for owner, (day, preserve) in protections.items():
                 with self.config_scope(owner):
                     self._prune_once_schedules(day, preserve=preserve)
@@ -632,7 +722,7 @@ class ScheduleMixin:
                 now = self.local_now()
                 day, preserve = protections.setdefault(owner, (now.date().isoformat(), set()))
                 state = await self.load_state(session_id, cold_start=False)
-                cursor = self._schedule_cursor(state, now)
+                cursor = self._schedule_scan_cursor(state, now)
                 start = datetime.fromtimestamp(cursor, now.tzinfo)
                 for schedule in self.schedules.schedules:
                     if not self.schedule_in_scope(schedule, session_id):
@@ -656,16 +746,13 @@ class ScheduleMixin:
         for session_id in [session_id]:
             if self.is_busy(session_id):
                 continue  # A delayed decision in one life must not stop the global clock.
-            async with self.session_state(session_id) as state:
+            async with self._schedule_scan_state(session_id) as (state, scan):
                 if active_visit(self, session_id):
                     continue
                 now = self.local_now()
                 seconds = now.timestamp()
                 day_key = now.strftime("%Y-%m-%d")
-                if self._schedule_reset_pending:
-                    cursor = seconds - self.SCHEDULE_LOOKBACK_SECONDS
-                else:
-                    cursor = self._schedule_cursor(state, now)
+                cursor = self._schedule_scan_cursor(state, now)
                 # The schedule cursor is on local_now().timestamp()'s calendar
                 # timeline. An injected clock may expose a separate now() epoch;
                 # feeding this cursor into local_at() would apply its offset twice.
@@ -676,6 +763,7 @@ class ScheduleMixin:
                            for schedule in self.schedules.schedules}
                 candidates = [schedule for schedule in self.schedules.schedules if schedule.enabled]
                 state.schedule_cursor = seconds
+                scan["checked"] = True
                 if not candidates:
                     continue
                 due: list[tuple[Any, str, str]] = []
@@ -702,6 +790,10 @@ class ScheduleMixin:
                     if not self.schedule_in_scope(schedule, session_id):
                         # 这条日程是别的会话 / 别的组的事
                         continue
+                    if (state.session_id in getattr(self, "_schedule_reset_cursors", {})
+                            and await self.db.call("has_schedule_fired", session_id=session_id,
+                                                   schedule_id=schedule.id, day_key=day_key, slot=slot)):
+                        continue  # A recheck never pays to choose an already executed destination again.
                     if schedule.matter_id:
                         from .. import life_matters as matters
                         item = matters.find(state, schedule.matter_id)

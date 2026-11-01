@@ -14,7 +14,7 @@ from astrbot.api.message_components import At, Image, Plain, Reply
 from ..core.message_parts import _sendable_images
 from ..core.plugin_compat import group_card_owner
 from ..core.ports import CardResult, PokeResult
-from ..core.speech_policy import segment_allowed, reply_target, accept_segment, contact_targets
+from ..core.speech_policy import segment_allowed, segment_ready, reply_target, accept_segment, contact_targets
 from .group_names import GroupNamesMixin
 from .group_mentions import GroupMentions, addressed_chain, has_body
 
@@ -58,6 +58,10 @@ class AstrBotMessenger(GroupNamesMixin):
     def proactive_segment(self, session_id, index):
         from .proactive_delivery import segment
         return segment(session_id, index)
+
+    def rebase_proactive(self, outcome, retained):
+        from .proactive_delivery import rebase_prepared
+        rebase_prepared(outcome, retained)
 
     async def proactive_accepted(self, session_id, text, index):
         from .proactive_delivery import accepted
@@ -118,7 +122,7 @@ class AstrBotMessenger(GroupNamesMixin):
         failed = False
         for index, text in enumerate(texts):
             if not segment_allowed(session_id, index):
-                break
+                continue
             try:
                 from .proactive_delivery import prepared_chain
                 chain = prepared_chain(session_id, str(text), index)
@@ -130,8 +134,8 @@ class AstrBotMessenger(GroupNamesMixin):
                 chain = addressed_chain(chain, people, reply_target(session_id, index))
                 chain = await self._mentions.prepare(session_id, chain)
                 # Permissions can change while the bounded member read is waiting.
-                if not segment_allowed(session_id, index):
-                    break
+                if not await segment_ready(session_id, index):
+                    continue
                 result = await self.plugin.context.send_message(
                     session_id, MessageChain(chain=chain)
                 )
@@ -181,6 +185,8 @@ class AstrBotMessenger(GroupNamesMixin):
         if not segment_allowed(session_id):
             return False
         chain = [Image(file=ref) for ref in refs]
+        if not await segment_ready(session_id):
+            return False
         try:
             result = await self.plugin.context.send_message(
                 session_id, MessageChain(chain=chain)

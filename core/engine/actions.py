@@ -897,14 +897,15 @@ class ActionsMixin:
                     speech_ids={"": list(outcome.speech_ids.get(target, []))},
                     speech_people={"": list(outcome.speech_people.get(target, []))},
                     speech_origins={"": list(outcome.speech_origins.get(target, []))},
-                    image_kinds={}, image_ids={}, image_people={})
+                    speech_proofs={"": list(outcome.speech_proofs.get(target, []))},
+                    image_kinds={}, image_ids={}, image_people={}, image_proofs={})
                 if callable(prepare):
                     async with prepare(target, view, instant=True):
                         await self._flush_prepared_say(view)
                 else:
                     await self._flush_prepared_say(view)
                 outcome.routed[target] = view.messages
-                for name in ("speech_kinds", "speech_ids", "speech_people", "speech_origins"):
+                for name in ("speech_kinds", "speech_ids", "speech_people", "speech_origins", "speech_proofs"):
                     getattr(outcome, name)[target] = list(getattr(view, name).get("", []))
         finally:
             outcome.speech_home = previous_home
@@ -927,14 +928,19 @@ class ActionsMixin:
         ids = outcome.speech_ids.pop("", [])
         people = outcome.speech_people.pop("", [])
         origins = outcome.speech_origins.pop("", [])
+        proofs = outcome.speech_proofs.pop("", [])
         lines = outcome.take_messages()
         sent_count = 0
         for index, line in enumerate(lines):
             kind = kinds[index] if index < len(kinds) else outcome.speech_kind
             recipients = set(people[index]) if index < len(people) else set(outcome.contact_people)
             view = replace(outcome, contact_people=recipients)
+            proof = proofs[index] if index < len(proofs) else None
+            from .queued_home import home_speech_allowed, home_persona_allowed
             if (not self.speech_allowed(outcome.home(), kind)
+                    or not home_speech_allowed(self, view, kind, proof)
                     or not self.contact_speech_allowed(view, outcome.home(), kind)):
+                outcome.notes.extend(note for note in view.notes if note not in outcome.notes)
                 sent_count += 1
                 continue
             receipt, blocked = self._reserve_contact(view, outcome.home(), [kind])
@@ -975,7 +981,9 @@ class ActionsMixin:
                         mentioned.update(outcome.live_people[i] if i < len(outcome.live_people) else outcome.contact_people)
                 with wire, contact_send(outcome.home(), recipients - mentioned, 0 if kind == "outreach" else -1), watch_send(received_segment), quote_send(outcome.home(), outcome.reply_targets.get(outcome.home(), "")), guard_send(
                     lambda sid, i: self.speech_allowed(sid, kind)
-                        and self.contact_speech_allowed(view, sid, kind, reserved=receipt is not None)):
+                        and home_speech_allowed(self, view, kind, proof)
+                        and self.contact_speech_allowed(view, sid, kind, reserved=receipt is not None),
+                    async_check=lambda sid, i: home_persona_allowed(self, view, kind, proof)):
                     sent = bool(await self.say_sink(outcome.home(), line))
                     if sent or accepted_live:
                         await received_segment(outcome.home(), line, 0)
@@ -985,6 +993,7 @@ class ActionsMixin:
                 sent = accepted_live
             finally:
                 self._finish_contact(receipt, sent or accepted_live)
+                outcome.notes.extend(note for note in view.notes if note not in outcome.notes)
             if not sent:
                 # 发不出去（会话没配 / 平台在冷却里）：从这里开始都留到收尾一起发，别丢
                 break
@@ -999,6 +1008,7 @@ class ActionsMixin:
         outcome.speech_ids[""] = ids[sent_count:]
         outcome.speech_people[""] = people[sent_count:]
         outcome.speech_origins[""] = origins[sent_count:]
+        outcome.speech_proofs[""] = proofs[sent_count:]
         # 回显的位置是"排在第几句之后"：前面几句已经当场发出去了，位置整体往前挪
         outcome.debug_positions = [
             max(0, int(position) - sent_count) for position in outcome.debug_positions

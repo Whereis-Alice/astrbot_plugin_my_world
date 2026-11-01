@@ -21,6 +21,7 @@ from .models import (
     MessageContext,
     TickOutcome,
 )
+from .queued_home import home_speech_allowed, home_persona_allowed
 
 
 class SendMixin:
@@ -190,6 +191,7 @@ class SendMixin:
             del outcome.images[MAX_GROUP_IMAGES:]
             outcome.image_kinds[""] = outcome.image_kinds.get("", [])[:MAX_GROUP_IMAGES]
             outcome.image_ids[""] = outcome.image_ids.get("", [])[:MAX_GROUP_IMAGES]
+            outcome.image_proofs[""] = outcome.image_proofs.get("", [])[:MAX_GROUP_IMAGES]
 
     def _tag_chat_origin(
         self,
@@ -296,9 +298,10 @@ class SendMixin:
     def _filter_proactive_speech(self, outcome: TickOutcome, *, block_contact=False, include_broadcast=False, contact_reserved=False) -> None:
         """Filter before recording speech, including already queued autonomous lines."""
         removed = 0
+        retained_speech = []
 
         def keep(lines, key, metadata, *, images=False):
-            nonlocal removed
+            nonlocal removed, retained_speech
             kinds = metadata.get(key, [])
             def allowed(i):
                 kind = kinds[i] if i < len(kinds) else outcome.speech_kind
@@ -308,13 +311,16 @@ class SendMixin:
                 targets = [target, *outcome.broadcast_targets] if not key and include_broadcast else [target]
                 def contact_allowed(sid):
                     view = replace(outcome, contact_people=outcome.speech_recipients(key, i, images=images))
-                    return self.contact_speech_allowed(view, sid, kind, reserved=contact_reserved)
+                    allowed = home_speech_allowed(self, view, kind, outcome.speech_proof(key, i, images=images))
+                    outcome.notes.extend(note for note in view.notes if note not in outcome.notes)
+                    return allowed and self.contact_speech_allowed(view, sid, kind, reserved=contact_reserved)
                 return (images or kind == "reply" or speakable(lines[i])) and any(
                     self.speech_allowed(sid, kind) and (protected or (
                         (not block_contact or kind in CHAT_KINDS) and contact_allowed(sid)))
                     for sid in targets)
             mask = [allowed(i) for i in range(len(lines))]
             if key == "" and not images:
+                retained_speech = [i for i, ok in enumerate(mask) if ok]
                 outcome.debug_positions = [sum(mask[:int(pos)]) for pos in outcome.debug_positions]
             removed += len(mask) - sum(mask)
             metadata[key] = [kinds[i] if i < len(kinds) else outcome.speech_kind for i, ok in enumerate(mask) if ok]
@@ -324,6 +330,8 @@ class SendMixin:
             people = outcome.image_people if images else outcome.speech_people
             people[key] = [tuple(sorted(outcome.speech_recipients(key, i, images=images)))
                            for i, ok in enumerate(mask) if ok]
+            proofs = outcome.image_proofs if images else outcome.speech_proofs
+            proofs[key] = [outcome.speech_proof(key, i, images=images) for i, ok in enumerate(mask) if ok]
             if not images and key in outcome.speech_origins:
                 origins = outcome.speech_origins[key]
                 outcome.speech_origins[key] = [origins[i] if i < len(origins) else key or outcome.home()
@@ -334,6 +342,9 @@ class SendMixin:
         outcome.images = keep(outcome.images, "", outcome.image_kinds, images=True)
         outcome.routed = {sid: keep(lines, sid, outcome.speech_kinds) for sid, lines in outcome.routed.items()}
         outcome.routed_images = {sid: keep(lines, sid, outcome.image_kinds, images=True) for sid, lines in outcome.routed_images.items()}
+        rebase = getattr(self.messenger, "rebase_proactive", None)
+        if callable(rebase):
+            rebase(outcome, retained_speech)
         if removed:
             outcome.notes.append(f"自主发言未获授权、已过期或联系额度不足，未发送 {removed} 条内容")
 
@@ -428,6 +439,7 @@ class SendMixin:
         sent = False
         attempted = False
         cancelled = False
+        suppressed = False
         # Reserve only while sending, and count only platform-accepted content.
         async def send_target(target, view, echoes=()):
             prepare = getattr(self.messenger, "proactive_delivery", None)
@@ -438,7 +450,7 @@ class SendMixin:
                 await send_target_ready(target, view, echoes)
 
         async def send_target_ready(target, view, echoes=()):
-            nonlocal sent, attempted, autonomous_delivered, interject_delivered, cancelled
+            nonlocal sent, attempted, autonomous_delivered, interject_delivered, cancelled, suppressed
             self._filter_proactive_speech(view)
             if not self.speech_allowed(target, view.speech_kind):
                 echoes = ()
@@ -478,7 +490,10 @@ class SendMixin:
                     values = view.speech_kinds.get("", [])
                     ordered_kinds = [values[i] if i is not None and i < len(values)
                         else view.speech_kind if i is not None else "reply" for _, i in entries]
+                    ordered_proofs = [view.speech_proof("", i) if i is not None else None for _, i in entries]
                     recorded_indices = set()
+                    receipt_pending = set()
+                    rejected_indices = set()
                     from uuid import uuid4
                     send_identity = uuid4().hex
 
@@ -486,11 +501,12 @@ class SendMixin:
                         if sid != target or position >= len(entries) or entries[position][0] != text:
                             return
                         index = entries[position][1]
+                        recorded_indices.add(position)
                         if index is None:
                             return  # Debug echoes are not the character's speech.
                         ids = view.speech_ids.get("", [])
                         identity = ids[index] if index < len(ids) else ""
-                        recorded_indices.add(position)
+                        receipt_pending.add(position)
                         if ordered_kinds[position] not in autonomous_kinds:
                             people = view.speech_recipients("", index)
                             accepted_people.update(self._outreach_people(replace(view, contact_people=people), target))
@@ -499,6 +515,21 @@ class SendMixin:
                         notify = getattr(self.messenger, "proactive_accepted", None)
                         if callable(notify):
                             await notify(target, text, position)
+                        receipt_pending.discard(position)
+
+                    def check_segment(sid, position):
+                        allowed = (self.speech_allowed(sid, ordered_kinds[position])
+                            and home_speech_allowed(self, view, ordered_kinds[position], ordered_proofs[position])
+                            and self.contact_speech_allowed(view, sid, ordered_kinds[position], reserved=receipt is not None))
+                        if not allowed:
+                            rejected_indices.add(position)
+                        return allowed
+
+                    async def check_persona(sid, position):
+                        allowed = await home_persona_allowed(self, view, ordered_kinds[position], ordered_proofs[position])
+                        if not allowed:
+                            rejected_indices.add(position)
+                        return allowed
                     quote_index = next((i for i, kind in enumerate(ordered_kinds)
                                         if kind in CHAT_KINDS), 0)
                     mentioned = set()
@@ -512,8 +543,7 @@ class SendMixin:
                             positions[position] = people - mentioned
                             mentioned.update(people)
                     with contact_send(target, (), positions=positions), watch_send(received_segment), quote_send(target, view.reply_targets.get(target, ""), quote_index), guard_send(
-                        lambda sid, i: self.speech_allowed(sid, ordered_kinds[i])
-                            and self.contact_speech_allowed(view, sid, ordered_kinds[i], reserved=receipt is not None)):
+                        check_segment, async_check=check_persona):
                         try:
                             accepted = bool(await self.messenger.send_text(target, target_ordered))
                         except asyncio.CancelledError:
@@ -528,10 +558,25 @@ class SendMixin:
                     receipt_reader = getattr(self.messenger, "take_sent_texts", None)
                     received = receipt_reader(target) if callable(receipt_reader) else (target_ordered if accepted else [])
                     received_counts = Counter(received)
+                    # Exact adapter callbacks own these occurrences, including
+                    # echoes. Their text must not be reassigned to an identical
+                    # earlier draft by the legacy text-only receipt fallback.
+                    for position in sorted(recorded_indices):
+                        text, index = entries[position]
+                        if received_counts[text] > 0:
+                            received_counts[text] -= 1
+                        if index is not None and position in receipt_pending:
+                            try:
+                                await received_segment(target, text, position)
+                            except Exception as exc:
+                                outcome.notes.append(f"已发送，回执保存暂时失败：{type(exc).__name__}")
+                                self._log("warning", f"保存已接受发言失败：{exc}")
                     # Older/custom transports expose only a final receipt. Walk
                     # actual positions so identical echoes cannot acquire speech identity.
                     actual_positions = set(recorded_indices)
                     for position, (text, index) in enumerate(entries):
+                        if position in recorded_indices or position in rejected_indices:
+                            continue
                         if received_counts[text] <= 0:
                             continue
                         received_counts[text] -= 1
@@ -561,8 +606,11 @@ class SendMixin:
                         else:
                             self.note_visible_speech(target)
                     if not accepted:
-                        outcome.notes.append(f"发到 {target} 失败：平台没有接收")
-                        self._log("warning", f"发到 {target} 失败：平台没有接收")
+                        if any(proof is not None and proof.cancelled for proof in ordered_proofs):
+                            suppressed = True  # Cancelled privately, without a platform failure.
+                        else:
+                            outcome.notes.append(f"发到 {target} 失败：平台没有接收")
+                            self._log("warning", f"发到 {target} 失败：平台没有接收")
                 if target_images and not cancelled:
                     # A text send may have awaited the platform or typing delay.
                     self._filter_proactive_speech(view, contact_reserved=receipt is not None)
@@ -572,8 +620,10 @@ class SendMixin:
                     auto_images = autonomous(image_kinds)
                     from ..speech_policy import guard_send
                     with guard_send(lambda sid, i: all(self.speech_allowed(sid, kind)
+                        and home_speech_allowed(self, view, kind, view.speech_proof("", index, images=True))
                         and self.contact_speech_allowed(view, sid, kind, reserved=receipt is not None)
-                        for kind in image_kinds)):
+                        for index, kind in enumerate(image_kinds)),
+                        async_check=lambda sid, i: self._home_images_ready(view, image_kinds)):
                         try:
                             accepted = await self._send_group_images(target, target_images)
                         except asyncio.CancelledError:
@@ -622,9 +672,11 @@ class SendMixin:
                 speech_ids={"": list(outcome.speech_ids.get("", []))},
                 speech_people={"": list(outcome.speech_people.get("", []))},
                 speech_origins={"": list(outcome.speech_origins.get("", []))},
+                speech_proofs={"": list(outcome.speech_proofs.get("", []))},
                 image_kinds={"": list(outcome.image_kinds.get("", []))},
                 image_ids={"": list(outcome.image_ids.get("", []))},
-                image_people={"": list(outcome.image_people.get("", []))})
+                image_people={"": list(outcome.image_people.get("", []))},
+                image_proofs={"": list(outcome.image_proofs.get("", []))})
             await send_target(target, view, pending)
         for target in dict.fromkeys([*routed, *routed_images]):
             if cancelled:
@@ -636,9 +688,11 @@ class SendMixin:
                 speech_ids={"": list(outcome.speech_ids.get(target, []))},
                 speech_people={"": list(outcome.speech_people.get(target, []))},
                 speech_origins={"": list(outcome.speech_origins.get(target, []))},
+                speech_proofs={"": list(outcome.speech_proofs.get(target, []))},
                 image_kinds={"": list(outcome.image_kinds.get(target, []))},
                 image_ids={"": list(outcome.image_ids.get(target, []))},
-                image_people={"": list(outcome.image_people.get(target, []))})
+                image_people={"": list(outcome.image_people.get(target, []))},
+                image_proofs={"": list(outcome.image_proofs.get(target, []))})
             await send_target(target, view)
         outcome.delivered_messages.update(delivered)
         if delivered or delivered_images:
@@ -681,7 +735,20 @@ class SendMixin:
                     "send_failed",
                     {"messages": ordered, "note": failed_note},
                 )
-        elif not sent and ordered and attempted:
+        elif not sent and ordered and attempted and not suppressed:
             outcome.notes.append("平台没有接收这批消息")
         if cancelled:
             raise asyncio.CancelledError()
+
+    async def _home_images_ready(self, outcome: TickOutcome, kinds: list[str]) -> bool:
+        # One platform message can contain several images from the same lease.
+        # Verify each distinct source once, without repeating its persona read.
+        checked = set()
+        for index, kind in enumerate(kinds):
+            proof = outcome.speech_proof("", index, images=True)
+            identity = id(proof)
+            if identity not in checked:
+                if not await home_persona_allowed(self, outcome, kind, proof):
+                    return False
+                checked.add(identity)
+        return True

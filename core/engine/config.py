@@ -85,6 +85,12 @@ class ConfigMixin:
     def reload_config(self) -> list[str]:
         """热加载配置：世界 / 日程 / 会话。"""
 
+        previous_lives = {}
+        had_schedule_signature = self._schedule_signature is not None
+        if had_schedule_signature:
+            for session_id in self.tick_session_ids():
+                with self.config_scope(session_id):
+                    previous_lives[self.state_key(session_id)] = self.config_scope_id
         world, schedules, sessions, warnings = self.store.reload()
         # 日程内容变了（改了时间/星期/动作）就把检查游标往回拨一次，
         # 否则「刚把时间改到现在」的日程会被当成已经检查过的过去。
@@ -100,8 +106,7 @@ class ConfigMixin:
             for item in (schedules.schedules if schedules is not None else [])
         ]
         signature.append(tuple((item.session_id, repr(item.config_overrides)) for item in sessions.sessions))
-        if self._schedule_signature is not None and signature != self._schedule_signature:
-            self._schedule_reset_pending = True
+        schedule_changed = self._schedule_signature is not None and signature != self._schedule_signature
         self._schedule_signature = signature
         # 扩展包带来的动作：合并进动作库（坏的定义直接丢，不影响原动作）
         self._apply_extension_actions(world)
@@ -128,6 +133,7 @@ class ConfigMixin:
         self.db.raw.split_profile_sessions({item.session_id: self.state_key(item.session_id)
                                             for item in sessions.sessions})
         self._scope_runtimes.clear()
+        self._reload_schedule_rechecks(signature, previous_lives, had_schedule_signature, schedule_changed)
         return warnings
 
     def _make_runtime(self, world, schedules) -> dict[str, Any]:

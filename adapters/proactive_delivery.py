@@ -54,6 +54,28 @@ def prepared_chain(target, text, index):
     return list(row["chain"]) if row and row["text"] == text else None
 
 
+def rebase_prepared(view, retained):
+    """A later policy filter must move the exact prepared occurrence with it."""
+    current = WIRE.get()
+    if not current:
+        return
+    target = view.home()
+    remap = {old: new for new, old in enumerate(retained)}
+    ordered = {index: position for position, (_text, index) in enumerate(view.ordered_entries())
+               if index is not None}
+    wire = {key: row for key, row in current.items() if key[0] != target}
+    for (sid, _position), row in current.items():
+        if sid != target:
+            continue
+        previous = row.get("message_index")
+        if previous not in remap:
+            continue
+        index = remap[previous]
+        position = index if row.get("instant") else ordered[index]
+        wire[(target, position + row.get("echo_count", 0))] = {**row, "message_index": index}
+    WIRE.set(wire)
+
+
 @asynccontextmanager
 async def delivery(plugin, target, view, *, echo_count=0, instant=False):
     original = view.native_events.get(target) or source_event(plugin, target)
@@ -145,7 +167,8 @@ async def delivery(plugin, target, view, *, echo_count=0, instant=False):
         identities.append(identity)
         retained.append(index)
         wire[(target, position)] = {"text": body, "chain": chain, "event": event,
-                                   "accepted": False, "history_target": history_target}
+                                   "accepted": False, "history_target": history_target,
+                                   "message_index": position, "instant": instant, "echo_count": echo_count}
         trace = next((r for r in view.speech_decisions if r["id"] == identity), None)
         if trace and body != text:
             drafts = trace.get("drafts", [])
@@ -160,6 +183,7 @@ async def delivery(plugin, target, view, *, echo_count=0, instant=False):
     view.speech_people[""] = [tuple(sorted(view.speech_recipients("", i))) for i in retained]
     origins = view.speech_origins.get("", [])
     view.speech_origins[""] = [origins[i] if i < len(origins) else target for i in retained]
+    view.speech_proofs[""] = [view.speech_proof("", i) for i in retained]
     view.debug_positions = [positions.get(int(pos), len(messages)) for pos in debug_positions]
     # Engine indices include interleaved debug echoes. Match the final ordered
     # entries before transmission so echoes can never acquire speech receipts.

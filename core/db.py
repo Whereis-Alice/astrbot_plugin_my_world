@@ -1520,6 +1520,12 @@ class Database(
 
     # ---------------- 日程触发记录 ----------------
 
+    def has_schedule_fired(self, *, session_id: str, schedule_id: str, day_key: str, slot: str = "") -> bool:
+        """Read the original slot's receipt before an optional configuration recheck."""
+        return bool(self._query("SELECT 1 FROM schedule_fire WHERE session_id = ? AND schedule_id = ? "
+                                "AND day_key = ? AND slot = ? LIMIT 1",
+                                (session_id, schedule_id, day_key, str(slot or ""))))
+
     def mark_schedule_fired(
         self, *, session_id: str, schedule_id: str, day_key: str, slot: str = ""
     ) -> bool:

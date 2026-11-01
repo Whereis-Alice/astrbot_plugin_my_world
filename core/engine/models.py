@@ -71,6 +71,25 @@ class TickOutcome:
     """Arrival history at observation; returning home cannot revive a stale comment."""
     chat_replied_seq: dict[str, int] = field(default_factory=dict)
 
+    generation_origin: str = ""
+    speech_proofs: dict[str, list[Any]] = field(default_factory=dict, repr=False)
+    image_proofs: dict[str, list[Any]] = field(default_factory=dict, repr=False)
+    """Transient original-life proofs, kept beside each queued occurrence."""
+
+    def __post_init__(self):
+        # dataclasses.replace retains this marker and must never refresh an old
+        # draft's generation proof merely because delivery has entered a lease.
+        if self.generation_origin:
+            return
+        self.generation_origin = self.session_id
+        from .queued_home import capture_home_proof
+        for buffers, metadata, kinds in (({"": self.messages, **self.routed}, self.speech_proofs, self.speech_kinds),
+                                         ({"": self.images, **self.routed_images}, self.image_proofs, self.image_kinds)):
+            for key, lines in buffers.items():
+                values = kinds.get(key, [])
+                metadata[key] = [capture_home_proof(values[i] if i < len(values) else self.speech_kind)
+                                 for i in range(len(lines))]
+
     def take_messages(self) -> list[str]:
         """取走"还没发出去"的几句话（调用方负责真的发出去）。"""
 
@@ -198,6 +217,10 @@ class TickOutcome:
         origins = self.speech_origins.setdefault(key, [])
         origins.extend([self.home()] * max(0, len(bucket) - len(origins)))
         origins.append(target)
+        from .queued_home import capture_home_proof
+        proofs = self.speech_proofs.setdefault(key, [])
+        proofs.extend([None] * max(0, len(bucket) - len(proofs)))
+        proofs.append(capture_home_proof(self.speech_kind if kind is None else kind))
         if not target or target == str(self.session_id):
             self.messages.append(body)
             return
@@ -228,7 +251,15 @@ class TickOutcome:
             people = self.image_people.setdefault(key, [])
             people.extend([tuple(sorted(self.contact_people))] * max(0, len(bucket) - len(people)))
             people.append(tuple(sorted(self.contact_people)))
+            from .queued_home import capture_home_proof
+            proofs = self.image_proofs.setdefault(key, [])
+            proofs.extend([None] * max(0, len(bucket) - len(proofs)))
+            proofs.append(capture_home_proof(self.speech_kind if kind is None else kind))
             bucket.append(ref)
+
+    def speech_proof(self, key: str, index: int, *, images=False):
+        values = (self.image_proofs if images else self.speech_proofs).get(key, [])
+        return values[index] if index < len(values) else None
 
     def speech_recipients(self, key: str, index: int, *, images=False) -> set[str]:
         """Older/custom callers can still queue speech directly without metadata."""
@@ -254,7 +285,7 @@ class TickOutcome:
         previous = {target: list(self.routed.get(target, [])) for target in moved}
         for metadata, fallback in ((self.speech_kinds, self.speech_kind), (self.speech_ids, ""),
                                    (self.speech_people, tuple(sorted(self.contact_people))),
-                                   (self.speech_origins, None)):
+                                   (self.speech_origins, None), (self.speech_proofs, None)):
             values = list(metadata.get("", []))
             def value(i):
                 return values[i] if i < len(values) else fallback

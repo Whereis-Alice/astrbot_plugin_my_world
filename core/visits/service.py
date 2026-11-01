@@ -37,7 +37,10 @@ class VisitService(VisitFlow, VisitJournal):
 
     async def close(self) -> None:
         self._closed = True
-        await self.transport.close()
+        try:
+            await self._close_memory_tasks()
+        finally:
+            await self.transport.close()
 
     def _enabled(self):
         if not self.config.enabled or self._closed or self.error:
@@ -465,5 +468,5 @@ class VisitService(VisitFlow, VisitJournal):
             current = self._state["visits"][visit["id"]]
             await self._finish(current, "interrupted", "真人要求告别归家")
         await self._notify_end(visit["id"])
-        await self._remember(visit["id"])
+        await self._observe_memory(visit["id"])
         return {"ok": True, "status": "interrupted"}

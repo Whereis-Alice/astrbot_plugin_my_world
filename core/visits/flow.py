@@ -485,13 +485,13 @@ class VisitFlow(VisitRhythm):
                     continue
                 if visit["status"] in TERMINAL:
                     await self._notify_end(visit_id)
-                    await self._remember(visit_id)
+                    await self._observe_memory(visit_id)
                     continue
                 if visit["expires_at"] <= self._now():
                     async with self._lock:
                         await self._finish(visit, "expired", "本次停留到期，保留已确认经过")
                     await self._notify_end(visit_id)
-                    await self._remember(visit_id)
+                    await self._observe_memory(visit_id)
                     continue
                 if not self._life_enabled(visit["scope"]):
                     async with self._lock:

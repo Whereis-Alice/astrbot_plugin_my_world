@@ -8,6 +8,7 @@ from contextlib import contextmanager
 
 SILENT_FOLLOWUP = ContextVar("world_silent_followup", default=False)
 SEND_CHECK = ContextVar("world_send_check", default=None)
+ASYNC_SEND_CHECK = ContextVar("world_async_send_check", default=None)
 REPLY_TARGET = ContextVar("world_reply_target", default=None)
 SPEECH_OUTCOME = ContextVar("world_speech_outcome", default=None)
 PLAN_SPEECH = ContextVar("world_plan_speech", default=None)
@@ -89,18 +90,30 @@ def reply_target(session_id: str, index: int = 0) -> str:
 
 
 @contextmanager
-def guard_send(check):
+def guard_send(check, *, async_check=None):
     """Recheck authorization after typing waits, without changing port signatures."""
     token = SEND_CHECK.set(check)
+    async_token = ASYNC_SEND_CHECK.set(async_check)
     try:
         yield
     finally:
+        ASYNC_SEND_CHECK.reset(async_token)
         SEND_CHECK.reset(token)
 
 
 def segment_allowed(session_id: str, index: int = 0) -> bool:
     check = SEND_CHECK.get()
     return check is None or bool(check(session_id, index))
+
+
+async def segment_ready(session_id: str, index: int = 0) -> bool:
+    """Optional actual-send check; legacy/custom ports retain sync protection."""
+    if not segment_allowed(session_id, index):
+        return False
+    check = ASYNC_SEND_CHECK.get()
+    if check is not None and not await check(session_id, index):
+        return False
+    return segment_allowed(session_id, index)
 
 
 def speech_origin(source):

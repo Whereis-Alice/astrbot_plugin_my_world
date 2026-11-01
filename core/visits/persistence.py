@@ -13,6 +13,8 @@ from .protocol import RESERVED, TERMINAL, new_id, public_actor
 from .model_retry import valid_retry, visible_wait
 
 KEY = "world_visits.v1"
+MAX_MEMORY_WORKERS = 2
+MEMORY_WAIT_SECONDS = .05
 
 
 class VisitJournal(WorldConnections):
@@ -25,6 +27,7 @@ class VisitJournal(WorldConnections):
         self._closed = False
         self._touched: dict[str, float] = {}
         self._remembering: set[str] = set()
+        self._memory_tasks: dict[str, asyncio.Task] = {}
         self.error = ""
 
     async def _load(self):
@@ -224,7 +227,75 @@ class VisitJournal(WorldConnections):
             visit.pop("end_pending", None)
         await self._save()
 
+    async def _start_memory(self, visit_id):
+        """Keep at most two owned writes; each trip retains its original task."""
+        async with self._lock:
+            current = self._memory_tasks.get(visit_id)
+            if current and not current.done():
+                return current, False
+            visit = self._state["visits"].get(visit_id)
+            if (self._closed or not visit or visit["status"] not in TERMINAL or visit.get("remembered")
+                    or visit_id in self._remembering or visit.get("remember_retry_at", 0) > self._now()
+                    or sum(not task.done() for task in self._memory_tasks.values()) >= MAX_MEMORY_WORKERS):
+                return None, False
+            task = asyncio.create_task(self._write_memory(visit_id), name="world-visit-memory:" + visit_id)
+            self._memory_tasks[visit_id] = task
+
+            def finished(done):
+                if self._memory_tasks.get(visit_id) is done:
+                    self._memory_tasks.pop(visit_id, None)
+                if not done.cancelled() and (error := done.exception()) is not None:
+                    logger.warning("串门记忆任务暂未完成（%s），保留原记录等待重试", type(error).__name__)
+
+            task.add_done_callback(finished)
+            return task, True
+
+    async def _observe_memory(self, visit_id):
+        """A slow write releases the visit clock without cancelling its transaction."""
+        task, _ = await self._start_memory(visit_id)
+        if task and not task.done():
+            await asyncio.wait({task}, timeout=MEMORY_WAIT_SECONDS)
+
+    @staticmethod
+    async def _await_memory_tasks(tasks):
+        """Cancellation cannot abandon a SQLite worker which still owns a write."""
+        if not tasks:
+            return
+        joined = asyncio.gather(*tasks, return_exceptions=True)
+        cancelled = False
+        while not joined.done():
+            try:
+                await asyncio.shield(joined)
+            except asyncio.CancelledError:
+                cancelled = True
+        joined.result()
+        if cancelled:
+            raise asyncio.CancelledError()
+
+    async def _close_memory_tasks(self):
+        tasks = tuple(self._memory_tasks.values())
+        for task in tasks:
+            task.cancel()
+        try:
+            await self._await_memory_tasks(tasks)
+        finally:
+            self._memory_tasks = {key: task for key, task in self._memory_tasks.items() if not task.done()}
+
     async def _remember(self, visit_id):
+        """A direct first call waits; duplicate calls retain the existing single flight."""
+        task, started = await self._start_memory(visit_id)
+        if not started:
+            return
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            task.cancel()
+            try:
+                await self._await_memory_tasks((task,))
+            finally:
+                raise
+
+    async def _write_memory(self, visit_id):
         async with self._lock:
             visit = self._state["visits"].get(visit_id)
             if (self._closed or not visit or visit["status"] not in TERMINAL or visit.get("remembered")
