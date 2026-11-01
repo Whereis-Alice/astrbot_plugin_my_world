@@ -84,6 +84,29 @@ class VisitsBrowserTests(unittest.TestCase):
         expect(self.page.get_by_role('button', name='打电话', exact=True)).to_have_attribute('aria-expanded', 'false')
         self.assertEqual(self.errors, [])
 
+    def test_pending_contact_is_not_displayed_as_an_arrived_visit(self):
+        self.open_phone()
+        for status in ('inviting', 'offered'):
+            with self.subTest(status=status):
+                self.page.evaluate("""status => {
+                  visitData.active={id:'waiting',status,created_at:1761990000,
+                    remote:{id:'friend',name:'爱丽丝'},log:[],contact_error:'对方串门服务暂时不可用（HTTP 503）'};
+                }""", status)
+                self.page.locator('#tab-visits').get_by_role('button', name='刷新', exact=True).click()
+                expect(self.page.locator('.visits-phone-hint')).to_have_text('邀请还在等待决定，双方答应后才会相见。')
+                expect(self.page.get_by_role('button', name='取消邀请', exact=True)).to_be_enabled()
+                expect(self.page.locator('.visits-channel-status')).to_have_text('通道状态：对方串门服务暂时不可用（HTTP 503）')
+                if status == 'offered':
+                    expect(self.page.locator('.visits-current h3')).to_contain_text('等待接待决定')
+        self.page.evaluate("""() => {
+          visitData.active.status='active';visitData.active.arrived_at=1761990100;delete visitData.active.contact_error;
+        }""")
+        self.page.locator('#tab-visits').get_by_role('button', name='刷新', exact=True).click()
+        expect(self.page.get_by_role('button', name='告别归家', exact=True)).to_be_enabled()
+        expect(self.page.locator('.visits-phone-hint')).to_have_text('她们正在相见，告别归家后可以再约。')
+        expect(self.page.locator('.visits-channel-status')).to_have_count(0)
+        self.assertEqual(self.errors, [])
+
     def test_reading_history_survives_refresh_but_does_not_follow_a_life_switch(self):
         self.page.evaluate("""() => {
           visitData.history=[{id:'past-call',status:'completed',created_at:1761990000,

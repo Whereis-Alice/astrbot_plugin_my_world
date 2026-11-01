@@ -12,6 +12,7 @@ import aiohttp
 
 from .config import normalize_url
 from .protocol import ID, RESERVED, code_id, derive_key, digest, envelope, new_id, public_actor, text, validate_actor, verify
+from .transport import VisitTransportError
 
 MAX_LIVES = 32
 CONTROL_OPS = {"world_catalog", "world_bind"}
@@ -329,10 +330,14 @@ class WorldConnections:
             async with self._lock:
                 conn = self._state["connections"].get(cid)
                 if conn and not self._closed:
-                    reason = ("暂时联系不上对方，尚未取得最新角色目录；原配对与已有角色保留"
-                              if isinstance(exc, (ConnectionError, TimeoutError, OSError))
-                              or isinstance(exc.__cause__, (aiohttp.ClientError, TimeoutError, OSError)) else
-                              "对方角色目录未通过确认；原配对与已有角色保留，可刷新或检查双方版本")
+                    if isinstance(exc, VisitTransportError):
+                        pending = "尚未取得最新角色目录" if exc.category == "channel" else "角色目录未通过确认"
+                        reason = f"{exc}；{pending}，原配对与已有角色保留"
+                    else:
+                        reason = ("暂时联系不上对方，尚未取得最新角色目录；原配对与已有角色保留"
+                                  if isinstance(exc, (ConnectionError, TimeoutError, OSError))
+                                  or isinstance(exc.__cause__, (aiohttp.ClientError, TimeoutError, OSError)) else
+                                  "对方角色目录未通过确认；原配对与已有角色保留，可刷新或检查双方版本")
                     conn.update(catalog_error=reason,
                                 next_catalog_at=self._now() + max(60, self.config.auto_interval_minutes * 60))
                     await self._save()

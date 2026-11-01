@@ -9,12 +9,15 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from aiohttp import web
+
 from tests import fake_astrbot
 fake_astrbot.install()
 from core.db import AsyncDatabase  # noqa: E402 - install the SDK fixture before core imports
 from core.visits import VisitConfig, VisitService  # noqa: E402
 from core.visits.persistence import KEY  # noqa: E402
 from core.visits.protocol import envelope, public_actor  # noqa: E402
+from core.visits.transport import VisitTransportError  # noqa: E402
 
 
 class LivesActor:
@@ -337,6 +340,7 @@ class GlobalPairingTests(unittest.IsolatedAsyncioTestCase):
                 await release.wait()
             return description
         self.b_actor.describe = delayed
+        before = copy.deepcopy(self.a._state["connections"][self.connection["id"]])
         pending = asyncio.create_task(self.a.refresh_connection(self.connection["id"]))
         await entered.wait()
         self.b_actor.rows[self.b1]["persona_key"] = "private-persona-new"
@@ -344,7 +348,12 @@ class GlobalPairingTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await pending
         self.assertIn(self.connection["id"], self.a._state["connections"])
-        self.assertIn("未通过确认", self.a._state["connections"][self.connection["id"]]["catalog_error"])
+        current = self.a._state["connections"][self.connection["id"]]
+        # The listener rejects this invalidated catalog with an unsigned HTTP
+        # error. The caller can identify the channel status, not its inner cause.
+        self.assertIn("HTTP 400", current["catalog_error"])
+        self.assertEqual(current["actors"], before["actors"])
+        self.assertEqual(current["anchors"], before["anchors"])
 
     async def test_catalog_network_failure_keeps_pairing_and_does_not_claim_an_old_server(self):
         from unittest.mock import AsyncMock, patch
@@ -362,6 +371,48 @@ class GlobalPairingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("联系不上", after["catalog_error"])
         self.assertNotIn("旧版", after["catalog_error"])
         self.assertGreater(after["next_catalog_at"], self.now)
+
+
+class CatalogTransportFailureTests(unittest.IsolatedAsyncioTestCase):
+    asyncSetUp = GlobalPairingTests.asyncSetUp
+
+    async def test_http_and_protocol_failures_keep_pairing_and_consistent_safe_reasons(self):
+        reply = {"status": 200, "raw": b"{}"}
+        app = web.Application()
+        async def respond(request):
+            return web.Response(status=reply["status"], body=reply["raw"])
+        app.router.add_post("/v1/message", respond)
+        runner = web.AppRunner(app, access_log=None)
+        await runner.setup()
+        self.addAsyncCleanup(runner.cleanup)
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        connection = self.a._state["connections"][self.connection["id"]]
+        connection["url"] = f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}"
+        before = copy.deepcopy(connection)
+        cases = ((503, b"private upstream diagnostic", "channel"),
+                 (200, b"<html>untrusted diagnostic</html>", "protocol"),
+                 (200, b'{"value":NaN}', "protocol"), (200, b"\xff", "protocol"),
+                 (200, b"[]", "protocol"), (200, b"x" * 32769, "protocol"))
+        for status, raw, category in cases:
+            with self.subTest(status=status, raw=raw[:30]):
+                reply.update(status=status, raw=raw)
+                with self.assertRaises(VisitTransportError) as raised:
+                    await self.a.refresh_connection(connection["id"])
+                self.assertEqual(raised.exception.category, category)
+                self.assertIn(str(raised.exception), connection["catalog_error"])
+                self.assertIn("原配对与已有角色保留", connection["catalog_error"])
+                self.assertNotIn("private upstream diagnostic", connection["catalog_error"])
+                if category == "channel":
+                    self.assertIn("HTTP 503", connection["catalog_error"])
+                    self.assertNotIn("未通过确认", connection["catalog_error"])
+                else:
+                    self.assertNotIn("联系不上", connection["catalog_error"])
+                self.assertEqual(connection["anchors"], before["anchors"])
+                self.assertEqual(connection["actors"], before["actors"])
+                self.assertGreater(connection["next_catalog_at"], self.now)
+        self.assertEqual(self.a_actor.calls, [])
+        self.assertEqual(self.b_actor.calls, [])
 
 
 class LegacyGlobalMigrationTests(unittest.IsolatedAsyncioTestCase):

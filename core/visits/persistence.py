@@ -45,6 +45,10 @@ class VisitJournal(WorldConnections):
             for visit in list(self._state["visits"].values()):
                 if visit.pop("model_pending", None):
                     await self._finish(visit, "interrupted", "上次思考被中断，只保留已确认经过")
+                elif visit.get("proposal_stage") == "pending" and (
+                        visit.get("decision_cursor") != self._decision_cursor(visit, "propose")
+                        or not isinstance(visit.get("decision"), dict)):
+                    await self._finish(visit, "interrupted", "上次邀请尚未形成可确认的决定，这次联系结束")
             await self._save()
 
     async def _save(self):
@@ -121,7 +125,8 @@ class VisitJournal(WorldConnections):
         result.update(role=visit["role"], reason=visit["reason"],
                       local=public_actor(visit["local"], self._state["instance_id"]),
                       remote=copy.deepcopy(visit["remote"]),
-                      calls_used=sum(visit["calls"].values()))
+                      calls_used=sum(visit["calls"].values()),
+                      contact_error=visit.get("contact_error", ""))
         return result
 
     async def overview(self, scope: str = "") -> dict[str, Any]:
@@ -159,6 +164,10 @@ class VisitJournal(WorldConnections):
         visit.pop("model_pending", None)
         visit.pop("outbox", None)
         visit.pop("unsent_turn", None)
+        visit.pop("proposal_offer", None)
+        visit.pop("proposal_cursor", None)
+        if "proposal_stage" in visit:
+            visit["proposal_stage"] = "done"
         if notify and contacted:
             visit["end_pending"] = {"attempts": 0, "next_at": self._now()}
         else:

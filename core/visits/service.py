@@ -359,6 +359,8 @@ class VisitService(VisitFlow, VisitJournal):
         async with self._lock:
             self._enabled()
             visit = self._state["visits"][visit_id]
+            if visit["status"] in TERMINAL and payload.get("op") != "end":
+                raise ValueError("本次旅程已结束，旧动作不再发送")
             peer = self._find_peer(visit["scope"], visit["remote"]["id"])
             if not peer or not self._peer_trusted(peer) or not self._visit_belongs(visit, peer) \
                     or not self._exchange_allowed(peer, {**payload, "id": visit_id}):
@@ -422,6 +424,7 @@ class VisitService(VisitFlow, VisitJournal):
                 candidate["expires_at"] = min(visit["expires_at"], expires)
             candidate.pop("outbox", None)
             candidate["network_failures"] = 0
+            candidate.pop("contact_error", None)
             visit.clear()
             visit.update(candidate)
             await self._save()

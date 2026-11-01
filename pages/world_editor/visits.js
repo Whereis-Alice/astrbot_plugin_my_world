@@ -1,11 +1,12 @@
 /** Paired worlds use their own channel; the editor only invites and observes. */
 const STATUS = {
-  invited: "邀请已提出", inviting: "正在提出邀请", pending: "等待答复", accepted: "对方已接受",
+  invited: "邀请已提出", inviting: "正在提出邀请", offered: "等待接待决定", pending: "等待答复", accepted: "对方已接受",
   visiting: "正在做客", active: "正在一起活动", arrived: "已经到访", returning: "正在告别归家",
   completed: "已告别归家", closed: "已经结束", ended: "已经结束", declined: "这次没有成行",
   rejected: "对方暂时不方便", cancelled: "邀请已取消", interrupted: "这次暂时中断",
   expired: "这次已结束", failed: "这次没有成行",
 };
+const WAITING = new Set(["invited", "inviting", "offered", "pending", "accepted"]);
 
 function stamp(value) {
   if (!value) return "";
@@ -69,11 +70,16 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     own.input.value = foreign.input.value = ""; ownInfo.textContent = "";
     secretRevision += 1; clearTimeout(secretTimer); clearTimeout(refreshTimer);
   }
+  function waitingForVisit() {
+    return Boolean(lifeData?.active && !lifeData.active.arrived_at && WAITING.has(lifeData.active.status));
+  }
   function controls() {
     const enabled = data?.enabled === true;
     const canInvite = enabled && Boolean(getSession()) && lifeData?.scope_enabled === true;
     generate.disabled = pair.disabled = busy || !enabled;
     home.disabled = busy || !enabled || !getSession() || !lifeData?.active;
+    const waiting = waitingForVisit();
+    home.textContent = waiting ? "取消邀请" : "告别归家";
     refresh.disabled = busy;
     saveScopes.disabled = busy || !enabled || scopeDraft === null;
     for (const checkbox of lifeChoices.querySelectorAll("input")) checkbox.disabled = busy || !enabled;
@@ -88,7 +94,8 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     const hint = phone.querySelector(".visits-phone-hint");
     if (hint) hint.textContent = !getSession() ? "先在上方选择生活，再打电话约见。" : !lifeData?.scope_enabled
       ? "这个生活尚未参与串门，请在「友邻与生活设置」中勾选并保存。" : lifeData?.active
-      ? "她们正在相见，告别归家后可以再约。" : "先听听对方是否方便，她们答应后才会相见。";
+      ? waiting ? "邀请还在等待决定，双方答应后才会相见。" : "她们正在相见，告别归家后可以再约。"
+      : "先听听对方是否方便，她们答应后才会相见。";
   }
   async function mutation(endpoint, payload = {}, global = false) {
     if (busy || (!global && !getSession())) return null;
@@ -143,6 +150,9 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     }
     card.append(summary);
     const body = el("div", "visits-visit-body"), scene = visit.scene;
+    if (live && typeof visit.contact_error === "string" && visit.contact_error.trim()) {
+      body.append(el("p", "visits-channel-status muted", `通道状态：${visit.contact_error.trim()}`));
+    }
     const endReason = typeof visit.end_reason === "string" ? visit.end_reason.trim() : "";
     if (!live || endReason) {
       const ending = el("div", "visits-end-reason");
@@ -304,7 +314,10 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
   }
   refresh.onclick = reload;
   saveScopes.onclick = () => mutation("visits/scopes", {sessions: [...(scopeDraft || [])]}, true);
-  home.onclick = async () => {if (await mutation("visits/return")) toast("这次串门准备结束，保留已确认的经历");};
+  home.onclick = async () => {
+    const waiting = waitingForVisit();
+    if (await mutation("visits/return")) toast(waiting ? "这次邀请已取消" : "这次串门准备结束，保留已确认的经历");
+  };
   generate.onclick = async () => {
     clearSecrets(); const secretRequest = secretRevision;
     const result = await mutation("visits/pair-code", {}, true);

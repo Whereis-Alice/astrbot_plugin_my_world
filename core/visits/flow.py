@@ -8,16 +8,21 @@ from typing import Any
 from .protocol import RESERVED, TERMINAL, clean_decision, clean_scene, new_id, public_actor
 from .rhythm import VisitRhythm
 from .snapshots import validate_snapshot
+from .transport import VisitTransportError
 
 
 class VisitFlow(VisitRhythm):
     @staticmethod
     def _decision_cursor(visit, phase):
-        return {"phase": phase, "status": visit["status"], "log_seq": len(visit["log"]),
-                "turns": copy.deepcopy(visit["turns"]), "event_stage": visit["event_stage"],
-                "scene_stage": visit.get("scene_stage", ""), "next_actor": visit["next_actor"]}
+        cursor = {"phase": phase, "status": visit["status"], "log_seq": len(visit["log"]),
+                  "turns": copy.deepcopy(visit["turns"]), "event_stage": visit["event_stage"],
+                  "scene_stage": visit.get("scene_stage", ""), "next_actor": visit["next_actor"]}
+        if phase == "propose":
+            cursor["proposal_stage"] = visit.get("proposal_stage", "")
+        return cursor
 
-    async def _resume_receive(self, visit_id, cursor, scope):
+    async def _resume_invitation_decision(self, visit_id, cursor, scope, phase="receive"):
+        """Recheck local invitation gates before consuming a saved choice."""
         try:
             current = await self.actor_port.describe(scope)
         except asyncio.CancelledError:
@@ -28,8 +33,8 @@ class VisitFlow(VisitRhythm):
             visit = self._state["visits"].get(visit_id)
             if not visit or self._closed or not self.config.enabled or visit["status"] in TERMINAL:
                 return None
-            if (self._decision_cursor(visit, "receive") != cursor
-                    or visit.get("decision_cursor") != cursor):
+            marker = "proposal_cursor" if phase == "propose" and visit.get("proposal_stage") == "prepared" else "decision_cursor"
+            if (self._decision_cursor(visit, phase) != cursor or visit.get(marker) != cursor):
                 return None
             if visit["expires_at"] <= self._now():
                 await self._finish(visit, "expired", "确认接待状态期间本次停留到期，旧决定作废")
@@ -46,7 +51,7 @@ class VisitFlow(VisitRhythm):
             reason = (current.get("ready_reason") or "现在不方便，稍后再约") if not current["ready"] else ""
             if not reason and not current.get("reception_open", True):
                 reason = "现在不在接待时间，稍后再约"
-            if not reason and current.get("chat_busy"):
+            if not reason and current.get("chat_busy") and (phase == "receive" or visit["automatic"]):
                 reason = "正在接眼前的交谈，稍后再约"
             if reason:
                 decision = clean_decision({"accept": False, "say": reason, "leave": True})
@@ -78,10 +83,11 @@ class VisitFlow(VisitRhythm):
                 await self._finish(visit, "expired", "本次停留已经到期，旧决定作废")
                 return None
             cursor = self._decision_cursor(visit, phase)
-            resumable = phase in {"receive", "turn", "scene"}
+            resumable = phase in {"receive", "turn", "scene"} or (
+                phase == "propose" and visit.get("proposal_stage") == "pending")
             if (resumable and visit.get("decision_cursor") == cursor
                     and isinstance(visit.get("decision"), dict)):
-                if phase != "receive":
+                if phase not in {"receive", "propose"}:
                     return copy.deepcopy(visit["decision"])
                 receive_cache = (cursor, visit["scope"])
             else:
@@ -97,7 +103,7 @@ class VisitFlow(VisitRhythm):
                 snapshot = copy.deepcopy(visit)
                 await self._save()  # Admission, including failure, is durable before inference.
         if receive_cache is not None:
-            return await self._resume_receive(visit_id, *receive_cache)
+            return await self._resume_invitation_decision(visit_id, *receive_cache, phase=phase)
         try:
             async with asyncio.timeout(self.config.timeout_seconds):
                 raw = await self.actor_port.decide(snapshot["scope"], phase, snapshot)
@@ -161,32 +167,59 @@ class VisitFlow(VisitRhythm):
             visit_id = new_id()
             visit = self._new_visit(scope, peer, local, visit_id,
                                     "guest" if direction == "outgoing" else "host", reason, automatic)
+            visit["proposal_stage"] = "pending"
             self._state["visits"][visit_id] = visit
             await self._save()
         result = await self._decide(visit_id, "propose")
+        return await self._submit_proposal(visit_id, result)
+
+    async def _submit_proposal(self, visit_id, result=None, *, retry=False):
         async with self._lock:
             visit = self._state["visits"][visit_id]
-            if visit["status"] in TERMINAL or self._closed:
+            if visit["status"] != "inviting" or self._closed or not self.config.enabled:
                 return self._visible(visit)
-            if not result or not result["accept"] or result["leave"]:
-                if visit["status"] not in TERMINAL:
-                    if result:
-                        self._append(visit, self._local_id(visit), result["contact_kind"], result["say"])
-                    await self._finish(visit, "declined", result["say"] if result and result["say"] else "现在不方便，稍后再约")
+            if visit.get("proposal_stage") == "pending":
+                if not result or visit.get("decision_cursor") != self._decision_cursor(visit, "propose"):
+                    return self._visible(visit)
+                if not result["accept"] or result["leave"]:
+                    self._append(visit, self._local_id(visit), result["contact_kind"], result["say"])
+                    await self._finish(visit, "declined", result["say"] or "现在不方便，稍后再约")
+                    return self._visible(visit)
+                visit["scene"] = clean_scene(result["scene"]) if visit["role"] == "host" else {}
+                self._append(visit, self._local_id(visit), "invitation", result["say"])
+                visit["proposal_offer"] = {
+                    "op": "offer", "role": "host" if visit["role"] == "guest" else "guest",
+                    "reason": visit["reason"], "say": result["say"], "max_calls": visit["max_calls"],
+                    "turn_limit": visit["turn_limit"], "duration": self.config.duration_minutes * 60,
+                    "invitation": copy.deepcopy(visit["log"][0]) if visit["log"] else None}
+                visit["proposal_stage"] = "prepared"
+                visit["proposal_cursor"] = self._decision_cursor(visit, "propose")
+                await self._save()
+            if visit.get("proposal_stage") != "prepared":
                 return self._visible(visit)
-            visit["scene"] = clean_scene(result["scene"]) if visit["role"] == "host" else {}
-            self._append(visit, self._local_id(visit), "invitation", result["say"])
-            await self._save()
-            offer = {"op": "offer", "role": "host" if visit["role"] == "guest" else "guest",
-                     "reason": visit["reason"], "say": result["say"], "max_calls": visit["max_calls"],
-                     "turn_limit": visit["turn_limit"], "duration": self.config.duration_minutes * 60,
-                     "invitation": copy.deepcopy(visit["log"][0]) if visit["log"] else None}
+            cursor = copy.deepcopy(visit.get("proposal_cursor"))
+            scope = visit["scope"]
+        result = await self._resume_invitation_decision(visit_id, cursor, scope, phase="propose")
+        async with self._lock:
+            visit = self._state["visits"][visit_id]
+            if (not result or self._closed or not self.config.enabled or visit["status"] != "inviting"
+                    or visit.get("proposal_stage") != "prepared"
+                    or self._decision_cursor(visit, "propose") != cursor):
+                return self._visible(visit)
+            if not result["accept"] or result["leave"]:
+                self._append(visit, self._local_id(visit), result["contact_kind"], result["say"])
+                await self._finish(visit, "declined", result["say"] or "现在不方便，稍后再约")
+                return self._visible(visit)
+            offer = copy.deepcopy(visit["proposal_offer"])
         try:
             reply = await self._send(visit_id, offer)
             async with self._lock:
                 visit = self._state["visits"][visit_id]
                 if visit["status"] in TERMINAL or self._closed:
                     return self._visible(visit)
+                visit["proposal_stage"] = "sent"
+                visit.pop("proposal_offer", None)
+                visit.pop("proposal_cursor", None)
                 if reply.get("declined"):
                     await self._finish(visit, "declined", str(reply.get("reason") or "对方暂时不方便"))
                 else:
@@ -196,10 +229,16 @@ class VisitFlow(VisitRhythm):
                     visit["expires_at"] = min(visit["expires_at"], offered.get("expires_at", visit["expires_at"]))
                     visit["next_at"] = self._now() + self.config.poll_seconds
                     await self._save()
-        except ValueError:
+        except ValueError as error:
+            if retry:
+                raise
             async with self._lock:
                 visit = self._state["visits"].get(visit_id)
                 if visit and visit["status"] not in TERMINAL and not self._closed:
+                    if isinstance(error, VisitTransportError):
+                        visit["contact_error"] = str(error)
+                    else:
+                        visit.pop("contact_error", None)
                     visit["next_at"] = self._now() + self.config.poll_seconds
                     await self._save()
         async with self._lock:
@@ -363,14 +402,21 @@ class VisitFlow(VisitRhythm):
                     continue
                 try:
                     await self._advance(visit_id)
-                except ValueError:
+                except ValueError as error:
                     async with self._lock:
                         if visit["status"] in TERMINAL or self._closed:
                             continue
+                        if isinstance(error, VisitTransportError):
+                            visit["contact_error"] = str(error)
+                        else:
+                            visit.pop("contact_error", None)
                         visit["network_failures"] = visit.get("network_failures", 0) + 1
                         visit["next_at"] = self._now() + min(600, 60 * 2 ** visit["network_failures"])
                         if visit["network_failures"] >= 3:
-                            await self._finish(visit, "interrupted", "暂时联系不上，只保留已确认经过")
+                            reason = "暂时联系不上，只保留已确认经过"
+                            if isinstance(error, VisitTransportError):
+                                reason += "：" + str(error)
+                            await self._finish(visit, "interrupted", reason)
                         else:
                             await self._save()
             await self._automatic()
@@ -397,6 +443,17 @@ class VisitFlow(VisitRhythm):
                 await self._save()
             return
         if visit["status"] == "inviting":
+            if visit.get("proposal_stage") == "pending":
+                if visit.get("model_pending"):
+                    return
+                if (visit.get("decision_cursor") == self._decision_cursor(visit, "propose")
+                        and isinstance(visit.get("decision"), dict)):
+                    result = await self._decide(visit_id, "propose")
+                    await self._submit_proposal(visit_id, result)
+                return
+            if visit.get("proposal_stage") == "prepared":
+                await self._submit_proposal(visit_id, retry=True)
+                return
             reply = await self._send(visit_id, {"op": "status"})
             async with self._lock:
                 if self._closed or visit["status"] in TERMINAL:

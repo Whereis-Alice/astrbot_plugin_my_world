@@ -3,11 +3,32 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Literal
 
 import aiohttp
 from aiohttp import web
 
 from .protocol import MAX_BYTES, canonical
+
+
+class VisitTransportError(ValueError):
+    """A safe diagnostic with stable meaning for protocol and editor callers."""
+
+    def __init__(self, message: str, *, category: Literal["channel", "protocol"],
+                 http_status: int | None = None) -> None:
+        super().__init__(message)
+        self.category = category
+        self.http_status = http_status
+
+
+def _decode_reply(raw: bytes) -> dict:
+    try:
+        result = json.loads(raw, parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
+    except (ValueError, TypeError, RecursionError) as exc:
+        raise VisitTransportError("对方返回的串门数据格式无效", category="protocol") from exc
+    if not isinstance(result, dict):
+        raise VisitTransportError("对方返回的串门数据格式无效", category="protocol")
+    return result
 
 
 class VisitTransport:
@@ -48,9 +69,12 @@ class VisitTransport:
             return web.json_response({"error": "串门请求被拒绝，请检查配对和旅程状态"}, status=400)
 
     async def request(self, url, body):
-        data = canonical(body)
+        try:
+            data = canonical(body)
+        except (ValueError, TypeError, RecursionError) as exc:
+            raise VisitTransportError("串门请求数据格式无效", category="protocol") from exc
         if len(data) > MAX_BYTES:
-            raise ValueError("串门消息过长")
+            raise VisitTransportError("串门消息过长", category="protocol")
         if self.client is None or self.client.closed:
             self.client = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.config.timeout_seconds),
                                                 trust_env=False)
@@ -58,16 +82,19 @@ class VisitTransport:
             async with self.client.post(url.rstrip("/") + "/v1/message", data=data,
                                         headers={"Content-Type": "application/json"}, allow_redirects=False) as response:
                 if response.status != 200:
-                    raise ValueError("对方暂时不能接收，请检查配对、地址和状态")
-                raw = await response.content.read(MAX_BYTES + 1)
+                    raise VisitTransportError(f"对方串门服务暂时无法接收（HTTP {response.status}），请检查地址和服务状态",
+                                              category="channel", http_status=response.status)
+                try:
+                    # A proxy may split JSON across chunks. Wait for EOF while
+                    # retaining only the allowed bytes plus one overflow byte.
+                    raw = await response.content.readexactly(MAX_BYTES + 1)
+                except asyncio.IncompleteReadError as exc:
+                    raw = exc.partial
                 if len(raw) > MAX_BYTES:
-                    raise ValueError("对方返回的消息过长")
-                result = json.loads(raw, parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
-                if not isinstance(result, dict):
-                    raise ValueError("对方返回无效协议数据")
-                return result
-        except (aiohttp.ClientError, asyncio.TimeoutError, OSError, json.JSONDecodeError) as exc:
-            raise ValueError("暂时联系不上对方，请检查串门服务") from exc
+                    raise VisitTransportError("对方返回的串门消息过长", category="protocol")
+                return _decode_reply(raw)
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+            raise VisitTransportError("暂时联系不上对方，请检查串门服务", category="channel") from exc
 
     async def close(self):
         runner, self.runner = self.runner, None
