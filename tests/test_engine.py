@@ -11984,7 +11984,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             action_chain=[{"type": "say", "messages": ["早呀"]}],
         )
         self.clock.set_struct(datetime(2026, 9, 15, 12, 0))
-        await self.engine.tick()
+        await self.finish_schedule_tick()
         self.assertIn("早呀", self.messenger.flat_messages)
         self.assertEqual(self.llm.calls, [])
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -38,6 +39,67 @@ def _speaker(visit: dict, local: dict, actor_id: Any) -> str:
     if identity in friend_ids and identity not in self_ids:
         return "friend"
     return "unknown"
+
+
+def _recall_excerpt(row: dict, meta: dict, limit: int = 450) -> str:
+    """Keep an unchanged receipt's opening and ending within the recall budget.
+
+    The fingerprint and row count guard the old rendered format: an editor's
+    text or a quoted lookalike label is not reinterpreted as a new speaker.
+    Only excerpts change; the full durable memory and receipt stay untouched.
+    """
+    content = str(row.get("content") or "").strip()
+    if len(content) <= limit:
+        return content
+
+    def prefix():
+        value = _text(content, limit - 1)
+        # Do not leave an opening source label with no closing bracket.
+        if value.rfind("[") > value.rfind("]"):
+            value = value[:value.rfind("[")].rstrip("；")
+        return value + "…"
+
+    proof = meta.get("visit_confirmation")
+    if (not isinstance(proof, dict) or not isinstance(proof.get("log"), list)
+            or proof.get("content") != hashlib.sha256(content.encode("utf-8")).hexdigest()):
+        return prefix()
+    ending = ("。这次已告别归家。" if meta.get("status") == "completed" else
+              "。本次相处已结束：" + _text(meta.get("end_reason"), 500) + "；只记已确认的部分。")
+    before, separator, reflection = content.rpartition(ending)
+    header, marker, body = before.partition("已经确认的经过：")
+    feeling_label = "我当时的感受（主观）："
+    if not separator or not marker or (reflection and not reflection.startswith(feeling_label)):
+        return prefix()
+    facts = re.split(r"；(?=\[)", body)
+    if (len(facts) != len(proof["log"]) or not facts
+            or any(not fact.startswith("[") or "] " not in fact for fact in facts)):
+        return prefix()
+    # Keep the first encounter, latest settled event (or penultimate turn),
+    # and final words. The same row can satisfy several roles only once.
+    resolution = next((index for index in range(len(facts) - 1, -1, -1)
+                       if facts[index].startswith("[outcome] ")), max(0, len(facts) - 2))
+    selected = sorted({0, resolution, len(facts) - 1})
+    note = "已经确认的经过（节选，中段省略）："
+
+    def render(indices):
+        parts = [header] + [facts[index] for index in indices] + [ending, reflection]
+        floors = [min(len(header), 20)]
+        floors += [min(len(fact), fact.index("] ") + 2 + 16) for fact in parts[1:-2]]
+        floors += [min(len(ending), 30), min(len(reflection), len(feeling_label) + 16)]
+        lengths = [max(floor, min(len(part), 140 if 0 < index < len(parts) - 2 else 90))
+                   for index, (part, floor) in enumerate(zip(parts, floors))]
+        budget = limit - len(note) - max(0, len(indices) - 1)
+        if sum(floors) > budget:
+            return None
+        while sum(lengths) > budget:
+            index = max(range(len(parts)), key=lambda index: lengths[index] - floors[index])
+            lengths[index] -= min(sum(lengths) - budget, lengths[index] - floors[index])
+        excerpts = [part if len(part) <= size else part[:size - 1] + "…"
+                    for part, size in zip(parts, lengths)]
+        return excerpts[0] + note + "；".join(excerpts[1:-2]) + "".join(excerpts[-2:])
+
+    # Exceptionally long display names can consume most of three source labels.
+    return render(selected) or render(sorted({0, len(facts) - 1})) or prefix()
 
 
 class VisitActorPort:
@@ -189,7 +251,7 @@ class VisitActorPort:
                 continue
             if (row.get("source") == "life_event" and meta.get("kind") == "world_visit" and meta.get("peer_id") == partner
                     and meta.get("persona_key") == persona_key):
-                result.append(_text(row.get("content"), 450))
+                result.append(_recall_excerpt(row, meta))
                 if len(result) >= 3:
                     break
         return result
@@ -309,6 +371,11 @@ class VisitActorPort:
                 raise
             except Exception as exc:
                 raise VisitDecisionError("state", candidate=result) from exc
+            # A verified refusal/leave cannot start a visit. Preserve the
+            # character's original telephone reply even if home became busy
+            # while she thought; readiness still gates an actual acceptance.
+            if phase in {"propose", "receive"} and (not result["accept"] or result["leave"]):
+                return result
             if not latest["ready"]:
                 raise VisitDecisionError("life_busy", candidate=result)
             if phase in {"propose", "receive"} and not latest["reception_open"]:

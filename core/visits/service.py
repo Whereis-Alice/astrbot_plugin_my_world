@@ -69,6 +69,7 @@ class VisitService(VisitFlow, VisitJournal):
         if not isinstance(code, str) or len(code) != 64 or not all(c in "0123456789abcdef" for c in code):
             raise ValueError("配对码格式无效，请重新生成")
         local = await self._exchange_description(scope)
+        self._enabled()
         actor = public_actor(local, self._state["instance_id"])
         request = envelope(code, actor["id"], "pair:" + code_id(code),
                            {"op": "pair", "actor": actor, "url": self.config.public_url}, self._now())
@@ -121,6 +122,7 @@ class VisitService(VisitFlow, VisitJournal):
             raise ValueError("无效协议消息")
         receipt_key = str(body.get("sender")) + "/" + str(body.get("message_id"))
         async with self._lock:
+            self._enabled()
             cached = self._state["receipts"].get(receipt_key)
             if cached:
                 return await self._cached_response(body, cached)
@@ -152,6 +154,7 @@ class VisitService(VisitFlow, VisitJournal):
                     or not self._peer_trusted(current_peer) or not self._exchange_allowed(current_peer, payload)):
                 raise ValueError("友邻连接已变化，请稍后重新联系")
             current_local = await self._exchange_description(peer["scope"])
+            self._enabled()
             if current_local["actor_id"] != local["actor_id"] or current_local["persona_key"] != local["persona_key"]:
                 raise ValueError("生活身份已变化，旧请求作废")
             result = await self._inbox(peer, current_local, payload)
@@ -165,6 +168,7 @@ class VisitService(VisitFlow, VisitJournal):
         context = await self._receipt_context(body, cached["key"], cached["response"])
         if cached.get("context") and context != cached["context"]:
             raise ValueError("生活身份或配对已变化，旧请求作废")
+        self._enabled()
         return copy.deepcopy(cached["response"])
 
     def _settlement_exchange(self, peer, payload):

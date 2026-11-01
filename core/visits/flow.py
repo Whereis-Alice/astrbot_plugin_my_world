@@ -72,10 +72,11 @@ class VisitFlow(VisitRhythm):
                 if visit.pop("model_retry", None) is not None:
                     await self._save()
                 return copy.deepcopy(visit["decision"])
-            reason = (current.get("ready_reason") or "现在不方便，稍后再约") if not current["ready"] else ""
-            if not reason and not current.get("reception_open", True):
+            declining = visit["decision"].get("accept") is False or visit["decision"].get("leave") is True
+            reason = (current.get("ready_reason") or "现在不方便，稍后再约") if not declining and not current["ready"] else ""
+            if not declining and not reason and not current.get("reception_open", True):
                 reason = "现在不在接待时间，稍后再约"
-            if not reason and current.get("chat_busy") and (phase == "receive" or visit["automatic"]):
+            if not declining and not reason and current.get("chat_busy") and (phase == "receive" or visit["automatic"]):
                 reason = "正在接眼前的交谈，稍后再约"
             if reason:
                 decision = clean_decision({"accept": False, "say": reason, "leave": True})
@@ -134,7 +135,23 @@ class VisitFlow(VisitRhythm):
                 if charged:
                     visit["calls"][own] += 1
                 snapshot = copy.deepcopy(visit)
-                await self._save()  # Admission, including failure, is durable before inference.
+                try:
+                    await self._save()  # Admission is durable before inference.
+                except (Exception, asyncio.CancelledError):
+                    if (visit.get("model_pending") == token and not self._closed
+                            and visit["status"] not in TERMINAL):
+                        # No actor call has started: this exact reservation is refundable.
+                        visit.pop("model_pending", None)
+                        if charged:
+                            visit["calls"][own] = max(0, visit["calls"][own] - 1)
+                        try:
+                            if defer_decision(visit, cursor, category="state", now=self._now(), candidate=candidate):
+                                await self._save()
+                            else:
+                                await self._finish(visit, "interrupted", str(VisitDecisionError("state")))
+                        except Exception:
+                            pass  # Keep in-memory recovery while propagating the storage failure.
+                    raise
         if saved_choice is not None:
             return await self._resume_saved_decision(visit_id, *saved_choice, phase=phase)
         generated = {}
@@ -147,9 +164,11 @@ class VisitFlow(VisitRhythm):
                         current = await self.actor_port.describe(snapshot["scope"])
                         if any(current[key] != snapshot["local"][key] for key in ("actor_id", "persona_key")):
                             raise VisitDecisionError("identity", request_started=False)
-                        if not current["ready"]:
+                        if phase in {"propose", "receive"} and (candidate.get("accept") is False or candidate.get("leave") is True):
+                            raw = candidate  # A refusal needs identity proof, not an open reception.
+                        elif not current["ready"]:
                             raise VisitDecisionError("life_busy", request_started=False, candidate=candidate)
-                        if phase in {"propose", "receive"} and not current.get("reception_open", True):
+                        elif phase in {"propose", "receive"} and not current.get("reception_open", True):
                             raw = {"accept": False, "leave": True, "say": "现在不在接待时间，稍后再约",
                                    "contact_kind": "contact_status"}
                         elif phase == "receive" and current.get("chat_busy"):

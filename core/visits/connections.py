@@ -370,6 +370,25 @@ class WorldConnections:
             await self._save()
         return self._safe_connection(conn)
 
+    async def _refresh_rejected_binding(self, scope, cid):
+        """A rejected cached role may refresh its world once per catalog cooldown."""
+        try:
+            async with self._lock:
+                conn = self._state["connections"].get(cid)
+                if (self._closed or not self.config.enabled or not self._life_enabled(scope)
+                        or not conn or not conn.get("enabled", True)
+                        or conn.get("next_catalog_at", 0) > self._now()):
+                    return
+                # Several local lives can hit the same obsolete role together.
+                # Reserve the existing catalog cooldown before releasing the lock.
+                conn["next_catalog_at"] = self._now() + max(60, self.config.auto_interval_minutes * 60)
+                await self._save()
+            await self.refresh_connection(cid)
+        except Exception:
+            # Refresh diagnostics already preserve the old catalog and anchors.
+            # A maintenance failure must not replace the original bind rejection.
+            return
+
     async def _prepare_peer(self, scope, peer_id):
         if not self._life_enabled(scope):
             raise ValueError("这个生活还没有开启串门，请在友邻页勾选参与的生活")
@@ -408,14 +427,23 @@ class WorldConnections:
         own = public_actor(local, self._state["instance_id"])
         anchor = conn["anchors"][0]
         own_token = self._binding_token(scope, local, anchor)
-        result, anchor = await self._control_request(conn["id"], {"op": "world_bind", "actor": own,
-            "actor_token": own_token, "target_actor": actor["id"]})
-        remote = validate_actor(result.get("actor"))
-        remote_token = result.get("actor_token")
-        if (remote["id"] != actor["id"] or remote["instance_id"] != conn["id"]
-                or not isinstance(remote_token, str) or len(remote_token) != 64
-                or any(c not in "0123456789abcdef" for c in remote_token)):
-            raise ValueError("友邻绑定返回了其他角色")
+        try:
+            result, anchor = await self._control_request(conn["id"], {"op": "world_bind", "actor": own,
+                "actor_token": own_token, "target_actor": actor["id"]})
+        except VisitTransportError as error:
+            if error.http_status == 400:
+                await self._refresh_rejected_binding(scope, conn["id"])
+            raise
+        try:
+            remote = validate_actor(result.get("actor"))
+            remote_token = result.get("actor_token")
+            if (remote["id"] != actor["id"] or remote["instance_id"] != conn["id"]
+                    or not isinstance(remote_token, str) or len(remote_token) != 64
+                    or any(c not in "0123456789abcdef" for c in remote_token)):
+                raise ValueError("友邻绑定返回了其他角色")
+        except ValueError:
+            await self._refresh_rejected_binding(scope, conn["id"])
+            raise
         current = await describe_local(self.actor_port, scope, timeout_seconds=self.config.timeout_seconds)
         async with self._lock:
             self._enabled()
