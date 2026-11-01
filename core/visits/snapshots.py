@@ -67,7 +67,8 @@ def validate_snapshot(visit: dict, remote: dict) -> None:
             if "at" in row and (type(row["at"]) not in {int, float}
                                 or not math.isfinite(row["at"]) or row["at"] < 0):
                 raise ValueError("旅程经过时间无效")
-    if visit["role"] == "guest" and status not in {"inviting", "offered"}:
+    if (visit["role"] == "guest" and status not in {"inviting", "offered"}
+            or not visit.get("arrived_at") and status in TERMINAL):
         logs = remote.get("log", [])
         prior = visit["log"]
         if len(logs) < len(prior) or logs[:len(prior)] != prior:

@@ -173,8 +173,11 @@ class VisitRhythm:
                 day = self._visit_day(local)
                 peers = [peer for peer in candidates
                          if self._has_daily_opportunity(record, self._rhythm_peer_id(peer), day, self.config.daily_peer_limit)]
-                peers.sort(key=lambda peer: (record.get("peer_days", {}).get(self._rhythm_peer_id(peer), {}).get("last_at", 0),
-                                            peer["id"]))
+                def contact_order(peer):
+                    state = record.get("peer_days", {}).get(self._rhythm_peer_id(peer), {})
+                    return max(state.get("last_at", 0), state.get("last_prepare_at", 0)), peer["id"]
+
+                peers.sort(key=contact_order)
             for peer in peers:
                 async with self._lock:
                     previous_visits = set(self._state["visits"])
@@ -195,6 +198,10 @@ class VisitRhythm:
                                         for candidate in self._automatic_peers(scope))):
                             # Binding/catalog failures happen before invitation admission.
                             # Retain the opportunity without polling preparation every tick.
+                            state = record.setdefault("peer_days", {}).setdefault(peer_id, {"days": {}, "last_at": 0})
+                            state["last_prepare_at"] = self._now()
+                            # Let another world take the next turn even if this one's
+                            # catalog or binding remains unavailable across restarts.
                             record["next_auto_at"] = self._now() + max(self.config.poll_seconds,
                                 self.config.auto_interval_minutes * 60)
                             await self._save()

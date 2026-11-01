@@ -42,7 +42,10 @@ class VisitFlow(VisitRhythm):
             await self._save()  # Admission, including failure, is durable before inference.
         try:
             async with asyncio.timeout(self.config.timeout_seconds):
-                result = clean_decision(await self.actor_port.decide(snapshot["scope"], phase, snapshot))
+                raw = await self.actor_port.decide(snapshot["scope"], phase, snapshot)
+                result = clean_decision(raw)
+                result["contact_kind"] = ("contact_status" if isinstance(raw, dict)
+                                          and raw.get("contact_kind") == "contact_status" else "contact_reply")
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -100,7 +103,9 @@ class VisitFlow(VisitRhythm):
                 return self._visible(visit)
             if not result or not result["accept"] or result["leave"]:
                 if visit["status"] not in TERMINAL:
-                    await self._finish(visit, "declined", "现在不方便，稍后再约")
+                    if result:
+                        self._append(visit, self._local_id(visit), result["contact_kind"], result["say"])
+                    await self._finish(visit, "declined", result["say"] if result and result["say"] else "现在不方便，稍后再约")
                 return self._visible(visit)
             visit["scene"] = clean_scene(result["scene"]) if visit["role"] == "host" else {}
             self._append(visit, self._local_id(visit), "invitation", result["say"])
@@ -161,7 +166,10 @@ class VisitFlow(VisitRhythm):
                 self._activate(visit, remote.get("intro", ""))
             elif remote.get("status") in TERMINAL:
                 visit["status"] = "declined" if not visit.get("arrived_at") else "interrupted"
-                visit["ended_at"] = self._now()
+                visit["end_reason"] = remote.get("end_reason") or "对方已结束本次联系"
+                visit["ended_at"] = remote.get("ended_at", self._now())
+                if not visit.get("arrived_at"):
+                    visit["log"] = copy.deepcopy(remote.get("log", []))
             return
         if sender != visit["host_id"] or remote.get("status") not in RESERVED | TERMINAL:
             raise ValueError("无效东道主状态")
@@ -308,6 +316,8 @@ class VisitFlow(VisitRhythm):
                     return
                 if not result or not result["accept"] or result["leave"]:
                     if visit["status"] not in TERMINAL:
+                        if result:
+                            self._append(visit, self._local_id(visit), result["contact_kind"], result["say"])
                         await self._finish(visit, "declined", result["say"] if result else "稍后再约")
                     return
                 visit["intro"] = result["say"]

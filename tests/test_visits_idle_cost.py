@@ -236,7 +236,7 @@ class IdleVisitCostTests(unittest.IsolatedAsyncioTestCase):
         await self.service._automatic()
         record = self.service._state["draws"]["life"]
         self.assertEqual(record["next_auto_at"], self.service.now + 3600)
-        self.assertFalse(record.get("peer_days"))
+        self.assertFalse(record.get("peer_days", {}).get("friend", {}).get("days"))
         self.service._save.assert_awaited_once()
         for _ in range(20):
             await self.service._automatic()
@@ -245,7 +245,24 @@ class IdleVisitCostTests(unittest.IsolatedAsyncioTestCase):
         self.service.now += 3601
         await self.service._automatic()
         self.assertEqual(self.service.invite.await_count, 2)
-        self.assertFalse(record.get("peer_days"))
+        self.assertFalse(record.get("peer_days", {}).get("friend", {}).get("days"))
+
+    async def test_failed_world_preparation_cannot_starve_the_other_neighbour(self):
+        self.service._state["peers"].clear()
+        self.service.connect("second", ["second"])
+
+        async def contact(scope, peer, automatic=False):
+            if peer == "friend":
+                raise ValueError("unreachable binding")
+            return {}
+
+        self.service.invite.side_effect = contact
+        await self.service._automatic()
+        self.service.now += 3601
+        await self.service._automatic()
+        self.assertEqual([call.args[1] for call in self.service.invite.await_args_list], ["friend", "second"])
+        entry = self.service._state["draws"]["life"]["peer_days"].get("friend", {})
+        self.assertFalse(entry.get("days"))  # Preparation never draws or consumes an invitation.
 
     async def test_binding_failure_with_zero_interval_waits_at_least_one_poll(self):
         self.service.config = replace(self.service.config, auto_interval_minutes=0)

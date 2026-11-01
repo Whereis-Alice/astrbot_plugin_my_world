@@ -264,10 +264,13 @@ class VisitService(VisitFlow, VisitJournal):
             if role not in {"host", "guest"}:
                 raise ValueError("无效到访方向")
             if self._settlement_backlog_full(peer["scope"]):
-                return {"declined": True, "reason": "我想先把前面的几件事收好，稍后再约"}
+                reason = "我想先把前面的几件事收好，稍后再约"
+                return {"declined": True, "reason": reason,
+                        "contact": {"kind": "contact_status", "text": reason}}
             if not local["ready"] or local.get("chat_busy") or not local.get("reception_open", True):
                 reason = "现在不在接待时间，稍后再约" if not local.get("reception_open", True) else local.get("ready_reason") or "眼前还有交谈，稍后再约"
-                return {"declined": True, "reason": reason}
+                return {"declined": True, "reason": reason,
+                        "contact": {"kind": "contact_status", "text": reason}}
             visit = self._new_visit(peer["scope"], peer, local, visit_id, role, payload.get("reason", ""), False)
             for name, upper in (("max_calls", self.config.max_calls), ("turn_limit", self.config.turns_per_actor)):
                 value = payload.get(name)
@@ -314,6 +317,8 @@ class VisitService(VisitFlow, VisitJournal):
                 if remote.get("status") not in TERMINAL:
                     raise ValueError("对方尚未确认结束本次相见")
                 self._synchronize(visit, remote, peer["id"], allow_terminal=True)
+            elif remote is not None and not visit.get("arrived_at") and remote.get("status") == "declined":
+                self._synchronize(visit, remote, peer["id"])
             if visit["status"] not in TERMINAL:
                 status = "completed" if (visit.get("arrived_at") and isinstance(remote, dict)
                                           and remote.get("status") == "completed") else "interrupted"
@@ -404,6 +409,14 @@ class VisitService(VisitFlow, VisitJournal):
                     candidate[name] = value
             if remote is not None:
                 validate_snapshot(candidate, remote)
+            if result.get("declined") is True and outgoing["payload"]["op"] == "offer":
+                contact = result.get("contact")
+                if contact is None:  # Older neighbours return only their availability reason.
+                    contact = {"kind": "contact_status", "text": result.get("reason") or "对方暂时不方便"}
+                if (not isinstance(contact, dict) or contact.get("kind") not in {"contact_reply", "contact_status"}
+                        or not isinstance(contact.get("text"), str) or len(contact["text"]) > 500):
+                    raise ValueError("对方返回无效联系答复")
+                self._append(candidate, peer["id"], contact["kind"], contact["text"])
             expires = (remote or {}).get("expires_at")
             if isinstance(expires, (int, float)):
                 candidate["expires_at"] = min(visit["expires_at"], expires)
