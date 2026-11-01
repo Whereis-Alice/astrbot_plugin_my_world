@@ -13,17 +13,18 @@ from .models import TickOutcome
 
 
 class ParticipationMixin:
-    def _peer_chat_policy(self, target):
+    def _peer_chat_policy(self, target, *, state_key="", world=None):
         with self.config_scope(target):
-            config = self.world.decider
+            world = world or self.world
+            config = world.decider
             platform = target.split(":", 1)[0]
             peers = {value.strip().removeprefix(platform + ":") for value in config.peer_bot_ids
                      if value.strip() and (":" not in value or value.startswith(platform + ":"))}
-            key = "peer_chat:" + self.state_key(target)
+            key = "peer_chat:" + (state_key or self.state_key(target))
             if not peers:
                 return key, {}, peers, config
             ledger = self.db.raw.kv_get(key, {}) or {}
-            policy = [self.world.world_id, sorted(peers)]
+            policy = [world.world_id, sorted(peers)]
             if ledger.get("policy") != policy:
                 ledger = {"policy": policy, "sessions": {}}
             return key, ledger, peers, config
@@ -42,7 +43,9 @@ class ParticipationMixin:
         if kind not in CHAT_KINDS:
             return
         from ..chat_cadence import note_receipt
-        key, ledger, peers, config = self._peer_chat_policy(target)
+        owner = getattr(outcome, "receipt_owner", None)
+        key, ledger, peers, config = self._peer_chat_policy(target,
+            state_key=owner.state_key if owner is not None else "", world=owner.world if owner is not None else None)
         if not peers:
             return
         sessions = dict(ledger.get("sessions", {}))
@@ -652,8 +655,8 @@ class ParticipationMixin:
     def _contact_person_key(target: str, user_id: str) -> str:
         return target.split(":", 1)[0] + ":" + str(user_id)
 
-    def _outreach_ledger(self, session_id):
-        ledger = self.db.raw.kv_get("outreach:" + self.state_key(session_id), {}) or {}
+    def _outreach_ledger(self, session_id, *, state_key=""):
+        ledger = self.db.raw.kv_get("outreach:" + (state_key or self.state_key(session_id)), {}) or {}
         people = {}
         for uid, record in (ledger.get("people") or {}).items():
             # v4.29.0 used raw user IDs; their recorded origin supplies the platform.
@@ -682,9 +685,9 @@ class ParticipationMixin:
                 return "上次找他还没有回应，先给他一点时间"
         return ""
 
-    def note_visible_speech(self, target: str, *, token: str = "", people=()) -> None:
-        key = "outreach:" + self.state_key(target)
-        ledger = self._outreach_ledger(target)
+    def note_visible_speech(self, target: str, *, token: str = "", people=(), state_key="") -> None:
+        key = "outreach:" + (state_key or self.state_key(target))
+        ledger = self._outreach_ledger(target, state_key=state_key)
         now = self._now()
         sessions = ledger.setdefault("sessions", {})
         previous = sessions.get(target) or {}

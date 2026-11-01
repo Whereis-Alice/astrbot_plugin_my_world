@@ -251,6 +251,9 @@ class SpeechDecisionsMixin:
 
     async def remember_speech_decision(self, state, target, decision, *, trigger,
                                        outcome=None, browse_id="", drafts=None, raw=None):
+        if outcome is not None:
+            from .speech_receipts import bind_receipt_owner
+            bind_receipt_owner(self, outcome, state=state)
         identity = uuid4().hex
         sources = {"message": "接话前", "browse": "翻消息后接话", "plan": "主动接话",
                    "completion": "动作结束后", "expression": "准备说话"}
@@ -299,7 +302,8 @@ class SpeechDecisionsMixin:
         return trace
 
     async def finish_speech_decisions(self, outcome):
-        from .speech_receipts import remember_pending_receipts
+        from .speech_receipts import remember_pending_receipts, bind_receipt_owner
+        owner = bind_receipt_owner(self, outcome)
         await remember_pending_receipts(self, outcome)
         pending = [d for d in outcome.speech_decisions if not d.get("finished_at")
                    and (d["status"] == "prepared" or outcome.delivered_decisions.get(d["id"])
@@ -307,7 +311,7 @@ class SpeechDecisionsMixin:
         if not pending:
             return
         from .speech_receipts import receipt_state, update_thought, delivery_status
-        async with receipt_state(self, outcome.session_id) as state:
+        async with receipt_state(self, outcome.session_id, owner=owner) as state:
             for trace in pending:
                 sent = list(outcome.delivered_decisions.get(trace["id"], []))
                 images = list(outcome.delivered_image_decisions.get(trace["id"], []))
@@ -320,4 +324,5 @@ class SpeechDecisionsMixin:
                         "joined" if sent or images else "not_sent", "已接上当前话题" if sent or images else "接话未发出，等待新的现场")
                 update_thought(state, trace)
                 await self._log_event(state, "speech_result",
-                    {k: v for k, v in trace.items() if k != "draft"}, outcome=outcome, silent=True)
+                    {k: v for k, v in trace.items() if k != "draft"}, outcome=outcome, silent=True,
+                    persona_id=owner.persona_id or "", resolve_persona=False)

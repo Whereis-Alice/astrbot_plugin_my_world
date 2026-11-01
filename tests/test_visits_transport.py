@@ -143,10 +143,11 @@ class VisitTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raised.exception.category, "channel")
         self.assertIsNone(raised.exception.http_status)
         await self.channel.close()
-        self.channel.config = replace(self.config, timeout_seconds=.01)
+        sender = VisitTransport(None, replace(self.config, timeout_seconds=.01))
+        self.addAsyncCleanup(sender.close)
         url = await self.response_server(delay=.1)
         with self.assertRaises(VisitTransportError) as raised:
-            await self.channel.request(url, {"message": "probe"})
+            await sender.request(url, {"message": "probe"})
         self.assertEqual(raised.exception.category, "channel")
         self.assertEqual(str(raised.exception), "暂时联系不上对方，请检查串门服务")
 

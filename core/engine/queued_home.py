@@ -54,7 +54,7 @@ def _sessions_config(sessions) -> dict | None:
     return config
 
 
-def capture_home_proof(kind: str) -> HomeSpeechProof | None:
+def capture_home_proof(kind: str, *, origin: str = "") -> HomeSpeechProof | None:
     """Reuse the current owned lease; no database, persona or model read."""
     if kind not in HOME_KINDS:
         return None
@@ -63,7 +63,9 @@ def capture_home_proof(kind: str) -> HomeSpeechProof | None:
         owner = asyncio.current_task()
     except RuntimeError:
         return None
-    if not lease or lease.get("owner") is not owner:
+    if (not lease or lease.get("owner") is not owner
+            or str(origin or "") not in {str(lease.get("origin") or ""),
+                                         str(getattr(lease.get("state"), "session_id", ""))}):
         return None
     if "home_speech_proof" not in lease:
         lease["home_speech_proof"] = HomeSpeechProof(

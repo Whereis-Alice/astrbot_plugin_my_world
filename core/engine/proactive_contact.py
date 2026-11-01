@@ -118,7 +118,7 @@ class ProactiveContactMixin:
             if any(r["key"] == key for r in self._contact_pending.values()):
                 return None, "正在发送另一条生活分享"
             receipt = {"key": key, "day": day, "token": token, "target": target,
-                       "people": [], "identity": identity, "kind": "life_share"}
+                       "people": [], "identity": identity, "kind": "life_share", "state_key": self.state_key(target)}
             self._contact_pending[identity] = receipt
             receipts.append(receipt)
         contact, error = self._reserve_outreach(outcome, target, kinds)
@@ -179,7 +179,7 @@ class ProactiveContactMixin:
         if identity in self._contact_pending:
             return None, "同一次主动联系正在发送"
         receipt = {"key": key, "day": identity[1], "token": token,
-                   "target": target,
+                   "target": target, "state_key": self.state_key(target),
                    "people": [[target, str(uid)] for uid in sorted(people)], "identity": identity}
         self._contact_pending[identity] = receipt
         return receipt, ""
@@ -214,6 +214,7 @@ class ProactiveContactMixin:
             self.db.raw.kv_set(receipt["key"], ledger)
             target = receipt["target"]
             self.note_visible_speech(target, token=receipt["token"],
+                                     state_key=receipt.get("state_key") or receipt["key"].split(":", 1)[1],
                                      people=[uid for _, uid in receipt["people"]
                                              if people is None or uid in people])
         finally:

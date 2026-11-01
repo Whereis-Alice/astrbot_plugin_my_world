@@ -10832,8 +10832,10 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
     async def tick_until(self, done, limit: int = 6) -> None:
         """连着推几个 tick，直到条件满足（持续动作要跑完才会触发后续步骤）。"""
 
+        from tests.schedule_delivery import settled_clock_delivery
         for _ in range(limit):
             await self.engine.tick()
+            await settled_clock_delivery(self.engine)
             if done():
                 return
 
@@ -12041,12 +12043,14 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_new_events_are_still_echoed_after_restart(self):
         """但重载之后新发生的事，该回显还是要回显。"""
 
+        from tests.schedule_delivery import settled_clock_delivery
         raw = self.store.raw_world()
         raw["echo_types"] = ["tool_result"]
         self.store.save_world(raw)
         self.engine.reload_config()
         self.engine._event_ids.clear()
         await self.engine.tick()  # 第一次 tick 用来对齐游标
+        await settled_clock_delivery(self.engine)
         await self.db.call(
             "add_event",
             session_id=SESSION,
@@ -12054,6 +12058,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             detail={"action": "check_weather", "tool": "get_current_weather", "ok": True, "result": "武汉 晴"},
         )
         await self.engine.tick()
+        await settled_clock_delivery(self.engine)
         self.assertTrue(
             any("武汉 晴" in line for line in self.messenger.flat_messages),
             self.messenger.flat_messages,
@@ -12061,6 +12066,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         # 同一条只发一次：没被处理掉的话，下一个 tick 还会再发一遍
         before = len(self.messenger.flat_messages)
         await self.engine.tick()
+        await settled_clock_delivery(self.engine)
         self.assertEqual(len(self.messenger.flat_messages), before)
 
     # ---------------- 戳一戳 ----------------

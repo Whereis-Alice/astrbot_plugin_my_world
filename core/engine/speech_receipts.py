@@ -3,10 +3,54 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from hashlib import sha256
+from typing import Any
 from uuid import uuid4
 
 from ..speech_policy import PLAN_SPEECH
 from .life_inference import STATE_LEASE
+
+
+@dataclass(frozen=True)
+class ReceiptOwner:
+    """The speaking life, frozen before any send; never re-resolve after acceptance."""
+    origin: str
+    state_key: str
+    persona_id: str | None
+    world: Any = field(repr=False)
+
+
+def capture_receipt_owner(origin: str) -> ReceiptOwner | None:
+    lease = STATE_LEASE.get()
+    try:
+        task = asyncio.current_task()
+    except RuntimeError:
+        return None
+    if (not lease or lease.get("owner") is not task
+            or str(origin or "") not in {str(lease.get("origin") or ""),
+                                         str(getattr(lease.get("state"), "session_id", ""))}):
+        return None
+    if "receipt_owner" not in lease:
+        lease["receipt_owner"] = ReceiptOwner(str(lease["origin"]), str(lease["state"].session_id),
+            sha256(str(lease["persona"]).encode("utf-8")).hexdigest()[:24], lease["world"])
+    return lease["receipt_owner"]
+
+
+def bind_receipt_owner(engine, outcome, *, state=None) -> ReceiptOwner:
+    if outcome.receipt_owner is None:
+        origin = outcome.generation_origin or outcome.session_id
+        owner = capture_receipt_owner(origin)
+        if owner is None:
+            with engine.config_scope(origin):
+                key = engine.state_key(origin)
+                # A passed state can preserve this declared source's old key.
+                # An unrelated caller's state/lease cannot lend its identity.
+                if state is not None and str(state.session_id) in {origin, key}:
+                    key = str(state.session_id)
+                owner = ReceiptOwner(origin, key, None, engine.world)
+        outcome.receipt_owner = owner
+    return outcome.receipt_owner
 
 
 def image_receipt_ref(ref):
@@ -48,17 +92,29 @@ def delivery_status(trace):
 
 
 @asynccontextmanager
-async def receipt_state(engine, session):
+async def receipt_state(engine, session, *, owner: ReceiptOwner | None = None):
     lease = STATE_LEASE.get() or {}
+    key = owner.state_key if owner is not None else engine.state_key(session)
     if (lease.get("owner") is asyncio.current_task() and not lease.get("released")
-            and engine.state_key(lease["origin"]) == engine.state_key(session)):
+            and str(lease["state"].session_id) == key):
         # Instant speech runs inside the life lock. Re-entering that lock would
         # deadlock, and loading a second state would overwrite the active plan.
         yield lease["state"]
         await engine.save_state(lease["state"])
-    else:
+    elif owner is None:
         async with engine.session_state(session) as state:
             yield state
+    else:
+        # Loading through session_state/load_state would re-resolve a changed
+        # group after waiting for its lock or database. Historical receipts use
+        # the exact old key and leave a different life's active plan untouched.
+        with engine.config_scope(owner.origin):
+            async with engine.lock(key):
+                from ..state import WorldState
+                payload = await engine.db.call("get_state", key)
+                state = WorldState.from_payload(payload, key) if payload is not None else engine._default_state(key)
+                yield state
+                await engine.save_state(state)
 
 
 def update_thought(state, trace):
@@ -82,7 +138,8 @@ def update_thought(state, trace):
 
 def accept_receipt(engine, outcome, target, key, **payload):
     first = key not in outcome.accepted_receipts
-    record = outcome.accepted_receipts.setdefault(key, {"at": engine._now(), "target": target, **payload})
+    record = outcome.accepted_receipts.setdefault(key, {"at": engine._now(), "target": target,
+        "owner": bind_receipt_owner(engine, outcome), **payload})
     outcome.accepted_speech_at.setdefault(record["target"], record["at"])
     return first, record
 
@@ -105,7 +162,7 @@ async def remember_accepted(engine, outcome, target, text, key, identity="", *, 
         engine.note_peer_chat_receipt(outcome, target, kind or outcome.speech_kind)
 
     async def persist():
-        async with receipt_state(engine, outcome.session_id) as state:
+        async with receipt_state(engine, outcome.session_id, owner=record["owner"]) as state:
             recorded = state.note_chat(user_id="__self__",
                 name=state.bot_current_nickname or state.bot_base_nickname or "你",
                 text=text, now=stamp, keep=engine.chat_history_limit(),
@@ -149,7 +206,7 @@ async def remember_accepted_images(engine, outcome, target, images, key, identit
             engine.note_peer_chat_receipt(outcome, target, kind)
 
     async def persist():
-        async with receipt_state(engine, outcome.session_id) as state:
+        async with receipt_state(engine, outcome.session_id, owner=record["owner"]) as state:
             notes = list(dict.fromkeys(outcome.image_notes.get(target, {}).get(ref, "") for ref in images))
             note = "、".join(value for value in notes if value)[:120]
             caption = f"［我发了{'一' if len(images) == 1 else len(images)}张图片：{note}］" if note else ""

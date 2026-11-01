@@ -348,10 +348,19 @@ class QueuedHomeDeliveryTests(unittest.IsolatedAsyncioTestCase):
         text = "最近过得怎么样？"
         for origin, uid in ((self.session, "111"), (other, "222")):
             async with self.engine.session_state(origin):
-                outcome.contact_people = {uid}
-                outcome.speech_decisions.append({"id": uid, "target": self.session, "drafts": [text],
+                generated = self.models.TickOutcome(origin, speech_kind="outreach")
+                generated.contact_people = {uid}
+                generated.speech_decisions.append({"id": uid, "target": self.session, "drafts": [text],
                     "status": "prepared", "at": self.engine._now(), "intent": "outreach", "origin": "outreach", "sent": []})
-                outcome.add_speech(text)
+                generated.add_speech(text, self.session)
+            # Build only the policy-filter/prepared-chain test view from two
+            # explicitly proven candidates. Production keeps one life per turn.
+            key = "" if origin == self.session else self.session
+            outcome.messages.extend(generated.messages if not key else generated.routed[key])
+            outcome.speech_decisions.extend(generated.speech_decisions)
+            outcome.receipt_owner = outcome.receipt_owner or generated.receipt_owner
+            for name in ("speech_kinds", "speech_ids", "speech_people", "speech_origins", "speech_proofs"):
+                getattr(outcome, name).setdefault("", []).extend(getattr(generated, name)[key])
         self.engine.profiles.touch(self.session, "111", "第一位")
         self.engine.profiles.touch(self.session, "222", "第二位")
         async def hook(_plugin, event, name, *_args):

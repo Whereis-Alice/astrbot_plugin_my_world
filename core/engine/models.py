@@ -74,6 +74,7 @@ class TickOutcome:
     generation_origin: str = ""
     speech_proofs: dict[str, list[Any]] = field(default_factory=dict, repr=False)
     image_proofs: dict[str, list[Any]] = field(default_factory=dict, repr=False)
+    receipt_owner: Any = field(default=None, repr=False)
     """Transient original-life proofs, kept beside each queued occurrence."""
 
     def __post_init__(self):
@@ -82,12 +83,15 @@ class TickOutcome:
         if self.generation_origin:
             return
         self.generation_origin = self.session_id
+        from .speech_receipts import capture_receipt_owner
+        self.receipt_owner = self.receipt_owner or capture_receipt_owner(self.generation_origin)
         from .queued_home import capture_home_proof
         for buffers, metadata, kinds in (({"": self.messages, **self.routed}, self.speech_proofs, self.speech_kinds),
                                          ({"": self.images, **self.routed_images}, self.image_proofs, self.image_kinds)):
             for key, lines in buffers.items():
                 values = kinds.get(key, [])
-                metadata[key] = [capture_home_proof(values[i] if i < len(values) else self.speech_kind)
+                metadata[key] = [capture_home_proof(values[i] if i < len(values) else self.speech_kind,
+                                                   origin=self.generation_origin)
                                  for i in range(len(lines))]
 
     def take_messages(self) -> list[str]:
@@ -220,7 +224,10 @@ class TickOutcome:
         from .queued_home import capture_home_proof
         proofs = self.speech_proofs.setdefault(key, [])
         proofs.extend([None] * max(0, len(bucket) - len(proofs)))
-        proofs.append(capture_home_proof(self.speech_kind if kind is None else kind))
+        proofs.append(capture_home_proof(self.speech_kind if kind is None else kind, origin=self.generation_origin))
+        if self.receipt_owner is None:
+            from .speech_receipts import capture_receipt_owner
+            self.receipt_owner = capture_receipt_owner(self.generation_origin)
         if not target or target == str(self.session_id):
             self.messages.append(body)
             return
@@ -254,7 +261,10 @@ class TickOutcome:
             from .queued_home import capture_home_proof
             proofs = self.image_proofs.setdefault(key, [])
             proofs.extend([None] * max(0, len(bucket) - len(proofs)))
-            proofs.append(capture_home_proof(self.speech_kind if kind is None else kind))
+            proofs.append(capture_home_proof(self.speech_kind if kind is None else kind, origin=self.generation_origin))
+            if self.receipt_owner is None:
+                from .speech_receipts import capture_receipt_owner
+                self.receipt_owner = capture_receipt_owner(self.generation_origin)
             bucket.append(ref)
 
     def speech_proof(self, key: str, index: int, *, images=False):

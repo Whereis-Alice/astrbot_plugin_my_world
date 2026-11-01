@@ -875,6 +875,8 @@ class ActionsMixin:
         return str(getattr(definition, "llm_level", "")) in ("tool", "command")
 
     async def _flush_say(self, outcome: TickOutcome) -> None:
+        from .speech_receipts import bind_receipt_owner
+        bind_receipt_owner(self, outcome)
         if outcome.broadcast_targets:
             return
         outcome.freeze_speech_targets()
@@ -921,6 +923,8 @@ class ActionsMixin:
 
         if outcome.broadcast_targets:
             return  # Deliver each authorized destination together at the final boundary.
+        from .speech_receipts import bind_receipt_owner
+        owner = bind_receipt_owner(self, outcome)
         self._filter_proactive_speech(outcome)
         if self.say_sink is None or not outcome.messages:
             return
@@ -998,7 +1002,7 @@ class ActionsMixin:
                 # 发不出去（会话没配 / 平台在冷却里）：从这里开始都留到收尾一起发，别丢
                 break
             if receipt is None:
-                self.note_visible_speech(outcome.home())
+                self.note_visible_speech(outcome.home(), state_key=owner.state_key)
             outcome.reply_targets.pop(outcome.home(), None)
             sent_count += 1
         if sent_count >= len(lines):

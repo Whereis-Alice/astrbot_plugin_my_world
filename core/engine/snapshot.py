@@ -1097,6 +1097,7 @@ class SnapshotMixin:
         outcome: TickOutcome | None = None,
         silent: bool = False,
         place: str = "",
+        resolve_persona: bool = True,
     ) -> None:
         """写一条事件日志（编辑器的「日志」页会渲染成人话），并顺手做数量裁剪。
 
@@ -1109,7 +1110,7 @@ class SnapshotMixin:
         """
 
         payload = detail or {}
-        if not persona_id:
+        if not persona_id and resolve_persona:
             try:
                 _, persona_id = await self._journal_persona(state.session_id)
             except Exception:

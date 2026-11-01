@@ -38,22 +38,41 @@ class VisitTransport:
         self.runner = None
         self.client = None
         self.bound_port = config.listen_port
+        self._closed = False
+        self._start_task = None
+        self._close_task = None
 
     async def start(self):
+        self._open()
         if self.runner is not None:
             return
+        if self._start_task is None or self._start_task.done():
+            self._start_task = asyncio.create_task(self._start_listener(), name="world-visit-listener-start")
+        task = self._start_task
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            task.cancel()
+            try:
+                await self._drain_cleanup(task)
+            finally:
+                raise
+
+    async def _start_listener(self):
         app = web.Application(client_max_size=MAX_BYTES)
         app.router.add_post("/v1/message", self._handle)
         app.router.add_post("/v1/pair", self._handle)
         runner = web.AppRunner(app, access_log=None)
-        await runner.setup()
         try:
+            await runner.setup()
+            self._open()
             site = web.TCPSite(runner, self.config.listen_host, self.config.listen_port)
             await site.start()
+            self._open()
             self.bound_port = site._server.sockets[0].getsockname()[1]
             self.runner = runner
         except BaseException:
-            await runner.cleanup()
+            await self._drain_cleanup(asyncio.create_task(runner.cleanup(), name="world-visit-listener-cleanup"))
             raise
 
     async def _handle(self, request):
@@ -75,6 +94,7 @@ class VisitTransport:
             return web.json_response({"error": "串门请求被拒绝，请检查配对和旅程状态"}, status=400)
 
     async def request(self, url, body):
+        self._open()
         try:
             data = canonical(body)
         except (ValueError, TypeError, RecursionError) as exc:
@@ -102,10 +122,51 @@ class VisitTransport:
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
             raise VisitTransportError("暂时联系不上对方，请检查串门服务", category="channel") from exc
 
+    def _open(self):
+        if self._closed:
+            raise VisitTransportError("本次串门服务已关闭，旧联系作废", category="channel")
+
     async def close(self):
-        runner, self.runner = self.runner, None
-        if runner is not None:
-            await runner.cleanup()
-        client, self.client = self.client, None
-        if client is not None:
-            await client.close()
+        if self._close_task is None:
+            self._closed = True
+            starting = self._start_task
+            starting_pending = starting is not None and not starting.done()
+            if starting_pending:
+                starting.cancel()
+            runner, self.runner = self.runner, None
+            client, self.client = self.client, None
+
+            async def release():
+                try:
+                    if starting_pending:
+                        result, = await asyncio.gather(starting, return_exceptions=True)
+                        if isinstance(result, Exception) and not isinstance(result, VisitTransportError):
+                            raise result  # Do not report a failed listener cleanup as released.
+                    if runner is not None:
+                        await runner.cleanup()
+                finally:
+                    if client is not None:
+                        await client.close()
+
+            self._close_task = asyncio.create_task(release(), name="world-visit-channel-close")
+        await self._drain_cleanup(self._close_task)
+
+    @staticmethod
+    async def _drain_cleanup(task):
+        """An interrupted caller still owns its listener and session cleanup."""
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+            except Exception:
+                break
+        try:
+            task.result()
+        except BaseException:
+            if cancelled:
+                raise asyncio.CancelledError() from None
+            raise
+        if cancelled:
+            raise asyncio.CancelledError()

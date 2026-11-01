@@ -180,12 +180,22 @@ class ScheduleMixin:
 
     @asynccontextmanager
     async def _schedule_scan_state(self, session_id: str):
-        """Consume this revision's recheck only after its scan cursor is saved."""
+        """Keep completed outcomes and the original scan window across a local failure."""
         signature = self._schedule_signature
         generation = getattr(self, "_schedule_reset_generation", None)
-        scan = {"checked": False}
+        scan = {"checked": False, "cursor": None, "outcomes": []}
         async with self.session_state(session_id) as state:
-            yield state, scan
+            try:
+                yield state, scan
+            except Exception as error:
+                # The scan cursor is not an execution receipt. Preserve its actual
+                # start (also on a first scan), while claimed effects stay consumed.
+                if scan["cursor"] is not None:
+                    state.schedule_cursor = scan["cursor"]
+                scan["checked"] = False
+                if not scan["outcomes"]:
+                    raise
+                self._log("warning", f"日程检查暂未完成，保留已完成安排：{type(error).__name__}")
         if scan["checked"] and self._schedule_signature is signature:
             pending = getattr(self, "_schedule_reset_cursors", {})
             if state.session_id in pending:
@@ -695,22 +705,40 @@ class ScheduleMixin:
         import asyncio
         once_done: set[tuple[str, str]] = set()
         signature = self._schedule_signature
-        results = await asyncio.gather(*(self._run_schedule_scope(sid, once_done) for sid in self.tick_session_ids()))
+        sessions = self.tick_session_ids()
+        results = await asyncio.gather(*(self._run_schedule_scope(sid, once_done) for sid in sessions),
+                                       return_exceptions=True)
+        outcomes, errors = [], []
+        for session_id, result in zip(sessions, results):
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            if isinstance(result, Exception):
+                errors.append(result)
+                self._log("warning", f"日程检查暂未完成 session={session_id}：{type(result).__name__}")
+            else:
+                outcomes.extend(result)
+        if errors and not outcomes:
+            raise errors[0]
         # A reload during inference owns a fresh cursor reset. Do not consume it
         # or remove a new appointment that happens to reuse an old schedule ID.
         if self._schedule_signature is signature:
-            protections = await self._schedule_prune_protections()
-            if self._schedule_signature is not signature:
-                return [row for result in results for row in result]
-            for owner, (day, preserve) in protections.items():
-                with self.config_scope(owner):
-                    self._prune_once_schedules(day, preserve=preserve)
-            for owner, schedule_id in once_done:
-                if schedule_id in protections.get(owner, ("", set()))[1]:
-                    continue  # Another life using this library still has a valid retry.
-                with self.config_scope(owner):
-                    self._drop_schedule(schedule_id)
-        return [row for result in results for row in result]
+            try:
+                protections = await self._schedule_prune_protections()
+                if self._schedule_signature is not signature:
+                    return outcomes
+                for owner, (day, preserve) in protections.items():
+                    with self.config_scope(owner):
+                        self._prune_once_schedules(day, preserve=preserve)
+                for owner, schedule_id in once_done:
+                    if schedule_id in protections.get(owner, ("", set()))[1]:
+                        continue  # Another life using this library still has a valid retry.
+                    with self.config_scope(owner):
+                        self._drop_schedule(schedule_id)
+            except Exception as error:
+                if not outcomes:
+                    raise
+                self._log("warning", f"日程清理暂未完成，保留已完成安排：{type(error).__name__}")
+        return outcomes
 
     async def _schedule_prune_protections(self) -> dict[str, tuple[str, set[str]]]:
         """Prune a shared library only after collecting every life's valid retry."""
@@ -729,11 +757,26 @@ class ScheduleMixin:
                         continue
                     if self._previous_schedule_delay(state, schedule, now):
                         preserve.add(schedule.id)
-                    elif start.date() != now.date():
-                        moment = self._schedule_moment(start, schedule)
-                        if (schedule.enabled and schedule.once and schedule.date == start.date().isoformat()
-                                and moment and cursor < moment.timestamp() <= now.timestamp()):
+                    elif schedule.enabled and schedule.once:
+                        delayed = self._schedule_delay_record(state, schedule.id)
+                        try:
+                            until = float(delayed.get("until") or 0)
+                        except (TypeError, ValueError):
+                            until = 0
+                        if (delayed.get("day") == now.date().isoformat()
+                                and 0 < until and math.isfinite(until) and not delayed.get("cancelled")):
                             preserve.add(schedule.id)
+                            continue
+                        dates = [start, now] if start.date() != now.date() else [now]
+                        for date in dates:
+                            moment = self._schedule_moment(date, schedule)
+                            if (schedule.date and schedule.date != date.date().isoformat()
+                                    or not moment or not cursor < moment.timestamp() <= now.timestamp()):
+                                continue
+                            if not await self.db.call("has_schedule_fired", session_id=session_id,
+                                    schedule_id=schedule.id, day_key=date.date().isoformat(),
+                                    slot=moment.strftime("%H:%M")):
+                                preserve.add(schedule.id)
         return protections
 
     @session_scoped
@@ -747,12 +790,14 @@ class ScheduleMixin:
             if self.is_busy(session_id):
                 continue  # A delayed decision in one life must not stop the global clock.
             async with self._schedule_scan_state(session_id) as (state, scan):
+                outcomes = scan["outcomes"]
                 if active_visit(self, session_id):
                     continue
                 now = self.local_now()
                 seconds = now.timestamp()
                 day_key = now.strftime("%Y-%m-%d")
                 cursor = self._schedule_scan_cursor(state, now)
+                scan["cursor"] = cursor
                 # The schedule cursor is on local_now().timestamp()'s calendar
                 # timeline. An injected clock may expose a separate now() epoch;
                 # feeding this cursor into local_at() would apply its offset twice.

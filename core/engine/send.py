@@ -353,6 +353,8 @@ class SendMixin:
     async def _deliver(self, outcome: TickOutcome) -> None:
         if self.messenger is None:
             return
+        from .speech_receipts import bind_receipt_owner, receipt_state
+        owner = bind_receipt_owner(self, outcome)
         outcome.freeze_speech_targets()
         self._filter_proactive_speech(outcome, include_broadcast=True)
         # 已经即时发出去的算"她说过话"（进日志、进聊天上下文、算主动发言冷却），
@@ -599,13 +601,15 @@ class SendMixin:
                             actual_auto_text = actual_auto_text or kind not in autonomous_kinds
                             interject_delivered = interject_delivered or kind == "interject"
                     if actual_messages:
+                        sent = True
                         delivered.setdefault(target, []).extend(actual_messages)
                         autonomous_delivered = autonomous_delivered or actual_auto_text
                         if actual_auto_text:
                             autonomous_targets.add(target)
                         else:
-                            self.note_visible_speech(target)
-                    if not accepted:
+                            if receipt is None:
+                                self.note_visible_speech(target, state_key=owner.state_key)
+                    if not accepted and not actual_messages:
                         if any(proof is not None and proof.cancelled for proof in ordered_proofs):
                             suppressed = True  # Cancelled privately, without a platform failure.
                         else:
@@ -634,6 +638,7 @@ class SendMixin:
                     received = reader(target) if callable(reader) else (target_images if accepted else [])
                     actual_images = [ref for ref in target_images if ref in received]
                     if actual_images:
+                        sent = True
                         indices = [view.images.index(ref) for ref in actual_images]
                         values, ids = view.image_kinds.get("", []), view.image_ids.get("", [])
                         actual_kinds = [values[i] if i < len(values) else view.speech_kind for i in indices]
@@ -647,14 +652,19 @@ class SendMixin:
                         delivered_images[target] = delivered_images.get(target, 0) + len(actual_images)
                         from .speech_receipts import remember_accepted_images
                         from uuid import uuid4
-                        await remember_accepted_images(self, outcome, target, actual_images,
-                            ("images", uuid4().hex, target), identities, actual_kinds)
+                        try:
+                            await remember_accepted_images(self, outcome, target, actual_images,
+                                ("images", uuid4().hex, target), identities, actual_kinds)
+                        except asyncio.CancelledError:
+                            cancelled = True
+                            outcome.notes.append("已接受图片的回执保存中断，保留原生活事实后停止")
                         auto_images = autonomous(actual_kinds)
                         autonomous_delivered = autonomous_delivered or auto_images
                         if auto_images:
                             autonomous_targets.add(target)
                         else:
-                            self.note_visible_speech(target)
+                            if receipt is None:
+                                self.note_visible_speech(target, state_key=owner.state_key)
             except Exception as exc:
                 outcome.notes.append(f"发到 {target} 失败：{exc}")
                 self._log("warning", f"发到 {target} 失败：{exc}")
@@ -696,7 +706,7 @@ class SendMixin:
             await send_target(target, view)
         outcome.delivered_messages.update(delivered)
         if delivered or delivered_images:
-            async with self.session_state(outcome.session_id) as state:
+            async with receipt_state(self, outcome.session_id, owner=owner) as state:
                 if autonomous_delivered:
                     self.engagement.on_bot_spoke(state)
                     state.engagement_origins = sorted(autonomous_targets)
@@ -723,17 +733,19 @@ class SendMixin:
                         and (outcome.delivered_decisions.get(row["id"]) or outcome.delivered_image_decisions.get(row["id"]))]
                     if target != outcome.session_id:
                         detail.update(session=self.session_label(target, state), note="这一句说给了另一个会话")
-                    await self._log_event(state, "bot_message", detail)
+                    await self._log_event(state, "bot_message", detail,
+                                          persona_id=owner.persona_id or "", resolve_persona=False)
         note = getattr(self.messenger, "take_fail_note", None)
         failed_note = note(outcome.session_id) if callable(note) else ""
         if failed_note:
             # 失败留在发送日志里，不能进入她已经说过的话。
-            async with self.session_state(outcome.session_id) as state:
+            async with receipt_state(self, outcome.session_id, owner=owner) as state:
                 self.dynamics.apply_event(state, "send_failed", now=self._now())
                 await self._log_event(
                     state,
                     "send_failed",
                     {"messages": ordered, "note": failed_note},
+                    persona_id=owner.persona_id or "", resolve_persona=False,
                 )
         elif not sent and ordered and attempted and not suppressed:
             outcome.notes.append("平台没有接收这批消息")
