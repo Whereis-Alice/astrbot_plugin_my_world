@@ -207,6 +207,24 @@ class VisitActorPort:
             return start == end or (start <= hour < end if start < end else hour >= start or hour < end)
         return True
 
+    def _pausable_home_action(self, state, held: dict, definition, *, persona_key: str) -> bool:
+        """A standalone local activity may be put down after a real acceptance.
+
+        Both the saved action and its current definition must allow interruption.
+        Plans, appointments and externally directed work keep their existing gates;
+        this predicate never clears work or claims that it has been completed.
+        """
+        return bool(definition and definition.enabled and definition.available_in(state.node_id)
+                    and definition.category == "continuous" and definition.llm_level == "template"
+                    and definition.target_type == "none" and not definition.tool_list()
+                    and not definition.trigger_command and not sleep_action_kind(definition)
+                    and definition.on_complete.trigger in {"none", "llm_followup"}
+                    and definition.interruptible and held.get("interruptible") is True
+                    and held.get("persona_key") == persona_key and not held.get("from_plan")
+                    and held.get("speech_kind") in {"quiet", "life_share"}
+                    and not held.get("target") and not held.get("target_node")
+                    and not held.get("contact_people"))
+
     def _ready(self, scope: str, state, *, actor_id: str, persona_key: str) -> tuple[bool, str]:
         if (not self.plugin.enabled or getattr(self.plugin, "retired", False)
                 or not self.engine.is_enabled(scope)):
@@ -218,15 +236,15 @@ class VisitActorPort:
         paused_home = bool(visit and visit.get("arrived_at") and visit.get("scope") == scope
                            and local.get("actor_id") == actor_id and local.get("persona_key") == persona_key)
         held = state.current_action if isinstance(state.current_action, dict) else {}
-        definition = (self.engine.world.action_map().get(str(held.get("type") or ""))
-                      if paused_home and state.is_sleeping else None)
+        definition = self.engine.world.action_map().get(str(held.get("type") or ""))
         sleep_kind = {STATE_SLEEPING: "sleep", STATE_NAPPING: "nap"}.get(state.state)
         paused_sleep = bool(paused_home and sleep_kind and definition and definition.enabled
                             and sleep_action_kind(definition) == sleep_kind)
         if (state.is_sleeping and not paused_sleep) or state.state == STATE_DROWSY or state.energy < .25:
             return False, "现在需要休息，稍后再约"
         # Arrival pauses home work. It is not work still competing with this visit.
-        if state.current_action is not None and not paused_home:
+        if (state.current_action is not None and not paused_home
+                and not self._pausable_home_action(state, held, definition, persona_key=persona_key)):
             return False, "手头的活动还没结束，稍后再约"
         if state.current_plan is not None and not paused_home:
             return False, "还有原先的安排，稍后再约"
@@ -285,10 +303,21 @@ class VisitActorPort:
             state = await engine.load_state(scope, cold_start=False)
             remote = visit.get("remote") or {}
             past = await self._past_visits(scope, local["persona_key"], remote)
+            service = getattr(engine, "visits", None)
+            snapshot_current = getattr(service, "_decision_snapshot_current", None)
+            request_guard = None
+            if visit.get("model_pending") and callable(snapshot_current):
+                def request_guard():
+                    if (not self.plugin.enabled or getattr(self.plugin, "retired", False)
+                            or self.engine is not engine or getattr(engine, "visits", None) is not service
+                            or not snapshot_current(phase, visit)):
+                        raise VisitDecisionError("identity", request_started=False)
+                request_guard()
             own_id = str(visit.get("host_id" if visit.get("role") == "host" else "guest_id")
                          or local["actor_id"])
             scene = visit.get("scene") or {}
             visiting = visit.get("status") in {"active", "finishing"} and bool(visit.get("arrived_at"))
+            activity = engine.activity_view(state)
 
             def speaker(row):
                 return _speaker(visit, local, row.get("actor_id"))
@@ -317,6 +346,8 @@ class VisitActorPort:
                          "current_world": (_text(remote.get("world"), 80) or "友邻世界")
                                           if visiting and visit.get("role") == "guest" else local["world"],
                          "home_place": local["place"], "energy": round(state.energy, 2)}
+            if not visiting:
+                materials["current_personal_activity"] = {"label": _text(activity.get("label"), 100)}
             rules = (
                 "你正在与另一个由她自己的模型决定言行的角色相处。只决定自己的言行，不能替对方说话或答应。"
                 "self是你本人，friend是对方；confirmed_log的speaker明确标注台词来源，unknown不能归给任何一方。"
@@ -327,6 +358,8 @@ class VisitActorPort:
                 "说话遵循你原有人设和相处距离，简短自然，避免每次重打招呼。允许安静一起活动、拒绝、改约或告别。"
                 "propose先真诚提出邀请，accept表示自己愿意；receive决定是否接待或应邀，拒绝可在say中改约。"
                 "邀请阶段是从各自世界打电话约见；原话传给对方，尚未接受时不能说成已经到访或面对面相处。"
+                "current_personal_activity是你在家正在做的事；能打电话不等于必须放下它。"
+                "由你决定先继续、改约，还是愿意暂时放下；提出邀请本身没有完成或中止家中活动。"
                 "turn接对方眼前的话或活动，只描述自己这一步准备做什么；action不是已完成的事实。"
                 "scene只由东道主推进一个公开场景。scene_stage=event_offer时可提出至多一件轻微日常小事件，"
                 "不能编造对方选择或事件结局。scene_stage=event_resolve时，只依据双方已提交的action_plans"
@@ -345,14 +378,27 @@ class VisitActorPort:
                 try:
                     reply = await engine._budgeted_generate(engine.llm, session_id=scope,
                         system_prompt=persona[:6000] + "\n\n" + rules,
-                        prompt=json.dumps(materials, ensure_ascii=False), max_tokens=output_limit)
+                        prompt=json.dumps(materials, ensure_ascii=False), max_tokens=output_limit,
+                        **({"_request_guard": request_guard} if request_guard else {}))
                 except asyncio.CancelledError:
+                    raise
+                except VisitDecisionError as exc:
+                    exc.request_started = exc.request_started or admission.started
                     raise
                 except TimeoutError as exc:
                     raise VisitDecisionError("timeout", request_started=admission.started) from exc
                 except Exception as exc:
                     raise VisitDecisionError("provider", request_started=admission.started) from exc
             if not reply or not reply.ok:
+                if request_guard:
+                    try:
+                        request_guard()
+                    except VisitDecisionError as exc:
+                        # Budget admission may normalize a failed dispatch guard
+                        # into a reply. Recover its cause without refunding a call
+                        # which had already entered the provider.
+                        exc.request_started = admission.started
+                        raise
                 error = VisitDecisionError.unavailable(getattr(reply, "error", ""))
                 error.request_started = admission.started
                 raise error

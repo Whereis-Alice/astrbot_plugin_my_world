@@ -176,6 +176,7 @@ class BackgroundMixin:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _budgeted_generate(self, channel, **kwargs: Any):
+        request_guard = kwargs.pop("_request_guard", None)
         await validate_life_preparation(self)
         from ..ports import LLMReply
         context = call_context()
@@ -288,6 +289,10 @@ class BackgroundMixin:
                                     reason = changed_reason
                                     record_background_admission(deferred=True, reason=reason, next_at=self._now())
                                     raise RuntimeError(reason)
+                                if request_guard is not None:
+                                    # Local visit proof must survive provider and budget waits.
+                                    # This callback is synchronous and never reaches the provider.
+                                    request_guard()
                                 budget.started = True
                                 record_background_admission(started=True)
 

@@ -15,6 +15,43 @@ from .ports import VisitStateError, describe_local
 
 
 class VisitFlow(VisitRhythm):
+    def _decision_snapshot_current(self, phase, snapshot):
+        """A provider dispatch belongs to this exact still-live admission."""
+        visit = self._state.get("visits", {}).get(snapshot.get("id"))
+        return bool(visit and not self._closed and self.config.enabled
+                    and visit["status"] not in TERMINAL and visit["expires_at"] > self._now()
+                    and visit["scope"] == snapshot.get("scope") and self._life_enabled(visit["scope"])
+                    and snapshot.get("model_pending")
+                    and visit.get("model_pending") == snapshot["model_pending"]
+                    and visit["local"] == snapshot.get("local")
+                    and self._decision_cursor(visit, phase) == self._decision_cursor(snapshot, phase))
+
+    def _refund_unstarted_decision(self, visit, snapshot, token):
+        """Withdraw our known unsent admission, even after a live goodbye cleared it."""
+        own = self._local_id(snapshot)
+        if (self._closed or visit["scope"] != snapshot["scope"] or visit["local"] != snapshot["local"]
+                or visit["calls"].get(own) != snapshot["calls"][own]
+                or not (visit.get("model_pending") == token
+                        or visit["status"] in TERMINAL and not visit.get("model_pending"))):
+            return False
+        visit["calls"][own] = max(0, visit["calls"][own] - 1)
+        if visit.get("model_pending") == token:
+            visit.pop("model_pending", None)
+        return True
+
+    async def _decision_still_current(self, visit, phase, cursor):
+        """Under the journal lock, renew life/phase proof after a successful await."""
+        if (self._closed or visit["status"] in TERMINAL
+                or self._decision_cursor(visit, phase) != cursor):
+            return False
+        if not self.config.enabled or not self._life_enabled(visit["scope"]):
+            await self._finish(visit, "interrupted", "这个生活已关闭串门或归属发生变化")
+            return False
+        if visit["expires_at"] <= self._now():
+            await self._finish(visit, "expired", "本次停留已经到期，旧决定作废")
+            return False
+        return True
+
     @staticmethod
     def _decision_cursor(visit, phase):
         cursor = {"phase": phase, "status": visit["status"], "log_seq": len(visit["log"]),
@@ -71,6 +108,8 @@ class VisitFlow(VisitRhythm):
                     return None
                 if visit.pop("model_retry", None) is not None:
                     await self._save()
+                if not await self._decision_still_current(visit, phase, cursor):
+                    return None
                 return copy.deepcopy(visit["decision"])
             declining = visit["decision"].get("accept") is False or visit["decision"].get("leave") is True
             reason = (current.get("ready_reason") or "现在不方便，稍后再约") if not declining and not current["ready"] else ""
@@ -83,8 +122,12 @@ class VisitFlow(VisitRhythm):
                 decision["contact_kind"] = "contact_status"
                 visit["decision"] = decision
                 await self._save()
+                if not await self._decision_still_current(visit, phase, cursor):
+                    return None
             if visit.pop("model_retry", None) is not None:
                 await self._save()
+            if not await self._decision_still_current(visit, phase, cursor):
+                return None
             return copy.deepcopy(visit["decision"])
 
     def _new_visit(self, scope, peer, local, visit_id, role, reason, automatic):
@@ -154,6 +197,22 @@ class VisitFlow(VisitRhythm):
                     raise
         if saved_choice is not None:
             return await self._resume_saved_decision(visit_id, *saved_choice, phase=phase)
+        async with self._lock:
+            visit = self._state["visits"].get(visit_id)
+            if not visit:
+                return None
+            if visit.get("model_pending") != token:
+                if charged and self._refund_unstarted_decision(visit, snapshot, token):
+                    await self._save()
+                return None
+            if not await self._decision_still_current(visit, phase, cursor):
+                changed = charged and self._refund_unstarted_decision(visit, snapshot, token)
+                if not self._closed and visit.get("model_pending") == token:
+                    visit.pop("model_pending", None)
+                    changed = True
+                if changed:
+                    await self._save()
+                return None
         generated = {}
         try:
             with capture_decision_candidate() as generated:
@@ -193,10 +252,15 @@ class VisitFlow(VisitRhythm):
                 except Exception:
                     pass  # The confirmed failure still needs its normal settlement.
             async with self._lock:
-                visit = self._state["visits"][visit_id]
+                visit = self._state["visits"].get(visit_id)
+                if not visit or self._closed:
+                    return None
+                if visit["status"] in TERMINAL or visit.get("model_pending") != token:
+                    if (charged and isinstance(error, VisitDecisionError) and not error.request_started
+                            and self._refund_unstarted_decision(visit, snapshot, token)):
+                        await self._save()
+                    return None
                 if visit.get("model_pending") == token and not self._closed:
-                    if visit["status"] in TERMINAL:
-                        return None
                     visit.pop("model_pending", None)
                     if charged and isinstance(error, VisitDecisionError) and not error.request_started:
                         visit["calls"][own] = max(0, visit["calls"][own] - 1)
@@ -222,8 +286,12 @@ class VisitFlow(VisitRhythm):
                     await self._finish(visit, "interrupted", reason)
             return None
         async with self._lock:
-            visit = self._state["visits"][visit_id]
-            if visit.get("model_pending") != token or visit["status"] in TERMINAL or self._closed:
+            visit = self._state["visits"].get(visit_id)
+            if not visit or self._closed:
+                return None
+            if visit.get("model_pending") != token or visit["status"] in TERMINAL:
+                if charged and not request_started and self._refund_unstarted_decision(visit, snapshot, token):
+                    await self._save()
                 return None
             if charged and not request_started:
                 visit["calls"][own] = max(0, visit["calls"][own] - 1)
@@ -243,6 +311,8 @@ class VisitFlow(VisitRhythm):
             else:
                 visit.pop("decision_cursor", None)
             await self._save()
+            if not await self._decision_still_current(visit, phase, cursor):
+                return None
         return result
 
     async def invite(self, scope: str, peer_id: str, reason: str = "", direction: str = "outgoing",
@@ -256,7 +326,7 @@ class VisitFlow(VisitRhythm):
         if automatic and not await self._automatic_budget_available(scope):
             raise VisitDecisionError("budget")
         peer_id = await self._prepare_peer(scope, peer_id)
-        local = await self.actor_port.describe(scope)
+        local = await describe_local(self.actor_port, scope, timeout_seconds=self.config.timeout_seconds)
         async with self._lock:
             self._enabled()
             peer = self._peer(scope, peer_id)

@@ -132,6 +132,15 @@ class VisitRhythm:
         if record.get("next_auto_at", 0) > self._now():
             return False
         day = self._visit_day(local)
+        day_getter = getattr(self.actor_port, "local_date", None)
+        if callable(day_getter):
+            raw_day = day_getter(scope)
+            if not raw_day:
+                return False
+            try:
+                day = datetime.fromisoformat(str(raw_day)).date().isoformat()
+            except (TypeError, ValueError):
+                pass  # Older ports retain their description's calendar.
         state = record.setdefault("peer_days", {}).setdefault(self._rhythm_peer_id(peer), {"days": {}, "last_at": 0})
         entry = state["days"].get(day)
         if entry is None:
@@ -149,6 +158,9 @@ class VisitRhythm:
             record.update(week=week, count=0)
         record["day"] = day
         record["count"] = record.get("count", 0) + 1  # Legacy diagnostic counter only.
+        # A description can become yesterday's while waiting for this lock.
+        # The new journey copies this calendar and keeps it through arrival.
+        local["local_date"] = day
         return True
 
     def _automatic_available(self, scope):
