@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import importlib
 import json
 from pathlib import Path
@@ -211,6 +212,77 @@ class VisitActorTests(unittest.IsolatedAsyncioTestCase):
             await self.port.remember(fixture.SESSION, visit)
         rows = await self.db.call("query_memories", session_id=fixture.SESSION)
         self.assertFalse([row for row in rows if row["source"] == "life_event"])
+
+    def regroup_visit_owner(self, *, disable_main=False):
+        self.store.add_session(fixture.OTHER_SESSION, session_type="group", platform="aiocqhttp")
+        sessions = self.store.raw_sessions()
+        sessions["groups"] = [{"id": "shared-life", "name": "同一份生活",
+                               "sessions": [fixture.SESSION, fixture.OTHER_SESSION],
+                               "main_session": fixture.SESSION if disable_main else fixture.OTHER_SESSION}]
+        if disable_main:
+            next(row for row in sessions["sessions"] if row["session_id"] == fixture.SESSION)["enabled"] = False
+        self.store.save_sessions(sessions)
+        self.engine.reload_config()
+        self.assertEqual(self.engine.state_key(fixture.SESSION), fixture.OTHER_SESSION)
+
+    def confirmed_ending(self, visit):
+        final = copy.deepcopy(visit)
+        final["status"] = "completed"
+        final["log"].append({"seq": 2, "actor_id": "actor-b", "kind": "say", "text": "最后确认的告别"})
+        return final
+
+    async def trip_memories(self, session_id):
+        rows = await self.db.call("query_memories", session_id=session_id)
+        return [row for row in rows if row["source"] == "life_event"
+                and json.loads(row["context"])["kind"] == "world_visit"]
+
+    async def test_late_confirmation_after_regrouping_updates_original_trip_receipt(self):
+        initial = {**self.visit, "status": "interrupted", "end_reason": "等待告别确认"}
+        await self.port.remember(fixture.SESSION, initial)
+        self.regroup_visit_owner()
+        await self.port.remember(fixture.SESSION, self.confirmed_ending(initial))
+        old = await self.trip_memories(fixture.SESSION)
+        new = await self.trip_memories(fixture.OTHER_SESSION)
+        self.assertEqual(len(old), 1)
+        self.assertEqual(json.loads(old[0]["context"])["status"], "completed")
+        self.assertIn("最后确认的告别", old[0]["content"])
+        self.assertFalse(new)
+
+    async def test_delayed_first_settlement_keeps_trip_owner_when_main_is_disabled(self):
+        self.regroup_visit_owner(disable_main=True)
+        await self.port.remember(fixture.OTHER_SESSION, self.confirmed_ending(self.visit))
+        old = await self.trip_memories(fixture.SESSION)
+        new = await self.trip_memories(fixture.OTHER_SESSION)
+        self.assertEqual(len(old), 1)
+        self.assertEqual(old[0]["persona_id"], self.local["persona_key"])
+        self.assertEqual(old[0]["node_id"], self.local["home_node"])
+        self.assertFalse(new)
+
+    async def test_regrouped_confirmation_does_not_recreate_deleted_trip_memory(self):
+        initial = {**self.visit, "status": "interrupted"}
+        await self.port.remember(fixture.SESSION, initial)
+        rows = await self.trip_memories(fixture.SESSION)
+        await self.db.call("delete_memories_by_ids", [rows[0]["id"]])
+        self.regroup_visit_owner()
+        await self.port.remember(fixture.SESSION, self.confirmed_ending(initial))
+        for session_id in (fixture.SESSION, fixture.OTHER_SESSION):
+            self.assertFalse(await self.trip_memories(session_id))
+
+    async def test_legacy_trip_without_scope_uses_current_shared_life(self):
+        self.regroup_visit_owner()
+        visit = self.confirmed_ending(self.visit)
+        visit.pop("scope")
+        await self.port.remember(fixture.SESSION, visit)
+        self.assertFalse(await self.trip_memories(fixture.SESSION))
+        rows = await self.trip_memories(fixture.OTHER_SESSION)
+        self.assertEqual(len(rows), 1)
+
+    async def test_original_trip_remains_recallable_from_its_shared_life(self):
+        await self.port.remember(fixture.SESSION, self.confirmed_ending(self.visit))
+        self.regroup_visit_owner()
+        recalled = await self.port._past_visits(fixture.OTHER_SESSION, self.local["persona_key"], self.visit["remote"])
+        self.assertEqual(len(recalled), 1)
+        self.assertIn("最后确认的告别", recalled[0])
 
     async def test_same_experience_on_two_visits_does_not_revise_the_first_trip(self):
         first = {**self.visit, "status": "completed"}

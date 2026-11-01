@@ -63,7 +63,7 @@ async def delivery(plugin, target, view, *, echo_count=0, instant=False):
         return
     from astrbot.core.message.components import Plain
     from astrbot.core.message.message_event_result import MessageEventResult, ResultContentType
-    messages, kinds, identities, wire = [], [], [], {}
+    messages, kinds, identities, retained, wire = [], [], [], [], {}
     request = original.get_extra("provider_request")
     history_target = ({"cid": getattr(getattr(request, "conversation", None), "cid", None)}
                       if request is not None else None)
@@ -77,6 +77,7 @@ async def delivery(plugin, target, view, *, echo_count=0, instant=False):
             messages.append(text)
             kinds.append(kind)
             identities.append(identity)
+            retained.append(index)
             positions[index + 1] = len(messages)
             continue
         public_original = original
@@ -110,7 +111,7 @@ async def delivery(plugin, target, view, *, echo_count=0, instant=False):
         if ":GroupMessage:" in target and kind not in {"participation", "browse_reply", "continuation", "interject"}:
             sender = getattr(event.message_obj, "sender", None)
             if sender is not None:
-                person = next(iter(sorted(view.contact_people)), "") if kind == "outreach" else ""
+                person = next(iter(sorted(view.speech_recipients("", index))), "") if kind == "outreach" else ""
                 sender.user_id = person or event.get_group_id()
                 sender.nickname = person or "群里"
         raw = plugin.take_llm_response(target)
@@ -142,6 +143,7 @@ async def delivery(plugin, target, view, *, echo_count=0, instant=False):
         messages.append(body)
         kinds.append(kind)
         identities.append(identity)
+        retained.append(index)
         wire[(target, position)] = {"text": body, "chain": chain, "event": event,
                                    "accepted": False, "history_target": history_target}
         trace = next((r for r in view.speech_decisions if r["id"] == identity), None)
@@ -153,6 +155,11 @@ async def delivery(plugin, target, view, *, echo_count=0, instant=False):
     view.messages = messages
     view.speech_kinds[""] = kinds
     view.speech_ids[""] = identities
+    # A suppressed/empty replacement removes its recipient and destination too.
+    # Keep those capabilities beside the surviving line for mentions and quotas.
+    view.speech_people[""] = [tuple(sorted(view.speech_recipients("", i))) for i in retained]
+    origins = view.speech_origins.get("", [])
+    view.speech_origins[""] = [origins[i] if i < len(origins) else target for i in retained]
     view.debug_positions = [positions.get(int(pos), len(messages)) for pos in debug_positions]
     # Engine indices include interleaved debug echoes. Match the final ordered
     # entries before transmission so echoes can never acquire speech receipts.

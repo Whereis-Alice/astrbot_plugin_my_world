@@ -230,7 +230,10 @@ class VisitActorPort:
     async def remember(self, scope: str, visit: dict) -> None:
         """Write one receipt per trip; speculative summaries cannot replace facts."""
         engine = self.engine
-        scope = engine.state_key(scope)
+        # Settlement belongs to the persisted trip, even if its session has
+        # since been regrouped or the configured main session is disabled.
+        # Keep the old adapter fallback for snapshots without an owner.
+        scope = str(visit.get("scope") or engine.state_key(scope))
         local, remote = visit.get("local") or {}, visit.get("remote") or {}
         key = str(visit.get("id") or "")
         if not key or visit.get("status") not in {"completed", "interrupted", "expired"}:
