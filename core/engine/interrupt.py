@@ -83,7 +83,11 @@ class InterruptMixin:
         )
         try:
             if self.creator_llm is None:
-                raise ValueError("没有可用的内容生成模型，请在插件配置中选择模型或配置 AstrBot 默认对话模型")
+                from ..background_budget import record_background_admission
+                reason = "没有可用的内容生成模型，请在插件配置中选择模型或配置 AstrBot 默认对话模型"
+                record_background_admission(deferred=True, reason=reason,
+                                            next_at=self._now() + self.tick_seconds)
+                raise ValueError(reason)
             reply = await self._background_generate(self.creator_llm,
                 session_id=session_id,
                 system_prompt=system_prompt,

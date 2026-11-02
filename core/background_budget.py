@@ -101,6 +101,9 @@ class BackgroundReservation:
 
             await _finish_write(asyncio.create_task(withdraw()))
             raise
+        except Exception:
+            record_background_admission(deferred=True, reason="后台预算准备失败，模型尚未调用")
+            raise
         self.allowed, self.reason = budget['allowed'], budget.get('reason', '')
         if self.reason == EXHAUSTED and self.exhausted_reason:
             self.reason = self.exhausted_reason

@@ -7,7 +7,8 @@ import asyncio
 import time
 from hashlib import sha256
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
@@ -25,6 +26,17 @@ VISIT_UNOWNED = "串门缺少可用的生活归属，留待重新准备"
 
 
 class BackgroundMixin:
+    @contextmanager
+    def _unissued_preparation(self) -> Iterator[None]:
+        """Local validation/routing has not dispatched a model request yet."""
+        try:
+            yield
+        except (Exception, asyncio.CancelledError) as exc:
+            record_background_admission(deferred=True,
+                reason=safe_error(exc) or type(exc).__name__,
+                next_at=self._now() + self.tick_seconds)
+            raise
+
     def _background_budget_changed(self) -> None:
         self._background_budget_revision = getattr(self, "_background_budget_revision", 0) + 1
         for event in getattr(self, "_participation_wakeups", {}).values():
@@ -178,7 +190,8 @@ class BackgroundMixin:
     async def _budgeted_generate(self, channel, **kwargs: Any):
         request_guard = kwargs.pop("_request_guard", None)
         manual_visit = kwargs.pop("_visit_manual", False) is True
-        await validate_life_preparation(self)
+        with self._unissued_preparation():
+            await validate_life_preparation(self)
         from ..ports import LLMReply
         context = call_context()
         purpose = str(context.get("purpose") or "other")
@@ -198,11 +211,12 @@ class BackgroundMixin:
         session = str(kwargs.get("session_id") or request_session or "")
         visit_scope = ""
         if purpose == "world_visit":
-            visit_scope = self._visit_budget_scope(session)
-            if (not visit_scope or request_session
-                    and self._visit_budget_scope(request_session) != visit_scope):
-                record_background_admission(deferred=True, reason=VISIT_UNOWNED)
-                return LLMReply(ok=False, error=VISIT_UNOWNED)
+            with self._unissued_preparation():
+                visit_scope = self._visit_budget_scope(session)
+                if (not visit_scope or request_session
+                        and self._visit_budget_scope(request_session) != visit_scope):
+                    record_background_admission(deferred=True, reason=VISIT_UNOWNED)
+                    return LLMReply(ok=False, error=VISIT_UNOWNED)
 
         def visit_owned():
             return (purpose != "world_visit" or
@@ -211,38 +225,40 @@ class BackgroundMixin:
 
         # Preparation must not occupy a slot or spend a reservation. A malformed
         # option, unavailable tool context or failed routing lookup stays local.
-        reserve = (len(str(kwargs.get("system_prompt", ""))) + len(str(kwargs.get("prompt", "")))
-                   + len(str(kwargs.get("contexts") or "")) + len(str(kwargs.get("func_tool") or ""))
-                   + int(kwargs.get("max_tokens") or 2048))
-        from ..speech_runtime import SPEECH_REQUEST
-        speech = SPEECH_REQUEST.get()
-        available = self.allowed_tool_names(speech["state"].node_id) if speech else set()
-        if self.world.decider.proactive_tool_names:
-            available &= set(self.world.decider.proactive_tool_names)
-        context = getattr(getattr(channel, "plugin", None), "context", None)
-        if (speech and speech.get("allow_tools") and available and self.world.decider.proactive_tools
-                and getattr(channel, "role", "") == "main" and callable(getattr(context, "tool_loop_agent", None))):
-            reserve *= self.world.decider.proactive_tool_steps + 1
-        provider_id = str(getattr(channel, "provider_id", "") or "")
-        generate, generation_kwargs = channel.generate, kwargs
-        admitted_generate = None
-        timeout = min(2, self.world.limits.background_llm_timeout_seconds) if CRITICAL_TICK.get() and not LIFE_WORK.get() else self.world.limits.background_llm_timeout_seconds
-        resolver = getattr(channel, "resolve_provider_id", None)
-        if callable(resolver):
-            async with asyncio.timeout(timeout):
-                provider_id = await resolver(session)
-            if not isinstance(provider_id, str):
-                raise ValueError("后台模型 Provider 解析结果无效")
-            resolved_generate = getattr(channel, "generate_resolved", None)
-            if callable(resolved_generate):
-                generate = resolved_generate
-                generation_kwargs = {**kwargs, "resolved_provider_id": provider_id}
-            admitted_generate = getattr(channel, "generate_admitted", None)
-            await validate_life_preparation(self)
-        now = self._now()
-        if not visit_owned():
-            record_background_admission(deferred=True, reason=VISIT_UNOWNED)
-            return LLMReply(ok=False, error=VISIT_UNOWNED)
+        with self._unissued_preparation():
+            reserve = (len(str(kwargs.get("system_prompt", ""))) + len(str(kwargs.get("prompt", "")))
+                       + len(str(kwargs.get("contexts") or "")) + len(str(kwargs.get("func_tool") or ""))
+                       + int(kwargs.get("max_tokens") or 2048))
+            from ..speech_runtime import SPEECH_REQUEST
+            speech = SPEECH_REQUEST.get()
+            available = self.allowed_tool_names(speech["state"].node_id) if speech else set()
+            if self.world.decider.proactive_tool_names:
+                available &= set(self.world.decider.proactive_tool_names)
+            context = getattr(getattr(channel, "plugin", None), "context", None)
+            if (speech and speech.get("allow_tools") and available and self.world.decider.proactive_tools
+                    and getattr(channel, "role", "") == "main" and callable(getattr(context, "tool_loop_agent", None))):
+                reserve *= self.world.decider.proactive_tool_steps + 1
+            provider_id = str(getattr(channel, "provider_id", "") or "")
+            generate, generation_kwargs = channel.generate, kwargs
+            admitted_generate = None
+            timeout = min(2, self.world.limits.background_llm_timeout_seconds) if CRITICAL_TICK.get() and not LIFE_WORK.get() else self.world.limits.background_llm_timeout_seconds
+            resolver = getattr(channel, "resolve_provider_id", None)
+            if callable(resolver):
+                async with asyncio.timeout(timeout):
+                    provider_id = await resolver(session)
+                if not isinstance(provider_id, str):
+                    raise ValueError("后台模型 Provider 解析结果无效")
+                resolved_generate = getattr(channel, "generate_resolved", None)
+                if callable(resolved_generate):
+                    generate = resolved_generate
+                    generation_kwargs = {**kwargs, "resolved_provider_id": provider_id}
+                admitted_generate = getattr(channel, "generate_admitted", None)
+                await validate_life_preparation(self)
+        with self._unissued_preparation():
+            now = self._now()
+            if not visit_owned():
+                record_background_admission(deferred=True, reason=VISIT_UNOWNED)
+                return LLMReply(ok=False, error=VISIT_UNOWNED)
         if manual_visit:
             # Human-arranged visits do not reserve, spend or inspect autonomous
             # allowances. Keep real dispatch attribution and the same life proof.
@@ -250,11 +266,12 @@ class BackgroundMixin:
                 async with released_life_lock(self):
                     async with asyncio.timeout(timeout):
                         async def begin_manual_request():
-                            await validate_life_preparation(self)
-                            if not visit_owned():
-                                raise RuntimeError(VISIT_UNOWNED)
-                            if request_guard is not None:
-                                request_guard()
+                            with self._unissued_preparation():
+                                await validate_life_preparation(self)
+                                if not visit_owned():
+                                    raise RuntimeError(VISIT_UNOWNED)
+                                if request_guard is not None:
+                                    request_guard()
                             record_background_admission(started=True)
 
                         if callable(admitted_generate):
@@ -262,7 +279,8 @@ class BackgroundMixin:
                                 before_request=begin_manual_request, **kwargs)
                         await begin_manual_request()
                         return await generate(**generation_kwargs)
-        pool = self._background_budget_pool(purpose=purpose, session_id=session)
+        with self._unissued_preparation():
+            pool = self._background_budget_pool(purpose=purpose, session_id=session)
         if pool is None:
             record_background_admission(deferred=True, reason=VISIT_UNOWNED)
             return LLMReply(ok=False, error=VISIT_UNOWNED)
@@ -296,7 +314,8 @@ class BackgroundMixin:
                     # Tick never spends a full provider timeout holding a character lock.
                     async with released_life_lock(self):
                         async with asyncio.timeout(timeout):
-                            await validate_life_preparation(self)
+                            with self._unissued_preparation():
+                                await validate_life_preparation(self)
                             def current_ledger():
                                 latest = self._background_budget_pool(purpose=purpose, session_id=session)
                                 return visit_owned() and latest and latest["ledger"] == ledger
@@ -309,15 +328,16 @@ class BackgroundMixin:
                                 record_background_admission(deferred=True, reason=reason, next_at=self._now())
                                 return LLMReply(ok=False, error=reason)
                             async def begin_request():
-                                await validate_life_preparation(self)
-                                if not current_ledger():
-                                    reason = changed_reason
-                                    record_background_admission(deferred=True, reason=reason, next_at=self._now())
-                                    raise RuntimeError(reason)
-                                if request_guard is not None:
-                                    # Local visit proof must survive provider and budget waits.
-                                    # This callback is synchronous and never reaches the provider.
-                                    request_guard()
+                                with self._unissued_preparation():
+                                    await validate_life_preparation(self)
+                                    if not current_ledger():
+                                        reason = changed_reason
+                                        record_background_admission(deferred=True, reason=reason, next_at=self._now())
+                                        raise RuntimeError(reason)
+                                    if request_guard is not None:
+                                        # Local visit proof must survive provider and budget waits.
+                                        # This callback is synchronous and never reaches the provider.
+                                        request_guard()
                                 budget.started = True
                                 record_background_admission(started=True)
 
@@ -343,6 +363,12 @@ class BackgroundMixin:
         except LifeWorkDiscarded:
             raise
         except Exception as exc:
+            if budget is None:
+                # Construction/admission failed before a dispatch could begin.
+                # Keep the local error; it is not a provider-generation failure.
+                record_background_admission(deferred=True, reason=safe_error(exc) or type(exc).__name__,
+                                            next_at=self._now() + self.tick_seconds)
+                raise
             if budget is not None and not budget.started:
                 reason = safe_error(exc) or type(exc).__name__
                 record_background_admission(deferred=True, reason=reason,

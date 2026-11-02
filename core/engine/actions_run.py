@@ -1439,6 +1439,9 @@ class ActionsRunMixin:
 
         if self.llm is None:
             note(False, "没有可用的模型")
+            from ..background_budget import record_background_admission
+            record_background_admission(deferred=True, reason="没有可用的模型",
+                                        next_at=self._now() + self.tick_seconds)
             return None
         try:
             reply = await self._background_generate(self.llm,

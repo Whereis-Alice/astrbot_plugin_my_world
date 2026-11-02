@@ -11,7 +11,7 @@ from ..models import (
     ActionDef,
     NodeDef,
 )
-from ..planner import active_plan
+from ..planner import active_plan, advance
 from ..prompt import period_of
 from ..speech_policy import speech_origin
 from ..state import (
@@ -726,6 +726,33 @@ class SleepMixin:
                 return key
         return ""
 
+    def _skip_interrupted_sleep_plan_step(self, state: WorldState) -> bool:
+        """Keep queued work without restarting the interrupted rest or skipping another plan."""
+
+        action = state.current_action if isinstance(state.current_action, dict) else {}
+        plan = state.current_plan if isinstance(state.current_plan, dict) else {}
+        steps = plan.get("steps")
+        if action.get("plan_index") is None or not isinstance(steps, list):
+            return False
+        index = self._running_plan_index(state, plan)
+        if index is None:
+            return False
+        step = steps[index]
+        if (not isinstance(step, dict) or step.get("action") != action.get("type")
+                or step.get("status") in {"done", "skipped", "deferred"}):
+            return False
+        try:
+            current = int(plan.get("current_step") or 0)
+        except (TypeError, ValueError):
+            return False
+        if index == current:
+            advance(state, status="skipped")
+        else:
+            # A new prefix can precede this owned step in the same plan. Leave
+            # its cursor intact; peek_step will skip this rest when it reaches it.
+            step["status"] = "skipped"
+        return True
+
     def _wake_up_state(self, state: WorldState, ctx: MessageContext) -> None:
         """把「被叫醒」落到状态上：停下动作、可选地清掉排队计划、给一段保护期。"""
 
@@ -733,6 +760,8 @@ class SleepMixin:
         if state.current_action and sleep_action_kind(self.world.action_map().get(str(state.current_action.get("type")))):
             self.settle_recovery_progress(state, state.current_action)
             self._finish_sleep_rhythm(state, state.current_action, interrupted=True)
+            if not config.clear_plan_on_wake:
+                self._skip_interrupted_sleep_plan_step(state)
         elif config.mode == "autonomous" and state.sleep_rhythm.get("decision") == "sleep":
             # 临睡时还没有实际睡眠，取消待睡决定，但保留已有清醒负担。
             state.sleep_rhythm.pop("retry_at", None)

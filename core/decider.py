@@ -739,14 +739,16 @@ class Decider:
     def _pick_idle_node(self, *, exclude: str = "") -> str:
         """挑一个能发呆的地方：动作归属只认动作那一份（不再看节点自己的列表）。"""
 
+        graph = self.world.adjacent()
+        reachable = [node for node in self.world.nodes if node.id != exclude
+                     and (not exclude or find_path(graph, exclude, node.id) is not None)]
         candidates = [
             node.id
-            for node in self.world.nodes
-            if node.id != exclude
-            and any(action.id == "stare" for action in self.world.actions_in(node.id))
+            for node in reachable
+            if any(action.id == "stare" for action in self.world.actions_in(node.id))
         ]
         if not candidates:
-            candidates = [n.id for n in self.world.nodes if n.id != exclude]
+            candidates = [node.id for node in reachable]
         if not candidates:
             return ""
         return self.rng.choice(candidates)
