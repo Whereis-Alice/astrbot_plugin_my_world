@@ -75,7 +75,7 @@ class EnvironmentOpportunityTests(unittest.TestCase):
         self.state.last_outdoor_at = 0
         self.state.node_since = self.engine.now - ENVIRONMENT_OUTDOOR_GAP_SECONDS + 1
         self.assertIsNone(self.plan())
-        self.state.node_since -= 1
+        self.engine.now += 1
         self.assertIsNotNone(self.plan())
         self.state.node_since = 0
         self.assertIsNone(self.plan())

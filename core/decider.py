@@ -503,7 +503,7 @@ class Decider:
             return False
         now = self._now()
         arrived = float(state.node_since or 0)
-        last_outdoor = float(state.last_outdoor_at or arrived)
+        last_outdoor = float(state.last_outdoor_at or state.ensure_first_outing_wait_at(now))
         return (arrived > 0 and now - arrived >= ENVIRONMENT_DWELL_SECONDS
                 and last_outdoor > 0 and now - last_outdoor >= ENVIRONMENT_OUTDOOR_GAP_SECONDS)
 

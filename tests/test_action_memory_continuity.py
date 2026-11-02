@@ -71,6 +71,36 @@ class ActionMemoryContinuityTests(unittest.IsolatedAsyncioTestCase):
         done = next(row for row in events if row["event_type"] == "action_done")
         self.assertEqual("整理书签", done["detail"]["desc"])
 
+    async def complete_renamed_action_with_followup(self, *, legacy=False):
+        action_id = self.configure_action(name="整理书签", category="continuous", llm_level="template",
+            template="", duration_mode="fixed", duration=60, on_complete={"trigger": "llm_followup"})
+        await self.execute(action_id)
+        self.configure_action(name="浇花")
+        self.llm.replies = [json.dumps({"intent": "listen", "actions": []})]
+        async with self.engine.session_state(fixture.SESSION) as state:
+            if legacy:
+                state.current_action.pop("action_name", None)
+            await self.engine._tick_continuous(state, self.engine.node(state.node_id),
+                fixture.TickOutcome(fixture.SESSION))
+            self.assertIsNone(state.current_action)
+        events = await self.db.call("query_events", session_id=fixture.SESSION, limit=10)
+        done = next(row for row in events if row["event_type"] == "action_done")
+        return self.llm.calls[-1]["prompt"], await self.memories(), done
+
+    async def test_renamed_action_completion_prompt_matches_execution_memory_and_log(self):
+        prompt, rows, done = await self.complete_renamed_action_with_followup()
+        self.assertIn("你刚刚做完了「整理书签」，用了大约 1 分钟。", prompt)
+        self.assertNotIn("你刚刚做完了「浇花」", prompt)
+        self.assertEqual(["在这里整理书签"], [row["content"] for row in rows])
+        self.assertEqual("整理书签", done["detail"]["desc"])
+
+    async def test_legacy_completion_prompt_keeps_current_definition_name_fallback(self):
+        prompt, rows, done = await self.complete_renamed_action_with_followup(legacy=True)
+        self.assertIn("你刚刚做完了「浇花」，用了大约 1 分钟。", prompt)
+        self.assertEqual(["在这里浇花"], [row["content"] for row in rows])
+        # An old archive's existing description remains historical log data.
+        self.assertEqual("整理书签", done["detail"]["desc"])
+
     async def test_recent_start_keeps_execution_name_after_config_rename(self):
         await self.start_and_rename()
         prompt = await self.engine.preview_autonomous_prompt(fixture.SESSION)

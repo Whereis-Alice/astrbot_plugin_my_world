@@ -229,6 +229,8 @@ class TickMixin:
             self._tick_idle_life(state)
             # 1) 推进持续动作
             await self._tick_continuous(state, node, outcome)
+            # A completed walk owns the next step's place in this same beat.
+            node = self.node(state.node_id) or node
 
             # 2) 计划推进（无 LLM）
             self.resume_life(state)
@@ -763,7 +765,7 @@ class TickMixin:
                 minutes = max(
                     0, round(int(action.get("elapsed_ticks", 0)) * self.tick_seconds / 60)
                 )
-                label = definition.name or definition.id if definition else ""
+                label = str(action.get("action_name") or (definition.name or definition.id if definition else ""))
                 detail = f"你刚刚做完了「{label}」，用了大约 {minutes} 分钟。"
             detail = self._clip_followup(detail)
             followup_spoke = await self._llm_followup(

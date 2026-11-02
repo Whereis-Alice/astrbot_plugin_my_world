@@ -66,9 +66,14 @@ class StateStoreMixin:
         if payload is None:
             adopted = await self._adopt_group_state(key)
             if adopted is not None:
+                if not adopted.last_outdoor_at:
+                    adopted.ensure_first_outing_wait_at(self._now())
                 return adopted
             return await self._cold_start(key) if cold_start else self._default_state(key)
-        return WorldState.from_payload(payload, key)
+        state = WorldState.from_payload(payload, key)
+        if not state.last_outdoor_at:
+            state.ensure_first_outing_wait_at(self._now())
+        return state
 
     async def _adopt_group_state(self, key: str) -> WorldState | None:
         """刚把几个会话编成一组时，接过她原来那份状态。
@@ -105,6 +110,7 @@ class StateStoreMixin:
             if session and session.cold_start_node in self.world.node_map()
             else self.default_node_id()
         )
+        now = self._now()
         state = WorldState(
             session_id=session_id,
             node_id=node_id,
@@ -116,7 +122,8 @@ class StateStoreMixin:
             boredom=defaults.boredom,
             desire=defaults.desire,
             abilities=dict(self.world.abilities.initial),
-            node_since=self._now(),
+            node_since=now,
+            first_outing_wait_at=now,
         )
         state.clamp()
         return state

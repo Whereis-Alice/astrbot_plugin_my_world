@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import time
 from dataclasses import asdict, dataclass, field
@@ -692,6 +693,9 @@ class WorldState:
     last_outdoor_at: float = 0.0
     """上一次在外面（不在家那一片）是什么时候：久了她会想出去走走。"""
 
+    first_outing_wait_at: float = 0.0
+    """还没有外出记录时的等待起点；室内换房不重新开始计时。"""
+
     outdoor_hint_at: float = 0.0
     """上一次在提示词里提醒她"可以出去走走"是什么时候（别每轮都念）。"""
 
@@ -814,6 +818,22 @@ class WorldState:
 
     def to_payload(self) -> dict[str, Any]:
         return asdict(self)
+
+    def ensure_first_outing_wait_at(self, now: float) -> float:
+        """Keep a stable first wait, using only known times in the engine's clock."""
+        def known_stamp(value: Any) -> float:
+            try:
+                stamp = float(value or 0.0)
+            except (TypeError, ValueError, OverflowError):
+                return 0.0
+            return stamp if math.isfinite(stamp) and 0 < stamp <= now else 0.0
+
+        anchor = known_stamp(self.first_outing_wait_at)
+        if not anchor:
+            candidates = [known_stamp(self.created_at), known_stamp(self.node_since)]
+            anchor = min((stamp for stamp in candidates if stamp), default=now)
+            self.first_outing_wait_at = anchor
+        return anchor
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any] | None, session_id: str) -> "WorldState":
@@ -981,6 +1001,12 @@ class WorldState:
             self.last_outdoor_at = max(0.0, float(self.last_outdoor_at or 0.0))
         except (TypeError, ValueError):
             self.last_outdoor_at = 0.0
+        try:
+            self.first_outing_wait_at = max(0.0, float(self.first_outing_wait_at or 0.0))
+            if not math.isfinite(self.first_outing_wait_at):
+                self.first_outing_wait_at = 0.0
+        except (TypeError, ValueError, OverflowError):
+            self.first_outing_wait_at = 0.0
         try:
             self.outdoor_hint_at = max(0.0, float(self.outdoor_hint_at or 0.0))
         except (TypeError, ValueError):
