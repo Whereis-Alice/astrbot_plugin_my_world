@@ -177,10 +177,12 @@ class BackgroundMixin:
 
     async def _budgeted_generate(self, channel, **kwargs: Any):
         request_guard = kwargs.pop("_request_guard", None)
+        manual_visit = kwargs.pop("_visit_manual", False) is True
         await validate_life_preparation(self)
         from ..ports import LLMReply
         context = call_context()
         purpose = str(context.get("purpose") or "other")
+        manual_visit = manual_visit and purpose == "world_visit"
         request_session = str(context.get("session_id") or "")
         # Calls caused by a person are not part of the autonomous background
         # allowance. In particular, post-chat reflection is what keeps the
@@ -241,6 +243,25 @@ class BackgroundMixin:
         if not visit_owned():
             record_background_admission(deferred=True, reason=VISIT_UNOWNED)
             return LLMReply(ok=False, error=VISIT_UNOWNED)
+        if manual_visit:
+            # Human-arranged visits do not reserve, spend or inspect autonomous
+            # allowances. Keep real dispatch attribution and the same life proof.
+            with collect_llm_usage(propagate=True):
+                async with released_life_lock(self):
+                    async with asyncio.timeout(timeout):
+                        async def begin_manual_request():
+                            await validate_life_preparation(self)
+                            if not visit_owned():
+                                raise RuntimeError(VISIT_UNOWNED)
+                            if request_guard is not None:
+                                request_guard()
+                            record_background_admission(started=True)
+
+                        if callable(admitted_generate):
+                            return await admitted_generate(resolved_provider_id=provider_id,
+                                before_request=begin_manual_request, **kwargs)
+                        await begin_manual_request()
+                        return await generate(**generation_kwargs)
         pool = self._background_budget_pool(purpose=purpose, session_id=session)
         if pool is None:
             record_background_admission(deferred=True, reason=VISIT_UNOWNED)

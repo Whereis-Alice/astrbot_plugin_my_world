@@ -61,6 +61,7 @@ def register_visit_apis(plugin: Any, plugin_id: str) -> None:
         "visits/scopes": ("POST", "选择参与串门的生活"),
         "visits/refresh": ("POST", "刷新友邻可见的角色"),
         "visits/invite": ("POST", "提出串门邀请"),
+        "visits/record": ("POST", "读取本生活相见记录的更早经过"),
         "visits/return": ("POST", "结束串门并归家"),
     }
 
@@ -104,7 +105,13 @@ def register_visit_apis(plugin: Any, plugin_id: str) -> None:
                     raise ValueError("邀请方向必须是去做客或邀请来访")
                 result = await service.invite(scope, _text(payload, "peer_id", limit=200, required=True),
                                               reason=_text(payload, "reason", limit=300),
-                                              direction=direction, automatic=False)
+                                              direction=direction, automatic=False, manual=True)
+            elif endpoint == "visits/record":
+                before = payload.get("before", 0)
+                if type(before) is not int or before < 0:
+                    raise ValueError("记录位置必须是非负整数")
+                result = await service.public_record(_scope(plugin, payload),
+                    _text(payload, "visit_id", limit=200, required=True), before=before, limit=96)
             else:
                 result = await service.return_home(_scope(plugin, payload))
             return json_response(_public(result) if result is not None else {"ok": True})

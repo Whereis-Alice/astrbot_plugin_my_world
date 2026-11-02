@@ -32,6 +32,20 @@ from .util import _signed
 class SleepMixin:
     # ---------------- 睡觉时的门禁 ----------------
 
+    async def _home_sleep_paused_by_visit(self, state: WorldState, origin: str) -> bool:
+        from ..visit_presence import active_visit
+        visit = active_visit(self, origin)
+        if not (visit and visit.get("arrived_at") and visit.get("scope") == state.session_id):
+            return False
+        held = state.current_action if isinstance(state.current_action, dict) else {}
+        definition = self.world.action_map().get(str(held.get("type") or ""))
+        kind = {STATE_SLEEPING: "sleep", STATE_NAPPING: "nap"}.get(state.state)
+        if not (kind and definition and definition.enabled and sleep_action_kind(definition) == kind
+                and held.get("persona_key") == (visit.get("local") or {}).get("persona_key")):
+            return False
+        _, persona_key = await self._journal_persona(origin)
+        return (visit.get("local") or {}).get("persona_key") == persona_key
+
     def _is_asleep(self, state: WorldState) -> bool:
         """她现在算不算「睡着了」（小睡按配置决定要不要一起算）。"""
 
@@ -766,6 +780,8 @@ class SleepMixin:
         if ctx.is_mentioned and config.block_scope != "all":
             return False  # @ 了她但没说唤醒词 -> 交给 sleep_gate 回固定文案
         async with self.session_state(ctx.session_id) as state:
+            if await self._home_sleep_paused_by_visit(state, ctx.session_id):
+                return False
             if not self._is_asleep(state):
                 return False
             # 挡下来之前先记一笔：她醒来还得知道群里发生过什么
@@ -807,6 +823,8 @@ class SleepMixin:
         if not self._passes_safety(ctx.text):
             return None
         async with self.session_state(ctx.session_id) as state:
+            if await self._home_sleep_paused_by_visit(state, ctx.session_id):
+                return None  # Saved home sleep is paused; she is here with her friend.
             if not self._is_asleep(state):
                 return None
             if self._wake_hit(ctx):

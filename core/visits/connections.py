@@ -17,10 +17,23 @@ from .ports import VisitStateError, describe_local
 from .transport import VisitTransportError
 
 MAX_LIVES = 32
-CONTROL_OPS = {"world_catalog", "world_bind"}
+CONTROL_OPS = {"world_catalog", "world_bind", "world_availability"}
 
 
 class WorldConnections:
+    def _world_capabilities(self):
+        return {"manual_visits": 1, "outings": int(bool(self.config.outings_enabled))}
+
+    @staticmethod
+    def _read_capabilities(value):
+        if value is None:
+            return {"manual_visits": 0, "outings": 0}
+        if not isinstance(value, dict) or any(
+                type(value.get(key, 0)) is not int or value.get(key, 0) not in {0, 1}
+                for key in ("manual_visits", "outings")):
+            raise ValueError("友邻世界能力声明无效")
+        return {key: value.get(key, 0) for key in ("manual_visits", "outings")}
+
     def _canonical_life(self, scope):
         canonical = getattr(self.actor_port, "canonical_scope", None)
         return canonical(scope) if callable(canonical) else str(scope or "")
@@ -81,7 +94,8 @@ class WorldConnections:
     @staticmethod
     def _safe_connection(conn):
         return {key: copy.deepcopy(conn.get(key)) for key in
-                ("id", "name", "alias", "url", "enabled", "actors", "default_actor", "migrated", "catalog_error")}
+                ("id", "name", "alias", "url", "enabled", "actors", "default_actor", "migrated", "catalog_error",
+                 "availability", "capabilities")}
 
     def _scoped_candidates(self, scope):
         if not self._life_enabled(scope):
@@ -98,7 +112,8 @@ class WorldConnections:
                 result.append({"id": actor["id"], "scope": scope, "connection_id": conn["id"],
                     "actor": copy.deepcopy(actor), "name": actor["name"], "world": actor["world"],
                     "alias": conn.get("alias", "") if len(actors) == 1 else actor["name"],
-                    "url": conn["url"], "enabled": True, "virtual": True})
+                    "url": conn["url"], "enabled": True, "virtual": True,
+                    "availability": copy.deepcopy(conn.get("availability", {}).get(actor["id"], {}))})
         return result
 
     def _automatic_peers(self, scope):
@@ -107,6 +122,8 @@ class WorldConnections:
         selected = []
         candidates = {}
         for peer in self._scoped_candidates(scope):
+            if self._peer_automatic_hold(peer):
+                continue
             candidates.setdefault(peer["connection_id"], []).append(peer)
         for conn in self._state.get("connections", {}).values():
             rows = candidates.get(conn["id"], [])
@@ -119,7 +136,54 @@ class WorldConnections:
         return selected
 
     async def global_overview(self, scope: str = "") -> dict[str, Any]:
-        return await self.overview(scope)
+        result = await self.overview(scope)
+        for row in result.get("visits", []):
+            stored = self._state["visits"].get(row["id"], {})
+            for field in ("budget_side", "automatic_budget"):
+                if field in stored:
+                    row[field] = copy.deepcopy(stored[field])
+        result["history"] = [row for row in result.get("visits", []) if row.get("arrived_at")]
+        result["diagnostics"] = [row for row in result.get("visits", [])
+                                 if not row.get("arrived_at") and row["status"] not in RESERVED]
+        for item in result.get("manual_attempts", []):
+            row = copy.deepcopy(item)
+            row["id"] = "attempt:" + digest([item.get(key) for key in
+                ("scope", "peer_id", "created_at", "end_reason")])[:32]
+            peer = self._find_peer(item.get("scope", ""), item.get("peer_id", ""))
+            row["remote"] = copy.deepcopy(peer.get("actor", {})) if peer else {}
+            result["diagnostics"].append(row)
+        result["diagnostics"].sort(key=lambda row: row.get("created_at", 0), reverse=True)
+        if scope and self._life_enabled(scope):
+            result["automatic_budget"] = await self._local_automatic_availability(scope)
+        else:
+            result["automatic_budget"] = {}
+        result["budget_holds"] = [{"side": "remote", "actor_id": actor_id,
+                                   "connection_id": conn["id"], **copy.deepcopy(status)}
+                                  for conn in self._state["connections"].values()
+                                  for actor_id, status in conn.get("availability", {}).items()
+                                  if status.get("allowed") is False and status.get("reset_at", 0) > self._now()]
+        return result
+
+    async def public_record(self, scope: str, visit_id: str, before: int = 0, limit: int = 96) -> dict[str, Any]:
+        """Read public facts from this life; before is a row boundary, 0 means latest."""
+        if (not isinstance(scope, str) or not isinstance(visit_id, str) or not visit_id
+                or type(before) is not int or before < 0 or type(limit) is not int or not 1 <= limit <= 192):
+            raise ValueError("请选择有效串门记录及分页范围")
+        await self._load()
+        canonical = self._canonical_life(scope)
+        async with self._lock:
+            visit = self._state["visits"].get(visit_id)
+            if (not canonical or not visit or visit.get("scope") != canonical
+                    or self._canonical_life(visit["scope"]) != canonical):
+                raise ValueError("这份记录不属于当前生活或原生活归属已变化")
+            rows = visit.get("log", [])
+            end = min(before, len(rows)) if before else len(rows)
+            start = max(0, end - limit)
+            result = self._visible(visit)
+            result.pop("log_prefix", None)
+            result.update(log=copy.deepcopy(rows[start:end]), log_offset=start, log_count=len(rows),
+                          next_before=start, has_more=start > 0)
+            return result
 
     async def set_enabled_scopes(self, scopes: list[str]) -> dict[str, Any]:
         self._enabled()
@@ -266,7 +330,18 @@ class WorldConnections:
         scope = ""
         if op == "world_catalog":
             cards, catalog_stamp = await self._catalog_snapshot()
-            result = {"actors": cards}
+            result = {"actors": cards, "capabilities": self._world_capabilities()}
+        elif op == "world_availability":
+            for candidate in self._participating():
+                card = await describe_local(self.actor_port, candidate, timeout_seconds=self.config.timeout_seconds)
+                if public_actor(card, self._state["instance_id"])["id"] == payload.get("target_actor"):
+                    scope, local = candidate, card
+                    break
+            if not local:
+                raise ValueError("对方选择的生活没有开启串门，请刷新角色目录")
+            result = {"actor_id": payload["target_actor"],
+                      "availability": await self._local_automatic_availability(scope, local),
+                      "capabilities": self._world_capabilities()}
         elif op == "world_bind":
             remote = validate_actor(payload.get("actor"))
             remote_token = payload.get("actor_token")
@@ -294,7 +369,12 @@ class WorldConnections:
                 return await self._cached_response(body, self._state["receipts"][receipt_key])
             if op == "world_catalog" and (await self._catalog_snapshot())[1] != catalog_stamp:
                 raise ValueError("角色目录已变化，旧请求作废，请稍后重试")
-            if local:
+            if local and op == "world_availability":
+                current_local = await describe_local(self.actor_port, scope, timeout_seconds=self.config.timeout_seconds)
+                if (not self._life_enabled(scope) or current_local["actor_id"] != local["actor_id"]
+                        or current_local["persona_key"] != local["persona_key"]):
+                    raise ValueError("这个生活已关闭串门或身份已变化，请刷新角色目录")
+            elif local:
                 current_local = await describe_local(self.actor_port, scope, timeout_seconds=self.config.timeout_seconds)
                 if (not self._life_enabled(scope) or current_local["actor_id"] != local["actor_id"]
                         or current_local["persona_key"] != local["persona_key"]
@@ -320,6 +400,55 @@ class WorldConnections:
                     peer.update(connection_id=conn["id"], anchor_digest=digest(anchor))
             return await self._receipt(body, result, anchor["secret"], anchor["local_id"], receipt_key)
 
+    def _peer_automatic_hold(self, peer):
+        connection = self._state.get("connections", {}).get(peer.get("connection_id"), {})
+        snapshot = connection.get("availability", {}).get(peer["id"], {})
+        return bool(snapshot and snapshot.get("allowed") is False
+                    and snapshot.get("reset_at", 0) > self._now())
+
+    async def _automatic_peer_budget_available(self, scope, peer_id):
+        """Resolve a friend's own life allowance before generating our proposal."""
+        if not getattr(self.config, "outings_enabled", False):
+            return True
+        peer = self._find_peer(scope, peer_id)
+        if not peer:
+            return True  # Old protocol-only adapters keep their original path.
+        conn = self._state.get("connections", {}).get(peer.get("connection_id"))
+        if not conn or not conn.get("url"):
+            return True
+        if self._peer_automatic_hold(peer):
+            return False
+        cached = conn.get("availability", {}).get(peer_id, {})
+        if cached.get("allowed") and cached.get("checked_at", 0) + 300 > self._now():
+            return True
+        # A directory explicitly advertising the old protocol cannot answer the
+        # new lightweight inquiry. Its actual refusal can still establish a hold.
+        if conn.get("capabilities", {}).get("manual_visits") == 0:
+            return True
+        try:
+            result, anchor = await self._control_request(conn["id"], {
+                "op": "world_availability", "target_actor": peer_id})
+        except VisitTransportError as error:
+            if error.http_status != 400 or conn.get("capabilities", {}).get("manual_visits") == 1:
+                raise
+            async with self._lock:
+                if not self._closed and self._state["connections"].get(conn["id"]) is conn:
+                    conn["capabilities"] = {"manual_visits": 0, "outings": 0}
+                    await self._save()
+            return True  # One authenticated legacy capability fallback.
+        if result.get("actor_id") != peer_id:
+            raise ValueError("友邻返回了其他生活的自动联系状态")
+        availability = self._validate_automatic_availability(result.get("availability"))
+        capabilities = self._read_capabilities(result.get("capabilities"))
+        async with self._lock:
+            current = self._state["connections"].get(conn["id"])
+            if self._closed or not current or anchor not in current["anchors"]:
+                raise ValueError("友邻配对已变化，旧额度状态作废")
+            current.setdefault("availability", {})[peer_id] = availability
+            current["capabilities"] = capabilities
+            await self._save()
+        return availability["allowed"]
+
     async def _control_request(self, cid, payload):
         self._enabled()
         await self._load()
@@ -342,6 +471,7 @@ class WorldConnections:
         try:
             result, anchor = await self._control_request(cid, {"op": "world_catalog"})
             cards = self._validate_catalog(result.get("actors"), cid)
+            capabilities = self._read_capabilities(result.get("capabilities"))
         except (ValueError, ConnectionError, TimeoutError, OSError) as exc:
             async with self._lock:
                 conn = self._state["connections"].get(cid)
@@ -363,7 +493,7 @@ class WorldConnections:
             conn = self._state["connections"].get(cid)
             if not conn or anchor not in conn["anchors"]:
                 raise ValueError("全局配对已变化")
-            conn.update(actors=cards, catalog_error="", catalog_ready=True,
+            conn.update(actors=cards, capabilities=capabilities, catalog_error="", catalog_ready=True,
                         next_catalog_at=self._now() + max(60, self.config.auto_interval_minutes * 60))
             if cards and conn.get("default_actor") not in {c["id"] for c in cards}:
                 conn["default_actor"] = cards[0]["id"]

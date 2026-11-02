@@ -2,12 +2,58 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+import math
 
 from .ports import VisitStateError
 
 
 class VisitRhythm:
+    async def _local_automatic_availability(self, scope, local=None):
+        """Publish only the selected life's automatic allowance, never its ledger."""
+        budget = await self._automatic_budget_snapshot(scope)
+        if local is None:
+            getter = getattr(self.actor_port, "local_date", None)
+            day = getter(scope) if callable(getter) else ""
+        else:
+            day = local.get("local_date", "")
+        tomorrow = (datetime.fromtimestamp(self._now(), timezone.utc) + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0).timestamp()
+        if budget is None:
+            return {"allowed": True, "day": str(day), "reset_at": tomorrow,
+                    "used": 0, "limit": 0, "reason": "", "checked_at": self._now()}
+        hold = self._state.get("draws", {}).get(scope, {}).get("budget_hold")
+        allowed = bool(budget.get("allowed")) and (hold is None or budget.get("snapshot") != hold)
+        return self._validate_automatic_availability({
+            "allowed": allowed, "day": budget.get("day") or day,
+            "reset_at": budget.get("reset_at", tomorrow), "used": budget.get("used", 0),
+            "limit": budget.get("limit", 0),
+            "reason": budget.get("reason", "") or ("" if allowed else "今天的自主联系额度不足，明日再考虑"),
+            "checked_at": self._now()})
+
+    def _validate_automatic_availability(self, value):
+        """A signed peer snapshot is still bounded, structured external data."""
+        if not isinstance(value, dict) or type(value.get("allowed")) is not bool:
+            raise ValueError("友邻自动联系状态无效")
+        day = str(value.get("day") or "")
+        if day:
+            try:
+                day = datetime.fromisoformat(day).date().isoformat()
+            except ValueError as error:
+                raise ValueError("友邻自动联系日期无效") from error
+        reset_at = value.get("reset_at")
+        if (type(reset_at) not in {int, float} or not math.isfinite(reset_at)
+                or not self._now() - 300 <= reset_at <= self._now() + 172800):
+            raise ValueError("友邻自动联系状态期限无效")
+        counts = {}
+        for field in ("used", "limit"):
+            count = value.get(field, 0)
+            if type(count) is not int or not 0 <= count <= 10000000:
+                raise ValueError("友邻自动联系次数无效")
+            counts[field] = count
+        return {"allowed": value["allowed"], "day": day, "reset_at": float(reset_at),
+                **counts, "reason": str(value.get("reason") or "")[:160], "checked_at": self._now()}
+
     async def _automatic_budget_snapshot(self, scope):
         # Optional adapter capability: protocol-only implementations retain
         # their existing behaviour without knowing the local model scheduler.
@@ -27,7 +73,18 @@ class VisitRhythm:
         if budget is None:
             return True
         async with self._lock:
-            hold = self._state["draws"].get(scope, {}).get("budget_hold")
+            record = self._state["draws"].get(scope, {})
+            hold = record.get("budget_hold")
+            status = {key: budget.get(key) for key in ("allowed", "day", "reset_at", "used", "limit", "reason")}
+            if hold is not None and budget.get("snapshot") == hold:
+                status["allowed"] = False
+                status["reason"] = status["reason"] or "今天的自主联系额度不足，明日再考虑"
+            if getattr(self.config, "outings_enabled", False) and record.get("automatic_budget") != status:
+                self._state["draws"][scope] = record
+                record["automatic_budget"] = status
+                if not budget.get("allowed"):
+                    record["budget_hold"] = budget.get("snapshot")
+                await self._save()
             return bool(budget.get("allowed")) and budget.get("snapshot") != hold
 
     @staticmethod

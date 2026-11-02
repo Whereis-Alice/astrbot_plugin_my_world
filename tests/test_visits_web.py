@@ -21,7 +21,7 @@ class VisitEditorApiTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.service = types.SimpleNamespace(**{name: AsyncMock(return_value={"ok": True}) for name in
             ("global_overview", "create_pair_code", "pair_world", "remove_connection", "set_enabled_scopes",
-             "refresh_connection", "invite", "return_home")})
+             "refresh_connection", "invite", "public_record", "return_home")})
         self.service.global_overview.return_value = {
             "enabled": True, "peers": [{"id": "friend", "secret": "hidden"}],
             "connections": [{"id": "server", "actors": [{"id": "friend", "private_key": "hidden"}]}],
@@ -70,12 +70,30 @@ class VisitEditorApiTests(unittest.IsolatedAsyncioTestCase):
         result = await self.call("visits/invite", peer_id="friend", direction="incoming", reason="一起下棋")
         self.assertEqual(result["status_code"], 200)
         self.service.invite.assert_awaited_once_with("shared-life", "friend", direction="incoming",
-                                                    reason="一起下棋", automatic=False)
+                                                    reason="一起下棋", automatic=False, manual=True)
         self.service.invite.reset_mock()
         for bad in ("sideways", [], 12):
             result = await self.call("visits/invite", peer_id="friend", direction=bad)
             self.assertEqual(result["status_code"], 400)
         self.service.invite.assert_not_awaited()
+
+    async def test_history_pages_require_a_real_life_and_valid_cursor_and_hide_credentials(self):
+        self.service.public_record.return_value = {"id": "met", "log": [{"seq": 1, "text": "再来一起看花。"}],
+                                                  "secret": "hidden", "reflection": "hidden", "next_before": 0}
+        result = await self.call("visits/record", visit_id="met", before=100)
+        self.assertEqual(result["status_code"], 200)
+        self.service.public_record.assert_awaited_once_with("shared-life", "met", before=100, limit=96)
+        self.assertNotIn("secret", str(result))
+        self.service.public_record.reset_mock()
+        for bad in (-1, True, "100", [], None):
+            result = await self.call("visits/record", visit_id="met", before=bad)
+            self.assertEqual(result["status_code"], 400)
+        for bad in ("", [], "x" * 201):
+            result = await self.call("visits/record", visit_id=bad)
+            self.assertEqual(result["status_code"], 400)
+        result = await self.call("visits/record", visit_id="met", session="other")
+        self.assertEqual(result["status_code"], 400)
+        self.service.public_record.assert_not_awaited()
 
     async def test_only_pair_code_endpoint_returns_pairing_credential(self):
         result = await self.call("visits/pair-code")
@@ -102,8 +120,8 @@ class VisitEditorApiTests(unittest.IsolatedAsyncioTestCase):
         self.service.pair_world.assert_not_awaited()
 
     async def test_handlers_bind_their_own_operations_and_are_owned(self):
-        self.assertEqual(len(self.routes), 8)
-        self.assertEqual(len(self.plugin._web_api_handlers), 8)
+        self.assertEqual(len(self.routes), 9)
+        self.assertEqual(len(self.plugin._web_api_handlers), 9)
         await self.call("visits/remove", connection_id="server")
         await self.call("visits/return")
         self.service.remove_connection.assert_awaited_once_with("server")

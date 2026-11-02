@@ -11,6 +11,7 @@ from astrbot.api import logger
 from .connections import WorldConnections
 from .protocol import RESERVED, TERMINAL, new_id, public_actor
 from .model_retry import valid_retry, visible_wait
+from .history_pages import LOG_PAGE_SIZE, ROUTE_PAGE_SIZE, extended_history, write_page
 
 KEY = "world_visits.v1"
 MAX_MEMORY_WORKERS = 2
@@ -74,6 +75,8 @@ class VisitJournal(WorldConnections):
         self._state["codes"] = {k: v for k, v in self._state["codes"].items() if v["expires_at"] > now}
         receipts = sorted(self._state["receipts"].items(), key=lambda item: item[1]["at"], reverse=True)
         self._state["receipts"] = dict(receipts[:512])
+        if "manual_attempts" in self._state:
+            self._state["manual_attempts"] = self._state["manual_attempts"][-64:]
         visits = self._state["visits"]
         past = sorted((v for v in visits.values() if v["status"] in TERMINAL),
                       key=lambda v: v.get("ended_at", v["created_at"]), reverse=True)
@@ -169,8 +172,14 @@ class VisitJournal(WorldConnections):
     def _wire(visit):
         keys = ("id", "status", "created_at", "arrived_at", "expires_at", "scene", "scene_stage", "log",
                 "host_id", "guest_id", "next_actor", "next_at", "turns", "calls", "max_calls",
-                "turn_limit", "event_stage", "event_after", "end_reason", "ended_at", "intro")
-        return {key: copy.deepcopy(visit[key]) for key in keys if key in visit}
+                "turn_limit", "event_stage", "event_after", "end_reason", "ended_at", "intro",
+                "manual", "outing_version", "outing", "outing_offer", "action_plans", "budget_holds")
+        result = {key: copy.deepcopy(visit[key]) for key in keys if key in visit}
+        if extended_history(visit):
+            write_page(result, "log", visit["log"], LOG_PAGE_SIZE)
+            if isinstance(result.get("outing"), dict):
+                write_page(result["outing"], "route", visit["outing"]["route"], ROUTE_PAGE_SIZE)
+        return result
 
     def _visible(self, visit):
         result = self._wire(visit)
@@ -179,6 +188,10 @@ class VisitJournal(WorldConnections):
                       remote=copy.deepcopy(visit["remote"]),
                       calls_used=sum(visit["calls"].values()),
                       contact_error=visit.get("contact_error", ""))
+        result["observed_at"] = self._now()
+        if isinstance(result.get("outing"), dict):
+            result["outing"]["phase"] = "playing" if self._now() < result["outing"]["until"] else "checkpoint"
+        result["budget_side"] = visit.get("budget_side", "")
         result["model_wait"] = visible_wait(visit) if visit["status"] in RESERVED else {}
         return result
 
@@ -194,7 +207,10 @@ class VisitJournal(WorldConnections):
                     "connections": [self._safe_connection(c) for c in self._state["connections"].values()],
                     "lives": self._available_lives(), "enabled_scopes": self._participating(),
                     "scope_enabled": self._life_enabled(scope),
-                    "peers": self._scoped_candidates(scope), "visits": visits, "active": current}
+                    "peers": self._scoped_candidates(scope), "visits": visits, "active": current,
+                    "queued_invitation": copy.deepcopy(self._state.get("manual_invites", {}).get(scope)),
+                    "manual_attempts": [copy.deepcopy(item) for item in self._state.get("manual_attempts", [])
+                                        if not scope or item.get("scope") == scope]}
 
     def _append(self, visit, actor_id, kind, value):
         from .protocol import text

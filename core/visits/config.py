@@ -70,6 +70,8 @@ class VisitConfig:
     auto_interval_minutes: int = 60
     weekly_limit: int = 1
     duration_minutes: int = 30
+    outings_enabled: bool = False
+    outing_duration_minutes: int = 180
     turns_per_actor: int = 3
     max_calls: int = 12
     daily_calls: int = 24
@@ -109,6 +111,8 @@ class VisitConfig:
             auto_interval_minutes=number("auto_interval_minutes", 60, 0, 1440),
             weekly_limit=number("weekly_limit", 1, 0, 7),
             duration_minutes=number("duration_minutes", 30, 5, 60),
+            outings_enabled=_boolean(values.get("visits_outings_enabled"), True),
+            outing_duration_minutes=number("outing_duration_minutes", 180, 30, 240),
             turns_per_actor=number("turns_per_actor", 3, 1, 5),
             max_calls=number("max_calls", 12, 2, 20),
             daily_calls=number("daily_calls", 24, 1, 240),

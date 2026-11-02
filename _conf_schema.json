@@ -58,29 +58,38 @@
     "hint": "新版使用每日上限，不再按周计数。旧值 0 保留关闭自主邀请；需要恢复时设为 1。正数不限制每日邀请次数。",
     "type": "int", "default": 1
   },
+  "visits_outings_enabled": {
+    "invisible": true,
+    "description": "持续共同活动",
+    "hint": "与支持新版活动的友邻协商持续游玩，在地点或事件节点交流；已有旧旅程继续原来的经过。",
+    "type": "bool", "default": true
+  },
   "visits_duration_minutes": {
-    "description": "单次串门最长停留分钟",
-    "hint": "默认 30 分钟。她们可以提前告别，真人可以自然语言叫她回家；中断仅保留已确认经过。",
+    "invisible": true,
+    "description": "旧协议停留分钟（兼容项）",
+    "hint": "仅用于旧版友邻和升级前的旅程。持续共同活动按双方约定的时间推进，真人可以随时叫她归家。",
     "type": "int", "default": 30
   },
   "visits_turns_per_actor": {
-    "description": "每方主要发言次数上限",
-    "hint": "默认各三次。一起活动时到节点才思考，等待期间不持续调用模型。",
+    "invisible": true,
+    "description": "旧协议发言次数（兼容项）",
+    "hint": "只兼容旧版回合式旅程。新版共同活动不以发言次数结束相见。",
     "type": "int", "default": 3
   },
   "visits_max_calls": {
-    "description": "每趟模型调用总上限",
-    "hint": "默认双方合计十二次，已发出的邀请、事件与失败请求均计入。手动串门同样受限制，使用该生活独立的串门日预算；日常后台不会消耗此额度。",
+    "invisible": true,
+    "description": "旧协议旅程调用上限（兼容项）",
+    "hint": "只限制旧协议自主旅程。人工安排不扣自主额度，新版活动以低频节点交流。",
     "type": "int", "default": 12
   },
   "visits_daily_calls": {
-    "description": "每份生活每日串门模型调用上限",
-    "hint": "默认24次，1～240。去做客和接待来访共用，只计算这份生活的串门请求；共享生活的会话不重复领额度。与日常后台及每日成功邀请次数分开。",
+    "description": "每份生活每日自主串门模型调用上限",
+    "hint": "默认24次，1～240。自主去做客和接待自主来访共用，共享生活的会话不重复领额度。真人安排的整趟相见不扣这个额度；与日常后台和每日成功邀请次数分开。",
     "type": "int", "default": 24
   },
   "visits_daily_tokens": {
     "description": "每份生活每日串门 Token 上限",
-    "hint": "默认0，不额外限制 Token；每趟请求次数和单次输出上限仍生效。设为正数时，未返回完整用量的请求保留保守占位。",
+    "hint": "默认0，不额外限制自主串门 Token。真人安排的相见不扣此额度；自主请求未返回完整用量时保留保守占位。",
     "type": "int", "default": 0
   },
   "visits_max_output_tokens": {
@@ -94,9 +103,10 @@
     "type": "int", "default": 45
   },
   "visits_actor": {
-    "description": "谁可以自然语言安排串门",
-    "hint": "admin=仅管理员（默认）；all=当前已启用会话的用户。只能邀请已经管理员配对的友邻。",
-    "type": "string", "default": "admin", "options": ["admin", "all"]
+    "invisible": true,
+    "description": "旧版自然语言权限（兼容项）",
+    "hint": "新人工邀请向已启用会话开放，仍使用管理员配好的友邻；此项保留旧配置。",
+    "type": "string", "default": "all", "options": ["admin", "all"]
   },
   "visits_reception_start": {
     "description": "串门接待开始小时",

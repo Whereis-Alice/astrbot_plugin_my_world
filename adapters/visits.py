@@ -8,7 +8,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import re
+from datetime import timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -20,6 +22,7 @@ from ..core.state import STATE_DROWSY, STATE_NAPPING, STATE_SLEEPING
 from ..core.recovery import sleep_action_kind
 from ..core.visit_presence import active_visit, presence_text
 from ..core.visits.decisions import VisitDecisionError, record_decision_candidate
+from ..core.visits.protocol import clean_outing_offer, clean_pause
 from ..core.background_budget import capture_background_admission
 
 
@@ -161,7 +164,14 @@ class VisitActorPort:
             # for this budget or its configuration to change, including next day.
             snapshot = [status["ledger"], calls, tokens, status["calls"], status["tokens"],
                         status["reserved"], status["unknown"]]
-            return {"allowed": status["allowed"], "snapshot": snapshot}
+            local = engine.local_at(engine._now())
+            if local.tzinfo is None:
+                local = local.replace(tzinfo=engine._resolve_tz())
+            reset = (local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            return {"allowed": status["allowed"], "snapshot": snapshot,
+                    "day": status["day"], "reset_at": reset.timestamp(),
+                    "used": status["calls"], "limit": calls,
+                    "reason": "" if status["allowed"] else "今天的自主联系额度已用完"}
 
     async def describe(self, scope: str) -> dict[str, Any]:
         engine = self.engine
@@ -178,6 +188,8 @@ class VisitActorPort:
                     "persona_key": persona_key, "ready": ready and bool(persona.strip()),
                     "ready_reason": reason if persona.strip() else "还没有可用的人设",
                     "local_date": str(engine.local_now().date()),
+                    "outing_version": int(bool(getattr(getattr(engine, "visits", None), "config", None)
+                        and getattr(engine.visits.config, "outings_enabled", False))),
                     "reception_open": self._reception_open(),
                     "chat_busy": self._chat_busy(scope, state),
                     "home_node": state.node_id,
@@ -281,23 +293,24 @@ class VisitActorPort:
         engine = self.engine
         scope = engine.state_key(scope)
         with engine.config_scope(scope):
+            manual = visit.get("manual") is True
             local = await self.describe(scope)
             expected = visit.get("local") or {}
             if expected.get("persona_key") and expected["persona_key"] != local["persona_key"]:
                 raise VisitDecisionError("identity", request_started=False)
             if expected.get("actor_id") and expected["actor_id"] != local["actor_id"]:
                 raise VisitDecisionError("identity", request_started=False)
-            if not local["ready"]:
+            if not local["ready"] and not manual:
                 if phase in {"turn", "scene"}:
                     raise VisitDecisionError("life_busy", request_started=False)
                 return {"accept": False, "say": local["ready_reason"], "leave": True,
                         "thought": local["ready_reason"], "reflection": "", "contact_kind": "contact_status",
                         "_request_started": False}
-            if phase in {"propose", "receive"} and not local["reception_open"]:
+            if not manual and phase in {"propose", "receive"} and not local["reception_open"]:
                 return {"accept": False, "say": "现在不在接待时间，稍后再约", "leave": True,
                         "thought": "现在不在接待时间，稍后再约", "reflection": "", "contact_kind": "contact_status",
                         "_request_started": False}
-            if phase == "receive" and local["chat_busy"]:
+            if not manual and phase == "receive" and local["chat_busy"]:
                 return {"accept": False, "say": "正在接眼前的交谈，稍后再约", "leave": True,
                         "contact_kind": "contact_status", "_request_started": False}
             persona = await engine._persona_text(scope)
@@ -329,6 +342,10 @@ class VisitActorPort:
                                   "name": local["name"], "world": local["world"]},
                          "scene_stage": _text(visit.get("scene_stage"), 40),
                          "action_plans": visit.get("action_plans") or [],
+                         "outing": self._outing_materials(visit.get("outing")),
+                         "outing_offer": visit.get("outing_offer") or {},
+                         "outing_request": visit.get("outing_request") or {},
+                         "activity_progress": self._outing_progress(visit.get("outing")),
                          "friend": {key: _text(remote.get(key), 100)
                                     for key in ("id", "name", "world")},
                          "reason": _text(visit.get("reason"), 300),
@@ -349,6 +366,11 @@ class VisitActorPort:
                          "home_place": local["place"], "energy": round(state.energy, 2)}
             if not visiting:
                 materials["current_personal_activity"] = {"label": _text(activity.get("label"), 100)}
+            materials["human_arranged"] = manual
+            materials["home_status"] = {"state": state.state, "busy": local.get("chat_busy", False),
+                                        "reason": local.get("ready_reason", "")}
+            if visit.get("outing_version") == 1 and visit.get("role") == "host":
+                materials["host_places"] = self._outing_places(state.node_id, materials["current_place"])
             rules = (
                 "你正在与另一个由她自己的模型决定言行的角色相处。只决定自己的言行，不能替对方说话或答应。"
                 "self是你本人，friend是对方；confirmed_log的speaker明确标注台词来源，unknown不能归给任何一方。"
@@ -361,6 +383,32 @@ class VisitActorPort:
                 "邀请阶段是从各自世界打电话约见；原话传给对方，尚未接受时不能说成已经到访或面对面相处。"
                 "current_personal_activity是你在家正在做的事；能打电话不等于必须放下它。"
                 "由你决定先继续、改约，还是愿意暂时放下；提出邀请本身没有完成或中止家中活动。"
+                "human_arranged表示真人这次主动安排，无自主次数或模型额度限制；"
+                "看home_status自己决定是否方便、先忙完、改约或拒绝，不必按机械接待时段拒绝。"
+                "相见可以一起去具体地点、游览、游戏、散步、做饭或做一件彼此感兴趣的事。"
+                "host_places只列你世界中可见地点的简短名字及邻接地点，recent_personal_activities是近期兴趣；"
+                "结合朋友的兴趣和当前所在选下一段活动，不必固定坐着聊天。"
+                "路途本身也可以是一段持续活动，例如边散步边探索、逛街买点东西、读书、游玩或休息。"
+                "地方少时可在这些公开地点附近探索，提出具体去处；仍需对方独立同意，不能预写结果。"
+                "东道主在propose/receive或活动结束后的turn可提出outing:{place,activity,minutes,event}，"
+                "地点和做什么要具体，停留5至240分钟；event可为空或一件轻微、公开的小插曲。"
+                "访客收到outing_offer后在turn明确给outing_accept:true或false，自己的action与say只代表自己。"
+                "只有双方独立确认后才开始活动。outing的活动时间会真实流逝，其间不用一直说话。"
+                "活动可以边做边自然对话，故事、下棋、散步等也可以接着朋友的原话聊。"
+                "activity_progress是实际活动进度；outing.quiet_until只是双方确认暂时安静共玩的时点，"
+                "不是整段活动都禁止说话。不要仅因活动还没结束就拒绝互动。"
+                "需要继续当前活动和对话时给continue_activity:true；"
+                "pause_minutes表示你聊过这一段后希望静处多少分钟，0表示接着聊，支持小数，最长240分钟。"
+                "你提出新outing时也可在outing内给pause_minutes；双方各自决定节奏后才共同执行，"
+                "不必每次换地点、重提活动，也不要为了凑回合强行告别。"
+                "若愿意这段活动结束后归家，给return_after:true及你自己届时要说的farewell；"
+                "双方各自同意后才是约定的归家计划，不能替朋友同意。"
+                "东道主提出新的outing时也可在outing内给return_after:true，表明自己想活动后归家；"
+                "对方仍须独立给顶层return_after。outing.return_agreed才表示已共同确认，"
+                "outing.farewells保留各自计划的原话，不能改写成朋友新的台词。"
+                "farewell只用你的人设和原话，不写预算、回合或系统限制；不愿此时约定归家可省略。"
+                "活动中的turn接对方眼前的话和自己的行动，活动结束再依据confirmed_log和action_plans结算自己确实经历的outcome，"
+                "可以约下一段活动、简单交流或自然告别；不能凭时间流逝编造对方台词、私心或未确认结果。"
                 "turn接对方眼前的话或活动，只描述自己这一步准备做什么；action不是已完成的事实。"
                 "scene只由东道主推进一个公开场景。scene_stage=event_offer时可提出至多一件轻微日常小事件，"
                 "不能编造对方选择或事件结局。scene_stage=event_resolve时，只依据双方已提交的action_plans"
@@ -369,17 +417,24 @@ class VisitActorPort:
                 "thought/reflection是你自己的主观感受，不能当成对方的内心或事实；promise只在双方明确说过时记录。"
                 "输出一个JSON对象：accept:boolean,say:string,action:string,thought:string,leave:boolean,"
                 "scene:{place:string,activity:string,event:string},reflection:string,promise:string,outcome:string。"
+                "新活动用outing:{place:string,activity:string,minutes:number,event:string,return_after:boolean}，"
+                "回应朋友活动用outing_accept:boolean；可选return_after:boolean,farewell:string；"
+                "可选continue_activity:boolean,pause_minutes:number；next_contact_minutes可作为pause_minutes的同义输入。"
+                "不是每次都要重提活动，farewell不超过100字。"
                 "只输出本阶段用到的字段，不用的字段省略。邀请阶段必须输出accept；"
                 "say一般一句，thought不超过20字，reflection不超过35字；"
                 "提出小事件时event不超过70字，结算时outcome不超过100字。保持整个JSON简短完整。"
             )
             cfg = getattr(getattr(engine, "visits", None), "config", None)
             output_limit = max(64, min(512, int(getattr(cfg, "max_output_tokens", 240))))
+            if visit.get("outing_version") == 1:
+                output_limit = max(512, min(1024, int(getattr(cfg, "max_output_tokens", 512))))
             with model_context("world_visit", "友邻串门：" + phase, scope), capture_background_admission() as admission:
                 try:
                     reply = await engine._budgeted_generate(engine.llm, session_id=scope,
                         system_prompt=persona[:6000] + "\n\n" + rules,
                         prompt=json.dumps(materials, ensure_ascii=False), max_tokens=output_limit,
+                        _visit_manual=manual,
                         **({"_request_guard": request_guard} if request_guard else {}))
                 except asyncio.CancelledError:
                     raise
@@ -423,14 +478,59 @@ class VisitActorPort:
             # while she thought; readiness still gates an actual acceptance.
             if phase in {"propose", "receive"} and (not result["accept"] or result["leave"]):
                 return result
-            if not latest["ready"]:
+            if not latest["ready"] and not manual:
                 raise VisitDecisionError("life_busy", candidate=result)
-            if phase in {"propose", "receive"} and not latest["reception_open"]:
+            if not manual and phase in {"propose", "receive"} and not latest["reception_open"]:
                 return {"accept": False, "say": "现在不在接待时间，稍后再约", "leave": True,
                         "contact_kind": "contact_status"}
-            if phase == "receive" and latest["chat_busy"]:
+            if not manual and phase == "receive" and latest["chat_busy"]:
                 return {"accept": False, "say": "正在接眼前的交谈，稍后再约", "leave": True, "contact_kind": "contact_status"}
             return result
+
+    @staticmethod
+    def _outing_materials(outing: Any) -> dict[str, Any]:
+        """Keep the current activity and nearby history; the journal keeps all stops."""
+        if not isinstance(outing, dict):
+            return {}
+        result = {key: outing[key] for key in (
+            "version", "stage", "place", "activity", "started_at", "until", "event",
+            "quiet_until", "return_agreed", "farewells") if key in outing}
+        route = outing.get("route", [])
+        if isinstance(route, list):
+            result["route"] = route[-4:]
+            result["earlier_stops"] = max(0, len(route) - 4)
+        return result
+
+    def _outing_progress(self, outing: Any) -> dict[str, Any]:
+        if not isinstance(outing, dict):
+            return {}
+        start, until = outing.get("started_at"), outing.get("until")
+        if any(type(value) not in {int, float} or not math.isfinite(value) for value in (start, until)):
+            return {}
+        now = self.engine._now()
+        return {"elapsed_minutes": round(max(0, min(now, until) - start) / 60, 1),
+                "remaining_minutes": round(max(0, until - now) / 60, 1), "ongoing": now < until}
+
+    def _outing_places(self, home_node: str, place: str) -> list[dict[str, Any]]:
+        """Offer a small public map without prompts, memories or host tools."""
+        world = self.engine.world
+        nodes, graph = world.node_map(), world.adjacent()
+        start = next((key for key, node in nodes.items() if _text(node.name, 80) == place), home_node)
+        reachable, seen = [], {start}
+        frontier = [start]
+        while frontier and len(reachable) < 12:
+            key = frontier.pop(0)
+            node = nodes.get(key)
+            if not node:
+                continue
+            adjacent = [target for target, _ in graph.get(key, []) if target in nodes]
+            reachable.append({"name": _text(node.name, 80),
+                              "near": [_text(nodes[target].name, 80) for target in adjacent[:6]]})
+            for target in adjacent:
+                if target not in seen:
+                    seen.add(target)
+                    frontier.append(target)
+        return reachable
 
     @staticmethod
     def _parse_decision(phase: str, text: str) -> dict[str, Any]:
@@ -439,12 +539,24 @@ class VisitActorPort:
             raise VisitDecisionError("format")
         scene = value.get("scene") if isinstance(value.get("scene"), dict) else {}
         result = {"accept": value.get("accept") is True, "leave": value.get("leave") is True,
+                  "outing": clean_outing_offer(value.get("outing")),
+                  "outing_accept": value.get("outing_accept") is True,
+                  "return_after": value.get("return_after") is True,
+                  "continue_activity": value.get("continue_activity") is True,
+                  "pause_minutes": clean_pause(value),
                   **{name: _text(value.get(name), limit) for name, limit in
                      (("say", 400), ("action", 200), ("thought", 240),
-                      ("reflection", 500), ("promise", 180), ("outcome", 500))},
+                      ("reflection", 500), ("promise", 180), ("outcome", 500), ("farewell", 100))},
                   "scene": {name: _text(scene.get(name), limit)
                             for name, limit in (("place", 80), ("activity", 120), ("event", 240))}}
-        if phase not in {"propose", "receive"} and not (result["leave"] or any(
+        if any(key in value and type(value[key]) is not bool for key in ("outing_accept", "return_after", "continue_activity")):
+            raise VisitDecisionError("format")
+        for key in ("pause_minutes", "next_contact_minutes"):
+            if key in value and (type(value[key]) not in {int, float} or not math.isfinite(value[key])):
+                raise VisitDecisionError("format")
+        if phase not in {"propose", "receive"} and not (result["leave"] or result["outing"]
+                or any(key in value for key in ("outing_accept", "return_after", "continue_activity",
+                                               "pause_minutes", "next_contact_minutes")) or any(
                 result[name] for name in ("say", "action", "thought", "reflection", "promise", "outcome"))
                 or any(result["scene"].values())):
             raise VisitDecisionError("format")

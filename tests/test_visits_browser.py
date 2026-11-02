@@ -95,7 +95,7 @@ class VisitsBrowserTests(unittest.TestCase):
                 self.page.locator('#tab-visits').get_by_role('button', name='刷新', exact=True).click()
                 expect(self.page.locator('.visits-phone-hint')).to_have_text('邀请还在等待决定，双方答应后才会相见。')
                 expect(self.page.get_by_role('button', name='取消邀请', exact=True)).to_be_enabled()
-                expect(self.page.locator('.visits-channel-status')).to_have_text('通道状态：对方串门服务暂时不可用（HTTP 503）')
+                expect(self.page.locator('.visits-channel-status')).to_have_text('对方串门服务暂时不可用（HTTP 503）')
                 if status == 'offered':
                     expect(self.page.locator('.visits-current h3')).to_contain_text('等待接待决定')
         self.page.evaluate("""() => {
@@ -103,13 +103,13 @@ class VisitsBrowserTests(unittest.TestCase):
         }""")
         self.page.locator('#tab-visits').get_by_role('button', name='刷新', exact=True).click()
         expect(self.page.get_by_role('button', name='告别归家', exact=True)).to_be_enabled()
-        expect(self.page.locator('.visits-phone-hint')).to_have_text('她们正在相见，告别归家后可以再约。')
+        expect(self.page.locator('.visits-phone-hint')).to_have_text('她们正在相见。新的安排会接着这次经历考虑。')
         expect(self.page.locator('.visits-channel-status')).to_have_count(0)
         self.assertEqual(self.errors, [])
 
     def test_reading_history_survives_refresh_but_does_not_follow_a_life_switch(self):
         self.page.evaluate("""() => {
-          visitData.history=[{id:'past-call',status:'completed',created_at:1761990000,
+          visitData.history=[{id:'past-call',status:'completed',created_at:1761990000,arrived_at:1761990000,
             remote:{id:'friend',name:'爱丽丝'},end_reason:'告别归家',
             log:[{actor_id:'friend',kind:'say',text:'下次一起喝茶。'}]}];
         }""")
@@ -179,26 +179,32 @@ class VisitsBrowserTests(unittest.TestCase):
             self.host.screenshot(path=str(self.shots / f'visits-lives-{width}.png'))
         self.assertEqual(self.errors, [])
 
-    def test_history_shows_end_and_farewell_reasons_and_missing_reason_fallback(self):
+    def test_successful_meetings_and_failed_contacts_have_separate_records(self):
         self.page.evaluate("""() => {
           visitData.history=[
             {id:'declined',peer_name:'港湾',status:'declined',reason:'一起做饼干',end_reason:'她正在休息，今晚不方便。'},
             {id:'interrupted',peer_name:'茶室',status:'interrupted',end_reason:'对方暂时无法连接。'},
-            {id:'completed',peer_name:'森林',status:'completed',end_reason:'已经约好下次再见，先回家了。'},
+            {id:'completed',peer_name:'森林',status:'completed',arrived_at:1793500200,
+             end_reason:'已经约好下次再见，先回家了。',log:[{actor_id:'friend',kind:'say',text:'下次再一起喝茶。'}]},
             {id:'legacy',peer_name:'旧友邻',status:'failed',end_reason:'   '}
           ];
         }""")
         self.page.locator('#tab-visits').get_by_role('button', name='刷新', exact=True).click()
         cards = self.page.locator('.visits-history > details')
-        expect(cards).to_have_count(4)
+        expect(cards).to_have_count(1)
+        cards.locator('summary').click()
+        expect(cards).to_contain_text('下次再一起喝茶。')
+        expect(cards.locator('.visits-end-reason')).to_have_count(0)
+        self.page.locator('.visits-diagnostics > summary').click()
+        failed = self.page.locator('.visits-diagnostics-body > details')
+        expect(failed).to_have_count(3)
         for index, reason in enumerate(['她正在休息，今晚不方便。', '对方暂时无法连接。',
-                                        '已经约好下次再见，先回家了。',
-                                        '这条记录没有保存结束原因，无法确认具体原因。']):
-            card = cards.nth(index)
+                                        '这条联系没有留下具体说明。']):
+            card = failed.nth(index)
             card.locator('summary').click()
             expect(card.locator('.visits-end-reason p')).to_have_text(reason)
-            expect(card.locator('.visits-end-reason strong')).to_have_text('告别原因' if index == 2 else '结束原因')
-        expect(cards.first).to_contain_text('一起做饼干')
+            expect(card.locator('.visits-end-reason strong')).to_have_count(0)
+        expect(failed.first).to_contain_text('一起做饼干')
         self.assertEqual(self.errors, [])
 
     def test_history_end_reason_is_plain_text_and_wraps_on_phone(self):
@@ -207,7 +213,9 @@ class VisitsBrowserTests(unittest.TestCase):
           visitData.history=[{id:'ended',peer_name:'港湾',status:'interrupted',end_reason:reason}];
         }""", reason)
         self.page.locator('#tab-visits').get_by_role('button', name='刷新', exact=True).click()
-        card = self.page.locator('.visits-history > details')
+        expect(self.page.locator('.visits-history > details')).to_have_count(0)
+        self.page.locator('.visits-diagnostics > summary').click()
+        card = self.page.locator('.visits-diagnostics-body > details')
         expect(card).to_have_count(1)
         card.locator('summary').click()
         expect(card.locator('.visits-end-reason p')).to_have_text(reason)
@@ -245,7 +253,9 @@ class VisitsBrowserTests(unittest.TestCase):
         ordinary = self.page.locator('.visits-current .visits-transcript li:not(.visits-contact-reply)')
         expect(ordinary.nth(0).locator('strong')).to_have_text('总羽爱乃')
         expect(ordinary.nth(1).locator('strong')).to_have_text('爱丽丝')
-        card = self.page.locator('.visits-history > details')
+        expect(self.page.locator('.visits-history > details')).to_have_count(0)
+        self.page.locator('.visits-diagnostics > summary').click()
+        card = self.page.locator('.visits-diagnostics-body > details')
         card.locator('summary').click()
         status = card.locator('.visits-contact-status')
         expect(status.locator('strong')).to_have_text('对方当前状态')

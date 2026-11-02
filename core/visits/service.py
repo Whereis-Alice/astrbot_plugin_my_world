@@ -130,7 +130,7 @@ class VisitService(VisitFlow, VisitJournal):
             if isinstance(body.get("payload"), dict) and body["payload"].get("op") == "pair_world":
                 return await self._receive_world_pair(body, receipt_key)
             return await self._receive_pair(body, receipt_key)
-        if isinstance(body.get("payload"), dict) and body["payload"].get("op") in {"world_catalog", "world_bind"}:
+        if isinstance(body.get("payload"), dict) and body["payload"].get("op") in {"world_catalog", "world_bind", "world_availability"}:
             return await self._receive_control(body, receipt_key)
         peer = self._wire_peer(body.get("sender"), body.get("target"))
         if not peer or not self._peer_trusted(peer):
@@ -193,7 +193,7 @@ class VisitService(VisitFlow, VisitJournal):
                 raise ValueError("全局配对已变化，旧配对请求作废")
             context = [conn["id"], expected]
             catalog = True
-        elif op in {"world_catalog", "world_bind"}:
+        elif op in {"world_catalog", "world_bind", "world_availability"}:
             conn, anchor = self._anchor_for(request)
             if anchor["secret"] != key:
                 raise ValueError("全局配对已变化，旧管理请求作废")
@@ -203,6 +203,22 @@ class VisitService(VisitFlow, VisitJournal):
                 peer = self._wire_peer(request["payload"]["actor"]["id"], response["payload"]["actor"]["id"])
                 if not peer or peer.get("anchor_digest") != digest(anchor):
                     raise ValueError("角色绑定已变化，旧请求作废")
+            elif op == "world_availability":
+                target = request["payload"].get("target_actor")
+                selected = None
+                for scope in self._participating():
+                    local = await self._exchange_description(scope)
+                    if public_actor(local, self._state["instance_id"])["id"] == target:
+                        selected = (scope, local)
+                        break
+                if selected is None:
+                    raise ValueError("这份友邻生活已停止接待，旧额度答复作废")
+                scope, local = selected
+                status = (await self._local_automatic_availability(scope, local) if validate_identity
+                          else response["payload"]["availability"])
+                context.append([target, scope, local["persona_key"],
+                                self._state.get("life_generations", {}).get(scope, 0),
+                                {field: status.get(field) for field in ("allowed", "day", "reset_at", "used", "limit")}])
         else:
             target = response["sender"] if op == "pair" else request["target"]
             peer = self._wire_peer(request["sender"], target)
@@ -271,31 +287,48 @@ class VisitService(VisitFlow, VisitJournal):
             role = payload.get("role")
             if role not in {"host", "guest"}:
                 raise ValueError("无效到访方向")
+            manual = payload.get("manual", False)
+            if type(manual) is not bool:
+                raise ValueError("人工邀请标记无效")
+            requested_version = payload.get("outing_version", 0)
+            if type(requested_version) is not int or requested_version not in {0, 1}:
+                raise ValueError("共同游玩版本无效")
+            outing_version = 1 if getattr(self.config, "outings_enabled", False) and requested_version == 1 else 0
             if self._settlement_backlog_full(peer["scope"]):
                 reason = "我想先把前面的几件事收好，稍后再约"
                 return {"declined": True, "reason": reason,
                         "contact": {"kind": "contact_status", "text": reason}}
-            if not local["ready"] or local.get("chat_busy") or not local.get("reception_open", True):
+            if not manual and (not local["ready"] or local.get("chat_busy") or not local.get("reception_open", True)):
                 reason = "现在不在接待时间，稍后再约" if not local.get("reception_open", True) else local.get("ready_reason") or "眼前还有交谈，稍后再约"
                 return {"declined": True, "reason": reason,
                         "contact": {"kind": "contact_status", "text": reason}}
+            if not manual and getattr(self.config, "outings_enabled", False):
+                availability = await self._local_automatic_availability(peer["scope"], local)
+                if not availability["allowed"]:
+                    reason = "接待方今日自主串门预算已用完"
+                    return {"declined": True, "reason": reason,
+                            "budget": {"side": "receiver", "actor_id": self._state["instance_id"] + ":" + local["actor_id"],
+                                       **availability},
+                            "contact": {"kind": "contact_status", "text": reason}}
             visit = self._new_visit(peer["scope"], peer, local, visit_id, role, payload.get("reason", ""), False)
+            visit["manual"], visit["outing_version"] = manual, outing_version
             for name, upper in (("max_calls", self.config.max_calls), ("turn_limit", self.config.turns_per_actor)):
                 value = payload.get(name)
                 if type(value) is not int or not (2 if name == "max_calls" else 1) <= value <= 20:
                     raise ValueError("旅程预算不兼容")
                 visit[name] = min(value, upper)
             calls = payload.get("calls", 1)  # Older offers carried one successful proposal implicitly.
-            if type(calls) is not int or not 0 <= calls <= 20:
+            if type(calls) is not int or calls < 0 or not (manual or outing_version) and calls > 20:
                 raise ValueError("邀请调用额度无效")
-            if calls > self._allocation(visit, peer["id"]):
+            if not (manual or outing_version) and calls > self._allocation(visit, peer["id"]):
                 reason = "这次邀请已用的模型额度超过双方可用预算，稍后再约"
                 return {"declined": True, "reason": reason,
                         "contact": {"kind": "contact_status", "text": reason}}
             duration = payload.get("duration")
-            if type(duration) is not int or not 60 <= duration <= 3600:
+            if type(duration) is not int or not 60 <= duration <= (14400 if outing_version else 3600):
                 raise ValueError("无效停留期限")
-            visit["expires_at"] = self._now() + min(duration, self.config.duration_minutes * 60)
+            limit = self.config.outing_duration_minutes if outing_version else self.config.duration_minutes
+            visit["expires_at"] = self._now() + min(duration, limit * 60)
             visit["status"] = "offered"
             visit["contacted"] = True
             visit["calls"][peer["id"]] = calls
@@ -328,37 +361,58 @@ class VisitService(VisitFlow, VisitJournal):
             raise ValueError("找不到本友邻的旅程")
         if op == "end":
             previous = (copy.deepcopy(visit["log"]), visit["status"], visit.get("end_reason"))
+            candidate = copy.deepcopy(visit)
+            manual_continuation = payload.get("manual_continuation", False)
+            if type(manual_continuation) is not bool:
+                raise ValueError("人工延续标记无效")
+            if manual_continuation:
+                self._resume_manual_activity(candidate)
             remote = payload.get("visit")
             if remote is not None:
-                validate_snapshot(visit, remote, now=self._now())
-            if visit["role"] == "guest" and remote is not None:
+                validate_snapshot(candidate, remote, now=self._now())
+            if candidate["role"] == "guest" and remote is not None:
                 if remote.get("status") not in TERMINAL:
                     raise ValueError("对方尚未确认结束本次相见")
-                self._synchronize(visit, remote, peer["id"], allow_terminal=True)
-            elif remote is not None and not visit.get("arrived_at") and remote.get("status") == "declined":
-                self._synchronize(visit, remote, peer["id"])
+                self._synchronize(candidate, remote, peer["id"], allow_terminal=True)
+            elif remote is not None and not candidate.get("arrived_at") and remote.get("status") == "declined":
+                self._synchronize(candidate, remote, peer["id"])
+            visit.clear()
+            visit.update(candidate)
             if visit["status"] not in TERMINAL:
                 status = "completed" if (visit.get("arrived_at") and isinstance(remote, dict)
                                           and remote.get("status") == "completed") else "interrupted"
                 reason = (remote.get("end_reason") if isinstance(remote, dict)
                           and remote.get("status") in TERMINAL else "")
-                await self._finish(visit, status, reason or "对方已告别或结束本次联系", notify=False)
+                natural = status == "completed" and visit.get("outing_version") == 1
+                await self._finish(visit, status, reason or ("" if natural else "对方已告别或结束本次联系"), notify=False)
             if (visit["log"], visit["status"], visit.get("end_reason")) != previous:
                 self._invalidate_memory(visit)
             visit.pop("end_pending", None)
             self._clear_decision_wait(visit)
             visit.pop("outbox", None)
             visit.pop("unsent_turn", None)
+            self._record_remote_budget_hold(peer, visit)
             return {"visit": self._wire(visit)}
         if visit["status"] in TERMINAL:
             return {"visit": self._wire(visit)}
-        if visit["expires_at"] <= self._now():
-            await self._finish(visit, "expired", "本次停留已经到期")
+        if await self._complete_outing_if_due(visit):
             return {"visit": self._wire(visit)}
+        if visit["expires_at"] <= self._now():
+            outing = visit.get("outing_version") == 1 and visit.get("arrived_at")
+            await self._finish(visit, "interrupted" if outing else "expired",
+                               "这次相处的联系暂未续上，保留已确认经过" if outing else "本次停留已经到期")
+            return {"visit": self._wire(visit)}
+        manual_continuation = payload.get("manual_continuation", False)
+        if type(manual_continuation) is not bool:
+            raise ValueError("人工延续标记无效")
         calls = payload.get("calls", 0)
-        if type(calls) is not int or not 0 <= calls <= self._allocation(visit, peer["id"]):
+        if (type(calls) is not int or calls < 0 or not (
+                visit.get("manual") or visit.get("outing_version") or manual_continuation)
+                and calls > self._allocation(visit, peer["id"])):
             raise ValueError("旅程调用额度无效")
         candidate = copy.deepcopy(visit)
+        if manual_continuation:
+            self._resume_manual_activity(candidate)
         if op == "step":
             self._receive_step(candidate, peer["id"], payload)
         elif op == "sync":
@@ -366,9 +420,31 @@ class VisitService(VisitFlow, VisitJournal):
         elif op != "status":
             raise ValueError("未知旅程消息")
         candidate["calls"][peer["id"]] = max(candidate["calls"][peer["id"]], calls)
+        self._record_remote_budget_hold(peer, candidate)
         visit.clear()
         visit.update(candidate)
         return {"visit": self._wire(visit)}
+
+    def _record_remote_budget_hold(self, peer, snapshot):
+        """A received checkpoint protects every local life from redundant proposals."""
+        hold = snapshot.get("budget_holds", {}).get(peer["id"])
+        if not hold or hold.get("reset_at", 0) <= self._now():
+            return
+        connection = self._state["connections"].get(peer.get("connection_id"))
+        if not connection:
+            return
+        previous = connection.get("availability", {}).get(peer["id"], {})
+        availability = self._validate_automatic_availability({
+            **{key: hold.get(key, previous.get(key, "" if key == "day" else 0)) for key in ("day", "used", "limit")},
+            "allowed": False, "reset_at": hold["reset_at"], "reason": hold.get("reason", "")})
+        connection.setdefault("availability", {})[peer["id"]] = availability
+
+    def _resume_manual_activity(self, visit):
+        """An authenticated human continuation releases this trip's inference hold."""
+        visit["manual"] = True
+        for key in ("manual_continuation", "budget_holds", "outing_budget_hold", "budget_notice_pending"):
+            visit.pop(key, None)
+        visit["next_at"] = self._outing_wait_at(visit)
 
     def _visit_belongs(self, visit, peer):
         return (visit["scope"] == peer["scope"] and visit["remote"]["id"] == peer["id"]
@@ -392,11 +468,19 @@ class VisitService(VisitFlow, VisitJournal):
             self._enabled()  # Closing can finish while the local read yields.
             if local["actor_id"] != visit["local"]["actor_id"] or local["persona_key"] != visit["local"]["persona_key"]:
                 raise ValueError("生活身份已变化，旧联系作废")
+            if payload.get("op") != "end" and await self._complete_outing_if_due(visit):
+                raise ValueError("双方已按约定告别归家，旧动作不再发送")
             if payload.get("op") != "end" and visit["expires_at"] <= self._now():
-                await self._finish(visit, "expired", "本次停留已经到期，旧联系作废")
+                outing = visit.get("outing_version") == 1 and visit.get("arrived_at")
+                await self._finish(visit, "interrupted" if outing else "expired",
+                                   "这次相处的联系暂未续上，保留已确认经过" if outing else "本次停留已经到期，旧联系作废")
                 raise ValueError("本次停留已经到期，旧动作不再发送")
             if not peer["url"]:
                 raise ValueError("对方未提供可访问的串门地址，请补填对外地址后重新配对")
+            if visit.get("manual_continuation") is True:
+                payload = {**payload, "manual_continuation": True}
+                if isinstance(payload.get("visit"), dict):
+                    payload["visit"] = {**payload["visit"], "manual": True}
             payload = {**payload, "id": visit_id, "calls": visit["calls"][self._local_id(visit)]}
             outgoing = visit.get("outbox")
             if not outgoing:
@@ -422,8 +506,12 @@ class VisitService(VisitFlow, VisitJournal):
             self._enabled()  # A received reply cannot mutate a closed instance.
             if local["actor_id"] != visit["local"]["actor_id"] or local["persona_key"] != visit["local"]["persona_key"]:
                 raise ValueError("生活身份已变化，旧答复作废")
+            if outgoing["payload"]["op"] != "end" and await self._complete_outing_if_due(visit):
+                raise ValueError("双方已按约定告别归家，旧答复不再使用")
             if outgoing["payload"]["op"] != "end" and visit["expires_at"] <= self._now():
-                await self._finish(visit, "expired", "本次停留已经到期，旧答复作废")
+                outing = visit.get("outing_version") == 1 and visit.get("arrived_at")
+                await self._finish(visit, "interrupted" if outing else "expired",
+                                   "这次相处的联系暂未续上，保留已确认经过" if outing else "本次停留已经到期，旧答复作废")
                 raise ValueError("本次停留已经到期，旧答复作废")
             if (visit.get("outbox") or {}).get("message_id") != outgoing["message_id"]:
                 raise ValueError("本次联系已被更新，旧答复作废")
@@ -435,17 +523,39 @@ class VisitService(VisitFlow, VisitJournal):
                 raise ValueError("对方未提供本次旅程答复")
             if remote is not None and not isinstance(remote, dict):
                 raise ValueError("对方返回无效旅程快照")
+            if (candidate.get("manual_continuation") is True
+                    and outgoing["payload"].get("manual_continuation") is not True
+                    and (remote or {}).get("manual") is True and not candidate.get("manual")):
+                # Both sides can receive a human continuation while an older
+                # packet is in flight. Renew its signed status before new work.
+                visit.pop("outbox", None)
+                await self._save()
+                raise ValueError("正在重新确认双方的人工接续，请稍后继续")
+            if outgoing["payload"].get("manual_continuation") is True:
+                self._resume_manual_activity(candidate)
             for name in ("max_calls", "turn_limit"):
                 value = (remote or {}).get(name)
                 if value is not None:
                     if type(value) is not int or not (2 if name == "max_calls" else 1) <= value <= visit[name]:
                         raise ValueError("对方返回不兼容的旅程预算")
                     candidate[name] = value
-            if any(count > self._allocation(candidate, actor) for actor, count in candidate["calls"].items()):
+            if not (candidate.get("manual") or candidate.get("outing_version")) and any(
+                    count > self._allocation(candidate, actor) for actor, count in candidate["calls"].items()):
                 raise ValueError("对方的旅程预算不足以容纳已发出的调用")
             if remote is not None:
                 validate_snapshot(candidate, remote, now=self._now())
+                self._record_remote_budget_hold(peer, remote)
             if result.get("declined") is True and outgoing["payload"]["op"] == "offer":
+                if result.get("budget") is not None:
+                    remote_budget = result["budget"]
+                    if not isinstance(remote_budget, dict) or remote_budget.get("actor_id") != peer["id"]:
+                        raise ValueError("对方的自动联系额度不属于这份生活")
+                    availability = self._validate_automatic_availability(remote_budget)
+                    candidate["budget_side"] = "remote"
+                    candidate["automatic_budget"] = availability
+                    conn = self._state["connections"].get(peer.get("connection_id"))
+                    if conn:
+                        conn.setdefault("availability", {})[peer["id"]] = availability
                 contact = result.get("contact")
                 if contact is None:  # Older neighbours return only their availability reason.
                     contact = {"kind": "contact_status", "text": result.get("reason") or "对方暂时不方便"}
@@ -455,7 +565,8 @@ class VisitService(VisitFlow, VisitJournal):
                 self._append(candidate, peer["id"], contact["kind"], contact["text"])
             expires = (remote or {}).get("expires_at")
             if isinstance(expires, (int, float)):
-                candidate["expires_at"] = min(visit["expires_at"], expires)
+                candidate["expires_at"] = (expires if candidate.get("outing_version") == 1 and candidate.get("arrived_at")
+                                           else min(visit["expires_at"], expires))
             candidate.pop("outbox", None)
             clear_state_read(candidate, checkpoint="exchange")
             candidate["network_failures"] = 0

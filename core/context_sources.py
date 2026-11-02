@@ -235,9 +235,9 @@ def runtime_context(prompts: Any, state: Any, node: Any, request: ContextRequest
         state.current_plan = None
         state.idle_activity = {}
         state.state = "idle"
-        activity = "与友邻一起相处"
+        activity = str(values.get("visit_activity") or "与友邻一起相处")
     base = [CONTEXT_GUIDANCE,
-            "# 你的状态\n" + prompts._state_block(state, dwell_minutes=prompts._dwell_minutes(state),
+            "# 你的状态\n" + prompts._state_block(state, dwell_minutes=0 if visit_presence else prompts._dwell_minutes(state),
                                                   tick_seconds=prompts.tick_seconds, sleep_config=prompts.world.sleep),
             f"# 当前动作：{activity}",
             f"# 当前位置：{visit_presence or (node.name if node else '未知')}"]

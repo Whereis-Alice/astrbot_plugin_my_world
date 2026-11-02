@@ -5,7 +5,7 @@ from __future__ import annotations
 from ..model_calls import model_operation
 
 from typing import Any
-from ..visit_presence import active_visit, presence_text
+from ..visit_presence import active_visit, presence_text, visit_activity_text
 from ..defaults import DEFAULT_WEATHER_PROMPT
 from ..json_actions import (
     PlannedAction,
@@ -87,7 +87,8 @@ class WeatherMixin:
             notes["life_context"] = ""
         visit = active_visit(self, session_id)
         if visit:
-            notes["world_visit"] = presence_text(visit)
+            notes["world_visit"] = presence_text(visit, now=self._now())
+            notes["visit_activity"] = visit_activity_text(visit, now=self._now())
         if not session_id:
             return notes
         try:

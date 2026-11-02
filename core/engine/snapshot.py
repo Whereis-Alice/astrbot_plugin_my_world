@@ -243,7 +243,7 @@ class SnapshotMixin:
             "world_time": state.world_time,
             "tick_seconds": self.tick_seconds,
             "node_id": state.node_id,
-            "node_name": presence_text(visit) if visit else node.name if node else "",
+            "node_name": presence_text(visit, now=self._now()) if visit else node.name if node else "",
             "state": state.state,
             # 扩展想显示的状态（例如"兴奋中"）：只给编辑器看，不进群名片
             "extension_status": self.extensions.status_text(state, session_id),
@@ -753,7 +753,7 @@ class SnapshotMixin:
                     "session_id": session_id,
                     "state_key": self.state_key(session_id),
                     "node_id": state.node_id,
-                    "node_name": presence_text(visit) if visit else node.name if node is not None else state.node_id,
+                    "node_name": presence_text(visit, now=self._now()) if visit else node.name if node is not None else state.node_id,
                     "state": state.state,
                     "mood": state.mood,
                     "world_time": state.world_time,

@@ -3,13 +3,18 @@ from __future__ import annotations
 
 import importlib
 import json
+from pathlib import Path
+import sys
+import types
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock
 
-from tests.test_dialogue_inject import MODULE
-
-tools = importlib.import_module(MODULE.__name__ + ".adapters.visit_tools")
+# Exercise the real entrypoint without loading unrelated plugin WebUI APIs.
+package = types.ModuleType("visit_tool_fixture")
+package.__path__ = [str(Path(__file__).resolve().parents[1])]
+sys.modules[package.__name__] = package
+tools = importlib.import_module(package.__name__ + ".adapters.visit_tools")
 
 
 class VisitToolTests(unittest.IsolatedAsyncioTestCase):
@@ -35,7 +40,8 @@ class VisitToolTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_manual_invitation_uses_exact_shared_life_and_reports_pending(self):
         text = await self.invite()
-        self.service.invite.assert_awaited_once_with("one-life", "peer", reason="一起下棋", direction="outgoing")
+        self.service.invite.assert_awaited_once_with(
+            "one-life", "peer", reason="一起下棋", direction="outgoing", manual=True)
         self.assertIn("invited", text)
         self.assertIn("待答复", text)
 
@@ -74,10 +80,12 @@ class VisitToolTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("本轮", result)
         self.service.invite.assert_not_awaited()
 
-    async def test_permissions_and_background_messages_cannot_arrange_trip(self):
+    async def test_any_current_human_can_arrange_but_background_and_self_messages_cannot(self):
         self.plugin._can_admin = lambda event: False
-        self.assertIn("管理员", await self.invite())
-        self.plugin._can_admin = lambda event: True
+        await self.invite()
+        self.service.invite.assert_awaited_once_with(
+            "one-life", "peer", reason="一起下棋", direction="outgoing", manual=True)
+        self.service.invite.reset_mock()
         self.plugin.in_self_initiated_call = lambda: True
         self.assertIn("后台", await self.invite())
         self.plugin.in_self_initiated_call = lambda: False

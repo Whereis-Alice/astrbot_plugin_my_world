@@ -8,7 +8,7 @@ from typing import Literal
 import aiohttp
 from aiohttp import web
 
-from .protocol import MAX_BYTES, canonical
+from .protocol import MAX_BYTES, MAX_OUTING_BYTES, canonical, message_limit
 from .ports import VisitStateError
 
 
@@ -59,7 +59,7 @@ class VisitTransport:
                 raise
 
     async def _start_listener(self):
-        app = web.Application(client_max_size=MAX_BYTES)
+        app = web.Application(client_max_size=MAX_OUTING_BYTES)
         app.router.add_post("/v1/message", self._handle)
         app.router.add_post("/v1/pair", self._handle)
         runner = web.AppRunner(app, access_log=None)
@@ -81,11 +81,21 @@ class VisitTransport:
             # rechecks a directory more than once before saving its receipt.
             async with asyncio.timeout(self.config.timeout_seconds):
                 raw = await request.read()
-                if len(raw) > MAX_BYTES:
+                if len(raw) > MAX_OUTING_BYTES:
                     raise ValueError("消息过长")
-                body = json.loads(raw, parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
+                try:
+                    body = json.loads(raw, parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
+                except (ValueError, TypeError, RecursionError):
+                    if len(raw) > MAX_BYTES:
+                        raise web.HTTPRequestEntityTooLarge(max_size=MAX_BYTES, actual_size=len(raw)) from None
+                    raise
+                if len(raw) > message_limit(body):
+                    raise web.HTTPRequestEntityTooLarge(max_size=message_limit(body), actual_size=len(raw))
                 reply = await self.handler(body)
-                return web.Response(body=canonical(reply), content_type="application/json")
+                data = canonical(reply)
+                if len(data) > message_limit(reply):
+                    raise ValueError("消息过长")
+                return web.Response(body=data, content_type="application/json")
         except web.HTTPRequestEntityTooLarge:
             return web.json_response({"error": "消息过长"}, status=413)
         except (TimeoutError, VisitStateError):
@@ -99,7 +109,8 @@ class VisitTransport:
             data = canonical(body)
         except (ValueError, TypeError, RecursionError) as exc:
             raise VisitTransportError("串门请求数据格式无效", category="protocol") from exc
-        if len(data) > MAX_BYTES:
+        maximum = MAX_OUTING_BYTES
+        if len(data) > min(maximum, message_limit(body)):
             raise VisitTransportError("串门消息过长", category="protocol")
         if self.client is None or self.client.closed:
             self.client = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self.config.timeout_seconds),
@@ -113,12 +124,20 @@ class VisitTransport:
                 try:
                     # A proxy may split JSON across chunks. Wait for EOF while
                     # retaining only the allowed bytes plus one overflow byte.
-                    raw = await response.content.readexactly(MAX_BYTES + 1)
+                    raw = await response.content.readexactly(maximum + 1)
                 except asyncio.IncompleteReadError as exc:
                     raw = exc.partial
-                if len(raw) > MAX_BYTES:
+                if len(raw) > maximum:
                     raise VisitTransportError("对方返回的串门消息过长", category="protocol")
-                return _decode_reply(raw)
+                try:
+                    decoded = _decode_reply(raw)
+                except VisitTransportError:
+                    if len(raw) > MAX_BYTES:
+                        raise VisitTransportError("对方返回的串门消息过长", category="protocol") from None
+                    raise
+                if len(raw) > message_limit(decoded):
+                    raise VisitTransportError("对方返回的串门消息过长", category="protocol")
+                return decoded
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
             raise VisitTransportError("暂时联系不上对方，请检查串门服务", category="channel") from exc
 

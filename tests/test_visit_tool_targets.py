@@ -54,7 +54,7 @@ class VisitToolTargetTests(unittest.IsolatedAsyncioTestCase):
         self.event.get_message_str = lambda: "邀请艾拉来自己家坐坐"
         await self.invite(direction="incoming", evidence="邀请艾拉来自己家坐坐")
         self.service.invite.assert_awaited_once_with(
-            "one-life", "peer", reason="一起下棋", direction="incoming")
+            "one-life", "peer", reason="一起下棋", direction="incoming", manual=True)
 
     async def test_pronouns_and_unspecified_direction_leave_the_choice_to_the_model(self):
         self.friends()

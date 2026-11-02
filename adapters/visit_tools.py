@@ -55,8 +55,6 @@ def _scope(plugin: Any, event: Any, *, mutate: bool = False) -> str:
     if mutate:
         if plugin.in_self_initiated_call():
             raise ValueError("此工具需要当前真人明确邀请，后台角色消息不能调用。")
-        if service.config.actor != "all" and not plugin._can_admin(event):
-            raise ValueError("当前仅管理员可以安排串门。")
         sender = str(event.get_sender_id() or "").strip()
         if not sender:
             raise ValueError("当前没有可确认身份的真人用户，不能安排串门。")
@@ -176,6 +174,7 @@ class WorldVisitTool(FunctionTool[AstrAgentContext]):
             _invitation_selection(clauses, overview.get("peers", []), peer_id, direction)
             result = await self.plugin.visits.invite(
                 scope, peer_id, reason=str(kwargs.get("reason") or "")[:500], direction=direction,
+                manual=True,
             )
             return "邀请处理结果（以状态为准，不能把待答复说成已到访）：" + json.dumps(result, ensure_ascii=False)
         except ValueError as exc:
