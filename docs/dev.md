@@ -75,6 +75,8 @@ python -m pytest tests/test_life_workspace_browser.py tests/test_visual_workspac
 
 界面的主题与材质集中在 `observatory.css`，六套本机外观由 `appearance.js` 管理，工作区的次要操作菜单由 `workspace-ui.js` 初始化。`data-theme` 保留深浅语义，`data-palette` 指定配色；不要在组件里为每个主题复制颜色。可用 `python -m pytest tests/test_visual_workspace_browser.py -q` 验证六套主题、键盘关闭与恢复、文字对比度，以及各模块在四种屏幕宽度下的布局；合成截图输出到 `.pytest_cache/generation-ui/`。
 
+相见记录的纯数据投影集中在 `visit-records.js`：先按日志类型区分台词、意愿、感受、共享结果与纪事，再按唯一身份匹配人物；未知类型默认纪事，显示名不替代身份来源。`visits.js` 管理页面、懒展开和原 seq 分页，不补写记录或重排历史。记录样式共用六主题变量，正文保持固定阅读轴。可运行 `python -m pytest tests/test_visit_journal_reading_z.py tests/test_visits_journal_review_r.py -q` 检查来源、完整阅读、翻页与刷新边界。
+
 控制台的矢量世界由 `world-scene.js` 提供，主视窗与六张主题缩略图使用各自的 SVG ID，避免渐变引用串色。视窗文字使用状态快照，装饰插画不推断世界行为；减少动态效果会停用悬浮、指针景深与切页过渡。运行 `python -m pytest tests/test_observatory_browser.py -q` 可生成六主题、390/360px 手机截图，并检查实时状态、曲线无障碍说明、键盘展开与只读操作。截图全部使用合成数据。
 
 单选框通过 `@supports` 渐进使用 `appearance: base-select` 和 `::picker(select)`，保留原生的值、键盘操作和 `change` 事件；不支持时使用原生菜单及明确的选项配色。多选和带 `size` 的列表不启用弹出面板样式。

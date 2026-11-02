@@ -197,8 +197,9 @@ class VisitsArtDirectionTests(unittest.TestCase):
                 self.host.set_viewport_size({'width': width, 'height': height})
                 self.page.locator('.visits-current').scroll_into_view_if_needed()
                 self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'))
-                left, right = moments.nth(0).bounding_box(), moments.nth(1).bounding_box()
-                self.assertGreater(right['x'], left['x'])
+                left = moments.nth(0).locator('.visits-moment-body').bounding_box()
+                right = moments.nth(1).locator('.visits-moment-body').bounding_box()
+                self.assertAlmostEqual(right['x'], left['x'], delta=1)
                 self.host.screenshot(path=str(self.shots / f'visits-moments-{palette}-{width}.png'), animations='disabled')
         self.assertEqual(self.errors, [])
 

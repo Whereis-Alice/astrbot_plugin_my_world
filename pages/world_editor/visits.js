@@ -1,4 +1,6 @@
 /** Paired worlds use their own channel; the editor only invites and observes. */
+import {recordMoments, recordParts} from "./visit-records.js";
+
 const STATUS = {
   invited: "邀请已提出", inviting: "正在提出邀请", offered: "等待接待决定", pending: "等待答复", accepted: "对方已接受",
   visiting: "正在做客", active: "正在一起活动", arrived: "已经到访", returning: "正在告别归家",
@@ -14,11 +16,23 @@ function stamp(value) {
   return Number.isNaN(date.getTime()) ? "" : date.toLocaleString("zh-CN", {month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit"});
 }
 
+function recordDate(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return null;
+  const date = new Date(number * (number < 1e12 ? 1000 : 1));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function clockStamp(value) {
+  return recordDate(value)?.toLocaleTimeString("zh-CN", {hour: "2-digit", minute: "2-digit"}) || "";
+}
+
 export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, confirm}) {
   let revision = 0, globalRevision = 0, renderedGlobalRead = 0, secretRevision = 0, busy = false;
   let data = null, lifeData = null, lifeSession = null, refreshTimer, secretTimer, scopeDraft = null, phoneConnection = null;
   const friendDrafts = new Map();
   const recordDrafts = new Map();
+  let historyLimit = 20;
   const heading = el("div", "visits-heading");
   const title = el("div", "visits-title"); title.append(el("span", "visits-title-mark", "↗"), el("h2", "", "友邻与串门"));
   const toolbar = el("div", "toolbar"), refresh = el("button", "ghost", "刷新"), home = el("button", "ghost", "告别归家");
@@ -85,6 +99,8 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     const waiting = waitingForVisit();
     home.textContent = waiting ? "取消邀请" : "告别归家";
     refresh.disabled = busy;
+    const historyMore = history.querySelector(".visits-history-more");
+    if (historyMore) historyMore.disabled = busy || !lifeData || lifeSession !== getSession();
     saveScopes.disabled = busy || !enabled || scopeDraft === null;
     for (const checkbox of lifeChoices.querySelectorAll("input")) checkbox.disabled = busy || !enabled;
     for (const button of [...peers.querySelectorAll("button"), ...phone.querySelectorAll("button"), ...connections.querySelectorAll("button")]) {
@@ -127,57 +143,67 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     const name = connection.alias || connection.name;
     return name && !["小世界", "友邻世界"].includes(name) ? name : actor?.name || name || "友邻世界";
   }
-  function recordIdentity(visit, item) {
-    const actors = [visit.local, visit.remote].filter(Boolean);
-    const exact = actors.filter(actor => actor.id && actor.id === item.actor_id);
-    const short = actors.filter(actor => actor.actor_id && actor.actor_id === item.actor_id);
-    const matches = exact.length ? exact : short;
-    return matches.length === 1 ? matches[0] : null;
-  }
-  function recordMoments(visit, logs) {
-    const moments = [];
-    for (const item of logs) {
-      const identity = recordIdentity(visit, item), previous = moments.at(-1), last = previous?.items.at(-1);
-      const continuation = ["action_plan", "action", "experience", "result"].includes(item.kind);
-      const sameNode = item.node_id && last?.node_id ? item.node_id === last.node_id
-        : (!Number.isInteger(item.seq) || !Number.isInteger(last?.seq) || item.seq === last.seq + 1)
-          && (!item.at || !last?.at || Math.abs(Number(item.at) - Number(last.at)) < 3);
-      if (continuation && identity && previous?.identity === identity && last.actor_id === item.actor_id
-          && previous.items.some(row => ["say", "contact_reply", "invitation"].includes(row.kind) || row.say)
-          && !previous.items.some(row => row.kind === item.kind) && sameNode) previous.items.push(item);
-      else moments.push({identity, items: [item]});
-    }
-    return moments;
+  function momentTime(value) {
+    const date = recordDate(value), time = el("time", "visits-log-time muted", clockStamp(value));
+    if (date) {time.dateTime = date.toISOString(); time.title = stamp(value);}
+    return time;
   }
   function momentList(visit, moments) {
     const list = el("ol", "visits-transcript");
+    let previousDay = "";
     for (const moment of moments) {
       const item = moment.items[0], identity = moment.identity;
+      const date = recordDate(moment.at), day = date?.toLocaleDateString("zh-CN") || "";
+      if (previousDay && day && previousDay !== day) {
+        const divider = el("li", "visits-day-break", date.toLocaleDateString("zh-CN", {month: "long", day: "numeric"}));
+        list.append(divider);
+      }
+      if (day) previousDay = day;
+      const shared = ["chronicle", "result"].includes(moment.category);
       const isReply = item.kind === "contact_reply", isStatus = item.kind === "contact_status";
-      const row = el("li", `visits-moment ${identity === visit.local ? "is-local" : identity === visit.remote ? "is-remote" : "is-unknown"}${isReply ? " visits-contact-reply" : isStatus ? " visits-contact-status" : ""}`);
+      const row = el("li", `visits-moment ${shared ? "is-shared" : identity === visit.local ? "is-local" : identity === visit.remote ? "is-remote" : "is-unknown"}${isReply ? " visits-contact-reply" : isStatus ? " visits-contact-status" : ""}`);
       if (identity) row.dataset.actorId = identity.id || identity.actor_id;
+      row.dataset.recordKind = item.kind || "legacy";
+      if (shared) {
+        const margin = el("div", "visits-chronicle-margin"); margin.append(momentTime(moment.at));
+        const body = el("div", "visits-moment-body visits-chronicle-body");
+        // Arrival is a protocol milestone, never the host's line of dialogue.
+        if (item.kind === "arrival") {
+          body.append(el("span", "visits-arrival-mark", "✦"), el("span", "visits-arrival-label", "相见"));
+          body.setAttribute("aria-label", "双方已接受邀请并到访");
+          for (const part of moment.parts) {
+            if (!/^双方接受邀请，开始在东道主世界相处[。！!]?\s*$/.test(part.text)) body.append(el("p", "visits-log-chronicle", part.text));
+          }
+        } else {
+          for (const part of moment.parts) body.append(el("p", part.type === "result" ? "visits-log-result" : "visits-log-chronicle", part.text));
+        }
+        row.append(margin, body); list.append(row); continue;
+      }
       const sameName = identity && visit.local?.name && visit.local.name === visit.remote?.name;
+      const legacySpeaker = !item.actor_id && (typeof item.speaker === "string" ? item.speaker
+        : typeof item.name === "string" ? item.name : "");
       const speaker = sameName ? `${identity === visit.local ? "我" : "对方"}（${identity.name}）` : identity?.name ||
-        (!item.actor_id && (typeof item.speaker === "string" ? item.speaker : item.name)) || "来源未确认";
+        (legacySpeaker ? `来源未确认 · ${legacySpeaker}` : "来源未确认");
       const statusSpeaker = identity === visit.local ? "本方当前状态" : identity === visit.remote ? "对方当前状态" : "来源未确认的状态";
       const avatar = el("span", "visits-log-avatar", identity?.name?.slice(0, 1) || "·"); avatar.setAttribute("aria-hidden", "true");
       const body = el("div", "visits-moment-body"), head = el("div", "visits-log-head");
-      head.append(el("strong", "", isStatus ? statusSpeaker : speaker));
+      head.append(avatar, el("strong", "", isStatus ? statusSpeaker : speaker));
       if (isReply || isStatus) head.append(el("span", "visits-log-kind", isReply ? "电话答复" : "通话前状态"));
-      head.append(el("small", "muted", stamp(item.at))); body.append(head);
-      for (const entry of moment.items) {
-        const mainClass = ["action", "action_plan", "activity", "event"].includes(entry.kind) ? "visits-log-action"
-          : ["experience", "result"].includes(entry.kind) ? "visits-log-experience" : "visits-log-say";
-        for (const [text, style] of [[entry.say || entry.text, mainClass], [entry.action, "visits-log-action"], [entry.result, "visits-log-experience"]]) {
-          if (typeof text === "string" && text.trim()) body.append(el("p", style, text));
-        }
+      head.append(momentTime(moment.at));
+      for (const part of moment.parts) {
+        const style = {speech: "visits-log-say", intent: "visits-log-action", experience: "visits-log-experience",
+          result: "visits-log-result", status: "visits-log-status", chronicle: "visits-log-chronicle"}[part.type];
+        const paragraph = el("p", style, part.text);
+        if (part.type === "intent") paragraph.setAttribute("aria-label", `当时的行动打算：${part.text}`);
+        if (part.type === "experience") paragraph.setAttribute("aria-label", `当时的感受：${part.text}`);
+        body.append(paragraph);
       }
-      row.append(avatar, body);
+      row.append(head, body);
       list.append(row);
     }
     return list;
   }
-  function transcript(visit, container, diagnostic = false) {
+  function transcript(visit, container, diagnostic = false, live = false) {
     const key = `${getSession()}\n${visit.id || "preview"}`, signature = `${visit.local?.id}\n${visit.remote?.id}`;
     let draft = recordDrafts.get(key);
     if (!draft || draft.signature !== signature) {
@@ -193,10 +219,10 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
       : Number.isInteger(visit.next_before) ? visit.next_before : visit.log_offset > 0 ? visit.log_offset : 0;
     const logs = (sorted.length ? sorted : present).filter(item => (diagnostic || item.kind !== "contact_status")
       && !(item.kind === "activity" && /^开始相处[：:]/.test(item.text || "")));
-    const moments = recordMoments(visit, logs), split = Math.max(0, moments.length - 8);
+    const moments = recordMoments(visit, logs), split = live ? Math.max(0, moments.length - 8) : 0;
     if (!moments.length && !draft.nextBefore) return;
     if (split || draft.nextBefore) {
-      const earlier = el("details", "visits-earlier-moments"); earlier.open = draft.olderOpen;
+      const earlier = el("details", "visits-earlier-moments"); earlier.open = draft.olderOpen || !live;
       earlier.append(el("summary", "", split ? `更早的片刻 · ${split}` : "翻开更早的片刻"));
       earlier.ontoggle = () => {draft.olderOpen = earlier.open;};
       if (draft.nextBefore) {
@@ -289,7 +315,7 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
       copy.append(progress, el("p", "visits-scene-clock", `${stamp(start)} — ${stamp(end)}`));
     }
     panel.append(copy, sceneArt(scene));
-    if (steps.length) {
+    if (steps.length > 1) {
       const route = el("ol", "visits-route"); route.setAttribute("aria-label", "共同活动路线");
       const first = Math.max(0, index - 7);
       for (const [offset, item] of steps.slice(first, first + 8).entries()) {
@@ -303,41 +329,66 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     }
     return panel;
   }
-  function visitCard(visit, live = false, diagnostic = false) {
+  function visitCard(visit, live = false, diagnostic = false, expanded = false) {
     const card = el(live ? "div" : "details", "visits-visit");
     const place = visit.arrived_at && (visit.outing?.place || visit.outing_version !== 1 && visit.scene?.place);
-    const label = `${visit.peer_name || visit.peer?.name || visit.remote?.name || "友邻世界"} · ${!live && !diagnostic && visit.arrived_at ? place || "那次相见" : STATUS[visit.status] || visit.status || "等待答复"}`;
-    const summary = el(live ? "h3" : "summary", "", label);
+    const friend = visit.remote?.name || visit.peer_name || visit.peer?.name || "友邻世界";
+    const keepsake = !live && !diagnostic;
+    const label = keepsake ? [friend, place].filter(Boolean).join(" · ") : `${friend} · ${STATUS[visit.status] || visit.status || "等待答复"}`;
+    const summary = el(live ? "h3" : "summary", keepsake ? "visits-entry-summary" : "", keepsake ? "" : label);
     if (!live) {
       card.dataset.visitId = visit.id;
-      const date = stamp(visit.started_at || visit.created_at);
-      if (date) summary.append(el("small", "visits-history-time muted", date));
+      const start = visit.arrived_at || visit.started_at || visit.created_at, date = recordDate(start);
+      if (keepsake) {
+        const day = el("span", "visits-entry-date"); day.setAttribute("aria-hidden", "true");
+        day.append(el("b", "", date ? String(date.getDate()).padStart(2, "0") : "·"),
+          el("span", "", date ? `${date.getMonth() + 1}月` : "札记"));
+        const copy = el("span", "visits-entry-copy"); copy.append(el("strong", "visits-entry-title", label));
+        const firstSpeech = recordLogs(visit).filter(item => item.kind !== "invitation")
+          .flatMap(recordParts).find(part => part.type === "speech");
+        const preview = firstSpeech?.text || (visit.arrived_at && visit.outing?.activity) || "";
+        if (preview) copy.append(el("span", "visits-entry-preview", preview));
+        const interval = stamp(start) + (recordDate(visit.ended_at) && Number(visit.ended_at) >= Number(start)
+          ? ` — ${date?.toDateString() === recordDate(visit.ended_at).toDateString() ? clockStamp(visit.ended_at) : stamp(visit.ended_at)}` : "");
+        if (interval) copy.append(el("small", "visits-history-time muted", interval));
+        const arrow = el("span", "visits-entry-arrow", "↗"); arrow.setAttribute("aria-hidden", "true");
+        summary.append(day, copy, arrow);
+      } else if (date) summary.append(el("small", "visits-history-time muted", stamp(start)));
     }
     card.append(summary);
     const body = el("div", "visits-visit-body"), scene = visit.scene;
-    const contactNotes = [typeof visit.contact_error === "string" ? visit.contact_error.trim() : "", visit.model_wait?.reason].filter(Boolean);
-    if (live && contactNotes.length) {
-      const waiting = el("details", "visits-contact-notes"); waiting.append(el("summary", "", "联系状态"));
-      for (const note of contactNotes) waiting.append(el("p", "visits-channel-status muted", note));
-      body.append(waiting);
+    let bodyReady = false;
+    function populateBody() {
+      if (bodyReady) return;
+      bodyReady = true;
+      const contactNotes = [typeof visit.contact_error === "string" ? visit.contact_error.trim() : "", visit.model_wait?.reason].filter(Boolean);
+      if (live && contactNotes.length) {
+        const waiting = el("details", "visits-contact-notes"); waiting.append(el("summary", "", "联系状态"));
+        for (const note of contactNotes) waiting.append(el("p", "visits-channel-status muted", note));
+        body.append(waiting);
+      }
+      const endReason = typeof visit.end_reason === "string" ? visit.end_reason.trim() : "";
+      if (diagnostic) {
+        const ending = el("div", "visits-end-reason");
+        ending.append(el("p", "", endReason || "这条联系没有留下具体说明。"));
+        body.append(ending);
+      }
+      const sceneText = typeof scene === "string" ? scene : [scene?.place, scene?.activity].filter(value => typeof value === "string").join(" · ");
+      const awaitingActivity = visit.arrived_at && visit.outing_version === 1 && !visit.outing?.place;
+      if (awaitingActivity) body.append(el("p", "visits-scene", live ? "已经见面，接下来一起做什么还在商量。" : "那次见面还没有共同确认游玩安排。"));
+      else if (visit.arrived_at && (live || visit.outing?.place)) body.append(scenePanel(visit, live));
+      else if (sceneText) {
+        const description = el("p", visit.arrived_at ? "visits-scene" : "visits-scene-plan");
+        if (live && !visit.arrived_at) description.append(el("span", "visits-scene-kicker", "约见打算 · "));
+        description.append(document.createTextNode(sceneText)); body.append(description);
+      }
+      if (visit.reason && diagnostic) body.append(el("p", "muted", visit.reason));
+      transcript(visit, body, diagnostic || live && !visit.arrived_at, live);
     }
-    const endReason = typeof visit.end_reason === "string" ? visit.end_reason.trim() : "";
-    if (diagnostic) {
-      const ending = el("div", "visits-end-reason");
-      ending.append(el("p", "", endReason || "这条联系没有留下具体说明。"));
-      body.append(ending);
-    }
-    const sceneText = typeof scene === "string" ? scene : [scene?.place, scene?.activity].filter(value => typeof value === "string").join(" · ");
-    const awaitingActivity = visit.arrived_at && visit.outing_version === 1 && !visit.outing?.place;
-    if (awaitingActivity) body.append(el("p", "visits-scene", live ? "已经见面，接下来一起做什么还在商量。" : "那次见面还没有共同确认游玩安排。"));
-    else if (visit.arrived_at && (live || visit.outing?.place)) body.append(scenePanel(visit, live));
-    else if (sceneText) {
-      const description = el("p", visit.arrived_at ? "visits-scene" : "visits-scene-plan");
-      if (live && !visit.arrived_at) description.append(el("span", "visits-scene-kicker", "约见打算 · "));
-      description.append(document.createTextNode(sceneText)); body.append(description);
-    }
-    if (visit.reason && diagnostic) body.append(el("p", "muted", visit.reason));
-    transcript(visit, body, diagnostic || live && !visit.arrived_at); card.append(body); return card;
+    if (live || diagnostic || expanded) populateBody();
+    else card.ontoggle = () => {if (card.open) populateBody();};
+    if (expanded && !live) card.open = true;
+    card.append(body); return card;
   }
   function renderGlobal(result) {
     data = result; peers.replaceChildren(); lifeChoices.replaceChildren(); connections.replaceChildren();
@@ -469,8 +520,16 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     const past = all.filter(item => item.id !== result.active?.id && successful(item));
     const historyHead = el("div", "visits-section-head");
     historyHead.append(el("h3", "", "通话与相见记录"), el("span", "muted", past.length ? `${past.length} 篇札记` : "")); history.append(historyHead);
-    for (const visit of past.slice(0, 20)) {
-      const card = visitCard(visit); card.open = opened.has(visit.id); history.append(card);
+    for (const visit of past.slice(0, historyLimit)) {
+      history.append(visitCard(visit, false, false, opened.has(visit.id)));
+    }
+    if (past.length > historyLimit) {
+      const session = lifeSession;
+      const more = el("button", "ghost visits-history-more", "继续翻阅"); more.type = "button";
+      more.onclick = () => {
+        if (!lifeData || session !== getSession() || session !== lifeSession) return;
+        historyLimit += 20; renderLife(lifeData);
+      }; history.append(more);
     }
     if (!past.length) {
       const empty = el("div", "visits-empty-note"); empty.append(el("span", "", "✧"), el("span", "muted", "相见之后，这里会留下她们的札记。")); history.append(empty);
@@ -496,7 +555,7 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
   async function reload() {
     const session = getSession(), request = ++revision, globalRequest = globalRevision;
     if (session !== lifeSession) {
-      recordDrafts.clear(); lifeSession = session; renderLife({scope_enabled: false, active: null, history: []});
+      recordDrafts.clear(); historyLimit = 20; lifeSession = session; renderLife({scope_enabled: false, active: null, history: []});
     }
     lifeData = null; controls();
     try {
