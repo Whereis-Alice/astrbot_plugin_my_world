@@ -12091,31 +12091,34 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.clock.set_struct(datetime(2026, 9, 10, 17, 0))
 
     async def test_poke_action_pokes_the_target_without_talking(self):
+        from tests.schedule_delivery import settled_schedule_outcomes
         raw = self.store.raw_world()
         raw["bot_name"] = "小鲸鱼"
         self.store.save_world(raw)
         self.use_action_chain([{"type": "poke", "target": "42"}])
-        await self.engine.tick()
+        await settled_schedule_outcomes(self.engine, await self.engine.tick())
         self.assertEqual(self.messenger.pokes, [(SESSION, "42")])
         self.assertEqual(self.messenger.flat_messages, [])
 
     async def test_poke_falls_back_to_text_when_platform_refuses(self):
         """协议端不给戳（非 QQ 系）时不能凭空消失，要退化成一句动作文案。"""
 
+        from tests.schedule_delivery import settled_schedule_outcomes
         raw = self.store.raw_world()
         raw["bot_name"] = "小鲸鱼"
         self.store.save_world(raw)
         self.messenger.poke_result = False
         self.use_action_chain([{"type": "poke", "target": "42"}])
-        await self.engine.tick()
+        await settled_schedule_outcomes(self.engine, await self.engine.tick())
         self.assertIn("（小鲸鱼戳了戳你）", self.messenger.flat_messages)
 
     async def test_poke_without_target_uses_recent_speaker(self):
+        from tests.schedule_delivery import settled_schedule_outcomes
         await self.engine.note_presence(
             self.ctx(text="在吗在吗", user_id="77", user_name="小红")
         )
         self.use_action_chain([{"type": "poke"}])
-        await self.engine.tick()
+        await settled_schedule_outcomes(self.engine, await self.engine.tick())
         self.assertEqual(self.messenger.pokes[-1], (SESSION, "77"))
 
     async def test_poke_is_a_builtin_action(self):
