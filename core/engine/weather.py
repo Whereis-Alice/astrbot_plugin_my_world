@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ..model_calls import model_operation
+from ..context_sources import paused_home_event_context
 
 from typing import Any
 from ..visit_presence import active_visit, presence_text, visit_activity_text
@@ -91,7 +92,8 @@ class WeatherMixin:
         visit = active_visit(self, session_id)
         # A persona edit can precede the visit loop's identity cleanup. Keep
         # that old journey reserved, but never describe it as the new actor's.
-        if visit and visit.get("local", {}).get("persona_key") == persona_key:
+        paused_home = bool(visit and visit.get("local", {}).get("persona_key") == persona_key)
+        if paused_home:
             notes["world_visit"] = presence_text(visit, now=self._now())
             notes["visit_activity"] = visit_activity_text(visit, now=self._now())
         try:
@@ -103,6 +105,9 @@ class WeatherMixin:
         notes["pending_event"] = self.pending_event_line(state, persona_key)
         # 她自己的账：正在经历 / 最近发生在我身上的事 / 还挂着的（窗口外的不出现）
         notes["event_journal"] = self.event_journal(state, persona_key=persona_key)
+        if paused_home:
+            for key in ("pending_event", "event_journal"):
+                notes[key] = paused_home_event_context(notes[key])
         return notes
 
     async def _recent_search_line(self, session_id: str) -> str:

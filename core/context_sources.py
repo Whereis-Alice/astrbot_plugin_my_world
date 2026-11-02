@@ -9,6 +9,27 @@ from .context_selection import (CONTEXT_GUIDANCE, ContextItem, ContextRequest,
                                 relevance, section_items, select_context)
 
 
+def paused_home_event_context(material: str) -> str:
+    """Keep unfinished home evidence, with its execution paused during a visit."""
+    headings = {
+        "# 我正在经历": "# 家中保留的未完事件",
+        "# 你心里挂着的事": "# 家中挂着的未完事件",
+        "# 手头没完的事": "# 家中没完的事",
+        "# 有件事我心里还挂着": "# 家中尚未解决的事件",
+    }
+    lines = []
+    changed = False
+    for line in material.splitlines():
+        heading = next((key for key in headings if line.startswith(key)), None)
+        if heading:
+            changed = True
+            lines.append(headings[heading] + line[len(heading):] + "（串门期间暂停）")
+            lines.append("这是家中保留的未完事件；游玩期间没有在家继续执行，也未确认完成，归家后再接续。")
+        else:
+            lines.append(line)
+    return "\n".join(lines) if changed else material
+
+
 def life_items(state: Any, request: ContextRequest) -> list[ContextItem]:
     from .life_matters import (CLOSED, ON_HOLD, current_bookmark, current_stage_notes, pending_review_bookmarks,
                               execution_state, progress_label, stable_interests, stage_record_text, visible)
@@ -275,6 +296,8 @@ def runtime_context(prompts: Any, state: Any, node: Any, request: ContextRequest
         material = values.get(name, "")
         if visit_presence and name == "weather" and material:
             material = "# 自己世界的天气（来自家中，不代表友邻场景）\n" + material
+        if visit_presence and name in {"pending_event", "event_journal"} and material:
+            material = paused_home_event_context(material)
         candidates += section_items(material, key=name, kind=kind,
             continuing=name == "pending_event", required=(planning and name == "abilities_line")
             or name in {"weather", "recent_search"})

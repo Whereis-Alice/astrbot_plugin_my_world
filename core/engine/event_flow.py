@@ -246,6 +246,8 @@ class EventFlowMixin:
         不能顺手把别的到点线索也演了。
         """
 
+        if self._home_event_visit_pause_reason(state):
+            return False
         config = self.world.events
         for thread in open_threads(self._event_threads(state)):
             if thread_id and str(thread.get("id") or "") != thread_id:
@@ -508,6 +510,8 @@ class EventFlowMixin:
     ) -> None:
         """等待中的求助：活跃 →（轻提醒）轻等待 →（超时）自己收尾。"""
 
+        if self._home_event_visit_pause_reason(state):
+            return
         info = dict(self._pending_event_help(state))
         stage = str(info.get("state") or "")
         if stage not in ("active", "idle"):
@@ -616,6 +620,10 @@ class EventFlowMixin:
         if self.llm is None:
             return None
         async with self.session_state(ctx.session_id) as state:
+            if self._home_event_visit_pause_reason(state):
+                # Her saved home event waits while she is with her friend.
+                # Keep the human's message for the ordinary current-scene reply.
+                return None
             info = self._pending_event_help(state)
             if str(info.get("state") or "") not in ("active", "idle"):
                 return None

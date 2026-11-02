@@ -162,6 +162,7 @@ class CommandsMixin:
         note = ""
         async with self.session_state(session_id) as state:
             now = self._event_time()
+            paused = self._home_event_visit_pause_reason(state)
             thread = self._thread_by_id(state, thread_id) if thread_id else self._active_thread(state)
             if thread is None:
                 note = "她现在没有没完的事"
@@ -169,6 +170,8 @@ class CommandsMixin:
                 note = "这件事属于另一份人设，切回原人设后再推进"
             elif str(thread.get("status") or "open") != "open":
                 note = "这件事已经完结了"
+            elif paused:
+                note = paused
             elif self._thread_waiting_help(state, thread):
                 note = "这件事她在等群友拿主意，先别替她往下演"
             elif not str(thread.get("pending_followup") or "").strip():

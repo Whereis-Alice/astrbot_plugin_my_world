@@ -17,6 +17,7 @@ from ..json_actions import (
 )
 from ..models import (
     ActionDef,
+    ChainStep,
     NodeDef,
     pronoun_for as pronounce_for,
 )
@@ -1078,26 +1079,15 @@ class ActionsRunMixin:
     ) -> str:
         """执行日程动作链：瞬时动作立即执行；持续动作启动后，剩余步骤转为计划。"""
 
+        def schedule_action(step: Any) -> PlannedAction:
+            payload = {name: getattr(step, name) for name in ChainStep.model_fields if hasattr(step, name)}
+            payload["action"] = payload.pop("type", "")
+            return self._step_to_action(payload)
+
         skipped = 0
         completed = 0
         for index, step in enumerate(chain or []):
-            action = PlannedAction(
-                type=str(getattr(step, "type", "") or ""),
-                messages=list(getattr(step, "messages", []) or []),
-                target=str(getattr(step, "target", "") or ""),
-                target_node=str(getattr(step, "target_node", "") or ""),
-                content=str(getattr(step, "content", "") or ""),
-                # 这一步"想干什么"必须带过去：工具型动作的参数就是照它补的，
-                # 丢了它就只能拿动作说明兜底（以前日程里写的意图等于白写）
-                intent=str(getattr(step, "intent", "") or ""),
-                params=dict(getattr(step, "params", {}) or {}),
-                duration=int(getattr(step, "duration", 0) or 0),
-                queries=[
-                    str(item) for item in (getattr(step, "queries", []) or []) if str(item)
-                ],
-                search_depth=str(getattr(step, "search_depth", "") or ""),
-                read_pages=_to_int_or_default(getattr(step, "read_pages", None), -1),
-            )
+            action = schedule_action(step)
             definition = self.world.action_map().get(action.type)
             if definition is None:
                 outcome.notes.append(f"日程里的动作 {action.type} 不存在，已跳过")
@@ -1166,19 +1156,7 @@ class ActionsRunMixin:
                 ):
                     # 临睡期也算"手上这件事没做完"：日程后面那几步要等她睡下再继续，
                     # 不能因为还没真躺下就把它们丢掉。
-                    remaining = [
-                        {
-                            "action": str(getattr(item, "type", "") or ""),
-                            "target_node": str(getattr(item, "target_node", "") or ""),
-                            "target": str(getattr(item, "target", "") or ""),
-                            "duration": int(getattr(item, "duration", 0) or 0),
-                            "content": str(getattr(item, "content", "") or ""),
-                            "intent": str(getattr(item, "intent", "") or ""),
-                            "messages": list(getattr(item, "messages", []) or []),
-                            "params": dict(getattr(item, "params", {}) or {}),
-                        }
-                        for item in rest
-                    ]
+                    remaining = [schedule_action(item).to_dict() for item in rest]
                     state.current_plan = create_plan(
                         steps=remaining,
                         world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds,

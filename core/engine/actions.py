@@ -129,6 +129,8 @@ class ActionsMixin:
         seconds = max(low * 60, min(high * 60, seconds))
         ticks = max(1, math.ceil(seconds / max(1, self.tick_seconds)))
         state.idle_activity = {"id": definition.id, "node_id": state.node_id,
+                               "action_name": definition.name or definition.id,
+                               "action_description": definition.description,
                                "persona_key": self._matter_persona_key(state) or "",
                                "start_tick": state.world_time, "until_tick": state.world_time + ticks}
 
@@ -738,7 +740,10 @@ class ActionsMixin:
                     outcome.notes.append(f"无法走到睡眠地点 {target}，这一步不睡")
                     await self._log_event(state, "skip", {"action": definition.id, "note": outcome.notes[-1]}, outcome=outcome)
                     continue
-            if not definition.available_in(state.node_id) and not (definition.id == "sleep" and self.world.sleep_node_id() == state.node_id):
+            satisfied_walk = definition.id == "walk_to" and self._already_at_walk_target(
+                state, action.target_node or action.target)
+            if (not definition.available_in(state.node_id) and not satisfied_walk
+                    and not (definition.id == "sleep" and self.world.sleep_node_id() == state.node_id)):
                 # A2 兜底：她想去别处做这件事，自己又没写移动 —— 插件带她过去
                 target = (
                     self._nearest_node_with_action(state.node_id, definition)

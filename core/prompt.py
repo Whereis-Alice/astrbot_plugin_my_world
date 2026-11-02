@@ -1331,11 +1331,12 @@ class PromptBuilder:
             what = action.get("desc") or self.action_label(action.get("type"))
             lines.append(f"- 正在做（还没做完）：{what}（还要约 {left} tick）")
         else:
-            from .life import idle_definition
+            from .life import activity_view, idle_definition
 
             idle = idle_definition(state, self.world)
             if idle:
-                lines.append(f"- 空闲时的小事：{idle.name or idle.id}。{idle.description}")
+                activity = activity_view(state, self.world)
+                lines.append(f"- 空闲时的小事：{activity['label']}。{activity['detail']}")
         plan = state.current_plan or {}
         if plan.get("persona_key") and persona_key is not None and plan["persona_key"] != persona_key:
             plan = {}

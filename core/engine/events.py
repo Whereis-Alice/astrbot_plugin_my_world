@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ..model_calls import model_operation
+from ..visit_presence import active_visit
 
 from datetime import (
     datetime,
@@ -308,6 +309,15 @@ class EventsMixin:
         state.day_mood_day = day
         return True
 
+    def _home_event_visit_pause_reason(self, state: WorldState) -> str:
+        """Only the locked current character's confirmed visit pauses her home event."""
+        visit = active_visit(self, state.session_id)
+        persona_key = self._matter_persona_key(state)
+        if (visit and visit.get("arrived_at") and visit.get("scope") == state.session_id
+                and persona_key and visit.get("local", {}).get("persona_key") == persona_key):
+            return "正在与友邻相处，家中事件暂停，等归家后再接续"
+        return ""
+
     def _event_block_reason(
         self, state: WorldState, now: float, *, manual: bool = False
     ) -> str:
@@ -320,6 +330,9 @@ class EventsMixin:
         config = self.world.events
         if not bool(getattr(config, "enabled", True)):
             return "事件系统在全局设置里关着"
+        paused = self._home_event_visit_pause_reason(state)
+        if paused:
+            return paused
         if self._is_asleep(state) and not bool(getattr(config, "in_sleep", False)):
             return "她正在睡觉（想要梦里的剧情可以打开「睡觉时也出事」）"
         if state.state == STATE_WALKING:
@@ -860,6 +873,10 @@ class EventsMixin:
     ) -> None:
         """开一件新事（或者给已有线索接上一步）。"""
 
+        paused = self._home_event_visit_pause_reason(state)
+        if paused:
+            outcome.notes.append(paused)
+            return
         config = self.world.events
         package: EventPackage | None = None
         # 同一时间只允许一件事：有没完的就别开新的（续线走上一条）
@@ -1030,6 +1047,10 @@ class EventsMixin:
     ) -> None:
         """一步事件：她抉择 →（求助 or 判定）→ 结算。"""
 
+        paused = self._home_event_visit_pause_reason(state)
+        if paused:
+            outcome.notes.append(paused)
+            return
         if not (self._is_asleep(state) and self.world.events.in_sleep):
             admission = self.admit_life(state, "event", critical=self._thread_critical(thread))
             if not admission["allow"]:

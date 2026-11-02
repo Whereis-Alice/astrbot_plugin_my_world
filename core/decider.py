@@ -600,6 +600,8 @@ class Decider:
                 target = str(step.get("target_node") or "")
                 if target not in self.world.node_map() or find_path(self.world.adjacent(), position, target) is None:
                     return False
+                if target != position and not action.available_in(position):
+                    return False
                 position = target
             elif not action.available_in(position):
                 return False

@@ -430,7 +430,7 @@ class CuddleMixin:
         from ..pathfinding import travel_cost
 
         walking = self.world.action_map().get("walk_to")
-        if (walking is None or not walking.enabled or not self._action_usable_now(walking)
+        if (walking is None or not walking.available_in(state.node_id) or not self._action_usable_now(walking)
                 or not self._check_preconditions(state, walking)[0]
                 or self.action_quota_left(state, walking) <= 0):
             return ""

@@ -19,6 +19,7 @@ from ..json_actions import (
 )
 from ..models import (
     ActionDef,
+    ChainStep,
     NodeDef,
 )
 from ..state import WorldState
@@ -340,11 +341,15 @@ class ScheduleActionsMixin:
             if action_id in self.SCHEDULE_ACTION_IDS:
                 # 日程里再去排日程是个死循环，只会到点报错
                 return False, "日程里不能再排日程，换个到点要做的动作"
-            item: dict[str, Any] = {"type": action_id}
-            for key in ("target_node", "target", "content", "duration", "messages", "params"):
-                if step.get(key):
-                    item[key] = step[key]
-            chain.append(item)
+            # Keep the declared step contract, including explicit zero-page
+            # searches, without carrying model-supplied internal fields.
+            fields = {key: step[key] for key in ChainStep.model_fields if key != "type"
+                      and (step.get(key) or key == "read_pages" and step.get(key) == 0)}
+            try:
+                item = ChainStep(type=action_id, **fields)
+            except ValueError:
+                return False, f"动作「{action_id}」的参数格式不正确，这条日程没加成"
+            chain.append(item.model_dump(mode="json", exclude_defaults=True))
         matter_id = str(payload.get("matter_id") or "")
         if matter_id:
             from .. import life_matters as matters

@@ -100,11 +100,13 @@ def activity_view(state: WorldState, world: WorldConfig) -> dict[str, Any]:
         return {"kind": "rest", "label": "睡觉" if state.state == "sleeping" else "小睡"}
     idle = idle_definition(state, world)
     if idle:
+        activity = state.idle_activity
+        description = activity.get("action_description")
         return {
             "kind": "idle",
-            "label": idle.name or idle.id,
+            "label": str(activity.get("action_name") or idle.name or idle.id),
             "id": idle.id,
-            "detail": idle.description,
+            "detail": description if isinstance(description, str) else idle.description,
             "until_tick": state.idle_activity.get("until_tick"),
         }
     if state.state != "idle":
