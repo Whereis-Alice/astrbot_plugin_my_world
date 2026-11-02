@@ -214,7 +214,8 @@ class VisitActorPort:
         Plans, appointments and externally directed work keep their existing gates;
         this predicate never clears work or claims that it has been completed.
         """
-        return bool(definition and definition.enabled and definition.available_in(state.node_id)
+        return bool(state.current_plan is None and definition and definition.enabled
+                    and definition.available_in(state.node_id)
                     and definition.category == "continuous" and definition.llm_level == "template"
                     and definition.target_type == "none" and not definition.tool_list()
                     and not definition.trigger_command and not sleep_action_kind(definition)

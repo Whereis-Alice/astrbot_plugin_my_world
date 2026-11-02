@@ -167,7 +167,7 @@ class VisitReadinessReviewTests(unittest.IsolatedAsyncioTestCase):
         state = await self.advance_home()
         self.assertTrue(state.current_plan)
         self.assertEqual(state.current_action["elapsed_ticks"], 1)
-        await self.assert_automatic_blocked("原先的安排")
+        await self.assert_automatic_blocked("手头的活动")
 
     async def test_uninterruptible_reading_still_blocks_a_call(self):
         await self.connect()
