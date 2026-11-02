@@ -1066,6 +1066,8 @@ class ScheduleMixin:
         delaying other lives. A completed or already retired clock proceeds to
         bounded FIFO acquisition of the state lock, including short handoffs.
         """
+        if not self.is_busy(session_id):
+            return self.is_enabled(session_id)  # Lock-free clock inference does not block appointments.
         import asyncio
         key = self.state_key(session_id)
         signature = self._schedule_signature

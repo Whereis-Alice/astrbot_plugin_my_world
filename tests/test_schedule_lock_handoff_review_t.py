@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from core.engine.life_inference import LifeWorkDiscarded
 from core.engine.state_store import StateLockBusy
+from core.ports import LLMReply
 from tests import test_engine as fixture
 
 S, OTHER = fixture.SESSION, fixture.OTHER_SESSION
@@ -233,3 +234,52 @@ class ScheduleLockHandoffTests(unittest.IsolatedAsyncioTestCase):
                     self.fail("Discarded lock guard cannot enter state preparation")
         self.assertEqual(load.await_count, 0)
         self.assertFalse(self.engine.is_busy(S))
+
+    async def test_pending_arrival_inference_allows_due_schedule_and_discards_old_result(self):
+        await self.prepare()
+        self.engine.queue_background = lambda *args, **kwargs: None
+        self.engine._maybe_run_event = AsyncMock()
+        self.engine._sync_nickname = AsyncMock()
+        async with self.engine.session_state(S) as state:
+            state.pending_arrival = True
+            state.current_action = state.current_plan = None
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def slow_provider(**kwargs):
+            self.llm.calls.append({"session_id": kwargs["session_id"]})
+            entered.set()
+            await release.wait()
+            return LLMReply(text='{"plan":[{"action":"sleep","duration":600}],'
+                                 '"reason":"抵达时旧的休息打算"}', ok=True)
+
+        self.llm.generate = slow_provider
+        # Start the production clock worker and observe actual provider entry
+        # before testing ticks whose schedule scans begin with the lease free.
+        clock = asyncio.create_task(self.engine._tick_session(S), name="my_world:life_clock:" + S)
+        self.engine._life_clock_jobs = {self.engine.state_key(S): clock}
+        try:
+            await asyncio.wait_for(entered.wait(), 1)
+            for minute in range(4):
+                if minute:
+                    self.clock.advance(60)
+                await self.engine.tick()
+                await asyncio.wait_for(entered.wait(), 1)
+                clock = self.engine._life_clock_jobs[self.engine.state_key(S)]
+                self.assertFalse(self.engine.is_busy(S), "Provider inference released the real state lease")
+                await asyncio.wait_for(self.engine._schedule_delivery_job, 1)
+                self.assertFalse(clock.done())
+                self.assertFalse(clock.cancelled())
+                state = await self.engine.load_state(S, cold_start=False)
+                self.assertEqual(state.schedule_cursor, self.clock.now())
+                self.assertEqual(state.current_action["type"], "read")
+        finally:
+            release.set()
+            await asyncio.wait_for(asyncio.gather(clock, return_exceptions=True), 2)
+        self.assertIsNone(clock.result(), "The old arrival decision must be discarded after the new appointment")
+        saved = await self.engine.load_state(S, cold_start=False)
+        self.assertEqual(saved.current_action["type"], "read")
+        self.assertNotEqual((saved.current_plan or {}).get("reason"), "抵达时旧的休息打算")
+        events = await self.db.call("query_events", session_id=S, event_type="schedule")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(self.llm.calls, [{"session_id": S}])
+        self.assertEqual(self.messenger.sent, [])
