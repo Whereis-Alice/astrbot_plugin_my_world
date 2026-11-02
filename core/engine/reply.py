@@ -718,14 +718,16 @@ class ReplyMixin:
             async with self.session_state(ctx.session_id) as state:
                 node = self.node(state.node_id) or self.node(self.default_node_id())
                 # 「刚被叫醒」之类的临时提示：接管模式也要带上，否则她会以完全清醒的状态回话
-                wake_note = wake_note_kept or self._take_wake_note(state)
-                wake_note_kept = wake_note
+                home_sleep_paused = await self._home_sleep_paused_by_visit(state, ctx.session_id)
+                wake_note = "" if home_sleep_paused else wake_note_kept or self._take_wake_note(state)
+                if not home_sleep_paused:
+                    wake_note_kept = wake_note
                 extra_notes = [
                     note
                     for note in [
                         *incoming_notes,
                         wake_note,
-                        *self.sleep_notes(state),
+                        *(self.sleep_notes(state) if not home_sleep_paused else []),
                     ]
                     if note
                 ]
@@ -1287,12 +1289,13 @@ class ReplyMixin:
         )
 
     def _record_user_message(
-        self, state: WorldState, ctx: MessageContext
+        self, state: WorldState, ctx: MessageContext, *, home_sleep_paused: bool = False
     ) -> tuple[list[str], bool]:
         """记录一条用户消息带来的全部影响，返回要给提示词的额外说明。
 
         接管回复和自主行为共用这一段，保证两条路径的状态演化完全一致。
         第二个返回值表示这次是不是把她叫醒了（调用方负责写一条事件日志）。
+        ``home_sleep_paused`` 由当前串门与角色归属核对，家中保留的睡眠不是此刻在睡。
         """
 
         now = self._now()
@@ -1360,24 +1363,25 @@ class ReplyMixin:
         notes: list[str] = []
         woke = False
         # 睡眠中被明确叫醒 -> 打断睡眠
-        if (self._is_asleep(state) or state.state == STATE_DROWSY) and self._wake_hit(ctx):
+        if not home_sleep_paused and (self._is_asleep(state) or state.state == STATE_DROWSY) and self._wake_hit(ctx):
             self._wake_up_state(state, ctx)
             if state.wake_note:
                 notes.append(state.wake_note)
             woke = True
         # 「等会儿再睡」：说话算数——她说好了再待一会儿，就真的把这轮睡眠往后推。
         # 放在 sleep_notes 之前：这一轮给她的说明就该是"别催他"那版。
-        delay_word = self._sleep_delay_hit(ctx, state)
+        delay_word = "" if home_sleep_paused else self._sleep_delay_hit(ctx, state)
         if delay_word:
             self.delay_sleep(
                 state,
                 reason=f"他说「{delay_word}」",
                 by=str(ctx.user_name or ctx.user_id or ""),
             )
-        if not state.is_sleeping:
+        if home_sleep_paused or not state.is_sleeping:
             # 有人跟她说话本身就压一点困意：聊起来了就不会一下就困死过去
             self.relieve_sleep_pressure(state)
-        notes.extend(self.sleep_notes(state))
+        if not home_sleep_paused:
+            notes.extend(self.sleep_notes(state))
         if not state.cold_start_done:
             notes.append(
                 "你刚从沉睡中苏醒，还有点迷糊。说话可以简短、带点困意。"

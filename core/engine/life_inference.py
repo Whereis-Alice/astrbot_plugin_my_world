@@ -64,6 +64,9 @@ def decision_state(payload: dict) -> dict:
     if result.get("current_action"):
         for name in ACTION_TIME_FIELDS:
             result["current_action"].pop(name, None)
+    if result.get("idle_activity"):
+        for name in IDLE_TIME_FIELDS:
+            result["idle_activity"].pop(name, None)
     # Rule-only numerical evolution can continue; crossing meaningful boundaries
     # invalidates the decision rather than applying an old plan to an exhausted life.
     result["energy_band"] = int(float(payload.get("energy", .5)) * 5)
@@ -72,7 +75,8 @@ def decision_state(payload: dict) -> dict:
     return result
 
 
-ACTION_TIME_FIELDS = ("elapsed_ticks", "effects_settled_minutes")
+ACTION_TIME_FIELDS = ("elapsed_ticks", "effects_settled_minutes", "progress_at", "progress_ticks")
+IDLE_TIME_FIELDS = ("progress_at", "progress_ticks")
 
 
 def owned_life_lease() -> dict | None:
@@ -160,6 +164,12 @@ async def released_life_lock(engine):
                         state.current_action[name] = copy.deepcopy(latest.current_action[name])
                     else:
                         state.current_action.pop(name, None)
+            if state.idle_activity and latest.idle_activity:
+                for name in IDLE_TIME_FIELDS:
+                    if name in latest.idle_activity:
+                        state.idle_activity[name] = copy.deepcopy(latest.idle_activity[name])
+                    else:
+                        state.idle_activity.pop(name, None)
             lease["save"] = True
         # Even cancellation while another writer owns the lock must rejoin before
         # session_state saves and releases it. Shield only this short commit phase.

@@ -898,7 +898,8 @@ class SleepMixin:
                 state.node_id = self.default_node_id()
                 node = self.node(state.node_id)
 
-            extra_notes, woke = self._record_user_message(state, ctx)
+            home_sleep_paused = await self._home_sleep_paused_by_visit(state, ctx.session_id)
+            extra_notes, woke = self._record_user_message(state, ctx, home_sleep_paused=home_sleep_paused)
             if extra_notes:
                 # 「刚被叫醒 / 冷启动」这类临时提示要等真正组装提示词时才写得进去
                 # （接管路径在 handle_reply 里组装）：先按会话存着，取走即失效。

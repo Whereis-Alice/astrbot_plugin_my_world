@@ -443,10 +443,10 @@ class BackgroundMixin:
         paused = sum(last - first for first, last in pauses)
         home = max(0, elapsed - paused)
         gap, old_tick = min(elapsed, 24 * 3600), state.world_time
-        if elapsed > self.tick_seconds * 2.5:
-            state.world_time += max(0, int(gap / self.tick_seconds) - 1)
         self._settle_idle_practice(state, at=previous)
         state.idle_activity = {}
+        if elapsed > self.tick_seconds * 2.5:
+            state.world_time += max(0, int(gap / self.tick_seconds) - 1)
         current = state.current_action or {}
         segments = self._visit_segments(previous, now, pauses)
         definition = self.world.action_map().get(str(current.get("type") or ""))

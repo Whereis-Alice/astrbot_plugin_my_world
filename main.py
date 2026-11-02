@@ -758,6 +758,9 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
             if not self.engine.is_enabled(session_id):
                 return None
             state = await self.engine.load_state(session_id, cold_start=False)
+            with self.engine.config_scope(session_id):
+                home_sleep_paused = await self.engine._home_sleep_paused_by_visit(state, session_id)
+                sleeping = self.engine.is_asleep(state) and not home_sleep_paused
         except Exception:
             return None
         return {
@@ -776,7 +779,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
             "state": state.state,
             "style_cell": state.last_style_cell,
             # 睡着时联动方最好直接不判断（意图路由会拿它当硬门）
-            "sleeping": bool(self.engine.is_asleep(state)),
+            "sleeping": bool(sleeping),
             "node_id": state.node_id,
             "world_time": state.world_time,
             "interject_enabled": bool(self.engine.world.decider.enabled),

@@ -55,6 +55,23 @@ class ActionsMixin:
         self.dynamics.apply_pulse(state, {key: value * config.life_relief_strength
                                         for key, value in effects.items()}, now=self._now())
 
+    def _capture_idle_progress(self, state: WorldState, previous_tick: int) -> None:
+        """Timestamp only this online beat's progress; finished quiet work stays frozen."""
+        from ..life import safe_idle_action
+
+        activity = state.idle_activity or {}
+        definition = self.world.action_map().get(str(activity.get("id") or ""))
+        if (not self.world.idle_life.enabled or state.current_action or state.state != "idle"
+                or not definition or not safe_idle_action(definition)
+                or not definition.available_in(state.node_id) or activity.get("node_id") != state.node_id
+                or not self._running_life_belongs(state, activity)):
+            return
+        start, until = int(activity.get("start_tick") or 0), int(activity.get("until_tick") or 0)
+        before = max(0, min(previous_tick, until) - start)
+        elapsed = max(0, min(state.world_time, until) - start)
+        if elapsed > before:
+            activity.update(progress_at=self._now(), progress_ticks=elapsed)
+
     def _settle_idle_practice(self, state: WorldState, *, at: float | None = None) -> None:
         """Keep only the online part of quiet life before replacing or clearing it."""
         from ..life import safe_idle_action

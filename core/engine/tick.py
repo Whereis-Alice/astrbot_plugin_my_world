@@ -154,6 +154,15 @@ class TickMixin:
             if summary.get(flag):
                 self.queue_background(key + self.state_key(sid), work)
 
+    def _advance_online_action(self, action: dict[str, Any]) -> None:
+        """Retain the actual last online tick without advancing finished work again."""
+        elapsed = max(0, int(action.get("elapsed_ticks") or 0))
+        duration = max(0, int(action.get("duration_ticks", 1) or 0))
+        advanced = min(duration, elapsed + 1)
+        action["elapsed_ticks"] = advanced
+        if advanced > elapsed:
+            action.update(progress_at=self._now(), progress_ticks=advanced)
+
     @session_scoped
     async def _tick_while_thinking(self, session_id: str) -> TickOutcome | None:
         """Only the basic clock and online action time advance during slow inference."""
@@ -162,17 +171,19 @@ class TickMixin:
         async with self.session_state(session_id) as state:
             await self._validate_running_life(state)
             elapsed = self.reconcile_life_time(state, stay_up_costs=False)
+            previous_tick = state.world_time
             state.world_time += 1
             visit = active_visit(self, session_id)
             if visit:
                 await self._tick_visit_presence(state, elapsed, visit, stay_up_costs=False)
                 return TickOutcome(session_id=session_id, notes=[presence_text(visit)],
                                    summary={"world_time": state.world_time, "visiting": True})
+            self._capture_idle_progress(state, previous_tick)
             if self._home_completion_pending(state.current_action):
                 await self._tick_continuous(state, self.node(state.node_id), TickOutcome(session_id=session_id))
             action = state.current_action
             if action and not action.pop("offline_tick_settled", False) and not self._home_completion_pending(action):
-                action["elapsed_ticks"] = min(int(action.get("duration_ticks", 1)), int(action.get("elapsed_ticks", 0)) + 1)
+                self._advance_online_action(action)
             self._settle_elapsed_needs(state, node=self.node(state.node_id), elapsed_seconds=elapsed,
                                        now=self._now(), stay_up_costs=False)
             if action:
@@ -194,6 +205,7 @@ class TickMixin:
             echo_marker = await self._event_marker(state)
             node = self.node(state.node_id) or self.node(self.default_node_id())
             elapsed_life = self.reconcile_life_time(state)
+            previous_tick = state.world_time
             state.world_time += 1
             visit = active_visit(self, session_id)
             if visit:
@@ -202,6 +214,7 @@ class TickMixin:
                 outcome.summary = {"world_time": state.world_time, "visiting": True,
                                    "node_id": state.node_id, "node_name": presence_text(visit)}
                 return outcome
+            self._capture_idle_progress(state, previous_tick)
             if not self.world.is_home_zone(state.node_id):
                 # 人就在外面：一直记着"最近出过门"，回家以后那句提醒才准
                 state.last_outdoor_at = self._now()
@@ -420,7 +433,7 @@ class TickMixin:
             return
         definition = self.world.action_map().get(str(action.get("type") or ""))
         if not action.pop("offline_tick_settled", False) and not self._home_completion_pending(action):
-            action["elapsed_ticks"] = int(action.get("elapsed_ticks", 0)) + 1
+            self._advance_online_action(action)
         self.settle_recovery_progress(state, action)
         from ..recovery import restores_energy
         if (self.world.sleep.mode == "activity" and definition and definition.duration_mode == "llm"
@@ -546,6 +559,9 @@ class TickMixin:
             if target_node and target_node in self.world.node_map():
                 # 离开这个地点之前，把刚才在那儿聊的那段总结成一条记忆
                 state.node_id = target_node
+                # Completion can itself generate the next activity before the
+                # outer beat resumes. Its context already belongs to this place.
+                node = self.node(state.node_id)
                 # 换地方了：事件系统按"在这里待了多久"决定要不要出事，重新计时
                 state.node_since = self._now()
                 if not self.world.is_home_zone(target_node):

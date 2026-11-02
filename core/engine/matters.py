@@ -13,7 +13,7 @@ from .. import life_matters as matters
 from ..activity_time import life_time_context, matter_start_at
 from ..config_scope import session_scoped
 from ..json_actions import extract_json_object
-from ..life import life_role
+from ..life import action_progress_time, life_role
 from ..life_policy import choose_life
 from ..models import LIFE_SIMULATION_ACTION
 from ..model_calls import model_context
@@ -233,10 +233,11 @@ class MattersMixin:
             return 0
         elapsed = max(0, int(action.get("elapsed_ticks") or 0))
         accounted = max(0, int(action.get("matter_accounted_ticks") or 0))
+        end = action_progress_time(action, self._now() if at is None else at)
         total = 0.0
         # Usually one tick; legacy running saves may contain several unsettled ticks.
         for tick in range(accounted + 1, elapsed + 1):
-            day = self._today_key((self._now() if at is None else at) - (elapsed - tick + .5) * self.tick_seconds)
+            day = self._today_key(end - (elapsed - tick + .5) * self.tick_seconds)
             if item.get("work_day") != day:
                 item.update(work_day=day, worked_minutes=0, plan_attempts=0)
             minutes = min(self.tick_seconds / 60,
@@ -249,7 +250,7 @@ class MattersMixin:
             total += minutes
         action["matter_accounted_ticks"] = elapsed
         if total:
-            matters.capture_bookmark(item, step, now=self._now() if at is None else at)
+            matters.capture_bookmark(item, step, now=end)
             matters.sync(state)
         return total
 
@@ -328,6 +329,9 @@ class MattersMixin:
                 raise ValueError("事项内容不能为空")
             changed_goal = "text" in changes and str(changes["text"]).strip() != item["text"]
             if changed_goal:
+                # The last online effort still belongs to the old goal. Settle
+                # its bookmark/history before replacing the goal's wording.
+                self._stop_matter_work(state, matter_id)
                 for row in [*item.get("stage_notes", []), *item.get("steps", [])]:
                     row.setdefault("goal", item["text"])
             for key in ("text", "motivation", "next_step"):
@@ -753,9 +757,12 @@ class MattersMixin:
                 or definition.tool_list() or definition.trigger_command or definition.on_complete.trigger not in {"none", "llm_followup"}
                 or elapsed <= accounted or elapsed * self.tick_seconds < 60):
             return
-        end = float(self._now() if at is None else at)
+        end = action_progress_time(action, self._now() if at is None else at)
         start = end - (elapsed - accounted) * self.tick_seconds
-        interest = state.life_interests.setdefault(definition.id, {"label": definition.name, "sessions": 0, "minutes": 0, "days": []})
+        # The index describes the latest actual execution; historical episodes
+        # keep their own labels even when the configured action is renamed.
+        label = str(action.get("action_name") or definition.name or definition.id)
+        interest = state.life_interests.setdefault(definition.id, {"label": label, "sessions": 0, "minutes": 0, "days": []})
         owner = matters.practice_owner(interest, str(action.get("persona_key") or self._matter_persona_key(state) or ""))
         records = (interest, owner)
         if not action.get("practice_id"):
@@ -763,7 +770,7 @@ class MattersMixin:
             for record in records:
                 record["sessions"] = int(record.get("sessions", 0)) + 1
         for record in records:
-            record.update(label=definition.name, minutes=float(record.get("minutes", 0)) + (end - start) / 60, last_at=end)
+            record.update(label=label, minutes=float(record.get("minutes", 0)) + (end - start) / 60, last_at=end)
         node_id = str(action.get("node_id") or state.node_id)
         while start < end:
             local = self.local_at(start)
@@ -778,7 +785,7 @@ class MattersMixin:
                                 and row.get("day") == day and row.get("period") == period and row.get("node") == node_id), None)
                 if episode is None:
                     episode = {"practice_id": action["practice_id"], "day": day, "period": period,
-                               "node": node_id, "action": definition.id, "label": definition.name or definition.id, "minutes": 0}
+                               "node": node_id, "action": definition.id, "label": label, "minutes": 0}
                     episodes.append(episode)
                 episode.update(at=stop, minutes=episode["minutes"] + (stop - start) / 60)
                 record["days"] = sorted(set(record.get("days", [])) | {day})[-30:]

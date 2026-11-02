@@ -2,10 +2,24 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from .models import ActionDef, WorldConfig
 from .state import WorldState
+
+
+def action_progress_time(action: dict[str, Any], observed_at: float) -> float:
+    """Use the last online tick's time only while it proves this exact progress."""
+    try:
+        stamp = float(action.get("progress_at") or 0)
+        ticks = int(action.get("progress_ticks", -1))
+        elapsed = int(action.get("elapsed_ticks") or 0)
+    except (TypeError, ValueError, OverflowError):
+        return observed_at
+    if elapsed > 0 and ticks == elapsed and math.isfinite(stamp) and 0 < stamp <= observed_at:
+        return stamp
+    return observed_at
 
 
 def life_role(action: ActionDef | None) -> str:
