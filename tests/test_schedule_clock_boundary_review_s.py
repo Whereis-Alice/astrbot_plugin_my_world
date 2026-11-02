@@ -1,4 +1,4 @@
-"""Clock observation cannot cancel life work or turn an unrelated lock into a wait."""
+"""Clock observation cannot cancel life work; state handoffs use a separate bounded wait."""
 
 import asyncio
 import unittest
@@ -26,16 +26,16 @@ class ScheduleClockBoundaryReviewTests(unittest.IsolatedAsyncioTestCase):
         await entered.wait()
         return task, release
 
-    async def test_external_busy_without_clock_returns_immediately(self):
+    async def test_external_busy_without_clock_proceeds_to_bounded_lock_wait(self):
         async with self.engine.session_state(S):
-            self.assertFalse(await asyncio.wait_for(self.engine._schedule_clock_ready(S), .5))
+            self.assertTrue(await asyncio.wait_for(self.engine._schedule_clock_ready(S), .5))
 
-    async def test_completed_clock_does_not_make_an_external_lock_wait(self):
+    async def test_completed_clock_proceeds_to_bounded_lock_wait(self):
         task = asyncio.create_task(asyncio.sleep(0))
         await task
         self.engine._life_clock_jobs = {self.engine.state_key(S): task}
         async with self.engine.session_state(S):
-            self.assertFalse(await asyncio.wait_for(self.engine._schedule_clock_ready(S), .5))
+            self.assertTrue(await asyncio.wait_for(self.engine._schedule_clock_ready(S), .5))
 
     async def test_clock_timeout_observes_without_cancelling_it(self):
         task, release = await self.held_clock()
@@ -91,7 +91,7 @@ class ScheduleClockBoundaryReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(task.exception(), ValueError)
         self.assertFalse(self.engine.is_busy(S))
 
-    async def test_external_lock_taken_after_clock_completion_still_defers(self):
+    async def test_lock_taken_after_clock_completion_proceeds_to_bounded_wait(self):
         task, release_clock = await self.held_clock()
         entered, release_external = asyncio.Event(), asyncio.Event()
 
@@ -107,7 +107,7 @@ class ScheduleClockBoundaryReviewTests(unittest.IsolatedAsyncioTestCase):
         try:
             release_clock.set()
             await entered.wait()
-            self.assertFalse(await asyncio.wait_for(waiter, .5))
+            self.assertTrue(await asyncio.wait_for(waiter, .5))
             self.assertTrue(self.engine.is_busy(S))
         finally:
             release_external.set()

@@ -26,7 +26,8 @@ from ..state import STATE_DROWSY, WorldState
 from ..timeline import render_event
 from .models import TickOutcome
 from .util import _clip_text
-from .life_inference import life_work
+from .life_inference import LifeWorkDiscarded, life_work
+from .state_store import StateLockBusy
 from ..visit_presence import active_visit
 
 
@@ -65,6 +66,7 @@ class ScheduleMixin:
     SCHEDULE_LOOKBACK_SECONDS = 90
     SCHEDULE_MAX_GAP_SECONDS = 600
     SCHEDULE_RECHECK_KEY = "schedule_rechecks:v1"
+    SCHEDULE_LOCK_WAIT_SECONDS = 5.0
 
     max_followup_chars = 800
     """动作结果交给大模型续说前的截断长度（base64 图片地址不能整条塞进提示词）。"""
@@ -182,9 +184,19 @@ class ScheduleMixin:
     async def _schedule_scan_state(self, session_id: str):
         """Keep completed outcomes and the original scan window across a local failure."""
         signature = self._schedule_signature
+        key = self.state_key(session_id)
         generation = getattr(self, "_schedule_reset_generation", None)
         scan = {"checked": False, "cursor": None, "outcomes": []}
-        async with self.session_state(session_id) as state:
+
+        def check_locked():
+            # load_state resolves state_key again. Recheck while holding the
+            # original lock, before a queued old scan can read a regrouped life.
+            if (self._schedule_signature is not signature or self.state_key(session_id) != key
+                    or not self.is_enabled(session_id)):
+                raise LifeWorkDiscarded()
+
+        async with self.session_state(session_id, lock_timeout=self.SCHEDULE_LOCK_WAIT_SECONDS,
+                                      lock_check=check_locked) as state:
             try:
                 yield state, scan
             except Exception as error:
@@ -712,6 +724,9 @@ class ScheduleMixin:
         for session_id, result in zip(sessions, results):
             if isinstance(result, asyncio.CancelledError):
                 raise result
+            if isinstance(result, StateLockBusy):
+                self._log("debug", f"日程等待状态锁超时，保留检查窗口 session={session_id}")
+                continue
             if isinstance(result, Exception):
                 errors.append(result)
                 self._log("warning", f"日程检查暂未完成 session={session_id}：{type(result).__name__}")
@@ -783,7 +798,8 @@ class ScheduleMixin:
     @life_work([])
     async def _run_schedule_scope(self, session_id: str, once_done: set) -> list[TickOutcome]:
         outcomes: list[TickOutcome] = []
-        if self.schedules is None or active_visit(self, session_id):
+        signature, key = self._schedule_signature, self.state_key(session_id)
+        if self.schedules is None or not self.is_enabled(session_id) or active_visit(self, session_id):
             return outcomes
         # 她的一天只过一遍：同一个她（会话组）只检查一次日程
         for session_id in [session_id]:
@@ -791,7 +807,8 @@ class ScheduleMixin:
                 continue  # Each life waits only for its own bounded clock work.
             async with self._schedule_scan_state(session_id) as (state, scan):
                 outcomes = scan["outcomes"]
-                if active_visit(self, session_id):
+                if (self._schedule_signature is not signature or self.state_key(session_id) != key
+                        or not self.is_enabled(session_id) or active_visit(self, session_id)):
                     continue
                 now = self.local_now()
                 seconds = now.timestamp()
@@ -1046,22 +1063,24 @@ class ScheduleMixin:
         The clock and schedule workers start in the same tick. A slow clock
         used to make its schedule skip every time, even after the clock later
         completed. Observe that existing job briefly, without cancelling it or
-        delaying other lives; ordinary externally held locks still defer.
+        delaying other lives. A completed or already retired clock proceeds to
+        bounded FIFO acquisition of the state lock, including short handoffs.
         """
-        if not self.is_busy(session_id):
-            return True
         import asyncio
         key = self.state_key(session_id)
         signature = self._schedule_signature
         task = getattr(self, "_life_clock_jobs", {}).get(key)
-        if task is None or task.done():
-            return False
-        done, _ = await asyncio.wait({task}, timeout=5.0)
+        if task is None:
+            return self.is_enabled(session_id)
+        if task.done():
+            done = {task}
+        else:
+            done, _ = await asyncio.wait({task}, timeout=5.0)
         # No cancellation or manual rescan: the original scan proceeds from its
         # saved cursor. The state lock still serializes clock delivery and scans.
         return (bool(done) and not task.cancelled() and task.exception() is None
                 and self._schedule_signature is signature and self.state_key(session_id) == key
-                and self.is_enabled(session_id) and not self.is_busy(session_id))
+                and self.is_enabled(session_id))
 
     @session_scoped
     @life_work({"ok": False, "reason": "生活或设置已变化，请刷新后重试"})

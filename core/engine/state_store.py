@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from typing import Any
+from typing import Any, Callable
 from ..config_scope import session_scoped
 from ..memory import SCENE
 from ..models import (
@@ -26,6 +26,10 @@ from ..state import (
 from .util import _as_float
 from .life_inference import STATE_LEASE
 from ..visit_presence import presence_epoch
+
+
+class StateLockBusy(TimeoutError):
+    """Only the bounded wait for a world state lock expired."""
 
 
 class StateStoreMixin:
@@ -158,29 +162,54 @@ class StateStoreMixin:
 
     @contextlib.asynccontextmanager
     @session_scoped
-    async def session_state(self, session_id: str):
+    async def session_state(self, session_id: str, *, lock_timeout: float | None = None,
+                            lock_check: Callable[[], None] | None = None):
         """加锁 -> 加载 -> 交给调用方修改 -> 保存 -> 解锁。
 
         分过组的会话共用同一份状态（存在组代表会话名下）：几个群 / 私聊里的
         都是同一个她，位置、数值、计划、事件只有一份。
+        可选超时仅限制获取锁；同步校验在持有原锁后、读取状态前及准备完成后运行。
         """
 
         key = self.state_key(session_id)
-        async with self.lock(key):
+        lock = self.lock(key)
+        if lock_timeout is None:
+            await lock.acquire()
+        else:
+            try:
+                await asyncio.wait_for(lock.acquire(), timeout=lock_timeout)
+            except TimeoutError as error:
+                raise StateLockBusy(f"等待世界状态锁超时：{key}") from error
+        try:
+            if lock_check is not None:
+                lock_check()
             state = await self.load_state(key)
+            if lock_check is not None:
+                lock_check()
             from ..planner import migrate_plan
             from ..life_matters import ensure
             migrate_plan(state, now=self._now(), tick_seconds=self.tick_seconds)
             ensure(state, self._now())
+            persona = await self._persona_text(session_id)
+            if lock_check is not None:
+                lock_check()
             token = STATE_LEASE.set({"owner": asyncio.current_task(), "state": state,
-                                     "lock": self.lock(key), "origin": session_id, "released": False,
+                                     "lock": lock, "origin": session_id, "released": False,
                                      "world": self.world, "schedules": self.schedules, "sessions": self.sessions,
                                      "day": self.local_now().date(),
                                      "presence_epoch": presence_epoch(self, session_id),
-                                     "persona": await self._persona_text(session_id)})
+                                     "persona": persona})
             try:
                 await self._validate_running_life(state)
                 self._sync_sleep_rhythm_mode(state)
+                if lock_check is not None:
+                    try:
+                        lock_check()
+                    except BaseException:
+                        # Preparation may have awaited a reload. Never save a
+                        # state whose original lock/configuration is no longer valid.
+                        STATE_LEASE.get()["save"] = False
+                        raise
                 yield state
             finally:
                 try:
@@ -188,6 +217,8 @@ class StateStoreMixin:
                         await self.save_state(state)
                 finally:
                     STATE_LEASE.reset(token)
+        finally:
+            lock.release()
 
 
     # ---------------- 数值历史（给编辑器画曲线） ----------------

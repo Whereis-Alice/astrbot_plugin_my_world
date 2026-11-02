@@ -72,8 +72,9 @@ class ScheduleClockFairnessTests(unittest.IsolatedAsyncioTestCase):
             state.state, state.energy = "idle", .9
             state.current_action = state.current_plan = None
         self.clock.advance(60)
-        async with self.engine.session_state(S):
-            rows = await asyncio.wait_for(self.engine.run_schedules(), 2)
+        with patch.object(self.engine, "SCHEDULE_LOCK_WAIT_SECONDS", .05):
+            async with self.engine.session_state(S):
+                rows = await asyncio.wait_for(self.engine.run_schedules(), 2)
         self.assertEqual([row.session_id for row in rows], [other])
         state = await self.engine.load_state(S, cold_start=False)
         self.assertLess(state.schedule_cursor, self.clock.now())
