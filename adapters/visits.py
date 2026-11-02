@@ -331,10 +331,31 @@ class VisitActorPort:
                          or local["actor_id"])
             scene = visit.get("scene") or {}
             visiting = visit.get("status") in {"active", "finishing"} and bool(visit.get("arrived_at"))
+            outing = self._outing_materials(visit.get("outing"))
+            current_place = local["place"]
+            if visiting:
+                if visit.get("outing_version") == 1:
+                    # The host's proposal is still a proposal until both actors
+                    # agree. The confirmed outing is the travel location truth.
+                    confirmed_scene = {key: outing[key] for key in ("place", "activity", "event") if key in outing}
+                    if outing and all(scene.get(key) == outing.get(key) for key in ("place", "activity")):
+                        confirmed_scene["event"] = _text(scene.get("event"), 240)
+                    scene = confirmed_scene
+                    current_place = (_text(outing.get("place"), 80) or
+                        ("已到朋友的世界，见面地点尚未共同确认" if visit.get("role") == "guest" else local["place"]))
+                else:
+                    current_place = _text(scene.get("place"), 80) or local["place"]
             activity = engine.activity_view(state)
 
             def speaker(row):
                 return _speaker(visit, local, row.get("actor_id"))
+
+            requests = visit.get("outing_requests") or {}
+            handled = visit.get("outing_requests_handled") or {}
+            pending_requests = [{"actor_id": _text(actor_id, 160),
+                "speaker": _speaker(visit, local, actor_id), "id": _text(request.get("id"), 100),
+                "text": _text(request.get("text"), 300)} for actor_id, request in requests.items()
+                if isinstance(request, dict) and request.get("id") != handled.get(actor_id)][:2]
 
             # No chat window, private promises, raw thoughts or host tool catalog.
             materials = {"phase": phase, "role": visit.get("role"),
@@ -342,9 +363,10 @@ class VisitActorPort:
                                   "name": local["name"], "world": local["world"]},
                          "scene_stage": _text(visit.get("scene_stage"), 40),
                          "action_plans": visit.get("action_plans") or [],
-                         "outing": self._outing_materials(visit.get("outing")),
+                         "outing": outing,
                          "outing_offer": visit.get("outing_offer") or {},
-                         "outing_request": visit.get("outing_request") or {},
+                         "outing_request": {} if requests else visit.get("outing_request") or {},
+                         "outing_requests": pending_requests,
                          "activity_progress": self._outing_progress(visit.get("outing")),
                          "friend": {key: _text(remote.get(key), 100)
                                     for key in ("id", "name", "world")},
@@ -359,8 +381,7 @@ class VisitActorPort:
                          "previous_visits": past,
                          "recent_personal_activities": [_text(item.get("label"), 100) for item in
                              stable_interests(state, now=engine._now(), persona_key=local["persona_key"])[:4]],
-                         "current_place": (_text(scene.get("place"), 80) or local["place"])
-                                          if visiting else local["place"],
+                         "current_place": current_place,
                          "current_world": (_text(remote.get("world"), 80) or "友邻世界")
                                           if visiting and visit.get("role") == "guest" else local["world"],
                          "home_place": local["place"], "energy": round(state.energy, 2)}
@@ -385,6 +406,8 @@ class VisitActorPort:
                 "由你决定先继续、改约，还是愿意暂时放下；提出邀请本身没有完成或中止家中活动。"
                 "human_arranged表示真人这次主动安排，无自主次数或模型额度限制；"
                 "看home_status自己决定是否方便、先忙完、改约或拒绝，不必按机械接待时段拒绝。"
+                "outing_requests是标注来源的真人新想法，仍需双方各自商量；"
+                "有请求不代表已换地点、已完成活动或取消共同约定的归家。"
                 "相见可以一起去具体地点、游览、游戏、散步、做饭或做一件彼此感兴趣的事。"
                 "host_places只列你世界中可见地点的简短名字及邻接地点，recent_personal_activities是近期兴趣；"
                 "结合朋友的兴趣和当前所在选下一段活动，不必固定坐着聊天。"

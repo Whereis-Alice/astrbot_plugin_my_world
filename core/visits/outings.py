@@ -14,10 +14,19 @@ def outing_enabled(visit: dict) -> bool:
     return type(visit.get("outing_version")) is int and visit["outing_version"] == OUTING_VERSION
 
 
+def pending_outing_requests(visit: dict) -> dict:
+    """A signed human suggestion starts a conversation, never changes the shared plan."""
+    if not outing_enabled(visit) or (visit.get("outing") or {}).get("return_agreed"):
+        return {}
+    handled = visit.get("outing_requests_handled", {})
+    return {actor: request for actor, request in visit.get("outing_requests", {}).items()
+            if handled.get(actor) != request["id"]}
+
+
 def activity_waiting(visit: dict, now: float) -> bool:
     activity = visit.get("outing") or {}
     quiet_until = activity.get("quiet_until", activity.get("until", 0))
-    return bool(outing_enabled(visit) and activity and quiet_until > now)
+    return bool(outing_enabled(visit) and activity and quiet_until > now and not pending_outing_requests(visit))
 
 
 def proposed_activity(decision: dict) -> dict:

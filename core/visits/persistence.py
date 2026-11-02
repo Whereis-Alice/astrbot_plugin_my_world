@@ -173,7 +173,8 @@ class VisitJournal(WorldConnections):
         keys = ("id", "status", "created_at", "arrived_at", "expires_at", "scene", "scene_stage", "log",
                 "host_id", "guest_id", "next_actor", "next_at", "turns", "calls", "max_calls",
                 "turn_limit", "event_stage", "event_after", "end_reason", "ended_at", "intro",
-                "manual", "outing_version", "outing", "outing_offer", "action_plans", "budget_holds")
+                "manual", "outing_version", "outing", "outing_offer", "action_plans", "budget_holds",
+                "outing_requests", "outing_requests_handled", "outing_request_turn")
         result = {key: copy.deepcopy(visit[key]) for key in keys if key in visit}
         if extended_history(visit):
             write_page(result, "log", visit["log"], LOG_PAGE_SIZE)

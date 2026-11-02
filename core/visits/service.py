@@ -12,7 +12,7 @@ from .ports import VisitActorPort, describe_local
 from .flow import VisitFlow
 from .persistence import VisitJournal
 from .protocol import (RESERVED, TERMINAL, code_id, derive_key, digest, envelope,
-                       new_id, public_actor, text, validate_actor, verify)
+                       new_id, public_actor, text, validate_actor, validate_outing_request, verify)
 from .transport import VisitTransport
 from .snapshots import validate_snapshot
 from .model_retry import clear_state_read
@@ -412,7 +412,12 @@ class VisitService(VisitFlow, VisitJournal):
             raise ValueError("旅程调用额度无效")
         candidate = copy.deepcopy(visit)
         if manual_continuation:
+            local_request_pending = (candidate.get("manual_continuation")
+                                     and self._local_id(candidate) in candidate.get("outing_requests", {}))
             self._resume_manual_activity(candidate)
+            if local_request_pending:
+                candidate["manual_continuation"] = True
+        self._accept_outing_request(candidate, peer["id"], payload)
         if op == "step":
             self._receive_step(candidate, peer["id"], payload)
         elif op == "sync":
@@ -424,6 +429,24 @@ class VisitService(VisitFlow, VisitJournal):
         visit.clear()
         visit.update(candidate)
         return {"visit": self._wire(visit)}
+
+    def _accept_outing_request(self, visit, sender, payload):
+        request = payload.get("human_request")
+        if request is None:
+            return
+        if not (visit.get("manual") and visit.get("outing_version") == 1 and visit.get("arrived_at")):
+            raise ValueError("真人游玩请求缺少已到访的人工相处证明")
+        request = validate_outing_request(request, now=self._now())
+        requests = visit.setdefault("outing_requests", {})
+        prior = requests.get(sender)
+        if prior and request["seq"] < prior["seq"]:
+            return  # A delayed signed status cannot replace the sender's newer request.
+        if prior and request["seq"] == prior["seq"]:
+            if prior != request:
+                raise ValueError("已经确认的真人游玩请求不能被改写")
+            return
+        requests[sender] = request
+        visit["next_at"] = self._outing_wait_at(visit)
 
     def _record_remote_budget_hold(self, peer, snapshot):
         """A received checkpoint protects every local life from redundant proposals."""
@@ -481,6 +504,9 @@ class VisitService(VisitFlow, VisitJournal):
                 payload = {**payload, "manual_continuation": True}
                 if isinstance(payload.get("visit"), dict):
                     payload["visit"] = {**payload["visit"], "manual": True}
+            local_request = visit.get("outing_requests", {}).get(self._local_id(visit))
+            if local_request and payload.get("op") != "end":
+                payload = {**payload, "human_request": copy.deepcopy(local_request)}
             payload = {**payload, "id": visit_id, "calls": visit["calls"][self._local_id(visit)]}
             outgoing = visit.get("outbox")
             if not outgoing:
@@ -533,6 +559,13 @@ class VisitService(VisitFlow, VisitJournal):
                 raise ValueError("正在重新确认双方的人工接续，请稍后继续")
             if outgoing["payload"].get("manual_continuation") is True:
                 self._resume_manual_activity(candidate)
+                current_request = visit.get("outing_requests", {}).get(self._local_id(visit))
+                remote_requests = (remote or {}).get("outing_requests")
+                received_request = (remote_requests.get(self._local_id(visit))
+                                    if isinstance(remote_requests, dict) else None)
+                if (visit.get("manual_continuation") and current_request
+                        and received_request != current_request):
+                    candidate["manual_continuation"] = True
             for name in ("max_calls", "turn_limit"):
                 value = (remote or {}).get(name)
                 if value is not None:
@@ -575,6 +608,9 @@ class VisitService(VisitFlow, VisitJournal):
             visit.update(candidate)
             await self._save()
         result["delivered_op"] = outgoing["payload"]["op"]
+        sent_request = outgoing["payload"].get("human_request")
+        received_request = (result.get("visit") or {}).get("outing_requests", {}).get(outgoing["sender"])
+        result["delivered_request"] = sent_request["id"] if sent_request and received_request == sent_request else None
         return result
 
     async def return_home(self, scope: str) -> dict[str, Any]:

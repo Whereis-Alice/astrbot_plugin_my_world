@@ -21,6 +21,32 @@ def new_id() -> str:
     return secrets.token_hex(16)
 
 
+def validate_outing_request(value: Any, *, now: float | None = None) -> dict[str, Any]:
+    """A bounded, ordered human request; the signed sender supplies its actor ID."""
+    if (not isinstance(value, dict) or set(value) != {"id", "text", "at", "seq"}
+            or not isinstance(value["id"], str) or not ID.fullmatch(value["id"])
+            or not isinstance(value["text"], str) or not value["text"].strip() or len(value["text"]) > 300
+            or type(value["seq"]) is not int or value["seq"] < 1
+            or type(value["at"]) not in {int, float} or not math.isfinite(value["at"])
+            or value["at"] < 0 or now is not None and value["at"] > now + 300):
+        raise ValueError("真人游玩请求无效")
+    return dict(value)
+
+
+def validate_outing_request_maps(value: dict, actors: set[str], *, now: float | None = None) -> tuple[dict, dict, dict]:
+    """Retain at most each participant's latest request and compact acknowledgements."""
+    maps = tuple(value.get(name, {}) for name in
+                 ("outing_requests", "outing_requests_handled", "outing_request_turn"))
+    if any(not isinstance(items, dict) or not set(items) <= actors for items in maps):
+        raise ValueError("真人游玩请求来源无效")
+    requests, handled, turn = maps
+    requests = {actor: validate_outing_request(request, now=now) for actor, request in requests.items()}
+    if any(not isinstance(request_id, str) or not ID.fullmatch(request_id)
+           for items in (handled, turn) for request_id in items.values()):
+        raise ValueError("真人游玩请求确认无效")
+    return requests, dict(handled), dict(turn)
+
+
 def canonical(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
                       allow_nan=False).encode("utf-8")

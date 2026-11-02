@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import math
-from .protocol import RESERVED, TERMINAL, clean_outing_offer
+import copy
+from .protocol import RESERVED, TERMINAL, clean_outing_offer, validate_outing_request_maps
 from .outings import CHECKPOINT_LEASE_SECONDS, outing_enabled, valid_activity
 from .history_pages import extended_history, expand_snapshot
 
@@ -91,6 +92,9 @@ def validate_snapshot(visit: dict, remote: dict, *, now: float | None = None) ->
         if outing.get("return_agreed") and set(outing.get("farewells", {})) != actors:
             raise ValueError("共同归家必须保留双方独立原话")
         prior = visit.get("outing") or {}
+        if (visit["role"] == "guest" and prior.get("stage") == outing.get("stage")
+                and "pause_choices" in prior and "pause_choices" not in outing):
+            raise ValueError("不能删除已确认的休息意愿")
         if "pause_choices" in outing:
             pauses = outing["pause_choices"]
             first, cadence = outing.get("pause_at"), outing.get("cadence_seconds")
@@ -99,13 +103,22 @@ def validate_snapshot(visit: dict, remote: dict, *, now: float | None = None) ->
                            for value in pauses.values())
                     or type(first) not in {int, float} or not math.isfinite(first)
                     or not outing["started_at"] <= first < outing["until"]
+                    or now is not None and first > now + 300
                     or type(cadence) not in {int, float} or not 1 <= cadence <= 180
                     or outing.get("quiet_until") != min(outing["until"], first + max(cadence, *(value * 60 for value in pauses.values())))):
                 raise ValueError("共同休息节奏无效")
-            if visit["role"] == "guest" and (len(route) > len(prior_route)
-                    or prior.get("quiet_until") != outing.get("quiet_until")):
-                choice = visit.get("decision") or {}
-                if pauses[visit["guest_id"]] != choice.get("pause_minutes", 5):
+            if visit["role"] == "guest":
+                same_checkpoint = (len(route) == len(prior_route) and "pause_choices" in prior
+                                   and prior.get("pause_at") == first)
+                if same_checkpoint and any(prior.get(key) != outing.get(key) for key in
+                                           ("pause_choices", "cadence_seconds", "quiet_until")):
+                    raise ValueError("已经共同确认的休息意愿不能被改写")
+                if (not same_checkpoint and len(route) == len(prior_route)
+                        and not _submitted_pause_choice(visit, remote)):
+                    raise ValueError("共同休息缺少本次访客独立回应证明")
+                expected = (prior["pause_choices"][visit["guest_id"]] if same_checkpoint
+                            else (visit.get("decision") or {}).get("pause_minutes", 5))
+                if pauses[visit["guest_id"]] != expected:
                     raise ValueError("不能替访客编造休息意愿")
         if visit["role"] == "guest" and len(route) > len(prior_route):
             offer = visit.get("outing_offer") or {}
@@ -129,6 +142,7 @@ def validate_snapshot(visit: dict, remote: dict, *, now: float | None = None) ->
                 or clean_outing_offer(offer) != {**offer, "return_after": offer.get("return_after", False),
                                                 "pause_minutes": offer.get("pause_minutes", 5)}):
             raise ValueError("共同活动提议无效")
+    remote = _merge_outing_requests(visit, remote, actors, now=now)
     holds = remote.get("budget_holds", {})
     if not isinstance(holds, dict) or not set(holds) <= actors:
         raise ValueError("自动相处等待来源无效")
@@ -153,3 +167,58 @@ def validate_snapshot(visit: dict, remote: dict, *, now: float | None = None) ->
         if len(logs) < len(prior) or logs[:len(prior)] != prior:
             raise ValueError("已确认的经过不能被改写")
     return remote
+
+
+def _submitted_pause_choice(visit: dict, remote: dict) -> bool:
+    """Bind a new pause to the visitor's durable, submitted turn, not an old choice."""
+    cursor = visit.get("decision_cursor") or {}
+    prior = visit.get("outing") or {}
+    guest = visit["guest_id"]
+    # A human suggestion may arrive after this turn was signed. Its request map
+    # belongs to the next discussion and does not invalidate the submitted reply.
+    return (visit.get("unsent_turn") is True and isinstance(visit.get("decision"), dict)
+            and visit["decision"].get("leave") is not True
+            and cursor.get("phase") == "turn" and cursor.get("status") == visit["status"] == "active"
+            and cursor.get("log_seq") == len(visit["log"]) and cursor.get("turns") == visit["turns"]
+            and cursor.get("next_actor") == visit["next_actor"] == guest
+            and cursor.get("outing_stage") == prior.get("stage")
+            and cursor.get("quiet_until") == prior.get("quiet_until", 0)
+            and remote.get("turns", {}).get(guest) == visit["turns"][guest] + 1)
+
+
+def _merge_outing_requests(visit: dict, remote: dict, actors: set[str], *, now: float | None) -> dict:
+    requests, handled, turn = validate_outing_request_maps(remote, actors, now=now)
+    prior_requests, prior_handled, _ = validate_outing_request_maps(visit, actors)
+    if (requests or handled or turn) and (not outing_enabled(visit) or not remote.get("manual")
+                                         or not remote.get("arrived_at")):
+        raise ValueError("真人游玩请求缺少已到访的人工相处证明")
+    local_id = visit["host_id"] if visit["role"] == "host" else visit["guest_id"]
+    merged = copy.deepcopy(prior_requests)
+    for actor, request in requests.items():
+        prior = prior_requests.get(actor)
+        if actor == local_id:
+            if (not prior or request["seq"] > prior["seq"]
+                    or request["seq"] == prior["seq"] and request != prior):
+                raise ValueError("不能替本人改写真人游玩请求")
+        elif prior and request["seq"] == prior["seq"] and request != prior:
+            raise ValueError("已经确认的真人游玩请求不能被改写")
+        elif not prior or request["seq"] > prior["seq"]:
+            merged[actor] = request
+    if visit["role"] == "host":
+        return remote  # The host receives only the sender's separately signed request.
+    merged_handled = dict(prior_handled)
+    cursor_turn = (visit.get("decision_cursor") or {}).get("outing_request_turn") or {}
+    for actor, request_id in handled.items():
+        if request_id == prior_handled.get(actor):
+            continue
+        current = merged.get(actor)
+        if not current or current["id"] != request_id:
+            continue  # An older acknowledgement cannot consume a newer request.
+        if not visit.get("unsent_turn") or cursor_turn.get(actor) != request_id:
+            raise ValueError("真人游玩请求缺少本人独立回应证明")
+        merged_handled[actor] = request_id
+    result = copy.deepcopy(remote)
+    if merged or handled or turn or prior_handled:
+        result.update(outing_requests=merged, outing_requests_handled=merged_handled,
+                      outing_request_turn=turn)
+    return result

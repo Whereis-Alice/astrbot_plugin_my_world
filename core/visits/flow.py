@@ -6,7 +6,7 @@ import copy
 from typing import Any
 
 from .protocol import RESERVED, TERMINAL, clean_decision, clean_scene, new_id, public_actor
-from .outings import CHECKPOINT_LEASE_SECONDS, activity_waiting, begin_activity, outing_enabled, pause_activity, proposed_activity
+from .outings import CHECKPOINT_LEASE_SECONDS, activity_waiting, begin_activity, outing_enabled, pause_activity, pending_outing_requests, proposed_activity
 from .rhythm import VisitRhythm
 from .snapshots import validate_snapshot
 from .transport import VisitTransportError
@@ -23,6 +23,8 @@ class VisitFlow(VisitRhythm):
             return outing["until"]
         if holds:
             return max(hold["reset_at"] for hold in holds.values())
+        if pending_outing_requests(visit):
+            return self._now() + (self.config.poll_seconds if visit["next_actor"] != self._local_id(visit) else 0)
         if activity_waiting(visit, self._now()):
             return outing.get("quiet_until", outing["until"])
         return self._now()
@@ -125,6 +127,10 @@ class VisitFlow(VisitRhythm):
                   "scene_stage": visit.get("scene_stage", ""), "next_actor": visit["next_actor"],
                   "manual": bool(visit.get("manual")), "manual_continuation": bool(visit.get("manual_continuation")),
                   "outing_request": copy.deepcopy(visit.get("outing_request"))}
+        # Omit absent additions so older durable decision cursors still match.
+        for name in ("outing_requests", "outing_requests_handled", "outing_request_turn"):
+            if visit.get(name):
+                cursor[name] = copy.deepcopy(visit[name])
         if phase == "propose":
             cursor["proposal_stage"] = visit.get("proposal_stage", "")
         if outing_enabled(visit):
@@ -498,8 +504,15 @@ class VisitFlow(VisitRhythm):
         await self._save()
         return {"queued": True, "status": "queued", "current_visit_id": current["id"], **queued}
 
-    @staticmethod
-    def _mark_manual_request(visit, reason):
+    def _mark_manual_request(self, visit, reason):
+        if reason and outing_enabled(visit) and visit.get("arrived_at"):
+            requests = visit.setdefault("outing_requests", {})
+            actor = self._local_id(visit)
+            request = {"id": new_id(), "text": str(reason)[:300], "at": self._now(),
+                       "seq": requests.get(actor, {}).get("seq", 0) + 1}
+            requests[actor] = request
+            visit["manual_continuation"] = True
+            visit["next_at"] = self._now()
         if visit.get("manual"):
             return
         if visit["status"] == "inviting" and not visit.get("contacted") and not visit.get("outbox"):
@@ -529,12 +542,25 @@ class VisitFlow(VisitRhythm):
             return await self._submit_proposal(visit_id, result)
         if not visit.get("manual_continuation"):
             return self._visible(visit)
+        attempted_request_id = (visit.get("outing_requests", {}).get(self._local_id(visit)) or {}).get("id")
         try:
             reply = await self._send(visit_id, {"op": "status"})
-            if visit.get("manual_continuation") and reply.get("delivered_op") != "status":
+            request = visit.get("outing_requests", {}).get(self._local_id(visit))
+            pending_delivery = bool(visit.get("manual_continuation") and request
+                                    and reply.get("delivered_request") != request["id"])
+            if visit.get("manual_continuation") and (reply.get("delivered_op") != "status" or pending_delivery):
                 reply = await self._send(visit_id, {"op": "status"})
         except (ValueError, VisitStateError) as error:
             async with self._lock:
+                if self._closed or visit["status"] in TERMINAL or not visit.get("manual_continuation"):
+                    return self._visible(visit)
+                current_request_id = (visit.get("outing_requests", {}).get(self._local_id(visit)) or {}).get("id")
+                if current_request_id != attempted_request_id:
+                    # A late failure belongs to the earlier suggestion. The
+                    # newer human request still needs its own signed delivery.
+                    visit["next_at"] = self._now()
+                    await self._save()
+                    return self._visible(visit)
                 visit["continuation_error"] = str(error)[:240]
                 visit["next_at"] = self._now() + 120
                 await self._save()
@@ -542,6 +568,16 @@ class VisitFlow(VisitRhythm):
         async with self._lock:
             if not self._closed and visit["status"] not in TERMINAL:
                 self._synchronize(visit, reply["visit"], visit["remote"]["id"])
+                request = visit.get("outing_requests", {}).get(self._local_id(visit))
+                if (visit.get("manual_continuation") and request
+                        and reply.get("delivered_request") != request["id"]):
+                    if request["id"] == attempted_request_id:
+                        visit["continuation_error"] = "友邻尚未确认收到这条游玩建议，可能需要更新插件"
+                        visit["next_at"] = self._now() + 120
+                    else:
+                        visit["next_at"] = self._now()
+                    await self._save()
+                    return self._visible(visit)
                 if visit.get("manual"):
                     for key in ("budget_holds", "outing_budget_hold", "budget_notice_pending", "continuation_error",
                                 "model_retry", "decision_cursor", "proposal_cursor"):
@@ -740,7 +776,8 @@ class VisitFlow(VisitRhythm):
             raise ValueError("东道主调用额度无效")
         own_calls = visit["calls"][self._local_id(visit)]
         for key in ("status", "arrived_at", "scene", "log", "next_actor", "next_at", "turns", "event_stage", "ended_at", "end_reason",
-                    "outing", "outing_offer", "outing_version", "action_plans", "budget_holds"):
+                    "outing", "outing_offer", "outing_version", "action_plans", "budget_holds",
+                    "outing_requests", "outing_requests_handled", "outing_request_turn"):
             if key in remote:
                 visit[key] = copy.deepcopy(remote[key])
         if "expires_at" in remote:
@@ -842,14 +879,28 @@ class VisitFlow(VisitRhythm):
                        and visit.get("event_stage") == "offered" and len(visit.get("action_plans", {})) == 2)
         if result.get("outcome") and not settled:
             self._append(visit, sender, "experience", result["outcome"])
+        if settled:
+            self._append(visit, sender, "result", result["outcome"])
+            visit["event_stage"] = "resolved"
+        if result.get("leave"):
+            # A farewell is an independent decision to end this visit. It
+            # cannot also accept a new plan or promise another shared pause.
+            for key in ("outing_offer", "outing_host_action", "outing_host_farewell", "outing_host_pause"):
+                visit.pop(key, None)
+            return
         if sender == visit["host_id"]:
-            if settled:
-                self._append(visit, sender, "result", result["outcome"])
-                visit["event_stage"] = "resolved"
+            request_turn = {actor: request["id"] for actor, request in pending_outing_requests(visit).items()}
+            if request_turn:
+                visit["outing_request_turn"] = request_turn
+            else:
+                visit.pop("outing_request_turn", None)
             self._offer_activity(visit, result)
             visit["next_actor"] = visit["guest_id"]
             visit["next_at"] = self._now() + self.config.poll_seconds
             return
+        for actor, request_id in visit.pop("outing_request_turn", {}).items():
+            if visit.get("outing_requests", {}).get(actor, {}).get("id") == request_id:
+                visit.setdefault("outing_requests_handled", {})[actor] = request_id
         offer = visit.get("outing_offer")
         if offer and result.get("outing_accept") and not result.get("leave"):
             begin_activity(visit, offer, self._now(), result, floor_seconds=self.config.poll_seconds)
@@ -861,10 +912,12 @@ class VisitFlow(VisitRhythm):
                 visit["event_stage"] = "offered"
             else:
                 visit["event_stage"] = "none"
+            visit["next_at"] = self._outing_wait_at(visit)
             return
         if not offer and (visit.get("outing") or {}).get("until", 0) > self._now():
             pause_activity(visit, visit.pop("outing_host_pause", 5), result.get("pause_minutes", 5),
                            self._now(), floor_seconds=self.config.poll_seconds)
+            visit["next_at"] = self._outing_wait_at(visit)
             return
         visit.pop("outing_offer", None)
         visit.pop("outing_host_action", None)
@@ -1126,6 +1179,8 @@ class VisitFlow(VisitRhythm):
             async with self._lock:
                 if self._closed or visit["status"] in TERMINAL:
                     return
+                if visit.get("decision_cursor") != self._decision_cursor(visit, "turn"):
+                    return  # A new signed request arrived after this decision finished.
                 visit["unsent_turn"] = True
                 await self._save()
                 step = {"op": "step", "seq": len(visit["log"]), "decision":
@@ -1146,6 +1201,8 @@ class VisitFlow(VisitRhythm):
             return
         async with self._lock:
             if not result or self._closed or visit["status"] in TERMINAL:
+                return
+            if visit.get("decision_cursor") != self._decision_cursor(visit, "turn"):
                 return
             self._record_turn(visit, visit["host_id"], result)
             if result["leave"]:

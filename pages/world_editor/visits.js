@@ -71,7 +71,8 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
 
   function clearSecrets() {
     own.input.value = foreign.input.value = ""; ownInfo.textContent = "";
-    secretRevision += 1; clearTimeout(secretTimer); clearTimeout(refreshTimer);
+    secretRevision += 1; clearTimeout(secretTimer);
+    if (!root.classList.contains("active")) clearTimeout(refreshTimer);
   }
   function waitingForVisit() {
     return Boolean(lifeData?.active && !lifeData.active.arrived_at && WAITING.has(lifeData.active.status));
@@ -187,8 +188,9 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     const sequenced = present.length && present.every(item => Number.isInteger(item.seq) && item.seq > 0);
     if (sequenced) for (const item of present) draft.rows.set(item.seq, item);
     const sorted = [...draft.rows.values()].sort((a, b) => a.seq - b.seq);
-    if (!draft.fetched) draft.nextBefore = sorted.length ? sorted[0].seq > 1 ? sorted[0].seq : 0
-      : Number.isInteger(visit.next_before) ? visit.next_before : visit.log_offset > 0 ? visit.log_offset + 1 : 0;
+    // The API cursor is a row boundary: seq 97 follows before=96.
+    if (!draft.fetched) draft.nextBefore = sorted.length ? Math.max(0, sorted[0].seq - 1)
+      : Number.isInteger(visit.next_before) ? visit.next_before : visit.log_offset > 0 ? visit.log_offset : 0;
     const logs = (sorted.length ? sorted : present).filter(item => (diagnostic || item.kind !== "contact_status")
       && !(item.kind === "activity" && /^开始相处[：:]/.test(item.text || "")));
     const moments = recordMoments(visit, logs), split = Math.max(0, moments.length - 8);
@@ -207,7 +209,7 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
           try {
             const page = await apiPost("visits/record", {session, visit_id: visit.id, before});
             if (session !== getSession() || recordDrafts.get(key) !== draft || page?.id !== visit.id) return;
-            if (!Array.isArray(page.log) || !page.log.every(item => item && Number.isInteger(item.seq) && item.seq > 0 && item.seq < before)) throw new Error("这页记录暂时读不到，请再试一次");
+            if (!Array.isArray(page.log) || !page.log.every(item => item && Number.isInteger(item.seq) && item.seq > 0 && item.seq <= before)) throw new Error("这页记录暂时读不到，请再试一次");
             for (const item of page.log) draft.rows.set(item.seq, item);
             draft.fetched = true;
             draft.nextBefore = Number.isInteger(page.next_before) && page.next_before > 0 && page.next_before < before ? page.next_before : 0;

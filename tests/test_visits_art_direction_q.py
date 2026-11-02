@@ -238,7 +238,7 @@ class VisitsArtDirectionTests(unittest.TestCase):
         self.page.get_by_role('button', name='继续往前翻', exact=True).click()
         expect(self.page.locator('.visits-current .visits-moment:visible')).to_have_count(96)
         expect(self.page.locator('.visits-current')).to_contain_text('完整记忆1')
-        self.assertEqual(self.page.evaluate('visitWrites.at(-1).payload.before'), 97)
+        self.assertEqual(self.page.evaluate('visitWrites.at(-1).payload.before'), 96)
         expect(self.page.get_by_role('button', name='继续往前翻', exact=True)).to_have_count(0)
         self.refresh()
         expect(self.page.locator('.visits-current .visits-moment:visible')).to_have_count(96)

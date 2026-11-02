@@ -85,18 +85,20 @@ class WeatherMixin:
             notes["life_context"] = await self.life_context_text(session_id)
         except Exception:
             notes["life_context"] = ""
-        visit = active_visit(self, session_id)
-        if visit:
-            notes["world_visit"] = presence_text(visit, now=self._now())
-            notes["visit_activity"] = visit_activity_text(visit, now=self._now())
         if not session_id:
             return notes
+        _, persona_key = await self._journal_persona(session_id)
+        visit = active_visit(self, session_id)
+        # A persona edit can precede the visit loop's identity cleanup. Keep
+        # that old journey reserved, but never describe it as the new actor's.
+        if visit and visit.get("local", {}).get("persona_key") == persona_key:
+            notes["world_visit"] = presence_text(visit, now=self._now())
+            notes["visit_activity"] = visit_activity_text(visit, now=self._now())
         try:
             state = await self.load_state(session_id, cold_start=False)
         except Exception:
             return notes
         # 能力值给的是人话；心里挂着的事按需注入（没挂着就整段不出现）
-        _, persona_key = await self._journal_persona(session_id)
         notes["abilities_line"] = self.abilities_line(state)
         notes["pending_event"] = self.pending_event_line(state, persona_key)
         # 她自己的账：正在经历 / 最近发生在我身上的事 / 还挂着的（窗口外的不出现）
