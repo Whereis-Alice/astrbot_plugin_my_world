@@ -132,6 +132,61 @@ class SamePlaceTravelTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(self.engine.decider._change_environment_due(state))
             self.assert_place_unchanged(state)
 
+    async def test_same_place_wake_request_keeps_context_and_finishes_search_once(self):
+        await self.prepare()
+        async with self.engine.session_state(fixture.SESSION) as state:
+            state.state = "sleeping"
+            state.current_action = {"type": "sleep"}
+        request = "醒醒，去书房帮我查今天的新闻"
+        evidence = "本地新闻回执：今天的图书馆延长开放时间。"
+        answer = "唔……查到了，今天图书馆会晚一点关门。"
+        self.tools.results["web_search"] = evidence
+        self.llm.replies = [
+            '{"reasoning":{"intent":"去书房查新闻"},'
+            '"actions":[{"type":"walk_to","target_node":"study"},'
+            '{"type":"search_web","intent":"查今天的新闻"}]}',
+            '{"done":true}',
+            '{"actions":[{"type":"say","messages":["' + answer + '"]}]}',
+        ]
+        ctx = fixture.EngineTestCase.ctx(self, text=request)
+        await self.engine.handle_incoming(ctx)
+        incoming = await self.saved()
+        self.assertIn("刚被叫醒", incoming.wake_note)
+        call_start = len(self.llm.calls)
+
+        outcome = await self.engine.handle_reply(ctx)
+
+        calls = self.llm.calls[call_start:]
+        self.assertTrue(calls)
+        main_request = calls[0]
+        self.assertIn("刚被叫醒", main_request["system_prompt"])
+        self.assertIn("不只是叫你起来", main_request["system_prompt"])
+        self.assertIn(request, main_request["prompt"])
+        # The completed search can ask whether its evidence is sufficient and
+        # then express the result. Those calls are not the original wake reply.
+        followups = calls[1:]
+        self.assertTrue(followups)
+        self.assertTrue(any(evidence in call["prompt"] for call in followups))
+        self.assertIn(evidence, followups[-1]["prompt"])
+        self.assertTrue(all("刚被叫醒" not in call["system_prompt"] for call in followups))
+        self.assertEqual([], self.llm.replies)
+        self.assertEqual(["web_search"], [name for name, _params in self.tools.calls])
+        self.assertTrue(outcome.ok, outcome.error)
+        self.assertIn(answer, outcome.messages)
+
+        state = await self.saved()
+        self.assertEqual("study", state.node_id)
+        self.assertEqual(self.original["node_since"], state.node_since)
+        self.assertEqual(self.original["last_outdoor_at"], state.last_outdoor_at)
+        self.assertEqual(self.original["world_time"], state.world_time)
+        self.assertFalse(state.pending_arrival)
+        self.assertFalse(any(row["kind"] == "move" for row in state.recent_events))
+        self.assertEqual("", state.wake_note)
+        self.assertIsNone(state.current_action)
+        self.assertIsNone(state.current_plan)
+        done = await self.db.call("query_events", session_id=fixture.SESSION, event_type="action_done")
+        self.assertFalse(any(row["detail"].get("type") == "walk_to" for row in done))
+
     async def saved_walk(self, state, target):
         state.current_plan = create_plan(steps=[{"action": "walk_to", "target_node": target},
             {"action": "onsite_work_w"}], world_time=state.world_time, now=self.clock.now(), valid_for=3600)

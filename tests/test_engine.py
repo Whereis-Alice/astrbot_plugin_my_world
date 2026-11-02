@@ -9194,7 +9194,9 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_wake_up_note_reaches_the_takeover_prompt(self):
         """「刚被叫醒」这句提示接管模式也要带上，并且要提醒她把交代的事做了。"""
 
-        await self.set_state(state="sleeping", current_action={"type": "sleep"})
+        # Start away from the study so this case retains a real journey and
+        # checks the takeover prompt before the queued search completes.
+        await self.set_state(node_id="bedroom", state="sleeping", current_action={"type": "sleep"})
         self.llm.replies = [
             '{"reasoning":{"intent":"去书房查新闻"},'
             '"actions":[{"type":"walk_to","target_node":"study"},'

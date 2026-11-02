@@ -25,4 +25,4 @@ jobs:
       - name: Lint
         run: ruff check .
       - name: Tests
-        run: python -m pytest -q
+        run: python -m pytest -q --durations=50
