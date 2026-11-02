@@ -47,6 +47,10 @@ from .util import (
 
 
 class ActionsRunMixin:
+    def _already_at_walk_target(self, state: WorldState, target_node: str) -> bool:
+        """A location step already satisfied does not represent a new journey."""
+        return bool(target_node and target_node == state.node_id and target_node in self.world.node_map())
+
     async def _call_one_tool(
         self,
         state: WorldState,
@@ -338,6 +342,13 @@ class ActionsRunMixin:
             # The private conversation is unavailable; independent activities
             # can still happen without exporting their narration to the group.
             outcome.speech_kind = "quiet"
+        if (definition.id == "walk_to" and definition.enabled
+                and self._already_at_walk_target(state, action.target_node or action.target)):
+            outcome.notes.append("已经在目标地点，无需移动，继续原来的安排")
+            if from_plan and state.current_plan is not None:
+                advance(state)
+                await self._tick_plan(state, node, outcome, depth=depth + 1)
+            return
         from ..activity_time import window_allows
         if not window_allows(definition.preconditions.time_window, self.world, self.local_now().hour):
             outcome.notes.append("尚未到动作适合开始的当地时段")
@@ -1111,6 +1122,12 @@ class ActionsRunMixin:
                     },
                     outcome=outcome,
                 )
+                continue
+            if (definition.id == "walk_to"
+                    and self._already_at_walk_target(state, action.target_node or action.target)):
+                await self._start_action(state, self.node(state.node_id), outcome,
+                                         definition, action, depth, True, from_plan=False)
+                completed += 1
                 continue
             ok, reason = self._check_preconditions(state, definition)
             if not ok:

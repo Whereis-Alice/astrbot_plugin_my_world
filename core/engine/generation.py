@@ -6,8 +6,11 @@ from ..recovery import sleep_action_kind, recovery_mode_allows
 
 import time
 import math
+import asyncio
 from datetime import timedelta
 from typing import Any
+from uuid import uuid4
+from ..background_budget import capture_background_admission, _finish_write
 from ..generator import (
     DEFAULT_MAP_NODES_PER_ZONE,
     clamp_event_count,
@@ -971,6 +974,15 @@ class GenerationMixin:
     AUTO_SCHEDULE_KV = "schedule.auto_day"
     """「今天已经自动排过日程了吗」记在 kv 里，按配置范围分开。"""
 
+    @staticmethod
+    def _defer_auto_schedule_attempt(db, key: str, expected: dict, *, count: int, retry_at: float) -> bool:
+        """Refund only this unstarted attempt, leaving a newer job's record intact."""
+        with db.atomic():
+            if db.kv_get(key, {}) != expected:
+                return False
+            db.kv_set(key, {"day": expected["day"], "count": count, "retry_at": retry_at})
+            return True
+
     @life_work("")
     async def maybe_auto_generate_schedules(self) -> str:
         async with self._auto_schedule_lock:
@@ -1018,10 +1030,12 @@ class GenerationMixin:
         persona = await self._persona_text(session_id)
         if self.world is not world or self.schedules is not schedules:
             return ""
-        await self.db.call("kv_set", attempt_key, {
+        attempt_record = {
             "day": today, "count": count + 1,
             "retry_at": self._now() + 900 * (3 ** count),
-        })
+            "token": uuid4().hex,
+        }
+        await self.db.call("kv_set", attempt_key, attempt_record)
         try:
             wanted = max(1, min(6, int(getattr(config, "per_day", 2) or 2)))
         except (TypeError, ValueError):
@@ -1039,12 +1053,25 @@ class GenerationMixin:
             )
         ]
         dropped = len(rows) - len(kept)
-        result = await self.generate_schedules(
-            wanted,
-            "once",
-            str(getattr(config, "extra_prompt", "") or ""),
-            persona_snapshot=persona,
-        )
+        with capture_background_admission() as admission:
+            try:
+                result = await self.generate_schedules(
+                    wanted,
+                    "once",
+                    str(getattr(config, "extra_prompt", "") or ""),
+                    persona_snapshot=persona,
+                )
+            finally:
+                if admission.deferred and not admission.started:
+                    # Budget pacing, a busy channel or provider backoff did not
+                    # reach the model. Keep a bounded local wait without using
+                    # one of the day's three actual generation attempts.
+                    deferred_at = self._now()
+                    next_at = admission.next_at if math.isfinite(admission.next_at) else deferred_at
+                    retry_at = deferred_at + min(900, max(60, next_at - deferred_at))
+                    await _finish_write(asyncio.create_task(self.db.run(
+                        self._defer_auto_schedule_attempt, self.db.raw, attempt_key, attempt_record,
+                        count=count, retry_at=retry_at)))
         current_persona = await self._persona_text(session_id)
         if (self.world is not world or self.schedules is not schedules or self.config_scope_id != scope
                 or not config.enabled

@@ -105,6 +105,24 @@ class ScheduleMixin:
         return [step for step in schedule.action_chain
                 if recovery_mode_allows(actions.get(step.type), self.world)]
 
+    def _schedule_text_wait(self, state: WorldState, chain: list[ChainStep], outcome: TickOutcome) -> bool:
+        """A single unsent line can wait; started chains and chosen silence cannot replay."""
+        if (self.llm is None or self.world.limits.max_llm_text_per_hour <= 0
+                or self._llm_text_allowed(state) or len(chain) != 1):
+            return False
+        step = chain[0]
+        if step.type not in {"say", "share"} or step.messages:
+            return False
+        definition = self.world.action_map().get(step.type)
+        if (not definition or not definition.enabled or not definition.available_in(state.node_id)
+                or self.action_quota_left(state, definition) <= 0
+                or not self._check_preconditions(state, definition)[0]
+                or step.type == "share" and not self._share_allowed(state)):
+            return False
+        # Permission is a terminal restriction, not a reason to keep asking.
+        return any(self.can_express(state, target, outcome.speech_kind)
+                   for target in [outcome.home(), *outcome.broadcast_targets])
+
     def _schedule_cursor(self, state: WorldState, now: datetime) -> float:
         """这个会话上次检查到哪一刻（现实时间戳）。"""
 
@@ -1010,6 +1028,18 @@ class ScheduleMixin:
                             self._cancel_schedule(state, schedule, day_key)
                         else:
                             self._delay_schedule(state, schedule, day_key, slot)
+                        continue
+                    if self._schedule_text_wait(state, chain, outcome):
+                        exhausted = self._delay_exhausted(state, schedule, day_key)
+                        if exhausted:
+                            self._cancel_schedule(state, schedule, day_key)
+                        else:
+                            self._delay_schedule(state, schedule, day_key, slot)
+                        await self._log_event(state, "skip", {
+                            "action": f"schedule:{schedule.id}",
+                            "note": ("本小时文字生成次数已用完，日程等待到上限，本次不再执行"
+                                     if exhausted else "本小时文字生成次数已用完，保留日程，稍后再试"),
+                        })
                         continue
                     # 「这条日程是干什么的」+ 完整动作链，一并带进这一轮的上下文：
                     # 她说话时才有背景（不然只知道自己"正在做某个动作"，

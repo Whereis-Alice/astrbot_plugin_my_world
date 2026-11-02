@@ -431,6 +431,10 @@ class TickMixin:
         action = state.current_action
         if not isinstance(action, dict):
             return
+        if (action.get("type") == "walk_to" and self._already_at_walk_target(
+                state, str(action.get("target_node") or action.get("target") or ""))):
+            await self._finish_action(state, node, outcome, action)
+            return
         definition = self.world.action_map().get(str(action.get("type") or ""))
         if not action.pop("offline_tick_settled", False) and not self._home_completion_pending(action):
             self._advance_online_action(action)
@@ -532,6 +536,9 @@ class TickMixin:
         depth: int = 0,
     ) -> bool:
         action_id = str(action.get("type", ""))
+        from_node = state.node_id
+        walk_target = str(action.get("target_node") or action.get("target") or "")
+        unnecessary_walk = action_id == "walk_to" and self._already_at_walk_target(state, walk_target)
         from ..models import CHAT_BROWSE_IDS
         if action_id in CHAT_BROWSE_IDS:
             # Reading completion acquires its own state lease before inference.
@@ -555,8 +562,8 @@ class TickMixin:
 
         handled_followup = False
         if action_id == "walk_to":
-            target_node = str(action.get("target_node", "") or "")
-            if target_node and target_node in self.world.node_map():
+            target_node = walk_target
+            if not unnecessary_walk and target_node and target_node in self.world.node_map():
                 # 离开这个地点之前，把刚才在那儿聊的那段总结成一条记忆
                 state.node_id = target_node
                 # Completion can itself generate the next activity before the
@@ -567,7 +574,7 @@ class TickMixin:
                 if not self.world.is_home_zone(target_node):
                     # 出门了：记一笔，久不出去会想出去走走（见 _outdoor_hint）
                     state.last_outdoor_at = self._now()
-                self._note_event(state, "move", {"to": target_node})
+                self._note_event(state, "move", {"from": from_node, "to": target_node})
                 # 特地走到一个新地方，落地后就地看看这里能做什么
                 if int(action.get("arrival_decide", 1)):
                     state.pending_arrival = True
@@ -606,8 +613,9 @@ class TickMixin:
             )
             handled_followup = True
 
-        effects = (definition.on_complete.effects if definition else {}) or {}
-        self._apply_life_completion(state, definition, elapsed_minutes=completion_ticks * self.tick_seconds / 60)
+        effects = {} if unnecessary_walk else (definition.on_complete.effects if definition else {}) or {}
+        if not unnecessary_walk:
+            self._apply_life_completion(state, definition, elapsed_minutes=completion_ticks * self.tick_seconds / 60)
         if effects:
             self.dynamics.apply_effects(state, effects, world=self.world, now=self._now())
         # 持续型亲密动作（靠着、按摩这类）做完也算安抚，同上
@@ -620,7 +628,7 @@ class TickMixin:
             await self._satisfy_desire_from_action(state, definition, outcome)
 
         # 按「实际持续时间」缩放的效果：例如小睡 30 分钟 → 精力 +0.002×30
-        per_minute = (definition.on_complete.effects_per_minute if definition else {}) or {}
+        per_minute = {} if unnecessary_walk else (definition.on_complete.effects_per_minute if definition else {}) or {}
         if per_minute:
             settled_minutes = max(0, float(action.get("effects_settled_minutes") or 0)) + max(
                 0, float(action.get("resumed_effects_settled_minutes") or 0))
@@ -650,10 +658,11 @@ class TickMixin:
         elif sleep_action_kind(definition) == "nap":
             self._finish_sleep_rhythm(state, action, interrupted=False)
 
-        self._record_matter_action(state, action)
+        if not unnecessary_walk:
+            self._record_matter_action(state, action)
 
         # 行动完成 -> 记忆
-        if definition is not None:
+        if definition is not None and not unnecessary_walk:
             await self._remember_action(state, definition, action)
 
         state.current_action = None
@@ -682,16 +691,24 @@ class TickMixin:
 
         await self._log_event(
             state,
-            "action_done",
-            {
+            "skip" if unnecessary_walk else "action_done",
+            {"action": "walk_to", "code": "already_at_target",
+             "note": "已经在目标地点，无需移动，继续原来的安排"} if unnecessary_walk else {
                 "type": action_id,
                 "desc": ((definition.name if definition else "") or action_id) if action_id == "life_simulation"
                 else action.get("desc") or (definition.name if definition else "") or action_id,
                 "elapsed_ticks": completion_ticks,
                 "tool_result": _clip_text(action.get("tool_result"), 200),
+                **({"from": from_node, "to": state.node_id, "moved": state.node_id != from_node}
+                   if action_id == "walk_to" else {}),
             },
             outcome=outcome,
         )
+
+        if unnecessary_walk:
+            if action_home:
+                outcome.speech_home = previous_home
+            return False
 
         # The greeting releases the life lock during inference. Commit the
         # completed action and its plan step first: a discarded greeting or an

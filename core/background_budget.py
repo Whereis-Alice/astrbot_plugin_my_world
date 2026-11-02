@@ -92,6 +92,7 @@ class BackgroundReservation:
         except asyncio.CancelledError:
             # Cancelling to_thread cannot stop a write already running. Wait for
             # its actual result and refund exactly this unstarted reservation.
+            record_background_admission(deferred=True, reason="后台请求准备已取消，模型尚未调用")
             async def withdraw() -> None:
                 budget = await reservation
                 if budget['allowed']:

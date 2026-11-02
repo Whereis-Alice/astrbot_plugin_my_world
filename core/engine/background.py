@@ -273,11 +273,15 @@ class BackgroundMixin:
         failure = failures.get(failure_key, {})
         if failure.get("until", 0) > now:
             reason = str(failure.get("error") or "")
-            return LLMReply(ok=False, error="后台模型暂时退避，规则继续运行" + (f"；上次失败：{reason}" if reason else ""))
+            message = "后台模型暂时退避，规则继续运行" + (f"；上次失败：{reason}" if reason else "")
+            record_background_admission(deferred=True, reason=message, next_at=failure["until"])
+            return LLMReply(ok=False, error=message)
         # No await may separate this shared slot check from its admission.
         active = getattr(self, "_background_active", 0)
         if active >= self.world.limits.background_concurrency:
-            return LLMReply(ok=False, error="后台通道忙，留待下一次")
+            reason = "后台通道忙，留待下一次"
+            record_background_admission(deferred=True, reason=reason, next_at=now + self.tick_seconds)
+            return LLMReply(ok=False, error=reason)
         self._background_active = active + 1
         budget = None
         try:

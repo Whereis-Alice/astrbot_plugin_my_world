@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ..model_calls import model_operation
+from ..background_budget import capture_background_admission
 
 from typing import Any
 from ..config_scope import session_scoped
@@ -364,6 +365,15 @@ class AutonomyMixin:
         request = self.context_request(state, context_target, task="plan", text=hint,
             rows=[] if quiet else None, focus=focus_user)
         await self.prepare_context_memory(request)
+        # Building a prompt is not yet a decision: admission may defer it, the
+        # provider may fail, or life may change while it thinks. Keep this outing
+        # reminder pending until a usable plan returns (staying home counts too).
+        previous_outdoor_hint_at = state.outdoor_hint_at
+        try:
+            reminders = self.extra_reminders(state, autonomy=True, include_life=False)
+        finally:
+            offered_outdoor_hint_at = state.outdoor_hint_at
+            state.outdoor_hint_at = previous_outdoor_hint_at
         system_prompt = self.prompts.build_autonomous_system_prompt(
             persona_text=persona_text,
             state=state,
@@ -386,9 +396,7 @@ class AutonomyMixin:
             session_labels=self.session_labels(state),
             profile_text="" if quiet else self.context_profiles(state, request),
             # 这是"她自己决定下一步做什么"的那一轮：好奇心可以推动她去问人
-            extra_notes=[
-                note for note in [self.extra_reminders(state, autonomy=True, include_life=False)] if note
-            ],
+            extra_notes=[reminders] if reminders else [],
             **await self.runtime_notes(request.session),
         )
         # 装了扩展（注册了提示词层的那种）就把它的那一层也带上：
@@ -427,14 +435,16 @@ class AutonomyMixin:
                        + "。必须明确选 intent：outreach 是找该人本人；continue_chat 是接上述编号的消息，"
                          "正文里的‘你’指该消息的真实发言者，必须填写 reply_to；listen 是继续自己的生活。"
                          "想念候选不是群聊接话的对象。选择接话时不要另行指定群/私聊，也不要附带对候选人的动作。")
-        if quiet:
-            reply = await self._ask_llm(state.session_id, system_prompt, prompt)
-        else:
-            reply = await self.ask_speech(state, request.session, system_prompt, prompt,
-                rows=self.context_chat(state, request), allow_tools=False)
+        with capture_background_admission() as admission:
+            if quiet:
+                reply = await self._ask_llm(state.session_id, system_prompt, prompt)
+            else:
+                reply = await self.ask_speech(state, request.session, system_prompt, prompt,
+                    rows=self.context_chat(state, request), allow_tools=False)
         self.record_context_selection(request)
-        outcome.llm_calls += 1
-        self._count_llm_plan(state)
+        if not (admission.deferred and not admission.started):
+            outcome.llm_calls += 1
+            self._count_llm_plan(state)
         if reply is None:
             return None
         if getattr(reply, "native_event", None) is not None:
@@ -471,6 +481,9 @@ class AutonomyMixin:
                 send_to=str(plan.get("send_to") or ""),
             )
             if created is not None:
+                if (offered_outdoor_hint_at != previous_outdoor_hint_at
+                        and state.outdoor_hint_at == previous_outdoor_hint_at):
+                    state.outdoor_hint_at = offered_outdoor_hint_at
                 if getattr(reply, "native_event", None) is not None:
                     created["native_context_target"] = request.session
                 created["inner"] = str(plan.get("inner") or "")
