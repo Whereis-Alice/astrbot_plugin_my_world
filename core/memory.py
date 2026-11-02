@@ -130,12 +130,16 @@ class RecalledMemory:
             prefix += "【梦境，非现实经历】"
         elif self.memory_type == INNER:
             prefix += "【当时的内心】"
+        from .context_sources import life_memory_metadata
+        meta = life_memory_metadata(self.source, self.context)
+        if meta.get("kind") == "world_visit":
+            from .memory_places import memory_location
+            place = memory_location({"source": self.source, "context": self.context})["label"]
+            prefix += f"【串门地点：{place}】"
         suffix = f"（{self.emotion}）" if self.emotion else ""
         detail = ""
         if self.tier == "gist" and self.context:
             original = self.context
-            from .context_sources import life_memory_metadata
-            meta = life_memory_metadata(self.source, self.context)
             if meta and (self.source in {"life_event", "life_matter", "chat_browse"}
                          or "persona_key" in meta or "original" in meta):
                 original = str(meta.get("original") or "")

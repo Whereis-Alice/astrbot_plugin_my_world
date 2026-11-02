@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from ..core.json_actions import extract_json_object
 from ..core.memory import EVENT, SCOPE_GROUP_PERSONA
+from ..core.memory_places import visit_location_metadata
 from ..core.model_calls import model_context
 from ..core.life_matters import stable_interests
 from ..core.state import STATE_DROWSY, STATE_NAPPING, STATE_SLEEPING
@@ -633,7 +634,8 @@ class VisitActorPort:
             content += "我当时的感受（主观）：" + reflection
         meta = {"kind": "world_visit", "visit_id": key, "peer_id": peer_id,
                 "peer_world": world, "persona_key": persona_key,
-                "status": visit["status"], "end_reason": end_reason, "confirmed": True}
+                "status": visit["status"], "end_reason": end_reason, "confirmed": True,
+                "visit_location": visit_location_metadata(visit)}
         with engine.config_scope(scope):
             await engine.db.run(engine.memory.remember_visit, confirmed_log=rows,
                 idempotency_key="world_visit:" + scope + ":" + key,

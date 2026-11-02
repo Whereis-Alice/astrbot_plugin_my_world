@@ -72,6 +72,13 @@ def remember_visit(memory, *, confirmed_log: list[dict], idempotency_key: str, *
             return memory_id
         if old_meta.get("status") == "completed" and meta["status"] != "completed":
             return memory_id
+        from .memory_places import retain_visit_location
+        location = retain_visit_location(old_meta.get("visit_location"), meta.get("visit_location"))
+        if location is None:
+            return memory_id
+        if location:
+            meta["visit_location"] = location
+            kwargs["context"] = json.dumps(meta, ensure_ascii=False)
         proof = old_meta.get("visit_confirmation")
         if isinstance(proof, dict):
             previous = proof.get("log")
@@ -80,7 +87,8 @@ def remember_visit(memory, *, confirmed_log: list[dict], idempotency_key: str, *
                     or len(previous) > len(hashes) or hashes[:len(previous)] != previous):
                 return memory_id
             if (len(previous) == len(hashes) and old_meta.get("status") == meta["status"]
-                    and old_meta.get("end_reason", "") == meta.get("end_reason", "")):
+                    and old_meta.get("end_reason", "") == meta.get("end_reason", "")
+                    and old_meta.get("visit_location", {}) == location):
                 return memory_id
         else:
             # A pre-upgrade receipt has no fingerprints. Upgrade only when its

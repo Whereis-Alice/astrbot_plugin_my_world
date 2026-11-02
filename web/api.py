@@ -34,6 +34,7 @@ from ..core.json_actions import extract_json_object
 from ..core.llm_usage import collect_llm_usage
 from ..core.model_calls import model_operation
 from ..core.map_inspection import inspect_routes
+from ..core.memory_places import memory_location
 from ..core.models import (
     DEFAULT_INTIMACY,
     FIELD_LABELS,
@@ -3518,11 +3519,11 @@ class WebApiMixin(LifeApiMixin):
             node_id=node_id,
             memory_type=memory_type,
             scope=scope,
+            text_terms=[keyword] if keyword else None,
             limit=500,
         )
-        if keyword:
-            rows = [row for row in rows if keyword in str(row.get("content", ""))]
-        return json_response({"memories": rows})
+        nodes = self.engine.world.node_map()
+        return json_response({"memories": [{**row, "location": memory_location(row, nodes)} for row in rows]})
 
     async def api_thoughts(self):
         """内心活动：她自己留下的心里话（按会话取，越新越靠前）。"""

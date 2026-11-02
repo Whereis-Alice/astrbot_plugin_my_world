@@ -3491,7 +3491,7 @@ class TestPromptBuilder(unittest.TestCase):
 
         scene = self.builder.scene_layer(self.world.node_map()["bedroom"], {})
         hint = [line for line in scene.splitlines() if "别处才能做的动作" in line][0]
-        self.assertIn("search_web（书房）", hint)
+        self.assertIn("read（书房）[study]", hint)
         self.assertIn("walk_to", hint)
         # 这里就能做的动作不该混进"别处"那一行
         self.assertNotIn("say（", hint)

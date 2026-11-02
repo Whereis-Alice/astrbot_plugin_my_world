@@ -10,7 +10,7 @@ import random
 import time
 from typing import Any
 
-from .models import WorldConfig
+from .models import ActionDef, WorldConfig
 from .mood import DAY_BRANCH_KEYS, day_mood_branches
 from .pathfinding import find_path
 from .planner import active_plan, create_plan
@@ -55,6 +55,13 @@ OUTDOOR_MIN_BOREDOM = 0.5
 
 比发呆那条（0.8）低：待腻了就该出门，不用等到坐不住。
 """
+
+ENVIRONMENT_MIN_ENERGY = 0.6
+ENVIRONMENT_MIN_CURIOSITY = 0.55
+ENVIRONMENT_DWELL_SECONDS = 90 * 60
+ENVIRONMENT_OUTDOOR_GAP_SECONDS = 18 * 3600
+ENVIRONMENT_OUTDOOR_WEIGHT = 3.0
+"""Comfortable quiet life can still leave room for an occasional curious outing."""
 SELF_CARE_IDLE = 0.3
 
 # 好奇心触发的"去查点东西"两次之间至少隔这么久：查一次只降一点点好奇心，
@@ -432,21 +439,23 @@ class Decider:
                 )
             )
 
-        # 5) 在家待腻了 -> 出门走走。
+        # 5) 在家待腻了，或舒服地待久了仍想看看外面的世界 -> 出门走走。
         #    没有这一条她可以连着几天不出门：规则里"找人就近去客厅"、"看书去书房"，
         #    全是屋里；发呆那条虽然可能抽到公园 / 海边，但门槛高、还老被别的动机挤掉。
         #    这里只管"在家待腻了"这一种：好奇心那条走的是上网查，不是出门。
-        if (
+        change_environment = self._change_environment_due(state)
+        bored_outing = (
             self.world.is_home_zone(node_id)
             and not self.is_night()
             and not wander_eligible
             and state.energy > OUTDOOR_MIN_ENERGY
             and state.boredom > OUTDOOR_MIN_BOREDOM
-        ):
-            target, doing = self._pick_outdoor_node(state)
+        )
+        if bored_outing or change_environment:
+            target, doing = self._pick_outdoor_node(state, safe_only=change_environment and not bored_outing)
             steps = self._travel_then(node_id, target, graph) if target else []
             if doing:
-                steps.append({"action": doing})
+                steps.append({"action": doing, "duration": self._action_duration(doing)})
             candidates.append(
                 (
                     "outdoor",
@@ -454,7 +463,8 @@ class Decider:
                         steps=steps,
                         world_time=state.world_time, now=self._now(), tick_seconds=self.tick_seconds,
                         valid_for=self._plan_valid(),
-                        reason="在家待久了，想出去走走",
+                        reason=("在家待久了，想出去走走" if bored_outing
+                                else "手头的事暂时可以放一放，想去外面看看新鲜的"),
                         source="rule",
                     ),
                 )
@@ -481,7 +491,21 @@ class Decider:
                 )
             )
 
-        return self._pick_branch(state, candidates)
+        return self._pick_branch(state, candidates, allow_stay=change_environment and not bored_outing)
+
+    def _change_environment_due(self, state: WorldState) -> bool:
+        """A low-frequency opportunity, independent of whether quiet life is satisfying."""
+        if (not self.world.state_dynamics.independent_life_enabled
+                or not self.world.is_home_zone(state.node_id) or self.is_night()
+                or state.state != "idle" or state.current_action or active_plan(state) is not None
+                or self.sleep_pressure_high(state)
+                or state.energy < ENVIRONMENT_MIN_ENERGY or state.curiosity < ENVIRONMENT_MIN_CURIOSITY):
+            return False
+        now = self._now()
+        arrived = float(state.node_since or 0)
+        last_outdoor = float(state.last_outdoor_at or arrived)
+        return (arrived > 0 and now - arrived >= ENVIRONMENT_DWELL_SECONDS
+                and last_outdoor > 0 and now - last_outdoor >= ENVIRONMENT_OUTDOOR_GAP_SECONDS)
 
     def branch_weights(self, state: WorldState) -> dict[str, float]:
         """今天各决策分支的权重（1.0 = 跟平常一样）。
@@ -510,6 +534,8 @@ class Decider:
         if float(getattr(state, "desire", 0.0) or 0.0) > DESIRE_HUNGRY:
             # 想被碰一碰的时候，主动找他的意愿抬起来（她想往人那边凑）
             weights["reach_out"] *= 1.6
+        if self._change_environment_due(state):
+            weights["outdoor"] *= ENVIRONMENT_OUTDOOR_WEIGHT
         return weights
 
     def reach_out_eagerness(self, state: WorldState) -> float:
@@ -525,23 +551,25 @@ class Decider:
         self,
         state: WorldState,
         candidates: list[tuple[str, dict[str, Any]]],
+        *,
+        allow_stay: bool = False,
     ) -> dict[str, Any] | None:
         """从几个都够格的分支里挑一个。
 
-        权重全一样（平常的日子）就按原来的优先级走，不掷骰子——决策要可复现，
-        只有今天确实偏了才让它显出"今天跟昨天不一样"。
+        普通规则在权重相同时保留既有优先级。久留而好奇的外出机会额外给
+        「继续安静待着」一份权重；它不是到点必须出门的日程。
         """
 
         candidates = [(name, plan) for name, plan in candidates if self._valid_candidate(state, plan)]
         if not candidates:
             return self._custom_life_plan(state)
-        if len(candidates) == 1:
+        if len(candidates) == 1 and not allow_stay:
             return candidates[0][1]
         weights = self.branch_weights(state)
         scaled = [max(0.0, float(weights.get(name, 1.0))) for name, _plan in candidates]
-        if len({round(item, 6) for item in scaled}) == 1:
+        if not allow_stay and len({round(item, 6) for item in scaled}) == 1:
             return candidates[0][1]
-        total = sum(scaled)
+        total = sum(scaled) + (1.0 if allow_stay else 0.0)
         if total <= 0:
             return candidates[0][1]
         point = self.rng.random() * total
@@ -550,7 +578,7 @@ class Decider:
             acc += weight
             if point < acc:
                 return plan
-        return candidates[-1][1]
+        return None if allow_stay else candidates[-1][1]
 
     def _valid_candidate(self, state, plan) -> bool:
         if not plan or not plan.get("steps"):
@@ -723,7 +751,7 @@ class Decider:
             return ""
         return self.rng.choice(candidates)
 
-    def _pick_outdoor_node(self, state: WorldState) -> tuple[str, str]:
+    def _pick_outdoor_node(self, state: WorldState, *, safe_only: bool = False) -> tuple[str, str]:
         """出门该去哪、到了做什么：返回 ``(地点 id, 动作 id)``。
 
         只在家外（``zone != 首页区``）的地点里选，优先"到了真有事可做"的
@@ -731,29 +759,33 @@ class Decider:
         好奇心不低于无聊时，从最热闹的那一半里挑。
         """
 
+        from .life import life_role
+
         home_zone = self.world.home_zone_id()
-        rows: list[tuple[float, str, str]] = []
+        graph = self.world.adjacent()
+        rows: list[tuple[float, str, list[ActionDef]]] = []
         for node in self.world.nodes:
             zone = self.world.zone_of(node.id)
-            if zone == home_zone or find_path(self.world.adjacent(), state.node_id, node.id) is None:
+            if zone == home_zone or find_path(graph, state.node_id, node.id) is None:
                 continue
-            actions = [
-                action
-                for action in self.world.actions_in(node.id)
-                if action.scope == "node" and action.enabled and not action.idle and not is_sleep_action(action)
-            ]
+            actions = []
+            for action in self.world.actions_in(node.id):
+                if (action.scope != "node" or is_sleep_action(action) or not self.action_usable(action.id)
+                        or safe_only and (action.llm_level not in {"template", "single"} or action.target_type != "none"
+                            or life_role(action) not in {"interest", "explore"} or action.tool_list()
+                            or action.trigger_command or action.on_complete.trigger not in {"none", "llm_followup"})):
+                    continue
+                steps = [*self._travel_then(state.node_id, node.id, graph),
+                         {"action": action.id, "duration": self._action_duration(action.id)}]
+                if self._valid_candidate(state, {"steps": steps}):
+                    actions.append(action)
             if not actions:
                 continue
             # 到了先做点什么：优先"正经事"（逛街 / 吃点东西 / 看会儿书），
             # 没有就发呆——别挑一个跟目的地对不上的动作，那样到点会被跳过。
-            doing = next(
-                (action.id for action in actions if action.id != "stare"), actions[0].id
-            )
+            useful = [action for action in actions if action.id != "stare"] or actions
             lively = float(len([action for action in actions if action.id != "stare"]))
-            rows.append((lively, node.id, doing))
-        if not rows:
-            # 外面一个能去的都没有：退回"有发呆动作的地方"，再不行就哪儿都不去
-            rows = []
+            rows.append((lively, node.id, useful))
         if not rows:
             return "", ""
         if float(state.curiosity) >= float(state.boredom):
@@ -761,8 +793,8 @@ class Decider:
             pool = rows[: max(1, len(rows) // 2)]
         else:
             pool = rows
-        _lively, node_id, doing = self.rng.choice(pool)
-        return node_id, doing
+        _lively, node_id, actions = self.rng.choice(pool)
+        return node_id, self.rng.choice(actions).id
 
     def _action_duration(self, action_id: str) -> int:
         action = self.world.action_map().get(action_id)

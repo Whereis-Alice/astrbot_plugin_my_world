@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import json
+from collections import deque
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -619,7 +620,7 @@ class PromptBuilder:
         blocked = hidden or set()
         graph = self.world.adjacent()
         here = {item.id for item in self.world.actions_in(node_id)}
-        nearest: dict[str, tuple[int, str]] = {}
+        nearest: dict[str, tuple[int, str, str]] = {}
         for target in self.world.nodes:
             if target.id == node_id:
                 continue
@@ -637,13 +638,35 @@ class PromptBuilder:
                 known = nearest.get(action.id)
                 if known is not None and known[0] <= cost:
                     continue
-                nearest[action.id] = (cost, target.name or target.id)
+                nearest[action.id] = (cost, target.id, target.name or target.id)
         if not nearest:
             return ""
-        rows = sorted(nearest.items(), key=lambda item: item[1][0])[:12]
-        text = "、".join(f"{action_id}（{place}）" for action_id, (_cost, place) in rows)
+        # A large nearby room must not consume every slot: show one option per
+        # reachable zone, rotating its places before showing another activity in
+        # the same place. This changes what she can consider, not where she goes.
+        zones: dict[str, dict[str, deque]] = {}
+        for row in sorted(nearest.items(), key=lambda item: item[1][0]):
+            node_id = row[1][1]
+            places = zones.setdefault(self.world.zone_of(node_id), {})
+            places.setdefault(node_id, deque()).append(row)
+        queues = [deque(places.values()) for places in zones.values()]
+        rows = []
+        while len(rows) < 12 and any(queues):
+            for places in queues:
+                if not places:
+                    continue
+                choices = places.popleft()
+                rows.append(choices.popleft())
+                if choices:
+                    places.append(choices)
+                if len(rows) == 12:
+                    break
+        text = "、".join(
+            f"{action_id}（{place}）[{node_id}]"
+            for action_id, (_cost, node_id, place) in rows
+        )
         return (
-            f"（别处才能做的动作也能写：{text}——写它们时前面先带一步 walk_to 去那个地点。）\n"
+            f"（别处才能做的动作也能写：{text}——方括号是 target_node；前面先带一步 walk_to 去那里。）\n"
         )
 
     def precondition_hints(self, node_id: str) -> str:

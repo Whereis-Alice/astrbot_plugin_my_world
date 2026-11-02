@@ -12,6 +12,7 @@ from typing import Any, Awaitable, Callable
 
 from .json_actions import extract_json_object
 from .memory import DREAM, MemoryEngine
+from .memory_places import memory_location
 from .profile import ProfileStore
 
 REVIEW_STEPS = (1.0, 3.0, 7.0, 30.0)
@@ -181,6 +182,7 @@ class Consolidator:
         )
         labels = dict(session_labels or {})
         lines: list[str] = []
+        nodes = self.world.node_map()
         from .context_sources import life_memory_metadata
         for item in rows:
             owner = life_memory_metadata(str(item.get("source") or ""), item.get("context")).get("persona_key")
@@ -191,9 +193,7 @@ class Consolidator:
             people = ",".join(str(entry) for entry in (item.get("participants") or []))
             tail = f"（{people}）" if people else ""
             where = self._where(str(item.get("session_id") or ""), labels)
-            node_id = str(item.get("node_id") or "")
-            node = self.world.node_map().get(node_id)
-            place = str(node.name or node_id) if node else node_id or "未标地点"
+            place = memory_location(item, nodes)["label"]
             lines.append(
                 f"#{item['id']} [{stamp}·{tier}·{item['type']}·{where}·地点={place}"
                 f"·persona={item.get('persona_id') or '未标人设'}·scope={item.get('scope')}] "
@@ -586,7 +586,10 @@ class Consolidator:
             from .context_sources import life_memory_metadata
             def ownership(row):
                 meta = life_memory_metadata(str(row.get("source") or ""), row.get("context"))
-                return row.get("source"), meta.get("persona_key", ""), meta.get("matter_id", "")
+                # Visits share a home map index, not an occurrence location.
+                # Separate trips must never be folded into one trip's geography.
+                visit = str(meta.get("visit_id") or row["id"]) if meta.get("kind") == "world_visit" else ""
+                return row.get("source"), meta.get("persona_key", ""), meta.get("matter_id", ""), visit
             compatible = {value for value in drops if value in allowed and (row := self.memory.db.memory_by_id(value))
                           and not row.get("pinned") and ownership(row) == ownership(kept)
                           and all(row.get(key) == kept.get(key) for key in ("session_id", "persona_id", "scope", "type", "node_id"))}

@@ -413,30 +413,64 @@ class CuddleMixin:
         return "\n\n".join(part for part in parts if part)
 
     def _outdoor_hint(self, state: WorldState) -> str:
-        """一直窝在家里时的一句提醒：想出去走走就直接 walk_to。
-
-        没有这一句她能在客厅连着待好几天——规则那条"出门"容易被别的动机挤掉，
-        大模型看着满满一屋子能做的事，也不会主动往外走。
-        """
+        """Offer reachable places from her own map, with a real hourly cooldown."""
 
         if not self.world.is_home_zone(state.node_id):
             return ""
         now = self._now()
         last = float(getattr(state, "last_outdoor_at", 0.0) or 0.0)
-        hours = (now - last) / 3600.0 if last else 0.0
-        if last and hours < OUTDOOR_HINT_HOURS:
+        cooldown = OUTDOOR_HINT_HOURS * 3600.0
+        if last and now - last < cooldown:
             return ""
         said = float(getattr(state, "outdoor_hint_at", 0.0) or 0.0)
-        if said and (now - said) < OUTDOOR_HINT_HOURS:
-            # 说过一次就别每轮念：隔几个小时再说
+        if said and now - said < cooldown:
             return ""
-        span = f"已经 {int(hours)} 小时没出过门了" if last else "这两天一直在家里"
+
+        from ..life import life_role
+        from ..pathfinding import travel_cost
+
+        walking = self.world.action_map().get("walk_to")
+        if (walking is None or not walking.enabled or not self._action_usable_now(walking)
+                or not self._check_preconditions(state, walking)[0]
+                or self.action_quota_left(state, walking) <= 0):
+            return ""
+        graph = self.world.adjacent()
+        choices = []
+        for node in self.world.nodes:
+            if self.world.is_home_zone(node.id):
+                continue
+            cost = travel_cost(graph, state.node_id, node.id)
+            if cost is None:
+                continue
+            activities = [action for action in self.world.actions_in(node.id) if (
+                action.scope == "node" and action.target_type == "none"
+                and life_role(action) in {"interest", "explore"}
+                and action.id != "walk_to" and action.llm_level in {"template", "single"}
+                and not action.tool_list() and not action.trigger_command
+                and self._action_usable_now(action) and self._check_preconditions(state, action)[0]
+                and self.action_quota_left(state, action) > 0
+            )]
+            doing = activities[0] if activities else None
+            choices.append((doing is None, cost, node.id, node, doing))
+        # One destination per zone keeps a large custom map from filling the prompt.
+        places, zones = [], set()
+        for _empty, _cost, _id, node, doing in sorted(choices, key=lambda row: row[:3]):
+            zone = self.world.zone_of(node.id)
+            if zone in zones:
+                continue
+            zones.add(zone)
+            activity = f"，可{doing.name or doing.id}（{doing.id}）" if doing else ""
+            places.append(f"{node.name or node.id}（{node.id}{activity}）")
+            if len(places) >= 6:
+                break
+        if not places:
+            return ""
+        span = f"你已经 {int((now - last) / 3600.0)} 小时没出过门了。" if last else "你现在在家。"
         state.outdoor_hint_at = now
         return (
-            f"你{span}——想出去走走就直接 `walk_to` 一个外面的地点"
-            "（街口 street_gate / 商场 mall / 小吃街 snacks / 公园公园大门 park_gate / "
-            "湖边 park_lake / 海滨步道 boardwalk…），一次写清目标就行；"
-            "在外面逛一逛、买点东西、看看新鲜的，比一直在家转圈有意思。"
+            f"{span}如果想离开家换个环境，可以去：{'；'.join(places)}。"
+            "用 `walk_to` 写清真实目标；如果有想做的事，也把抵达后的活动接在计划里。"
+            "这些只是可选的去处，仍按自己的兴趣和正在做的事安排。"
         )
 
     def _note_greet_candidate(

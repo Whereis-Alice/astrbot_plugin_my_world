@@ -16615,7 +16615,7 @@ async function loadMemories() {
       const info = el("div", "memory-copy");
       const typeLabel = MEMORY_TYPE_CHOICES.find((choice) => choice.value === memory.type)?.label.split("（")[0] || "生活记录";
       const scopeLabel = MEMORY_SCOPE_CHOICES.find((choice) => choice.value === memory.scope)?.label || "默认范围";
-      const nodeLabel = nodes().find((node) => node.id === memory.node_id)?.name || memory.node_id || "无地点";
+      const nodeLabel = memoryLocationLabel(memory);
       info.appendChild(el("div", "", memory.content));
       info.appendChild(
         el(
@@ -21308,6 +21308,17 @@ function openWizard() {
   render();
 }
 
+function memoryLocationLabel(memory) {
+  if (memory.location?.label) return String(memory.location.label);
+  // Older API replies can still reach an already-open editor after reload.
+  try {
+    if (memory.source === "life_event" && JSON.parse(memory.context || "{}").kind === "world_visit") {
+      return "串门 · 具体地点未记";
+    }
+  } catch (_) { /* Plain legacy context keeps its local map label. */ }
+  return nodes().find((node) => node.id === memory.node_id)?.name || memory.node_id || "无地点";
+}
+
 /**
  * 一条记忆的完整字段。
  *
@@ -21340,7 +21351,13 @@ async function openMemoryDetail(memory) {
   }
   rows.push(
     ["类型 / 作用域", `${memory.type || ""} · ${memory.scope || ""}`],
-    ["地点", memory.node_id || "无"],
+    ["地点", memoryLocationLabel(memory)],
+  );
+  if (memory.location?.stops?.length > 1) {
+    rows.push(["相处路线", memory.location.stops.map((stop) =>
+      stop.place + (stop.activity ? " · " + stop.activity : "")).join("\n")]);
+  }
+  rows.push(
     ["相关的人", (memory.related_users || []).join("、") || "无"],
     ["参与者", (memory.participants || []).join("、") || "无"],
     ["情绪 / 权重", `${memory.emotion || "无"} · ${Number(memory.weight || 0).toFixed(2)}`],

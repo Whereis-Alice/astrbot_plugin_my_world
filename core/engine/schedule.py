@@ -787,8 +787,8 @@ class ScheduleMixin:
             return outcomes
         # 她的一天只过一遍：同一个她（会话组）只检查一次日程
         for session_id in [session_id]:
-            if self.is_busy(session_id):
-                continue  # A delayed decision in one life must not stop the global clock.
+            if not await self._schedule_clock_ready(session_id):
+                continue  # Each life waits only for its own bounded clock work.
             async with self._schedule_scan_state(session_id) as (state, scan):
                 outcomes = scan["outcomes"]
                 if active_visit(self, session_id):
@@ -1039,6 +1039,29 @@ class ScheduleMixin:
                         owner = self.config_scope_id if "schedules" in (getattr(session, "config_overrides", {}) or {}) else ""
                         once_done.add((owner, schedule.id))
         return outcomes
+
+    async def _schedule_clock_ready(self, session_id: str) -> bool:
+        """A fresh heartbeat must not win the lock before every schedule scan.
+
+        The clock and schedule workers start in the same tick. A slow clock
+        used to make its schedule skip every time, even after the clock later
+        completed. Observe that existing job briefly, without cancelling it or
+        delaying other lives; ordinary externally held locks still defer.
+        """
+        if not self.is_busy(session_id):
+            return True
+        import asyncio
+        key = self.state_key(session_id)
+        signature = self._schedule_signature
+        task = getattr(self, "_life_clock_jobs", {}).get(key)
+        if task is None or task.done():
+            return False
+        done, _ = await asyncio.wait({task}, timeout=5.0)
+        # No cancellation or manual rescan: the original scan proceeds from its
+        # saved cursor. The state lock still serializes clock delivery and scans.
+        return (bool(done) and not task.cancelled() and task.exception() is None
+                and self._schedule_signature is signature and self.state_key(session_id) == key
+                and self.is_enabled(session_id) and not self.is_busy(session_id))
 
     @session_scoped
     @life_work({"ok": False, "reason": "生活或设置已变化，请刷新后重试"})
