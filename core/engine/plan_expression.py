@@ -30,17 +30,35 @@ async def choose_autonomous_plan(
         "say": "\n".join(lines)}, ensure_ascii=False), targets,
         allowed=tuple(allowed), strict_reply=True)
     available = {str(item["user_id"]) for item in candidates}
-    named = payload.get("contact_people", [])
-    named = named if isinstance(named, list) and all(isinstance(uid, str) for uid in named) else []
-    selected = {uid.strip() for uid in named if uid.strip()}
-    if not selected:
-        # An explicit user action already names its recipient. Do not infer a
-        # broadcast recipient from the social trigger or unrelated chat history.
-        selected = {str(step.get("target") or "") for step in steps
-            if (definition := engine.world.action_map().get(step.get("action"))) is not None
-            and definition.target_type == "user" and step.get("target")}
-    if decision.intent == "outreach" and (not selected or not selected <= available):
-        decision.error = "主动联系必须选择本轮可联系的具体对象"
+    named = payload.get("contact_people")
+    malformed_people = named is not None and (not isinstance(named, list) or any(
+        not isinstance(uid, (str, int)) or isinstance(uid, bool) for uid in named))
+    defaults = ({str(uid).strip() for uid in named if str(uid).strip()}
+        if named is not None and not malformed_people else set())
+    explicit = set()
+    for step in steps:
+        definition = engine.world.action_map().get(step.get("action"))
+        if definition is None:
+            continue
+        person_action = definition.target_type == "user" or definition.id in {"say", "share"}
+        if (not person_action and definition.llm_level not in {"tool", "command"}
+                and definition.target_type != "group"):
+            continue
+        destination = str(step.get("send_to") or (plan or {}).get("send_to") or target)
+        recipient = private_recipient(engine.resolve_send_to(state, destination, fallback=""))
+        person = str(step.get("target") or "") if person_action else ""
+        if (person or recipient) in available:
+            explicit.add(person or recipient)
+    if decision.intent == "outreach":
+        if malformed_people:
+            decision.error = "主动联系对象需要有效的 user_id 列表"
+        elif not defaults <= available or not (defaults | explicit):
+            decision.error = "主动联系必须选择本轮可联系的具体对象"
+    # A top-level list is a default, not a union of future action recipients.
+    # An unaddressed line may inherit one explicit partner, never several people
+    # who happen to appear in different steps or rooms.
+    if not defaults and len(explicit) == 1:
+        defaults = set(explicit)
     if decision.error:
         outcome.notes.append("自主计划的开口选择无效，保留安静生活：" + decision.error)
     chat = decision.intent in {"join_chat", "continue_chat"} and not decision.error
@@ -65,12 +83,15 @@ async def choose_autonomous_plan(
             resolved = engine.resolve_send_to(state, destination, fallback="")
             recipient = private_recipient(resolved)
             person = str(step.get("target") or recipient)
-            if (not resolved or (recipient and recipient not in selected)
-                    or definition.target_type == "user" and person not in selected):
+            person_action = definition.target_type == "user" or definition.id in {"say", "share"}
+            if (not resolved or recipient and recipient not in available
+                    or person_action and person and person not in available
+                    or person_action and recipient and person != recipient
+                    or person_action and not person and not defaults):
                 outcome.notes.append("联系落点或动作对象不属于本轮所选对象，未发送该步骤")
                 continue
             accepted.append({**step, "kind": "outreach", **({"target": person}
-                if definition.target_type == "user" else {})})
+                if person_action and person else {})})
         elif life_share and definition.target_type != "user":
             accepted.append({**step, "kind": "life_share"})
     if plan is None:
@@ -79,7 +100,7 @@ async def choose_autonomous_plan(
                 trigger="plan", outcome=outcome, drafts=[])
         return None
     plan["steps"] = accepted
-    plan["contact_people"] = sorted(selected) if outreach else []
+    plan["contact_people"] = sorted(defaults) if outreach else []
     plan["speech_choice"] = {"intent": decision.intent if not decision.error else "listen",
         "reply_to": decision.reply_to if chat else "", "target": target}
     if chat:

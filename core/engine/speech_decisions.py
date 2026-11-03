@@ -45,9 +45,10 @@ class SpeechDecisionsMixin:
         targets = {f"c{i}": str(row["message_id"]) for i, row in enumerate(chat, 1) if row.get("message_id")}
         return allowed, chat, targets
 
-    def expression_contract(self, state, target, kind, *, token="", extra_intents=()):
+    def expression_contract(self, state, target, kind, *, token="", extra_intents=(), options=None):
         import json
-        allowed, rows, targets = self.expression_options(state, target, kind, token=token)
+        allowed, rows, targets = options or self.expression_options(state, target, kind, token=token)
+        allowed = list(allowed)
         allowed.extend(intent for intent in extra_intents if intent not in allowed)
         scene = [{"ref": ref, "who": str(row.get("name") or row.get("user_name") or row.get("user_id") or "群友"),
                   "user_id": str(row.get("user_id") or ""), "text": str(row.get("text") or "")[:500],
@@ -78,14 +79,14 @@ class SpeechDecisionsMixin:
         return await choose_autonomous_plan(self, state, outcome, plan, raw,
             target=target, options=options, candidates=candidates)
 
-    async def contact_plan_choice(self, state, outcome, plan, raw, *, target, user_id):
+    async def contact_plan_choice(self, state, outcome, plan, raw, *, target, user_id, options=None):
         """A feeling names a candidate; only the explicit choice may address them."""
         import json
         from copy import deepcopy
         from ..json_actions import extract_json_object, strip_reasoning
         from ..speech_decision import parse_decision
-        allowed, rows, targets = self.expression_options(state, target, "outreach",
-                                                         token=outcome.speech_receipt_batch)
+        allowed, rows, targets = options or self.expression_options(state, target, "outreach",
+                                                                  token=outcome.speech_receipt_batch)
         payload = extract_json_object(strip_reasoning(str(raw or ""))) or {}
         steps = (plan or {}).get("steps", [])
         lines = [str(line).strip() for step in steps if step.get("action") in {"say", "share"}
@@ -116,7 +117,8 @@ class SpeechDecisionsMixin:
             if personal:
                 quiet_steps.append({**step, "kind": "quiet"})
             elif outreach:
-                if definition.target_type == "user" and step.get("target") not in {"", user_id}:
+                person_action = definition.target_type == "user" or definition.id in {"say", "share"}
+                if person_action and step.get("target") not in {"", user_id}:
                     continue
                 destination = str(step.get("send_to") or (plan or {}).get("send_to") or target)
                 resolved = self.resolve_send_to(state, destination, fallback="")
@@ -126,7 +128,7 @@ class SpeechDecisionsMixin:
                     outcome.notes.append("联系落点不属于所选对象，未发送该步骤")
                     continue
                 quiet_steps.append({**step, "kind": "outreach", "target": user_id
-                                    if definition.target_type == "user" else step.get("target", "")})
+                                    if person_action else step.get("target", "")})
             elif chat and definition.id in {"say", "share"}:
                 # The selected source owns the room. A conflicting send_to is not
                 # permission to export this group's message to another session.

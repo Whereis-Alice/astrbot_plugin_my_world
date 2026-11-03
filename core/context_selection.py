@@ -50,6 +50,7 @@ class ContextRequest:
     life_persona: str = ""
     people_queries: dict[str, str] = field(default_factory=dict)
     focus_user: str = ""
+    instant_action: dict[str, Any] | None = None  # This request's execution; never a persisted completion.
 
     @property
     def budget(self) -> int:

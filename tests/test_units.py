@@ -3523,8 +3523,8 @@ class TestPromptBuilder(unittest.TestCase):
 
         text = self.builder.build_reply_followup_prompt("说说刚做好的菜", "你刚做完了「做饭」。")
         self.assertIn("不要吆喝", text)
-        self.assertIn("自言自语", text)
-        self.assertIn("不要和最近说过的话重复", text)
+        self.assertIn("动作完成不要求向外通知", text)
+        self.assertIn("同义改写、换句式或补一句收尾不算新内容", text)
 
     def test_chat_blocks_keep_one_chronological_stream(self):
         """群聊要按原样一条时间线呈现：谁在接谁的话，模型得看得出来。"""

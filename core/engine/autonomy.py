@@ -431,10 +431,14 @@ class AutonomyMixin:
             + "只输出 JSON。"
         )
         plan_options = None
+        contact_options = None
         plan_candidates = []
         if contact_user and not quiet:
+            allowed, rows, targets = self.expression_options(state, request.session, "outreach",
+                token=outcome.speech_receipt_batch)
+            contact_options = (list(allowed), deepcopy(rows), dict(targets))
             prompt += self.expression_contract(state, request.session, "outreach",
-                                               token=outcome.speech_receipt_batch)
+                token=outcome.speech_receipt_batch, options=contact_options)
             prompt += ("\n这次想念的候选对象 user_id=" + contact_user
                        + "。必须明确选 intent：outreach 是找该人本人；continue_chat 是接上述编号的消息，"
                          "正文里的‘你’指该消息的真实发言者，必须填写 reply_to；listen 是继续自己的生活。"
@@ -451,10 +455,12 @@ class AutonomyMixin:
             allowed.extend(extra)
             plan_options = (allowed, deepcopy(rows), dict(targets))
             prompt += self.expression_contract(state, request.session, kind,
-                token=outcome.speech_receipt_batch, extra_intents=extra)
+                token=outcome.speech_receipt_batch, options=plan_options)
             import json
             prompt += ("\n主动计划的开口必须明确选择上述 intent；个人活动仍可照常安排。"
                 "outreach 必须在顶层 contact_people 写真实 user_id，或在面向用户的动作中填写 target。"
+                "面向某人的 say/share 也填写 target；同计划给不同人说话，每一步各写自己的 target，"
+                "不要把其他步骤的对象带入这句话。"
                 "不能因想陪伴就向空对象广播，也不能继续回答已经回应或过时的催促。"
                 "群聊续话只用上面可引用的现场；其他聊天留档和过去自己的话仅作背景。"
                 "本次计划按步骤顺序发生；行动前的 say 只能表达打算，不能把后续动作写成已经发生。"
@@ -485,7 +491,7 @@ class AutonomyMixin:
         )
         if contact_user and not quiet:
             plan = await self.contact_plan_choice(state, outcome, plan, reply,
-                                                  target=request.session, user_id=contact_user)
+                target=request.session, user_id=contact_user, options=contact_options)
         elif plan_options is not None:
             plan = await self.autonomous_plan_choice(state, outcome, plan, reply,
                 target=request.session, options=plan_options, candidates=plan_candidates)

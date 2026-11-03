@@ -722,7 +722,7 @@ class ActionsRunMixin:
                     outcome.reply_targets[outcome.home()] = reply_to
         elif can_speak or not self._action_speaks(definition):
             messages = await self._instant_output(
-                state, node, definition, action, session_id=outcome.home()
+                state, node, definition, action, session_id=outcome.home(), from_plan=from_plan
             )
         else:
             # Personal activities still happen without permission to narrate
@@ -854,6 +854,7 @@ class ActionsRunMixin:
         action: PlannedAction,
         *,
         session_id: str = "",
+        from_plan: bool = False,
     ) -> list[str]:
         """瞬时动作的输出文本。"""
 
@@ -892,12 +893,19 @@ class ActionsRunMixin:
         # 「单轮」动作：这一轮没有现成台词（日程、计划里的步骤都没有），
         # 就让大模型按动作语义现写一句——不然只会发一句机械文案。
         if definition.llm_level == "single" and self.llm is not None:
+            instant_action = {"type": definition.id, "action_name": definition.name or definition.id,
+                              "intent": action.intent, "from_plan": from_plan, "execution_kind": "instant"}
+            if from_plan and isinstance(state.current_plan, dict):
+                plan = state.current_plan
+                instant_action.update(plan_id=plan.get("id", ""), plan_index=plan.get("current_step", 0),
+                                      plan_created_at=plan.get("created_at", 0))
             generated = await self._generate_text_actions(
                 state,
                 node,
                 self._single_action_instruction(state, definition, action),
                 session_id=session_id,
                 focus_user=action.target,
+                instant_action=instant_action,
             )
             # Empty output can be a deliberate listening decision, exhausted
             # budget or failed generation. Preserve it, including speech kind;
@@ -921,7 +929,7 @@ class ActionsRunMixin:
         who = self._spoken_target(state, action.target)
         private = not self.chat_is_group(str(getattr(state, "session_id", "") or ""))
         lines = [
-            f"你刚刚做了「{label}」这个动作。",
+            f"你本轮正在做「{label}」这个动作，执行结果尚未确认。",
             f"这个动作是什么意思：{definition.description or label}。",
         ]
         if action.intent and action.intent.strip() not in ("", label):
@@ -933,10 +941,11 @@ class ActionsRunMixin:
                 else f"对象是 {who}。"
             )
         lines.append(
-            "用你自己的口吻说一句"
+            "确有新内容想说时，用你自己的口吻说一句"
             + ("发给他的话" if private else "发到群里的话")
             + "：短、自然、像随口说的，"
-            "不要解释设定、不要分点、不要写成在招呼全场。"
+            "不要解释设定、不要分点、不要写成在招呼全场。没有新内容可以保持安静。"
+            "不要提前汇报动作完成或凭空补充设备、身体状态的变化。"
         )
         return "\n".join(lines)
 
@@ -1227,6 +1236,7 @@ class ActionsRunMixin:
         session_id: str = "",
         autonomy: bool = False,
         focus_user: str = "",
+        instant_action: dict[str, Any] | None = None,
     ) -> list[str]:
         """用 LLM 生成要说的话（say / share 没有现成文案时）。
 
@@ -1253,6 +1263,7 @@ class ActionsRunMixin:
         _cell, say_limit, style_text = self.style_for(state, state.session_id)
         current = str(session_id or state.session_id or "")
         request = self.context_request(state, current, task="expression", text=instruction, focus=focus_user)
+        request.instant_action = dict(instant_action) if isinstance(instant_action, dict) else None
         await self.prepare_context_memory(request)
         system_prompt = self.prompts.build_autonomous_system_prompt(
             persona_text=persona_text,

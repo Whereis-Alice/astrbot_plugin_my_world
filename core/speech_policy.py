@@ -140,7 +140,9 @@ def speech_origin(source):
                 step = steps[index] if 0 <= index < len(steps) else {}
                 outcome.contact_people = set(plan.get("contact_people") or [])
                 definition = self.world.action_map().get(step.get("action"))
-                if definition is not None and definition.target_type == "user" and step.get("target"):
+                if (definition is not None and step.get("target")
+                        and (definition.target_type == "user" or step.get("kind") == "outreach"
+                             and definition.id in {"say", "share"})):
                     outcome.contact_people = {str(step["target"])}
                 kind = step.get("kind") or ("schedule" if plan.get("source") == "schedule"
                     else "outreach" if outcome.contact_people else "life_share")

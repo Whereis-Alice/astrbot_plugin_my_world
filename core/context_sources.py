@@ -234,6 +234,10 @@ def runtime_context(prompts: Any, state: Any, node: Any, request: ContextRequest
                     values: dict[str, Any]) -> str:
     """Build only the plugin's dynamic layer; host history/tools stay untouched."""
     now = prompts._now()
+    from .action_facts import action_facts, state_execution_view
+    instant_action = getattr(request, "instant_action", None)
+    state = state_execution_view(state, prompts.world, persona_key=request.life_persona, now=request.now,
+                                 instant_action=instant_action)
     visit_presence = str(values.get("world_visit") or "")
     home_state = state
     action = state.current_action or {}
@@ -275,8 +279,8 @@ def runtime_context(prompts: Any, state: Any, node: Any, request: ContextRequest
             base.append("# 家中保留的安排（串门期间暂停）\n" + held
                         + "原计划仍保留，尚未确认完成；归家后再接续，当前没有在家推进。")
     else:
-        from .action_facts import action_facts
-        execution = action_facts(state, prompts.world, persona_key=request.life_persona, now=request.now)
+        execution = action_facts(state, prompts.world, persona_key=request.life_persona, now=request.now,
+                                 instant_action=instant_action)
         if execution:
             base.append(execution)
     from .activity_time import quiet_life_note

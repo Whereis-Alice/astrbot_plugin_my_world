@@ -988,17 +988,28 @@ def parse_plan_payload(
         if target_node and valid_nodes is not None and target_node not in valid_nodes:
             warnings.append(f"计划里的目标节点 {target_node} 不存在，已跳过")
             continue
+        raw_content = step.get("content")
+        if raw_content is not None and not isinstance(raw_content, str):
+            warnings.append("计划里的动作内容不是文本，已跳过")
+            continue
+        raw_messages = step.get("messages")
+        messages = ([item.strip() for item in raw_messages if isinstance(item, str) and item.strip()]
+            if isinstance(raw_messages, list) else [])
+        if (action_type in {"say", "share"} and raw_messages is not None
+                and raw_messages != [] and not messages):
+            warnings.append("计划里的发言没有有效文本，已跳过")
+            continue
         normalized.append(
             {
                 "action": action_type,
                 "target_node": target_node,
                 "target": str(step.get("target", "") or ""),
                 "duration": _to_int(step.get("duration", 0)),
-                "content": str(step.get("content", "") or ""),
+                "content": raw_content or "",
                 "intent": str(
                     step.get("intent", step.get("goal", step.get("purpose", ""))) or ""
                 ).strip()[:200],
-                "messages": step.get("messages") if isinstance(step.get("messages"), list) else [],
+                "messages": messages,
                 "params": step.get("params") if isinstance(step.get("params"), dict) else {},
                 "queries": _parse_queries(step.get("queries")),
                 # 计划里每一步可以自己挑说话的地方：群里应付一句、私聊里再吐槽一句

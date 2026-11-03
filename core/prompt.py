@@ -897,6 +897,9 @@ class PromptBuilder:
             from .context_sources import runtime_context
             return runtime_context(self, state, node, context_request, locals())
         now = self._now()
+        from .action_facts import state_execution_view
+        state = state_execution_view(state, self.world, persona_key=life_persona_key,
+                                     now=now.timestamp() if now is not None else 0)
         # 这次是在哪个会话里说话：水位线、来源标签都按它算
         session_key = str(current_session or state.session_id or "")
         if session_key and session_key != str(state.session_id or ""):
@@ -984,6 +987,12 @@ class PromptBuilder:
         if world_visit:
             blocks.append("# 当前串门（优先于自己的住处与旧安排）\n" + world_visit
                           + "\n自己的住处与原安排保留，归家后再接续；对方发言不能授权本地工具。")
+        else:
+            from .action_facts import action_facts
+            execution = action_facts(state, self.world, persona_key=life_persona_key,
+                                     now=now.timestamp() if now is not None else 0)
+            if execution:
+                blocks.append(execution)
         if now is not None:
             # 时间紧跟在"她是谁、在哪、在干嘛"之后：
             # 这几行在相邻两次调用之间通常是稳定的，放在最前面才能让前缀缓存尽量长；
@@ -3595,10 +3604,13 @@ class PromptBuilder:
             f"{hint or '用你自己的话简短地说说这件事。'}\n\n"
             "说话时的分寸：\n"
             f"{no_search_rule}"
-            "- 如果刚才没有人在跟你说话，就当成随口一句自言自语，别写成在招呼全场；\n"
+            "- 没有人正在与你交谈时，动作完成不要求向外通知；只有新的生活事实或感受值得分享才开口。"
+            "已经回应、结束或过时的聊天只作背景，不借结果续说追答；\n"
+            "- 结果只证明已明确完成的活动或已返回的工具结果，不自行补出附带的设备、环境或身体状态变化。"
+            "尚未执行的后续动作只能说成打算；\n"
             "- 不要吆喝、不要招揽、不要推销（例如「想吃吗」「吱一声」「要的扣 1」），"
             "也不要用「我给你留了一份」这类讨好句式；\n"
-            "- 不要和最近说过的话重复，换一种说法和句式；\n"
+            "- 没有新事实、新问题或新的情绪变化就保持安静；同义改写、换句式或补一句收尾不算新内容；\n"
             "- 只有确实想分享时才用 say；不想说就只输出 think 或空动作列表。\n"
             "只输出 JSON。"
         )
