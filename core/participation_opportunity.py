@@ -112,11 +112,16 @@ def assess_opportunity(*, now: float, rows: list[dict], new: list[dict],
                            own_turns=len(turns))
     query = "\n".join(attention_text(row)[:600] for row in content[-8:])
     related = min(1., 3 * relevance(query, persona[:12000]))
-    continuity = max((min(1., 3 * relevance(query, turn["text"])) for turn in live_turns), default=0.)
     own_ids = {mid for turn in live_turns for mid in turn["message_ids"]}
+    # Shared vocabulary is not a reply to her when the author explicitly
+    # addresses somebody else. A real quote of her own message still counts.
+    continuing_rows = [row for row in content if row.get("addressing") != "others"
+                       or str((row.get("reply_to") or {}).get("message_id") or "") in own_ids]
+    continuity = max((min(1., 3 * relevance(attention_text(row), turn["text"]))
+                      for row in continuing_rows for turn in live_turns), default=0.)
     explicit = any(row.get("addressing") == "me" or
                    str((row.get("reply_to") or {}).get("message_id") or "") in own_ids
-                   for row in content)
+                   for row in continuing_rows)
     continuing = explicit or continuity >= .5
     related = max(related, continuity)
     # A person's own relevant contribution supplies their weight. A close
@@ -141,8 +146,13 @@ def assess_opportunity(*, now: float, rows: list[dict], new: list[dict],
     last = float(observation.get("evaluated_at") or 0)
     # Sparse old messages cannot become a timed obligation to catch up.
     due = last + interval if last else now
-    if continuing and turns:
-        due = max(due, max(t["at"] for t in turns) + continuation_interval)
+    # Every actual expression leaves room in the conversation, including a
+    # native reply or a plan that did not pass through this observer. Reading
+    # another source must not reopen attention immediately after such a send.
+    last_sent = max([float(observation.get("sent_at") or 0)] + [float(row.get("at") or 0)
+        for row in rows if row.get("is_self") and 0 < float(row.get("at") or 0) <= now])
+    if last_sent:
+        due = max(due, last_sent + interval)
     ready = now >= due
     reason = ("连续接话后恢复普通观察节奏" if continuing and not priority else
               "现场延续了她刚参与的话题" if continuing else

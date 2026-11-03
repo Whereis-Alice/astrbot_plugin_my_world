@@ -563,8 +563,22 @@ class ParticipationMixin:
             # Scheduling is not a model decision. Only advance checked_seq once
             # admitted; deferred scenes remain available until their live expiry.
             state.participation[session_id] = observation
-            if sample and not self.participation_sample(state, session_id, new, await self._persona_text(session_id)):
+            if (sample or source == "browse") and not self.participation_sample(state, session_id, new, await self._persona_text(session_id)):
                 observation.update(decision="deferred", reason=(observation.get("opportunity") or {}).get("reason", "等待新的现场"))
+                if source == "browse":
+                    from .participation_queue import queue_browse
+                    due = float((observation.get("opportunity") or {}).get("due_at") or 0)
+                    waiting = bool(browse_ticket and self._now() < due < browse_ticket.deadline
+                        and browse_ticket.remaining(self._now()) > 0
+                        and (browse_ticket.deferred or queue_browse(self, browse_ticket)))
+                    self.note_browse_reply_gate(state, session_id, browse_id,
+                        "waiting" if waiting else "cadence", observation["reason"])
+                    thought = next((t for t in reversed(state.thoughts)
+                        if t.get("browse_id") == browse_id and t.get("browse_session") == session_id), None)
+                    if thought is not None:
+                        thought["detail"]["browse_reply"]["next_at"] = due
+                        if waiting:
+                            thought["detail"]["browse_reply"]["until"] = browse_ticket.deadline
                 return outcome
             if self.llm is None:
                 observation.update(decision="unavailable", reason="没有可用的主模型，暂未判断是否接话")
@@ -593,8 +607,9 @@ class ParticipationMixin:
             else:
                 observation["checked_seq"] = max(int(r.get("seq") or 0) for r in rows)
             observation["attempts"] = [at for at in observation.get("attempts", []) if 0 <= now - at < 3600][-119:]
-            if source == "message":
-                observation["attempts"].append(now)
+            # Reading keeps its own source capability and one-shot marker, but
+            # all autonomous chat judgments share the same attention budget.
+            observation["attempts"].append(now)
             self.decision_trace(session_id, "participation", "considering", "近期群聊已聚合，判断是否有话想接",
                                 messages=len(rows))
             self.claim_chat_scene(outcome, session_id, rows, window=window, state=state, media_rows=new)

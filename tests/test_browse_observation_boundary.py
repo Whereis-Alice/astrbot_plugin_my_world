@@ -32,12 +32,62 @@ class BrowseObservationBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_reading_after_real_listening_can_choose_to_reply(self):
         action = await self.observed_reading()
+        self.clock.advance(901)  # A later reading is independent after ordinary attention space.
         state = await self.complete(action, decision=(
             '{"intent":"continue_chat","say":"刚翻到这盆花，花期赶得真好。","reply_to":"m1"}'))
         self.assertEqual(self.messenger.sent, [(S, ["刚翻到这盆花，花期赶得真好。"])])
         thought = next(row for row in state.thoughts if row.get("browse_id") == action["id"])
         self.assertTrue(thought["browse_replied"])
         self.assertEqual(len(self.llm.calls), 3)  # Observe, read, independently decide after reading.
+
+    async def test_immediate_reading_does_not_repeat_a_recent_message_judgement(self):
+        action = await self.observed_reading()
+        state = await self.complete(action)
+        thought = next(row for row in state.thoughts if row.get("browse_id") == action["id"])
+        self.assertEqual(thought["detail"]["browse_reply"]["status"], "cadence")
+        self.assertNotIn("browse_reply_started_at", thought)
+        self.assertEqual(len(self.llm.calls), 2)  # Observation and reading, no duplicate speech call.
+        self.assertFalse(self.messenger.sent)
+        self.assertFalse(getattr(self.engine, "_participation_settlers", {}))
+
+    async def test_reading_speech_uses_the_same_hourly_attention_budget(self):
+        action = await self.prepare(reply_enabled=True, message_id="read-flower")
+        async with self.engine.session_state(S) as state:
+            cap = self.engine.world.decider.participation_hourly_max
+            state.participation[S] = {"attempts": [self.clock.now() - 60] * cap}
+        state = await self.complete(action)
+        thought = next(row for row in state.thoughts if row.get("browse_id") == action["id"])
+        self.assertEqual(thought["detail"]["browse_reply"]["status"], "cadence")
+        self.assertNotIn("browse_reply_started_at", thought)
+        self.assertEqual(len(self.llm.calls), 1)
+        self.assertEqual(len(state.participation[S]["attempts"]), cap)
+        self.assertFalse(self.messenger.sent)
+
+    async def test_real_followup_waits_outside_model_slot_and_keeps_original_reading(self):
+        from core.engine.participation_queue import wake
+        action = await self.prepare(reply_enabled=True, message_id="read-flower")
+        async with self.engine.session_state(S) as state:
+            state.recent_chat[0]["addressing"] = "me"
+            own = state.note_chat(user_id="__self__", name="她", text="花期很短。",
+                                  now=self.clock.now() - 10, origin=S, is_self=True, keep=100)
+            own["speech_turn"] = "last-turn"
+            state.participation[S] = {"evaluated_at": self.clock.now() - 40}
+        state = await self.complete(action, decision=(
+            '{"intent":"continue_chat","say":"今天正好赶上了。","reply_to":"m1"}'))
+        thought = next(row for row in state.thoughts if row.get("browse_id") == action["id"])
+        self.assertEqual(thought["detail"]["browse_reply"]["status"], "waiting")
+        self.assertEqual(thought["detail"]["browse_reply"]["next_at"], self.clock.now() + 10)
+        self.assertNotIn("browse_reply_started_at", thought)
+        self.assertEqual(len(self.llm.calls), 1)
+        self.assertFalse(self.messenger.sent)
+        task = self.engine._participation_settlers[self.engine.state_key(S)]
+        self.clock.advance(10)
+        wake(self.engine, S)
+        await asyncio.wait_for(task, 3)
+        self.assertEqual(self.messenger.sent, [(S, ["今天正好赶上了。"])])
+        self.assertEqual(len(self.llm.calls), 2)
+        state = await self.engine.load_state(S)
+        self.assertEqual(state.participation[S]["attempts"], [self.clock.now()])
 
     async def test_reading_keeps_message_observation_watermark_and_cadence(self):
         action = await self.prepare(reply_enabled=True, message_id="read-flower")
@@ -46,6 +96,7 @@ class BrowseObservationBoundaryTests(unittest.IsolatedAsyncioTestCase):
         state = await self.complete(action, decision='{"intent":"listen","motivation":"留着这个想法。"}')
         self.assertEqual(state.participation[S]["checked_seq"], 0)
         self.assertEqual(state.participation[S]["evaluated_at"], self.clock.now())
+        self.assertEqual(state.participation[S]["attempts"], [self.clock.now()])
         self.assertFalse(self.messenger.sent)
 
     async def test_waiting_reading_survives_an_independent_observation_watermark(self):

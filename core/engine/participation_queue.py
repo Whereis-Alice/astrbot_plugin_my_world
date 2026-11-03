@@ -24,6 +24,15 @@ def budget_delay(engine, state, target: str, *, source: str, browse_id: str = ""
     return max(0., float(observation.get("budget_next_at") or 0) - engine._now())
 
 
+def reading_attention_delay(state, ticket: BrowseReply, now: float) -> float:
+    """Wait on this reading's cadence without consuming its one-shot marker."""
+    thought = next((t for t in reversed(state.thoughts) if t.get("browse_id") == ticket.browse_id
+        and t.get("browse_session") == ticket.target), {})
+    attention = (thought.get("detail") or {}).get("browse_reply") or {}
+    return (max(0., float(attention.get("next_at") or 0) - now)
+            if attention.get("status") == "waiting" else 0.)
+
+
 def registries(engine):
     for name in ("_participation_pending", "_participation_browses", "_participation_settlers", "_participation_wakeups"):
         if not hasattr(engine, name):
@@ -211,6 +220,9 @@ async def settle_browse(engine, ticket: BrowseReply) -> float | None:
                 return None
             if gate in RETRYABLE:
                 return min(5, max(.01, ticket.remaining(engine._now())))
+            attention = reading_attention_delay(state, ticket, engine._now())
+            if attention:
+                return min(attention, max(.01, ticket.remaining(engine._now())))
             held = budget_delay(engine, state, target, source="browse", browse_id=ticket.browse_id)
             if held and reply_status(state, ticket) == "waiting":
                 return min(held, max(.01, ticket.remaining(engine._now())))
@@ -237,6 +249,9 @@ async def settle_browse(engine, ticket: BrowseReply) -> float | None:
             held = budget_delay(engine, state, target, source="browse", browse_id=ticket.browse_id)
             if held and reply_status(state, ticket) == "waiting":
                 return min(held, max(.01, ticket.remaining(engine._now())))
+            attention = reading_attention_delay(state, ticket, engine._now())
+            if attention:
+                return min(attention, max(.01, ticket.remaining(engine._now())))
             if reply_status(state, ticket) in RETRYABLE:
                 return min(5, max(.01, ticket.remaining(engine._now())))
     return None

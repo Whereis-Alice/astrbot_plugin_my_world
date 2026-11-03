@@ -306,7 +306,9 @@ class OpportunityTests(unittest.TestCase):
         self.assertEqual(len(visible_turns(rows, 1000)), 2)
         one = self.choice(rows=rows[:1], new=[{"text": "打印机买来了"}])
         split = self.choice(rows=rows[:3], new=[{"text": "打印机买来了"}])
-        self.assertEqual(one.due_at, split.due_at)
+        # The completed segment moves the last-send time by two seconds;
+        # it does not count as another turn or add another attention interval.
+        self.assertEqual(one.due_at - 995, split.due_at - 997)
 
     def test_continuation_has_priority_but_keeps_hourly_budget(self):
         new = [{"text": "还有个细节", "addressing": "me"}]

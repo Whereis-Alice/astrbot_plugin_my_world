@@ -12,6 +12,30 @@ GROUP, OTHER = participation.GROUP, participation.OTHER
 
 
 class CadenceTests(unittest.TestCase):
+    def test_others_same_topic_does_not_accelerate_but_real_quote_still_does(self):
+        rows = [{"is_self": True, "at": 990, "text": "风车叶片", "speech_turn": "a", "message_id": "own"}]
+        row = {"text": "风车叶片", "addressing": "others"}
+        args = dict(now=1000, rows=rows, new=[row], observation={"evaluated_at": 900},
+                    attempts=[], persona="", affinities={})
+        other = assess_opportunity(**args)
+        self.assertFalse(other.continuation)
+        self.assertFalse(other.continuation_priority)
+        self.assertFalse(other.ready)
+        row["reply_to"] = {"message_id": "own"}
+        quoted = assess_opportunity(**args)
+        self.assertTrue(quoted.continuation_priority)
+        self.assertEqual(quoted.due_at, 1010)
+
+    def test_unsampled_plan_or_native_send_still_leaves_attention_space(self):
+        args = dict(now=1000, rows=[], new=[{"text": "今天下雨了"}],
+                    observation={}, attempts=[], persona="", affinities={}, level="quiet")
+        self.assertTrue(assess_opportunity(**args).ready)
+        args["rows"].append({"is_self": True, "at": 995, "text": "我在做早餐", "speech_turn": "plan"})
+        after_send = assess_opportunity(**args)
+        self.assertFalse(after_send.ready)
+        self.assertFalse(after_send.continuation)
+        self.assertGreater(after_send.due_at, 995 + 900)
+
     def test_actual_send_controls_next_read_and_continuation_eventually_slows(self):
         rows = [{"is_self": True, "at": 990, "text": "我也喜欢这个", "speech_turn": "a"}]
         args = dict(now=1000, rows=rows, new=[{"text": "还有个细节", "addressing": "me"}],

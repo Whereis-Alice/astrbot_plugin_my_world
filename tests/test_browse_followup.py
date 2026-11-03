@@ -197,7 +197,7 @@ class BrowseFollowupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.messenger.sent, [(P, ["花现在开得怎么样？"])])
         self.assertFalse(self.engine._participation_pending)
         state = await self.engine.load_state(S)
-        self.assertFalse((state.participation.get(P) or {}).get("attempts"))
+        self.assertEqual((state.participation.get(P) or {}).get("attempts"), [self.clock.now()])
 
     async def test_waiting_display_expires_without_mutating_persisted_history(self):
         await self.blocked_reading(reply_wait_seconds=1)

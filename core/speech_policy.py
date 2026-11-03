@@ -52,7 +52,8 @@ def activity_speech_kind(kind, definition):
     scheduled and tool work keep their original provenance.
     """
     if (kind == "outreach" and definition is not None
-            and definition.category == "continuous"
+            and definition.category in {"instant", "continuous"}
+            and definition.id not in {"say", "share", "poke"}
             and definition.target_type in {"none", "node"}
             and definition.llm_level not in {"tool", "command"}
             and not definition.tool_list() and not definition.trigger_command):
@@ -175,6 +176,7 @@ def speech_origin(source):
                         outcome.contact_people = {str(action.target)}
                         if kind in {"", "life_share"}:
                             kind = "outreach"
+                kind = activity_speech_kind(kind, definition)
             else:
                 kind = source
             if source == "completion":
