@@ -3,7 +3,7 @@ import {recordMoments, recordParts} from "./visit-records.js";
 
 const STATUS = {
   invited: "邀请已提出", inviting: "正在提出邀请", offered: "等待接待决定", pending: "等待答复", accepted: "对方已接受",
-  visiting: "正在做客", active: "正在一起活动", arrived: "已经到访", returning: "正在告别归家",
+  visiting: "正在做客", active: "相见中", arrived: "已经到访", returning: "正在告别归家",
   completed: "已告别归家", closed: "已经结束", ended: "已经结束", declined: "这次没有成行",
   rejected: "对方暂时不方便", cancelled: "邀请已取消", interrupted: "这次暂时中断",
   expired: "这次已结束", failed: "这次没有成行",

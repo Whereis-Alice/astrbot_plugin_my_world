@@ -2,8 +2,9 @@
 把当前 HEAD 推到一个 GitHub 仓库：走 GitHub REST API（api.github.com），
 不依赖 github.com:443 的 git 传输。
 
-什么时候用：本机 / 网络只能访问 api.github.com、`git push` 被重置的时候。
+默认发布入口：本地相关验证完成后，通过 API 直接更新目标仓库。
 认证走本机已登录的 gh CLI（`gh auth login`），脚本本身不保存任何密钥。
+用户持久要求今后禁止跑 CI；本脚本不创建验证分支，不触发或等待 CI。
 
 用法：
     pwsh tools/push_via_api.ps1 -Repo Whereis-Alice/astrbot_plugin_my_world
@@ -12,20 +13,18 @@
 1. 把 HEAD 里每个 blob 逐个上传（二进制安全，直接读 git 对象）；
    已经传过的按 blob SHA 记在 .git/mw_push_blobs.json 里，重跑不重复上传；
 2. 以远端现在的 main 为父提交建一个新 commit（**不是空父提交**，历史照样接着长）；
-3. 创建 codex/ci-* 验证分支，等待该分支、准确提交的完整 CI 成功；
-4. 再次确认 main 没有被别人更新后，把同一个已验证 commit 晋级到 main。
+3. 校验上传的 tree 与本地 HEAD 一致，确认源码和远端 main 没有变化；
+4. 以 force=false 直接更新 main。
 
 注意：它只能"以远端 HEAD 为父"往前推一个提交，做不了合并、rebase 之类的同步；
-能 `git push` 的时候还是用 git push。另外它建出来的 commit 与本地 HEAD 内容相同、
-但 commit SHA 不同（作者 / 时间戳由 API 决定），网络恢复后 `git fetch` + 对齐一次即可。
+它建出来的 commit 与本地 HEAD 内容相同，但 commit SHA 不同（作者 / 时间戳由 API
+决定），发布后 `git fetch` + 对齐一次即可。只发布已提交的干净 HEAD；疑似密钥只报告
+文件名，不输出值。
 #>
 
 param(
     [Parameter(Mandatory = $true)]
-    [string]$Repo,
-
-    [ValidateRange(1, 60)]
-    [int]$CiTimeoutMinutes = 30
+    [string]$Repo
 )
 
 $ErrorActionPreference = "Stop"
@@ -85,39 +84,43 @@ function Get-GitBlobBytes {
     return $stream.ToArray()
 }
 
-function Wait-ValidationCI {
-    param([string]$Sha, [string]$Branch)
-    $timer = [System.Diagnostics.Stopwatch]::StartNew()
-    $lastStatus = ""
-    while ($timer.Elapsed.TotalMinutes -lt $CiTimeoutMinutes) {
-        $runs = Invoke-GhJson -Endpoint "repos/$Repo/actions/workflows/ci.yml/runs?head_sha=$Sha&per_page=20" |
-            ConvertFrom-Json
-        $run = $runs.workflow_runs | Where-Object {
-            $_.head_sha -eq $Sha -and $_.head_branch -eq $Branch -and $_.event -eq "push"
-        } | Sort-Object -Property id -Descending | Select-Object -First 1
-        $status = if ($run) { "$($run.status):$($run.conclusion)" } else { "等待 CI 创建" }
-        if ($status -ne $lastStatus) {
-            Write-Host "验证分支 CI：$status"
-            if ($run) { Write-Host $run.html_url }
-            $lastStatus = $status
-        }
-        if ($run -and $run.status -eq "completed") {
-            if ($run.conclusion -ne "success") {
-                throw "验证分支 CI 未通过（$($run.conclusion)）：$($run.html_url)。main 未更新。"
-            }
-            return $run.html_url
-        }
-        Start-Sleep -Seconds 15
+function Assert-UnchangedHead {
+    param([string]$Head)
+    $currentHead = (git rev-parse HEAD).Trim()
+    $dirty = @(git status --porcelain --untracked-files=all)
+    if ($currentHead -ne $Head -or $dirty.Count -gt 0) {
+        throw "源码已变化或尚未提交。请先提交本轮修改；本脚本只发布干净的 HEAD。"
     }
-    throw "等待验证分支 CI 超过 $CiTimeoutMinutes 分钟。main 未更新；请查看 $Branch 的 CI。"
+}
+
+function Assert-PublishableHead {
+    param([string]$Head, [string[]]$Rows)
+    Assert-UnchangedHead -Head $Head
+    foreach ($row in $Rows) {
+        $meta, $path = $row -split "`t", 2
+        $parts = $meta -split " ", 3
+        if ($parts[1] -ne "blob") {
+            throw "HEAD 包含不支持的对象：$path。停止发布以免遗漏源码。"
+        }
+        $text = [System.Text.Encoding]::UTF8.GetString((Get-GitBlobBytes -Sha $parts[2]))
+        # 检查长密钥字面量，避免把测试里的短脱敏样本判为实际凭据。
+        $secret = '(?:abk_[A-Za-z0-9_-]{40,}|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,})'
+        $privateKey = '(?s)-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----\s+[A-Za-z0-9+/=]{20,}'
+        if ($text -match $secret -or $text -match $privateKey) {
+            throw "HEAD 中存在疑似敏感信息：$path。请移除后重新提交；未向 GitHub 上传内容。"
+        }
+    }
 }
 
 $root = (git rev-parse --show-toplevel).Trim()
 Push-Location $root
 try {
     $head = (git rev-parse HEAD).Trim()
+    $headTree = (git rev-parse "$head^{tree}").Trim()
     $message = (git log -1 --pretty=%B | Out-String).TrimEnd()
-    # 发布门禁不能在验证前通过 Contents API 初始化 main。
+    $rows = @(git ls-tree -r $head)
+    Assert-PublishableHead -Head $head -Rows $rows
+    # 发布前不通过 Contents API 初始化 main。
     # 读取失败直接停止，也不把网络或权限错误当成空仓库。
     $refJson = Invoke-GhJson -Endpoint "repos/$Repo/git/ref/heads/main" -Method GET
     $parentSha = ($refJson | ConvertFrom-Json).object.sha
@@ -145,7 +148,6 @@ try {
             $uploaded = @{}
         }
     }
-    $rows = @(git ls-tree -r HEAD)
     $entries = New-Object System.Collections.Generic.List[object]
     $index = 0
     foreach ($row in $rows) {
@@ -169,6 +171,9 @@ try {
                 Invoke-GhJson -Endpoint "repos/$Repo/git/blobs" -Method POST -Payload $payload |
                     ConvertFrom-Json
             ).sha
+            if ($blobSha -ne $sha) {
+                throw "上传后的 blob 与本地对象不一致：$path。main 未更新。"
+            }
             $uploaded[$sha] = $true
             if ($index % 20 -eq 0) {
                 [System.IO.File]::WriteAllText(
@@ -194,6 +199,11 @@ try {
         Invoke-GhJson -Endpoint "repos/$Repo/git/trees" -Method POST -Payload @{ tree = $entries } |
             ConvertFrom-Json
     ).sha
+    if ($treeSha -ne $headTree) {
+        throw "上传后的 tree 与本地 HEAD 不一致。main 未更新。"
+    }
+
+    Assert-UnchangedHead -Head $head
 
     Write-Host "创建 commit…"
     $commitSha = (
@@ -204,41 +214,18 @@ try {
         } | ConvertFrom-Json
     ).sha
 
-    $validationBranch = "codex/ci-$($commitSha.Substring(0, 12))"
-    Write-Host "创建验证分支 $validationBranch → $commitSha"
-    try {
-        Invoke-GhJson -Endpoint "repos/$Repo/git/refs" -Method POST -Payload @{
-            ref = "refs/heads/$validationBranch"
-            sha = $commitSha
-        } | Out-Null
-    } catch {
-        # The server may have created the ref before its response was lost.
-        # Resume only after a read proves this exact ref still has our commit.
-        $creationError = $_
-        try {
-            $existingRef = Invoke-GhJson -Endpoint "repos/$Repo/git/ref/heads/$validationBranch" |
-                ConvertFrom-Json
-        } catch {
-            throw $creationError
-        }
-        if ($existingRef.object.sha -ne $commitSha) {
-            throw "已有验证分支与待发布提交不一致，停止发布；main 未更新。"
-        }
-        Write-Host "验证分支已存在且提交一致，继续等待同一份 CI。"
-    }
-    $ciUrl = Wait-ValidationCI -Sha $commitSha -Branch $validationBranch
     $currentMain = (Invoke-GhJson -Endpoint "repos/$Repo/git/ref/heads/main" | ConvertFrom-Json).object.sha
     if ($currentMain -ne $parentSha) {
-        throw "验证期间远端 main 已更新，停止晋级。请同步远端修改后重新验证；已通过的 CI：$ciUrl"
+        throw "上传期间远端 main 已更新，停止发布。请同步远端修改后重试；已上传提交：$commitSha"
     }
-    Write-Host "CI 已成功，晋级同一个提交到 refs/heads/main → $commitSha"
+    Assert-UnchangedHead -Head $head
+    Write-Host "直接更新 refs/heads/main → $commitSha"
     Invoke-GhJson -Endpoint "repos/$Repo/git/refs/heads/main" -Method PATCH -Payload @{
         sha   = $commitSha
         force = $false
     } | Out-Null
     Write-Host "完成：https://github.com/$Repo/commit/$commitSha"
-    Write-Host "验证 CI：$ciUrl"
-    Write-Host "（本地 HEAD $head 的树已推送；日常同步请直接 git push）"
+    Write-Host "（本地 HEAD $head 的树已通过 API 直发；未运行 CI）"
 } finally {
     Pop-Location
 }

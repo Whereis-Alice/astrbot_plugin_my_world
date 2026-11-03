@@ -29,6 +29,47 @@ class VisitFlow(VisitRhythm):
             return outing.get("quiet_until", outing["until"])
         return self._now()
 
+    async def _refresh_outing_budget_hold(self, visit_id):
+        """Release only our own obsolete allowance wait before the time gate."""
+        visit = self._state.get("visits", {}).get(visit_id)
+        if (not visit or visit["status"] in TERMINAL or not outing_enabled(visit)
+                or visit.get("manual")):
+            return False
+        own, scope = self._local_id(visit), visit["scope"]
+        if own not in visit.get("budget_holds", {}):
+            return False
+        budget = await self._automatic_budget_snapshot(scope)
+        if budget is None or not budget.get("allowed"):
+            return False
+        async with self._lock:
+            visit = self._state.get("visits", {}).get(visit_id)
+            if (not visit or self._closed or not self.config.enabled or visit["status"] in TERMINAL
+                    or visit["scope"] != scope or self._local_id(visit) != own
+                    or own not in visit.get("budget_holds", {})):
+                return False
+            record = self._state["draws"].get(scope, {})
+            if (not budget.get("unlimited") and record.get("budget_hold") is not None
+                    and record["budget_hold"] == budget.get("snapshot")):
+                return False
+            if visit.get("outbox"):
+                # Settle the saved signed packet first; its cached reply can
+                # still acknowledge our old hold. Keep network backoff intact.
+                if not visit.get("budget_notice_pending"):
+                    visit["budget_notice_pending"] = True
+                    visit["next_at"] = self._now()
+                    await self._save()
+                return False
+            visit["budget_holds"].pop(own)
+            record.pop("budget_hold", None)
+            if not visit["budget_holds"]:
+                visit.pop("outing_budget_hold", None)
+            # Publish our withdrawal even if the peer's cached hold still
+            # waits until tomorrow. Only its authenticated reply can clear it.
+            visit["budget_notice_pending"] = True
+            visit["next_at"] = self._now()
+            await self._save()
+            return True
+
     async def _hold_outing_budget(self, visit, budget):
         """Retain the last shared place and publish a single reset checkpoint."""
         budget = copy.deepcopy(budget or {})
@@ -748,6 +789,7 @@ class VisitFlow(VisitRhythm):
                     visit["next_at"] = self._outing_wait_at(visit)
                 elif sender in holds:
                     holds.pop(sender, None)
+                    visit["next_at"] = self._outing_wait_at(visit)
             if remote.get("status") == "active":
                 self._activate(visit, remote.get("intro", ""))
             elif remote.get("status") in TERMINAL:
@@ -958,6 +1000,11 @@ class VisitFlow(VisitRhythm):
                 if not self._life_enabled(visit["scope"]):
                     async with self._lock:
                         await self._finish(visit, "interrupted", "这个生活已关闭串门或归属发生变化")
+                    continue
+                try:
+                    await self._refresh_outing_budget_hold(visit_id)
+                except VisitStateError:
+                    # A failed read cannot prove the previous wait obsolete.
                     continue
                 if max(visit["next_at"], (visit.get("state_retry") or {}).get("next_at", 0),
                        self._touched.get(visit["scope"], 0)) > self._now():

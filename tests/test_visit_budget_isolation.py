@@ -11,11 +11,27 @@ from core.background_budget import capture_background_admission
 from core.llm_usage import record_llm_usage
 from core.model_calls import model_context
 from core.ports import LLMReply
+from core.visits import VisitConfig
 from tests import test_engine as fixture
 
 
 S, OTHER = fixture.SESSION, fixture.OTHER_SESSION
 EMPTY = dict(calls=0, tokens=0, unknown=0, reserved=0)
+
+
+class VisitBudgetDefaultsTests(unittest.TestCase):
+    def test_default_and_explicit_zero_leave_daily_calls_unlimited(self):
+        self.assertEqual((VisitConfig().daily_calls, VisitConfig().daily_tokens), (0, 0))
+        for values in ({}, {"visits_daily_calls": 0, "visits_daily_tokens": 0}):
+            with self.subTest(values=values):
+                config = VisitConfig.from_mapping(values)
+                self.assertEqual((config.daily_calls, config.daily_tokens), (0, 0))
+                self.assertEqual((config.daily_peer_limit, config.auto_interval_minutes,
+                                  config.auto_probability), (1, 60, 1.))
+
+    def test_explicit_finite_limits_are_preserved(self):
+        config = VisitConfig.from_mapping({"visits_daily_calls": 24, "visits_daily_tokens": 1000})
+        self.assertEqual((config.daily_calls, config.daily_tokens), (24, 1000))
 
 
 class VisitBudgetIsolationTests(unittest.IsolatedAsyncioTestCase):
@@ -59,8 +75,7 @@ class VisitBudgetIsolationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.usage(await self.status()), dict(calls=1, tokens=10, unknown=0, reserved=0))
         self.channel.generate.assert_awaited_once()
 
-    async def test_default_24_call_visit_pool_is_bounded_without_spending_routine(self):
-        self.engine.visits = SimpleNamespace(config=SimpleNamespace())
+    async def test_explicit_24_call_visit_pool_is_bounded_without_spending_routine(self):
         initial = await self.status()
         self.assertEqual((initial["call_limit"], initial["token_limit"]), (24, 0))
         for _ in range(24):
@@ -75,6 +90,37 @@ class VisitBudgetIsolationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.status())["calls"], 24)
         self.assertEqual(await self.ordinary(), EMPTY)
         self.assertEqual(self.channel.generate.await_count, 24)
+
+    async def test_unlimited_visits_beyond_24_calls_still_keep_their_actual_usage(self):
+        self.engine.visits.config = VisitConfig()
+        self.assertEqual((await self.status())["call_limit"], 0)
+        for _ in range(25):
+            self.assertTrue((await self.generate()).ok)
+        self.engine.visits.config = VisitConfig.from_mapping({"visits_daily_calls": 0})
+        self.assertTrue((await self.generate()).ok)
+        self.engine.visits.config = SimpleNamespace()
+        self.assertTrue((await self.generate()).ok)
+        status = await self.status()
+        self.assertTrue(status["allowed"])
+        self.assertEqual((status["call_limit"], status["token_limit"]), (0, 0))
+        self.assertEqual(self.usage(status), dict(calls=27, tokens=270, unknown=0, reserved=0))
+        self.assertEqual(self.channel.generate.await_count, 27)
+        self.assertEqual(await self.ordinary(), EMPTY)
+
+    async def test_unlimited_calls_still_respect_an_explicit_token_ceiling(self):
+        self.engine.visits.config = VisitConfig.from_mapping({
+            "visits_daily_calls": 0, "visits_daily_tokens": 118})
+        self.assertTrue((await self.generate()).ok)
+        with capture_background_admission() as admission:
+            denied = await self.generate()
+        self.assertFalse(denied.ok)
+        self.assertTrue(admission.deferred)
+        self.assertFalse(admission.started)
+        status = await self.status()
+        self.assertEqual((status["call_limit"], status["token_limit"]), (0, 118))
+        self.assertEqual(self.usage(status), dict(calls=1, tokens=10, unknown=0, reserved=0))
+        self.channel.generate.assert_awaited_once()
+        self.assertEqual(await self.ordinary(), EMPTY)
 
     async def test_distinct_lives_each_have_their_own_allowance(self):
         self.store.add_session(OTHER)

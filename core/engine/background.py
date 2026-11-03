@@ -71,7 +71,7 @@ class BackgroundMixin:
         if not scope:
             return None
         config = getattr(getattr(self, "visits", None), "config", None)
-        calls = max(0, int(getattr(config, "daily_calls", 24)))
+        calls = max(0, int(getattr(config, "daily_calls", 0)))
         tokens = max(0, int(getattr(config, "daily_tokens", 0)))
         with self.config_scope(scope):
             local = self.local_at(self._now())

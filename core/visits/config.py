@@ -74,7 +74,7 @@ class VisitConfig:
     outing_duration_minutes: int = 180
     turns_per_actor: int = 3
     max_calls: int = 12
-    daily_calls: int = 24
+    daily_calls: int = 0
     daily_tokens: int = 0
     max_output_tokens: int = 240
     timeout_seconds: int = 45
@@ -115,7 +115,7 @@ class VisitConfig:
             outing_duration_minutes=number("outing_duration_minutes", 180, 30, 240),
             turns_per_actor=number("turns_per_actor", 3, 1, 5),
             max_calls=number("max_calls", 12, 2, 20),
-            daily_calls=number("daily_calls", 24, 1, 240),
+            daily_calls=number("daily_calls", 0, 0, 240),
             daily_tokens=number("daily_tokens", 0, 0, 10000000),
             max_output_tokens=number("max_output_tokens", 240, 64, 512),
             timeout_seconds=number("timeout_seconds", 45, 5, 90),

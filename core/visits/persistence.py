@@ -41,6 +41,14 @@ class VisitJournal(WorldConnections):
                                   ("codes", {}), ("receipts", {}), ("draws", {})):
                 self._state.setdefault(name, default)
             self._migrate_connections()
+            limits = [self.config.daily_calls, self.config.daily_tokens]
+            if self._state.get("budget_limits") != limits:
+                # An old remote refusal is a cached observation, not current
+                # authority. A settings change permits one fresh authenticated
+                # check while retaining all pairings and actual usage ledgers.
+                for connection in self._state.get("connections", {}).values():
+                    connection.pop("availability", None)
+                self._state["budget_limits"] = limits
             if "presence_epochs" not in self._state:
                 self._state["presence_epochs"] = {}
                 for visit in self._state["visits"].values():

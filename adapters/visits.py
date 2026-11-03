@@ -170,6 +170,7 @@ class VisitActorPort:
                 local = local.replace(tzinfo=engine._resolve_tz())
             reset = (local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
             return {"allowed": status["allowed"], "snapshot": snapshot,
+                    "unlimited": calls == 0 and tokens == 0,
                     "day": status["day"], "reset_at": reset.timestamp(),
                     "used": status["calls"], "limit": calls,
                     "reason": "" if status["allowed"] else "今天的自主联系额度已用完"}

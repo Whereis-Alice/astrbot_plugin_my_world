@@ -138,7 +138,7 @@ class VisitRhythm:
             peer = history.setdefault(old_id, {"days": {}, "last_at": 0})
             used = peer["days"].setdefault(day, {"attempts": 0, "successes": 0})
             used["attempts"] += 1
-            if visit.get("arrived_at"):
+            if visit.get("arrived_at") and (not visit.get("manual") or visit.get("automatic_counted")):
                 used["successes"] += 1
                 visit["automatic_counted"] = True
             peer["last_at"] = max(peer["last_at"], visit["created_at"])
@@ -166,7 +166,8 @@ class VisitRhythm:
 
     def _note_automatic_success(self, visit):
         """Called under the invitation lock when a confirmed arrival is persisted."""
-        if not visit.get("automatic") or not visit.get("arrived_at") or visit.get("automatic_counted"):
+        if (not visit.get("automatic") or visit.get("manual")
+                or not visit.get("arrived_at") or visit.get("automatic_counted")):
             return
         record = self._daily_record(visit["scope"])
         if visit.get("automatic_counted"):  # Migration may already have restored this arrival.

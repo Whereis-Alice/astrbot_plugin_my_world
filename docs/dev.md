@@ -35,21 +35,31 @@ astrbot_plugin_my_world/
 
 ## 本地验证与测试
 
+用户已明确要求今后禁止跑 CI，仓库规则见 [AGENTS.md](../AGENTS.md)。不触发或等待 GitHub Actions，不把全仓 CI 作为发布门槛。先按实际改动选择能覆盖问题的本地检查；只有出现新变更、失败或尚未解决的跨模块问题时才扩大验证范围。
+
+开发依赖和浏览器只需准备一次，已有可用环境时直接复用：
+
 ```powershell
 python -m pip install -r requirements-dev.txt
 python -m playwright install chromium
-python -m ruff check .
-python -m pytest -q
 ```
 
-Linux CI 使用 `python -m playwright install --with-deps chromium` 安装浏览器和系统库。未安装 Playwright 或 Chromium 时，浏览器回归会跳过；完整验收应安装二者。生产环境仍只需要 `requirements.txt` 中的插件依赖。
+下面是针对回复注入改动的示例，请替换为本轮实际修改的文件和相关用例；不要求每轮执行全仓 pytest 或全仓 Ruff：
+
+```powershell
+python -m ruff check core/engine/reply.py
+python -m pytest tests/test_dialogue_inject.py -q
+git diff --check
+```
+
+Linux 本地环境可使用 `python -m playwright install --with-deps chromium` 安装浏览器和系统库。未安装 Playwright 或 Chromium 时，浏览器回归会跳过；涉及界面验收时应先确认二者可用。生产环境仍只需要 `requirements.txt` 中的插件依赖。本机测试缓存、截图与临时产物应放在 `D:\CodexData\Temp` 的任务目录；环境变量只设置在当前工具进程。
 
 pytest 的会话夹具统一使用 Asia/Shanghai，与默认测试世界一致，使旧用例里的无时区 `datetime.timestamp()` 与测试时钟处于同一天；测试结束会恢复原环境。其他世界时区的边界用例使用明确时区，不依赖机器所在地。
 
 覆盖范围：提示词分层与注入边界、回合复盘、世界生成解析、引擎状态机、事件与掷骰、
 记忆与画像、编辑器接口与前端引用、旧版接管路径（迁移兜底）等。
 
-想只跑某一块：
+按本轮影响范围选择回归：
 
 ```powershell
 python -m pytest tests/test_dialogue_inject.py -q   # 注入式接管（主路径）
@@ -73,7 +83,7 @@ python -m pytest tests/test_life_workspace_browser.py tests/test_visual_workspac
 
 浏览器验收需要 Playwright 与 Chromium，使用临时数据库和合成数据，覆盖桌面、手机、管理抽屉、配置范围、生成、保存与关联跳转。
 
-界面的主题与材质集中在 `observatory.css`，六套本机外观由 `appearance.js` 管理，工作区的次要操作菜单由 `workspace-ui.js` 初始化。`data-theme` 保留深浅语义，`data-palette` 指定配色；不要在组件里为每个主题复制颜色。可用 `python -m pytest tests/test_visual_workspace_browser.py -q` 验证六套主题、键盘关闭与恢复、文字对比度，以及各模块在四种屏幕宽度下的布局；合成截图输出到 `.pytest_cache/generation-ui/`。
+界面的主题与材质集中在 `observatory.css`，六套本机外观由 `appearance.js` 管理，工作区的次要操作菜单由 `workspace-ui.js` 初始化。`data-theme` 保留深浅语义，`data-palette` 指定配色；不要在组件里为每个主题复制颜色。可用 `python -m pytest tests/test_visual_workspace_browser.py -q` 验证六套主题、键盘关闭与恢复、文字对比度，以及各模块在四种屏幕宽度下的布局；本机设置 `MY_WORLD_TEST_ARTIFACTS` 指向 D 盘任务目录，合成截图输出到该目录的 `generation-ui/`。
 
 相见记录的纯数据投影集中在 `visit-records.js`：先按日志类型区分台词、意愿、感受、共享结果与纪事，再按唯一身份匹配人物；未知类型默认纪事，显示名不替代身份来源。`visits.js` 管理页面、懒展开和原 seq 分页，不补写记录或重排历史。记录样式共用六主题变量，正文保持固定阅读轴。可运行 `python -m pytest tests/test_visit_journal_reading_z.py tests/test_visits_journal_review_r.py -q` 检查来源、完整阅读、翻页与刷新边界。
 
@@ -102,15 +112,14 @@ python -m pytest tests/test_life_workspace_browser.py tests/test_visual_workspac
 
 ## 推送到 GitHub
 
-如果遇到只能访问 `api.github.com`、`git push` 被重置的网络，
-用 `tools/push_via_api.ps1` 通过 REST API 推送：
+发布采用 GitHub REST API 直发。先完成与本次改动有关的本地验证，再使用符合仓库规则的 `tools/push_via_api.ps1` 入口推送：
 
 ```powershell
 pwsh tools/push_via_api.ps1 -Repo Whereis-Alice/astrbot_plugin_my_world
 ```
 
-发布前先在本地完成完整测试、Ruff和必要的固定源码联测。脚本按 blob → tree → commit 的顺序上传当前HEAD，认证走本机已登录的 `gh`；先创建 `codex/ci-*` 验证分支，等待该分支、同一个提交的 `ci.yml` 完整成功，再更新main。测试失败、取消、等待超时或main在验证期间被别人更新，均停止晋级，保留验证分支便于查看；不删除失败记录或关闭通知。
+脚本先确认 HEAD 已提交且工作区干净，检查提交中是否存在疑似密钥；敏感信息只报告文件名，不输出值。随后按 blob → tree → commit 的顺序上传当前 HEAD，认证走本机已登录的 `gh`，校验上传内容的 tree 与本地 HEAD 一致，再直接以非强制方式更新目标分支。发布流程不创建 `codex/ci-*` 验证分支，不调用、重跑或等待 CI，也不恢复自动触发器。
 
-等待CI默认最多30分钟，可用 `-CiTimeoutMinutes` 在1–60分钟内调整。脚本校验本地提交包含远端历史，并使用非强制更新；验证成功后直接晋级已经通过的API提交，不重新建一个未经验证的提交。main更新仍触发现有完整CI，保留仓库原有检查规则。
+脚本应校验本地提交包含远端历史；上传期间目标分支被别人更新时，停止更新并保留已经上传的提交供核对。读取目标分支失败时直接停止，不把网络或权限错误当成空仓库，也不通过 Contents API 初始化目标分支。
 
-脚本用于已有main的仓库；读取main失败时直接停止，不把网络或权限错误当成空仓库，也不通过Contents API在验证前初始化main。
+`.github/workflows/ci.yml` 只保留手动定义供备查，未经用户明确重新授权不得运行。若旧脚本或外部开发说明仍要求 CI，按 [AGENTS.md](../AGENTS.md) 的用户持久要求修正流程，不能因工具兼容而触发 CI。

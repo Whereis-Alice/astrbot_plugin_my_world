@@ -1,8 +1,9 @@
 name: CI
 
+# 用户持久要求：今后禁止跑 CI。仅保留手动定义以供备查；
+# 未经用户明确重新授权，不得手动运行或恢复任何自动触发器。
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
