@@ -16,7 +16,7 @@ class ProactiveContactMixin:
         recipient = private_recipient(target)
         if recipient:
             return {recipient}
-        return set(outcome.contact_people)
+        return {str(uid).strip() for uid in outcome.contact_people if str(uid).strip()}
 
     def _contact_started(self, ledger: dict, target: str, token: str) -> float:
         started = (ledger.get("started_at") or {}).get(token)
@@ -61,6 +61,11 @@ class ProactiveContactMixin:
             return self._now() < outcome.chat_expires_at.get(target, 0)
         if kind == "reply":
             return True
+        if kind == "outreach" and not self._outreach_people(outcome, target):
+            note = "主动联系没有明确对象，继续自己的生活"
+            if note not in outcome.notes:
+                outcome.notes.append(note)
+            return False
         if reserved:
             return True
         if kind in LIFE_KINDS:
@@ -165,6 +170,8 @@ class ProactiveContactMixin:
                if item["key"] == f"proactive_contacts:{self.state_key(target)}"):
             return None, "正在发送另一条主动联系"
         people = self._outreach_people(outcome, target)
+        if "outreach" in kinds and not people:
+            return None, "主动联系没有明确对象，继续自己的生活"
         status = self.contact_status(target, token=token)
         if status["reason"]:
             return None, status["reason"]

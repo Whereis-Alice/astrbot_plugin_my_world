@@ -114,6 +114,15 @@ class ParticipationMixin:
                 outcome.chat_replied_seq[target] = max(outcome.chat_replied_seq.get(target, 0),
                                                        self._watermark(state, target)[1])
 
+    def note_chat_speech_accepted(self, target: str, *, batch: str = "", state_key: str = "") -> None:
+        """Retire only this life's unstarted old drafts after real room speech."""
+        life = state_key or self.state_key(target)
+        for outcome in list(getattr(self, "_queued_chat_outcomes", {}).values()):
+            if (outcome.chat_state_keys.get(target) == life
+                    and outcome.speech_receipt_batch != batch
+                    and target not in outcome.accepted_speech_at):
+                outcome.chat_speech_cancelled[target] = "准备期间已经在这里说过话，放下旧的接话内容"
+
     def queued_chat_pending(self, outcome, target: str) -> bool:
         return not self.queued_chat_blocked_reason(outcome, target)
 
@@ -131,6 +140,8 @@ class ParticipationMixin:
             return "本轮接话期间的串门经历已变化，取消旧的排队内容"
         if active_visit(self, target):
             return "正在串门，取消旧的排队接话内容"
+        if target in outcome.chat_speech_cancelled:
+            return outcome.chat_speech_cancelled[target]
         answered = "本轮接话对应的消息已被回应，取消旧的排队内容"
         replied = outcome.chat_replied_seq.get(target, 0)
         quoted = outcome.reply_targets.get(target)
@@ -701,6 +712,7 @@ class ParticipationMixin:
         return ""
 
     def note_visible_speech(self, target: str, *, token: str = "", people=(), state_key="") -> None:
+        self.note_chat_speech_accepted(target, state_key=state_key)
         key = "outreach:" + (state_key or self.state_key(target))
         ledger = self._outreach_ledger(target, state_key=state_key)
         now = self._now()

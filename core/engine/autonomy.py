@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 from ..model_calls import model_operation
 from ..background_budget import capture_background_admission
 
@@ -428,6 +430,8 @@ class AutonomyMixin:
             + self.prompts.AUTONOMOUS_MANNERS
             + "只输出 JSON。"
         )
+        plan_options = None
+        plan_candidates = []
         if contact_user and not quiet:
             prompt += self.expression_contract(state, request.session, "outreach",
                                                token=outcome.speech_receipt_batch)
@@ -435,6 +439,29 @@ class AutonomyMixin:
                        + "。必须明确选 intent：outreach 是找该人本人；continue_chat 是接上述编号的消息，"
                          "正文里的‘你’指该消息的真实发言者，必须填写 reply_to；listen 是继续自己的生活。"
                          "想念候选不是群聊接话的对象。选择接话时不要另行指定群/私聊，也不要附带对候选人的动作。")
+        elif not quiet and outcome.speech_kind not in {"reply", "schedule", "event"}:
+            # A social feeling does not grant a broadcast or an old reply. Freeze
+            # the actual live references before inference and choose speech intent
+            # independently of the trigger that requested this life plan.
+            kind = "life_share"
+            allowed, rows, targets = self.expression_options(state, request.session, kind,
+                token=outcome.speech_receipt_batch)
+            plan_candidates = self._cuddle_people(state, request.session)
+            extra = ("outreach",) if plan_candidates and self.speech_allowed(request.session, "outreach") else ()
+            allowed.extend(extra)
+            plan_options = (allowed, deepcopy(rows), dict(targets))
+            prompt += self.expression_contract(state, request.session, kind,
+                token=outcome.speech_receipt_batch, extra_intents=extra)
+            import json
+            prompt += ("\n主动计划的开口必须明确选择上述 intent；个人活动仍可照常安排。"
+                "outreach 必须在顶层 contact_people 写真实 user_id，或在面向用户的动作中填写 target。"
+                "不能因想陪伴就向空对象广播，也不能继续回答已经回应或过时的催促。"
+                "群聊续话只用上面可引用的现场；其他聊天留档和过去自己的话仅作背景。"
+                "本次计划按步骤顺序发生；行动前的 say 只能表达打算，不能把后续动作写成已经发生。"
+                "分享结果需先安排实际行动，生活事实不能来自旧聊天、内心或尚未执行的计划。"
+                "没有新生活事实或新的联系缘由就 listen，个人活动不必对外汇报。\n可联系的人："
+                + json.dumps([{key: item[key] for key in ("user_id", "name")} for item in plan_candidates],
+                    ensure_ascii=False))
         with capture_background_admission() as admission:
             if quiet:
                 reply = await self._ask_llm(state.session_id, system_prompt, prompt)
@@ -459,6 +486,9 @@ class AutonomyMixin:
         if contact_user and not quiet:
             plan = await self.contact_plan_choice(state, outcome, plan, reply,
                                                   target=request.session, user_id=contact_user)
+        elif plan_options is not None:
+            plan = await self.autonomous_plan_choice(state, outcome, plan, reply,
+                target=request.session, options=plan_options, candidates=plan_candidates)
         if plan:
             if quiet:
                 plan["send_to"] = ""

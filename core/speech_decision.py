@@ -42,6 +42,8 @@ def parse_decision(raw: str, targets: dict[str, str], *, default_intent: str = "
         intent = "continue_chat"
     if intent not in allowed:
         return SpeechDecision(inner=" ".join(inner.split()), error="发言意图不在本轮允许范围")
+    if intent in {"life_share", "outreach"} and payload.get("reply_to"):
+        return SpeechDecision(inner=" ".join(inner.split()), error="接消息需要选择续聊意图，不能借生活分享或找人追答")
     if strict_reply and intent != "listen" and payload.get("reply_to") and str(payload["reply_to"]) not in targets:
         return SpeechDecision(inner=" ".join(inner.split()), error="引用不在本次可回应的消息范围")
     if intent == "continue_chat" and not reply_to:

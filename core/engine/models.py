@@ -70,6 +70,8 @@ class TickOutcome:
     chat_presence_epochs: dict[str, int] = field(default_factory=dict)
     """Arrival history at observation; returning home cannot revive a stale comment."""
     chat_replied_seq: dict[str, int] = field(default_factory=dict)
+    chat_speech_cancelled: dict[str, str] = field(default_factory=dict)
+    """Another accepted expression can retire an unstarted draft in this room."""
 
     generation_origin: str = ""
     speech_proofs: dict[str, list[Any]] = field(default_factory=dict, repr=False)

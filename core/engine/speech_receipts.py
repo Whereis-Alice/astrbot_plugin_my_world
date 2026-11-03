@@ -159,6 +159,8 @@ async def remember_accepted(engine, outcome, target, text, key, identity="", *, 
         trace.update(sent=list(outcome.delivered_decisions.get(identity, [])))
         trace["status"] = delivery_status(trace)
     if first:
+        engine.note_chat_speech_accepted(target, batch=outcome.speech_receipt_batch,
+                                        state_key=record["owner"].state_key)
         engine.note_peer_chat_receipt(outcome, target, kind or outcome.speech_kind)
 
     async def persist():
@@ -202,6 +204,8 @@ async def remember_accepted_images(engine, outcome, target, images, key, identit
         traces.append(trace)
         outcome.delivered_image_decisions[identity] = sent
     if first:
+        engine.note_chat_speech_accepted(target, batch=outcome.speech_receipt_batch,
+                                        state_key=record["owner"].state_key)
         for kind in set(kinds):
             engine.note_peer_chat_receipt(outcome, target, kind)
 

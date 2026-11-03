@@ -610,7 +610,8 @@ class SendMixin:
                             if receipt is None:
                                 self.note_visible_speech(target, state_key=owner.state_key)
                     if not accepted and not actual_messages:
-                        if any(proof is not None and proof.cancelled for proof in ordered_proofs):
+                        if (target in view.chat_speech_cancelled
+                                or any(proof is not None and proof.cancelled for proof in ordered_proofs)):
                             suppressed = True  # Cancelled privately, without a platform failure.
                         else:
                             outcome.notes.append(f"发到 {target} 失败：平台没有接收")

@@ -56,7 +56,7 @@ class InstantExpressionSilenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_successful_expression_retains_exact_message_and_receipt(self):
         outcome = await self.execute(json.dumps({
             "reasoning": {"inner": "靠着椅背舒服多了。", "intent": "随口分享"},
-            "intent": "outreach", "actions": [{"type": "say", "messages": ["这边坐着挺舒服。"]}],
+            "intent": "life_share", "actions": [{"type": "say", "messages": ["这边坐着挺舒服。"]}],
         }, ensure_ascii=False))
         self.assertEqual(["这边坐着挺舒服。"], self.messenger.flat_messages)
         self.assertEqual("sent", outcome.speech_decisions[0]["status"])

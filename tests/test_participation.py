@@ -207,17 +207,20 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.engine.contact_status(GROUP)["left"], 6)
 
     async def test_expired_contact_token_starts_a_new_counted_contact(self):
-        first = TickOutcome(GROUP, speech_kind="outreach", messages=["我去找找那张照片"], contact_id="one-plan")
+        first = TickOutcome(GROUP, speech_kind="outreach", messages=["我去找找那张照片"], contact_id="one-plan",
+                            contact_people={"alice"})
         await self.engine._deliver(first)
         self.clock.advance(121)
-        second = TickOutcome(GROUP, speech_kind="outreach", messages=["找到了一张新照片"], contact_id="one-plan")
+        second = TickOutcome(GROUP, speech_kind="outreach", messages=["找到了一张新照片"], contact_id="one-plan",
+                             contact_people={"bob"})
         await self.engine._deliver(second)
         self.assertEqual(len(self.messenger.sent), 2)
         self.assertEqual(self.engine.contact_status(GROUP)["left"], 4)
 
     async def test_old_plan_cannot_bypass_the_daily_limit(self):
         self.engine.world.profile.proactive_daily_max = 1
-        first = TickOutcome(GROUP, speech_kind="outreach", messages=["先说一句"], contact_id="one-plan")
+        first = TickOutcome(GROUP, speech_kind="outreach", messages=["先说一句"], contact_id="one-plan",
+                            contact_people={"alice"})
         await self.engine._deliver(first)
         self.clock.advance(121)
         first.add_speech("晚些又来一句")
@@ -540,18 +543,19 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.engine.outreach_gate(GROUP))
 
     async def test_same_contact_can_flush_split_lines_but_new_module_cannot(self):
-        outcome = TickOutcome(GROUP, speech_kind="outreach", messages=["一会儿见"])
+        outcome = TickOutcome(GROUP, speech_kind="outreach", messages=["一会儿见"], contact_people={"alice"})
         await self.engine._deliver(outcome)
         receipt, reason = self.engine._reserve_contact(outcome, GROUP, ["outreach"])
         self.assertFalse(reason)
         self.engine._finish_contact(receipt, False)
-        other = TickOutcome(GROUP, speech_kind="outreach")
+        other = TickOutcome(GROUP, speech_kind="outreach", contact_people={"alice"})
         receipt, reason = self.engine._reserve_contact(other, GROUP, ["outreach"])
         self.assertIsNone(receipt)
         self.assertTrue(reason)
 
     async def test_pending_send_blocks_another_contact_without_spending_quota(self):
-        one, two = TickOutcome(GROUP, speech_kind="outreach"), TickOutcome(GROUP, speech_kind="outreach")
+        one, two = (TickOutcome(GROUP, speech_kind="outreach", contact_people={"alice"}),
+                    TickOutcome(GROUP, speech_kind="outreach", contact_people={"bob"}))
         receipt, reason = self.engine._reserve_contact(one, GROUP, ["outreach"])
         self.assertFalse(reason)
         blocked, reason = self.engine._reserve_contact(two, GROUP, ["outreach"])
@@ -743,7 +747,7 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.engine.contact_status(GROUP)["left"], 6)
 
     async def test_legacy_contact_continuation_is_counted_once_then_expires(self):
-        outcome = TickOutcome(GROUP, speech_kind="outreach", contact_id="legacy-plan")
+        outcome = TickOutcome(GROUP, speech_kind="outreach", contact_id="legacy-plan", contact_people={"alice"})
         token = "legacy-plan:" + GROUP
         self.db.raw.kv_set("proactive_contacts:" + self.engine.state_key(GROUP),
             {"day": self.engine._today_key(self.clock.now()), "contacts": {token: []}})
@@ -754,6 +758,7 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         self.engine._finish_contact(receipt, True)
         self.assertEqual(self.engine.contact_status(GROUP)["left"], 5)
         self.clock.advance(121)
+        outcome.contact_people = {"bob"}
         receipt, reason = self.engine._reserve_contact(outcome, GROUP, ["outreach"])
         self.assertFalse(reason)
         self.engine._finish_contact(receipt, True)
@@ -762,7 +767,7 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
     async def test_new_person_in_split_contact_cannot_bypass_their_existing_wait(self):
         self.engine.note_visible_speech(GROUP, token="old-contact", people=["alice"])
         self.clock.advance(100)
-        outcome = TickOutcome(GROUP, speech_kind="outreach", messages=["顺便分享给大家"])
+        outcome = TickOutcome(GROUP, speech_kind="outreach", messages=["也给Bob看看"], contact_people={"bob"})
         await self.engine._deliver(outcome)
         token = self.engine._contact_token(outcome, GROUP)
         self.assertFalse(self.engine.contact_status(GROUP, "bob", token=token)["reason"])

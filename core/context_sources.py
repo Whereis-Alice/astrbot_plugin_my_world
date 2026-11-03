@@ -274,6 +274,11 @@ def runtime_context(prompts: Any, state: Any, node: Any, request: ContextRequest
             held = "离家前：" + home_activity + "。" if action and not foreign_action else ""
             base.append("# 家中保留的安排（串门期间暂停）\n" + held
                         + "原计划仍保留，尚未确认完成；归家后再接续，当前没有在家推进。")
+    else:
+        from .action_facts import action_facts
+        execution = action_facts(state, prompts.world, persona_key=request.life_persona, now=request.now)
+        if execution:
+            base.append(execution)
     from .activity_time import quiet_life_note
     rhythm_note = quiet_life_note(prompts.world, now)
     if rhythm_note:

@@ -391,6 +391,13 @@ class ActionsRunMixin:
             speech_kind = "outreach"
         can_speak = any((self.can_express(state, sid, speech_kind, token=outcome.speech_receipt_batch) if definition.id in {"say", "share"}
                          else self.speech_allowed(sid, speech_kind)) for sid in speech_targets)
+        if (speech_kind in {"", "life_share"}
+                and self._is_personal_life_action(definition, action)
+                and self._has_expression_in_turn(outcome, target)):
+            # A chosen utterance already owns this turn. Performing the next
+            # personal step is not another invitation to narrate it.
+            can_speak = False
+            outcome.notes.append("本轮已经有要说的话，个人活动继续，不再追加动作旁白")
         if (definition.id in {"say", "share", "poke"} or definition.llm_level in {"tool", "command"}) and not can_speak:
             reason = "生活分享未获全局授权" if outcome.speech_kind in {"", "life_share"} else "自主发言未获授权"
             outcome.notes.append(f"{reason}，跳过发言动作 {definition.id}")
@@ -706,7 +713,10 @@ class ActionsRunMixin:
                 messages = []
             else:
                 self.claim_chat_scene(outcome, outcome.home(), rows, state=state)
-                message, reply_to = await self.participation_text(state, outcome.home(), source="plan", outcome=outcome)
+                from .expression_attention import chat_expression_attention
+                async with chat_expression_attention(self, state, outcome.home(), outcome, rows) as allowed:
+                    message, reply_to = (await self.participation_text(state, outcome.home(), source="plan", outcome=outcome)
+                                        if allowed else ("", ""))
                 messages = [message] if message else []
                 if reply_to:
                     outcome.reply_targets[outcome.home()] = reply_to
@@ -795,6 +805,21 @@ class ActionsRunMixin:
                 and definition.target_type == "none"
                 and definition.id not in {*cls.INNER_ACTIONS, "say", "share", "poke"}
                 and not action.target and not action.interject)
+
+    @staticmethod
+    def _has_expression_in_turn(outcome: TickOutcome, target: str) -> bool:
+        """Keep personal narration behind the utterance already chosen for this room."""
+        if target in outcome.accepted_speech_at or outcome.delivered_messages.get(target):
+            return True
+        if outcome.routed.get(target) or outcome.routed_images.get(target):
+            return True
+        origins = outcome.speech_origins.get("", [])
+        if any((origins[i] if i < len(origins) else outcome.home()) == target
+               for i in range(len(outcome.messages))):
+            return True
+        if outcome.broadcast_targets and outcome.messages and target in outcome.broadcast_targets:
+            return True
+        return bool(outcome.images and target == outcome.home())
 
     def _action_speaks(self, definition: ActionDef) -> bool:
         """这个动作产出的文本要不要发到群里。

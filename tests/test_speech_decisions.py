@@ -177,7 +177,8 @@ class SpeechDecisionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.engine.life_share_status(GROUP)["left"], 0)
         self.assertEqual(self.engine.contact_status(GROUP)["left"], 6)
         self.clock.advance(100)
-        await self.engine._deliver(TickOutcome(GROUP, messages=["想找你聊聊照片"], speech_kind="outreach"))
+        await self.engine._deliver(TickOutcome(GROUP, messages=["想找你聊聊照片"],
+            speech_kind="outreach", contact_people={"photo-friend"}))
         self.assertEqual(self.engine.contact_status(GROUP)["left"], 5)
         self.assertEqual(self.engine.life_share_status(GROUP)["left"], 0)
 

@@ -689,6 +689,11 @@ class TickMixin:
                     # 不能顺手把排在她前面的动作标成"做过了"
                     outcome.notes.append("计划已经有别的安排了，这一步不再往后推")
 
+        if definition is not None and not unnecessary_walk:
+            self._note_event(state, "action_done", {
+                "type": action_id, "action_name": definition.name or action_id,
+                "desc": action.get("desc") or "", "intent": action.get("intent") or "",
+            })
         await self._log_event(
             state,
             "skip" if unnecessary_walk else "action_done",

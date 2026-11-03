@@ -29,7 +29,9 @@ class PlanContactTests(unittest.IsolatedAsyncioTestCase):
         for person in people:
             self.engine.profiles.touch(fixture.GROUP, person["user_id"], person["name"])
         self.llm.replies = [json.dumps({"inner": "先招呼她，之后再找他。",
-                                       "reason": "按各自的事情联系", "plan": steps, **extra}, ensure_ascii=False)]
+                                       "reason": "按各自的事情联系", "plan": steps,
+                                       "intent": "outreach" if any(step.get("target") for step in steps) else "listen",
+                                       **extra}, ensure_ascii=False)]
         self.wire = []
 
         async def send(sid, lines):
@@ -42,8 +44,7 @@ class PlanContactTests(unittest.IsolatedAsyncioTestCase):
         async with self.engine.session_state(fixture.GROUP) as state:
             for person in people:
                 state.user_presence[person["user_id"]] = {"name": person["name"], "last_seen": self.clock.now()}
-            self.assertTrue(await self.engine._maybe_desire_push(
-                state, self.engine.node(state.node_id), outcome, fixture.GROUP))
+            await self.engine._maybe_desire_push(state, self.engine.node(state.node_id), outcome, fixture.GROUP)
         return outcome
 
     async def test_first_poke_does_not_charge_a_future_plan_recipient(self):
@@ -188,7 +189,7 @@ class PlanContactTests(unittest.IsolatedAsyncioTestCase):
         self.engine.decider.rule_plan = lambda *args, **kwargs: None
         self.engine.decider.should_ask_llm = lambda *args: True
         self.engine._llm_plan_allowed = lambda *args: True
-        self.llm.replies = [json.dumps({"plan": [
+        self.llm.replies = [json.dumps({"inner": "去那边招呼她。", "intent": "outreach", "plan": [
             {"action": "greet_person", "target": "111", "send_to": fixture.OTHER}]}, ensure_ascii=False)]
         outcome = await self.engine.maybe_decide(fixture.GROUP, force=True)
         self.assertEqual(outcome.routed, {fixture.OTHER: ["Alice，这本书我看完了。"]})
@@ -211,7 +212,8 @@ class PlanContactTests(unittest.IsolatedAsyncioTestCase):
         self.engine.decider.rule_plan = lambda *args, **kwargs: None
         self.engine.decider.should_ask_llm = lambda *args: True
         self.engine._llm_plan_allowed = lambda *args: True
-        self.llm.replies = [json.dumps({"plan": [{"action": "draw_book", "send_to": fixture.OTHER}]})]
+        self.llm.replies = [json.dumps({"inner": "把刚画好的书封发过去。", "intent": "life_share",
+            "plan": [{"action": "draw_book", "send_to": fixture.OTHER}]})]
         outcome = await self.engine.maybe_decide(fixture.GROUP, force=True)
         self.assertEqual(outcome.routed_images, {fixture.OTHER: ["https://images.example.test/book.png"]})
         self.assertEqual(self.messenger.sent_images, [(fixture.OTHER, ["https://images.example.test/book.png"])])

@@ -36,6 +36,7 @@ class StateStoreMixin:
     def _note_event(self, state: WorldState, kind: str, detail: dict[str, Any], keep: int = 40) -> None:
         """Short lived event context retains the same character as its source."""
         state.add_event(kind, detail, keep, persona_key=self._matter_persona_key(state) or "")
+        state.recent_events[-1]["at"] = self._now()
 
     # ================= 状态存取 =================
 

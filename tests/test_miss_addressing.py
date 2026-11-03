@@ -170,7 +170,7 @@ class MissAddressingTests(unittest.IsolatedAsyncioTestCase):
         await self.engine._deliver(outcome)
         self.assertFalse(self.wire)
         self.assertFalse(outcome.contact_people)
-        self.assertTrue(any("目标冲突" in note for note in outcome.notes))
+        self.assertTrue(any("不能借生活分享或找人追答" in note for note in outcome.notes))
 
     async def test_listen_does_not_execute_tool_or_user_targeted_actions(self):
         payload = self.payload("listen", "")

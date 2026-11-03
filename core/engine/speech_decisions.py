@@ -45,9 +45,10 @@ class SpeechDecisionsMixin:
         targets = {f"c{i}": str(row["message_id"]) for i, row in enumerate(chat, 1) if row.get("message_id")}
         return allowed, chat, targets
 
-    def expression_contract(self, state, target, kind, *, token=""):
+    def expression_contract(self, state, target, kind, *, token="", extra_intents=()):
         import json
         allowed, rows, targets = self.expression_options(state, target, kind, token=token)
+        allowed.extend(intent for intent in extra_intents if intent not in allowed)
         scene = [{"ref": ref, "who": str(row.get("name") or row.get("user_name") or row.get("user_id") or "群友"),
                   "user_id": str(row.get("user_id") or ""), "text": str(row.get("text") or "")[:500],
                   **{key: row[key] for key in ("reply_to", "at_targets", "addressing") if row.get(key)}}
@@ -71,6 +72,11 @@ class SpeechDecisionsMixin:
                 "问题已解决、明确结束或换题时不追答；不把生活分享伪装成续聊。"
                 "对方引用或附和不要求再接一句；没有新的内容、问题或情绪变化时自然收尾，不发收尾占位台词。listen 不发言。\n"
                 + json.dumps(scene, ensure_ascii=False) + recipient_note)
+
+    async def autonomous_plan_choice(self, state, outcome, plan, raw, *, target, options, candidates):
+        from .plan_expression import choose_autonomous_plan
+        return await choose_autonomous_plan(self, state, outcome, plan, raw,
+            target=target, options=options, candidates=candidates)
 
     async def contact_plan_choice(self, state, outcome, plan, raw, *, target, user_id):
         """A feeling names a candidate; only the explicit choice may address them."""
@@ -196,13 +202,21 @@ class SpeechDecisionsMixin:
     async def ask_speech(self, state, target, system, prompt, *, rows, images=None, allow_tools=True,
                          live_window=900, channel="main", reply_seqs=None):
         from ..speech_runtime import SPEECH_REQUEST, GROUNDING_RULES
+        from ..speech_policy import SPEECH_OUTCOME
+        from .expression_attention import chat_expression_attention
+        outcome = SPEECH_OUTCOME.get()
+        needs_attention = bool(outcome is not None and (outcome.speech_kind in CHAT_KINDS
+            or outcome.speech_kind in {"", "life_share"} and not self.speech_allowed(target, outcome.speech_kind)))
         token = SPEECH_REQUEST.set({"state": state, "target": target, "rows": list(rows),
                                    "allow_tools": allow_tools, "live_window": live_window, "channel": channel,
                                    "reply_seqs": reply_seqs})
         try:
-            if channel == "helper":
-                return await self._ask_helper(target, system + GROUNDING_RULES, prompt)
-            return await self._ask_speech_media(state, target, system + GROUNDING_RULES, prompt, rows=rows, images=images)
+            async with chat_expression_attention(self, state, target, outcome, rows, required=needs_attention) as allowed:
+                if not allowed:
+                    return None
+                if channel == "helper":
+                    return await self._ask_helper(target, system + GROUNDING_RULES, prompt)
+                return await self._ask_speech_media(state, target, system + GROUNDING_RULES, prompt, rows=rows, images=images)
         finally:
             SPEECH_REQUEST.reset(token)
 
