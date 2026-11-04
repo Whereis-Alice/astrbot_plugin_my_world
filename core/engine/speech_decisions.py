@@ -157,13 +157,17 @@ class SpeechDecisionsMixin:
             return None
         return plan
 
-    async def note_expression(self, state, outcome, raw, lines, *, target, trigger):
+    async def note_expression(self, state, outcome, raw, lines, *, target, trigger, options=None):
         """Annotate the existing action protocol without removing its tool chain."""
         from ..speech_decision import parse_decision
         from ..json_actions import extract_json_object, strip_reasoning
         import json
-        allowed, rows, targets = self.expression_options(state, target, outcome.speech_kind,
-                                                        token=outcome.speech_receipt_batch)
+        # Numbered references belong to the prompt sent to the model. A later
+        # message or reply watermark must never rebind c1 to a different source.
+        # Delivery still checks the captured scene against current permissions
+        # and actual reply progress before accepting any outward speech.
+        allowed, rows, targets = options or self.expression_options(state, target, outcome.speech_kind,
+                                                                   token=outcome.speech_receipt_batch)
         payload = extract_json_object(strip_reasoning(raw)) or {}
         if not isinstance(payload, dict):
             return None
@@ -171,7 +175,7 @@ class SpeechDecisionsMixin:
         default = "join_chat" if outcome.speech_kind in CHAT_KINDS else (
             "outreach" if outcome.speech_kind == "outreach" else "life_share")
         decision = parse_decision(json.dumps(payload, ensure_ascii=False), targets,
-            default_intent=default, allowed=tuple(allowed))
+            default_intent=default, allowed=tuple(allowed), strict_reply=True)
         if decision.error:
             known = {"listen", "life_share", "outreach", "join_chat", "continue_chat"}
             returned = payload.get("intent")

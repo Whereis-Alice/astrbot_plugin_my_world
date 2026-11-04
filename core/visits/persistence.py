@@ -235,10 +235,10 @@ class VisitJournal(WorldConnections):
         total = visit["max_calls"]
         return total // 2 + (total % 2 if actor_id == visit["host_id"] else 0)
 
-    async def _finish(self, visit, status, reason="", *, notify=True):
+    async def _finish(self, visit, status, reason="", *, notify=True, ended_at: float | None = None):
         contacted = visit.get("contacted") or visit.get("arrived_at") or visit["status"] == "offered"
         visit["status"], visit["end_reason"] = status, reason
-        visit["ended_at"] = self._now()
+        visit["ended_at"] = self._now() if ended_at is None else ended_at
         self._clear_decision_wait(visit)
         visit.pop("outbox", None)
         visit.pop("unsent_turn", None)

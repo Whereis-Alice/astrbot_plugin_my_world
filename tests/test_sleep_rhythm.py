@@ -394,7 +394,8 @@ class SleepRhythmTests(unittest.IsolatedAsyncioTestCase):
         self.engine.world.sleep.goodnight = True
         await self.set_state(node_id="bedroom")
         self.llm.replies = ['{"decision":"sleep","hours":7,"reason":"今天累了"}',
-            '{"plan":[{"action":"say","messages":["晚安，明天见"]}]}']
+            '{"intent":"life_share","inner":"今天有些累，想道声晚安就休息。",'
+            '"plan":[{"action":"say","messages":["晚安，明天见"]}]}']
         outcome = await self.assess()
         self.assertIn("晚安，明天见", outcome.messages)
         self.assertEqual((await self.get_state()).current_action["type"], "sleep")
@@ -423,8 +424,9 @@ class SleepRhythmTests(unittest.IsolatedAsyncioTestCase):
         self.engine.world.sleep.drowsy = True
         await self.set_state(node_id="bedroom")
         self.llm.replies = ['{"decision":"sleep","hours":7,"reason":"累了"}',
-            '{"plan":[{"action":"say","messages":["先睡了"]}]}']
-        await self.assess()
+            '{"intent":"life_share","inner":"困意上来了，跟大家说一声就睡。",'
+            '"plan":[{"action":"say","messages":["先睡了"]}]}']
+        self.assertIn("先睡了", (await self.assess()).messages)
         self.clock.advance(360)
         await self.engine._tick_session(fixture.SESSION)
         self.assertEqual((await self.get_state()).current_action["type"], "sleep")
@@ -452,7 +454,8 @@ class SleepRhythmTests(unittest.IsolatedAsyncioTestCase):
             state.current_plan = create_plan(steps=[{"action":"read","duration":900}],
                 world_time=state.world_time, source="schedule", reason="睡醒后看书")
             queued = state.current_plan
-            self.llm.replies = ['{"plan":[{"action":"say","messages":["晚安，我先睡啦"]},'
+            self.llm.replies = ['{"intent":"life_share","inner":"书留着明天看，先道声晚安。",'
+                '"plan":[{"action":"say","messages":["晚安，我先睡啦"]},'
                 '{"action":"walk_to","target_node":"window"}],"reason":"睡前问候"}']
             outcome = TickOutcome(session_id=fixture.SESSION)
             await self.engine._enter_drowsy(state, self.engine.node("bedroom"), outcome,
@@ -476,7 +479,8 @@ class SleepRhythmTests(unittest.IsolatedAsyncioTestCase):
             state.current_action["from_plan"] = False
             state.current_plan = create_plan(steps=[{"action":"read","duration":900}],
                 world_time=state.world_time, source="schedule", reason="醒来后读书")
-        self.llm.replies = ['{"plan":[{"action":"say","messages":["早呀，睡醒了"]}],"reason":"起床问候"}']
+        self.llm.replies = ['{"intent":"life_share","inner":"睡醒精神好些了，想和大家打声招呼。",'
+            '"plan":[{"action":"say","messages":["早呀，睡醒了"]}],"reason":"起床问候"}']
         outcome = await self.engine._tick_session(fixture.SESSION)
         self.assertIn("早呀，睡醒了", outcome.messages)
         state = await self.get_state()
@@ -509,7 +513,8 @@ class SleepRhythmTests(unittest.IsolatedAsyncioTestCase):
         fixture.EngineTestCase.add_group(self, sessions=[fixture.SESSION, fixture.OTHER_SESSION])
         self.engine.world.sleep.goodnight = True
         await self.set_state(state="drowsy", node_id="bedroom")
-        self.llm.replies = ['{"plan":[{"action":"say","messages":["晚安啦"],'
+        self.llm.replies = ['{"intent":"life_share","inner":"两个房间的朋友都说声晚安。",'
+            '"plan":[{"action":"say","messages":["晚安啦"],'
             '"send_to":"群 1001"},{"action":"say","messages":["我也跟这边说声晚安"],'
             '"send_to":"群 2002"}],"reason":"睡前问候"}']
         async with self.engine.session_state(fixture.SESSION) as state:
@@ -568,6 +573,19 @@ class SleepRhythmTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(await self.engine._maybe_say_goodnight(state, self.engine.node("bedroom"), outcome))
             self.assertEqual(outcome.messages, [])
             self.assertEqual(state.state, "drowsy")
+
+    async def test_goodnight_keeps_silence_when_model_does_not_choose_to_share(self):
+        self.engine.world.sleep.goodnight = True
+        await self.set_state(node_id="bedroom")
+        # A greeting opportunity still requires the character's explicit intent.
+        # Validating this independently prevents fixture updates from granting speech.
+        self.llm.replies = ['{"decision":"sleep","hours":7,"reason":"今天累了"}',
+            '{"inner":"今天就安静睡下吧。","intent":"listen",'
+            '"plan":[{"action":"say","messages":["这句不应被发送"]}]}']
+        outcome = await self.assess()
+        self.assertEqual(outcome.messages, [])
+        self.assertEqual((await self.get_state()).current_action["type"], "sleep")
+        self.assertEqual(len(self.llm.calls), 2)
 
     async def test_new_emergency_defers_sleep_after_the_drowsy_phase(self):
         await self.set_state(node_id="bedroom", state="drowsy", current_plan=None,
@@ -903,7 +921,8 @@ class SleepRhythmTests(unittest.IsolatedAsyncioTestCase):
         async def greeting(**kwargs):
             entered.set()
             await release.wait()
-            return LLMReply(ok=True, text='{"plan":[{"action":"say","messages":["早"]}]}')
+            return LLMReply(ok=True, text='{"intent":"life_share","inner":"刚醒来，先打声招呼。",'
+                '"plan":[{"action":"say","messages":["早"]}]}')
 
         self.llm.generate = greeting
         task = asyncio.create_task(self.engine._tick_session(fixture.SESSION))
@@ -967,7 +986,8 @@ class SleepRhythmTests(unittest.IsolatedAsyncioTestCase):
 
         async def greeting(**kwargs):
             observed.append(await self.get_state())
-            return LLMReply(ok=True, text='{"plan":[{"action":"say","messages":["醒了，接着看书"]}]}')
+            return LLMReply(ok=True, text='{"intent":"life_share","inner":"醒来惦记着昨天没看完的书。",'
+                '"plan":[{"action":"say","messages":["醒了，接着看书"]}]}')
 
         self.llm.generate = greeting
         outcome = await self.engine._tick_session(fixture.SESSION)

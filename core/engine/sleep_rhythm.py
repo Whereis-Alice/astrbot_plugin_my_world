@@ -267,7 +267,8 @@ class SleepRhythmMixin:
             sleep_here = True
         if state.node_id != target:
             movement = self.world.action_map().get("walk_to")
-            if movement is None or not movement.enabled or find_path(self.world.adjacent(), state.node_id, target) is None:
+            if (movement is None or not movement.enabled or not movement.available_in(state.node_id)
+                    or find_path(self.world.adjacent(), state.node_id, target) is None):
                 failures = min(8, int(state.sleep_rhythm.get("route_failures") or 0) + 1)
                 state.sleep_rhythm["route_failures"] = failures
                 # Avoid an endless awake loop at zero energy. After a short grace

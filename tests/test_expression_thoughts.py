@@ -40,11 +40,13 @@ class ExpressionThoughtTests(unittest.IsolatedAsyncioTestCase):
                 "who": "朋友", "intent": "轻松地回应"}, "actions": [
                 {"type": "say", "messages": ["现在清楚多了。"]}]}),
         ]
-        outcome = TickOutcome(B, speech_kind="life_share")
+        # User-requested work may keep nested expressions. An autonomous
+        # expression now leaves the next personal activity quiet in this turn.
+        outcome = TickOutcome(B, speech_kind="reply")
         async with self.engine.session_state(B) as state:
             self.assertEqual(state.session_id, A)
             action = {"type": "test_bookmarks", "duration_ticks": 10,
-                "elapsed_ticks": 10, "session": B, "speech_kind": "life_share"}
+                "elapsed_ticks": 10, "session": B, "speech_kind": "reply"}
             state.current_action = action
             await self.engine._finish_action(state, self.engine.node(state.node_id), outcome, action)
             # The older queued thought must not substitute for either new one.

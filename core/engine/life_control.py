@@ -37,6 +37,9 @@ class LifeControlMixin:
         if state.idle_activity and not self._running_life_belongs(state, state.idle_activity):
             state.idle_activity = {}
             await self._log_event(state, "skip", {"note": "人设已变化，停止原角色的闲置活动"}, outcome=outcome)
+        if state.drowsy_sleep_step and not self._running_life_belongs(state, state.drowsy_sleep_step):
+            self._cancel_pending_sleep(state, reason="人设已变化，重新评估休息", source="character_change", postpone=False)
+            await self._log_event(state, "skip", {"note": "人设已变化，取消原角色的临睡安排"}, outcome=outcome)
         plan = state.current_plan or {}
         if plan and not self._running_life_belongs(state, plan):
             state.current_plan = None

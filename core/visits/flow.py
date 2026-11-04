@@ -638,9 +638,10 @@ class VisitFlow(VisitRhythm):
             self._append(visit, actor, "say", outing.get("farewells", {}).get(actor, ""))
             if len(visit["log"]) != previous:
                 visit["log"][-1]["at"] = outing["until"]
-        await self._finish(visit, "completed", "")
-        visit["ended_at"] = outing["until"]
-        await self._save()
+        # The farewell and agreed return clock are one durable transition.
+        # Cancellation after SQLite commits must not leave a later poll time
+        # as the permanent end, overstating how long home life was paused.
+        await self._finish(visit, "completed", "", ended_at=outing["until"])
         return True
 
     async def _drain_manual_invites(self):

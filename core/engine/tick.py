@@ -1091,14 +1091,17 @@ class TickMixin:
             ),
         )
         if outcome.speech_kind != "reply":
+            from copy import deepcopy
+            expression_options = deepcopy(self.expression_options(state, home, outcome.speech_kind,
+                token=outcome.speech_receipt_batch))
             prompt += "\n" + self.prompts.AUTONOMOUS_MANNERS
             prompt += self.expression_contract(state, home, outcome.speech_kind,
-                                              token=outcome.speech_receipt_batch)
+                token=outcome.speech_receipt_batch, options=expression_options)
         # 用过了就清掉：这段时间发生的事只带出来一次
         self._consume_event_digest(state)
         if outcome.speech_kind != "reply":
             reply = await self.ask_speech(state, home, system_prompt, prompt,
-                rows=self.expression_chat(state, home), images=image_urls)
+                rows=expression_options[1], images=image_urls)
         else:
             # Normalize tool images too; this is still a reply, so don't open
             # proactive tools or re-read unrelated live chat to prepare it.
@@ -1125,7 +1128,7 @@ class TickMixin:
         if outcome.speech_kind != "reply":
             expression_kind = await self.note_expression(state, outcome, reply,
                 [text for item in result.actions if item.type == "say" for text in (item.messages or [])],
-                target=home, trigger="completion")
+                target=home, trigger="completion", options=expression_options)
         if expression_kind is None:
             await self._remember_inner_thought(
                 state,

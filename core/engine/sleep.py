@@ -357,7 +357,11 @@ class SleepMixin:
             return False
         if not bool(getattr(self.world.sleep, "drowsy", True)):
             return False
-        if str((active_plan(state) or {}).get("source") or "") == "forced":
+        plan = active_plan(state) or {}
+        if (str(plan.get("source") or "") == "forced"
+                or plan.get("source") == "sleep_rhythm" and plan.get("sleep_fallback")):
+            # Route failure already delayed this rest. Start the authorized local
+            # fallback directly; a detached drowsy step would lose that permission.
             return False
         if state.state == STATE_DROWSY or state.drowsy_sleep_step:
             return False
@@ -384,6 +388,7 @@ class SleepMixin:
             else asdict(action)
         )
         state.drowsy_sleep_step = dict(payload or {})
+        state.drowsy_sleep_step["persona_key"] = self._matter_persona_key(state) or (await self._journal_persona(state.session_id))[1]
         state.drowsy_sleep_step["speech_kind"] = outcome.speech_kind
         plan = active_plan(state) or {}
         state.drowsy_sleep_step["plan_source"] = "manual" if plan.get("manual") else str(plan.get("source") or "")

@@ -1403,6 +1403,9 @@ class ActionsMixin:
     ) -> str | None:
         from ..llm_attempt import record_attempt
         if self.helper_llm is None:
+            from ..background_budget import record_background_admission
+            record_background_admission(deferred=True, reason="没有可用的打杂模型",
+                                        next_at=self._now() + self.tick_seconds)
             record_attempt(session_id, "没有可用的打杂模型")
             return None
         try:

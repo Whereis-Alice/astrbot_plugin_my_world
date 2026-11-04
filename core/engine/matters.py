@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import copy
+import asyncio
 import json
+import math
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from hashlib import sha256
 from typing import Any
@@ -11,6 +14,7 @@ from uuid import uuid4
 
 from .. import life_matters as matters
 from ..activity_time import life_time_context, matter_start_at
+from ..background_budget import capture_background_admission, record_background_admission, _finish_write
 from ..config_scope import session_scoped
 from ..json_actions import extract_json_object
 from ..life import action_progress_time, life_role
@@ -26,6 +30,47 @@ from ..visit_presence import active_visit
 
 
 class MattersMixin:
+    @asynccontextmanager
+    async def _matter_attempt(self, session_id: str, snapshot: dict, reason: str, *, seed_key: str = "",
+                              persona_key: str = "", partial: bool = False):
+        """Only requests that reach a model consume a daily planning attempt."""
+        world, state_key = self.world, self.state_key(session_id)
+        with model_context("life_matter", reason, session_id), capture_background_admission() as admission:
+            try:
+                yield admission
+            finally:
+                if admission.deferred and not admission.started:
+                    now = self._now()
+                    next_at = admission.next_at if math.isfinite(admission.next_at) else now
+                    retry_at = now + min(900, max(60, next_at - now))
+                    async def refund():
+                        if seed_key:
+                            # A newer request or a different character owns its own marker.
+                            current = self._life_seed_marker(seed_key, persona_key)
+                            if current == snapshot:
+                                self._save_life_seed_marker(seed_key, persona_key, {
+                                    **current, "attempts": max(0, current["attempts"] - 1),
+                                    "retry_at": retry_at})
+                            return
+                        if self.world is not world or self.state_key(session_id) != state_key:
+                            return
+                        async with self.session_state(session_id) as state:
+                            item = matters.find(state, snapshot["id"])
+                            if (self.world is not world or state.session_id != state_key
+                                    or not item or item["revision"] != snapshot["revision"]):
+                                return
+                            if partial:
+                                review = item.get("note_review", {})
+                                if review.get("token") != snapshot.get("note_review", {}).get("token"):
+                                    return
+                                review.update(attempts=max(0, review["attempts"] - 1), retry_at=retry_at)
+                            elif all(item.get(key) == snapshot.get(key) for key in (
+                                    "work_day", "last_attempt_at", "plan_attempts")):
+                                item["plan_attempts"] = max(0, item["plan_attempts"] - 1)
+                                interval = self.world.limits.life_matter_interval_minutes * 60
+                                item["last_attempt_at"] = retry_at - interval
+                    await _finish_write(asyncio.create_task(refund()))
+
     def _matter_persona_key(self, state) -> str | None:
         from .life_inference import STATE_LEASE
         lease = STATE_LEASE.get()
@@ -110,8 +155,9 @@ class MattersMixin:
             interests = matters.stable_interests(state, now=self._now(), persona_key=persona_key)
             marker = self._life_seed_marker(key, persona_key) or {}
             attempts = int(marker.get("attempts") or 0) + 1
-            self._save_life_seed_marker(key, persona_key, {"at": self._now(), "attempts": attempts,
-                "retry_at": self._now() + max(15, self.world.limits.life_matter_interval_minutes) * 60})
+            attempt_record = {"at": self._now(), "attempts": attempts, "token": uuid4().hex,
+                "retry_at": self._now() + max(15, self.world.limits.life_matter_interval_minutes) * 60}
+            self._save_life_seed_marker(key, persona_key, attempt_record)
             # Freeze projects together with the persona and interests. A new
             # day is not a blank life; private promises stay out of this prompt.
             recent = copy.deepcopy([m for m in state.life_matters if not m.get("who") and m.get("kind") != "promise"
@@ -136,7 +182,8 @@ class MattersMixin:
             if pending:
                 row["unreviewed_bookmarks"] = pending
             previous.append(row)
-        with model_context("life_matter", "有空闲，为自己的生活想一件可持续的小事", session_id):
+        async with self._matter_attempt(session_id, attempt_record, "有空闲，为自己的生活想一件可持续的小事", seed_key=key,
+                                        persona_key=persona_key) as admission:
             raw = await self._ask_judge(session_id,
                 '结合人设和已有能力，想一件愿意持续几天的独处小事。只输出JSON：{"text":"", "motivation":""}。'
                 '没有想法可以留空。只在角色世界内模拟生活，不建立新身世、恋爱关系或重大物品。'
@@ -149,6 +196,8 @@ class MattersMixin:
                 json.dumps({"persona": persona, "available": candidates,
                             "local_time": life_time_context(world, self.local_now()),
                             "interests": interests, "recent_matters": previous}, ensure_ascii=False))
+        if admission.deferred and not admission.started:
+            return
         payload = extract_json_object(raw or "") or {}
         if "text" not in payload or not isinstance(payload["text"], str):
             # Backoff begins when the request returns, even after a slow failure.
@@ -442,15 +491,18 @@ class MattersMixin:
             snapshot["rhythm_hint"] = "最近多次被打断，优先拆成5到15分钟的小步；不代表喜好改变" if len(interrupted) >= 2 else ""
             candidates = self._matter_actions(state)
         # Never wait for inference while holding the life-state lock.
-        persona = await self._persona_text(session_id)
-        if not matters.belongs_to(snapshot, sha256(persona.encode("utf-8")).hexdigest()[:24]):
-            return
-        if not await self._matter_context_current(session_id, world, state_key, persona, day=day):
-            return
+        async with self._matter_attempt(session_id, snapshot, "准备生活事项的角色与处境"):
+            with self._unissued_preparation():
+                persona = await self._persona_text(session_id)
+                if (not matters.belongs_to(snapshot, sha256(persona.encode("utf-8")).hexdigest()[:24])
+                        or not await self._matter_context_current(session_id, world, state_key, persona, day=day)):
+                    record_background_admission(deferred=True, reason="生活事项的角色或处境已变化，尚未请求模型",
+                                                next_at=self._now() + self.tick_seconds)
+                    return
         if review:
             await self._review_matter_stage(session_id, snapshot, world=world, state_key=state_key, persona=persona, day=day)
             return
-        with model_context("life_matter", f"为生活事项 {snapshot['id']} 安排世界内的小步", session_id):
+        async with self._matter_attempt(session_id, snapshot, f"为生活事项 {snapshot['id']} 安排世界内的小步") as admission:
             raw = await self._ask_judge(session_id,
                     "你为角色安排一个能持续数天的个人项目，只输出JSON。不要把计划写成已经发生的事实。"
                     "基础人设的喜恶、价值观和能力优先；经历只用于温和延伸，不得改变身份、性格或强迫培养新爱好。"
@@ -477,6 +529,8 @@ class MattersMixin:
                     json.dumps({"persona": persona,
                                 "matter": snapshot, "available": candidates,
                                 "local_time": life_time_context(world, self.local_now())}, ensure_ascii=False))
+        if admission.deferred and not admission.started:
+            return
         payload = extract_json_object(raw or "") or {}
         if not await self._matter_context_current(session_id, world, state_key, persona, day=day):
             return
@@ -577,7 +631,8 @@ class MattersMixin:
         if not matters.belongs_to(snapshot, sha256(persona.encode("utf-8")).hexdigest()[:24]):
             return
         day = day or self._today_key(self._now())
-        with model_context("life_matter", f"核对生活事项 {snapshot['id']} 的实际阶段结果", session_id):
+        async with self._matter_attempt(session_id, snapshot, f"核对生活事项 {snapshot['id']} 的实际阶段结果",
+                                        partial=partial) as admission:
             raw = await self._ask_judge(session_id,
                 ("本轮只为已做完的小步留下一则生活小结，不决定整个目标是否完成，不改后续日程。outcome用continue。"
                  if partial else "根据事项目标和实际动作收据，判断整个目标是否已达成，只输出JSON。") +
@@ -600,6 +655,8 @@ class MattersMixin:
                 "现实用户的约定仍需兑现依据。可以继续则continue，暂时无法继续则blocked。",
                 json.dumps({"persona": persona, "matter": snapshot,
                             "local_time": life_time_context(world, self.local_now())}, ensure_ascii=False))
+        if admission.deferred and not admission.started:
+            return
         result = extract_json_object(raw or "") or {}
         if not await self._matter_context_current(session_id, world, state_key, persona, day=day):
             return

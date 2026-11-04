@@ -1308,9 +1308,12 @@ class ActionsRunMixin:
             + "\n只输出 JSON：" + output_shape
         )
         if active_expression:
+            from copy import deepcopy
+            expression_options = deepcopy(self.expression_options(state, current, speech_outcome.speech_kind,
+                token=speech_outcome.speech_receipt_batch))
             prompt += self.expression_contract(state, current, speech_outcome.speech_kind,
-                                              token=speech_outcome.speech_receipt_batch)
-            reply = await self.ask_speech(state, current, system_prompt, prompt, rows=self.expression_chat(state, current))
+                token=speech_outcome.speech_receipt_batch, options=expression_options)
+            reply = await self.ask_speech(state, current, system_prompt, prompt, rows=expression_options[1])
         else:
             reply = await self._ask_llm(current, system_prompt, prompt)
         self.record_context_selection(request)
@@ -1325,7 +1328,8 @@ class ActionsRunMixin:
         )
         if active_expression:
             lines = [text for item in result.actions if item.type == "say" for text in (item.messages or [])]
-            kind = await self.note_expression(state, speech_outcome, reply, lines, target=current, trigger="expression")
+            kind = await self.note_expression(state, speech_outcome, reply, lines, target=current,
+                                              trigger="expression", options=expression_options)
             if kind is not None:
                 from .speech_decisions import SpeechLines
                 return SpeechLines([] if kind == "quiet" else lines, kind=kind)
