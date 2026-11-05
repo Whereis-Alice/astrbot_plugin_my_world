@@ -89,7 +89,7 @@ class VisitHandoffReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum(row["text"] == "b：receive" for row in visit["log"]), 1)
         self.assertNotIn("model_retry", visit)
 
-    async def test_three_failed_checks_end_without_reset_by_successful_tick_reads(self):
+    async def test_three_failed_checks_wait_without_reset_by_successful_tick_reads(self):
         visit_id, visit = await self.saved_proposal("prepared")
         before = copy.deepcopy(visit["calls"])
         self.fail_checks(self.a_actor, always=True)
@@ -101,9 +101,9 @@ class VisitHandoffReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(visit["model_retry"]["next_at"], self.now + 60)
         self.now += 60
         await self.a.tick()
-        self.assertEqual(visit["status"], "interrupted")
-        self.assertIn("接待状态", visit["end_reason"])
-        self.assertNotIn("model_retry", visit)
+        self.assertEqual(visit["status"], "inviting")
+        self.assertEqual(visit["model_retry"]["attempts"], 3)
+        self.assertEqual(visit["model_retry"]["next_at"], self.now + 120)
         self.assertEqual(visit["calls"], before)
         self.assertNotIn(visit_id, self.b._state["visits"])
 

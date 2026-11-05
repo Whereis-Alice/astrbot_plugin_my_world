@@ -7,6 +7,7 @@ import math
 from .decisions import RETRYABLE, WAITING
 
 DELAYS = (30, 60)
+WAIT_DELAYS = (30, 60, 120, 300)
 
 
 def _state_checkpoints(visit: dict) -> dict:
@@ -57,22 +58,43 @@ def valid_retry(visit: dict, cursor: dict) -> bool:
     if not isinstance(retry, dict) or retry.get("cursor") != cursor:
         return False
     attempts, next_at = retry.get("attempts"), retry.get("next_at")
+    waiting = retry.get("waiting", False)
+    failures = retry.get("failures", 0 if waiting else attempts)
     return (retry.get("phase") == cursor.get("phase")
             and retry.get("category") in RETRYABLE
-            and type(attempts) is int and 1 <= attempts <= len(DELAYS)
+            and type(waiting) is bool
+            and type(attempts) is int and 1 <= attempts <= len(WAIT_DELAYS if waiting else DELAYS)
+            and type(failures) is int and 0 <= failures <= len(DELAYS)
             and type(next_at) in {int, float} and math.isfinite(next_at) and next_at >= 0)
 
 
-def defer_decision(visit: dict, cursor: dict, *, category: str, now: float, candidate=None) -> bool:
+def defer_decision(visit: dict, cursor: dict, *, category: str, now: float, candidate=None,
+                   waiting: bool = False) -> bool:
+    """Unissued waits keep their phase; only unsuccessful inference spends recovery."""
     old = visit.get("model_retry") or {}
-    attempts = (old.get("attempts", 0) if valid_retry(visit, cursor) else 0) + 1
-    if category not in RETRYABLE or attempts > len(DELAYS):
+    previous = old if valid_retry(visit, cursor) else {}
+    failures = previous.get("failures", 0 if previous.get("waiting") else previous.get("attempts", 0))
+    if category not in RETRYABLE:
         return False
-    next_at = now + DELAYS[attempts - 1]
+    if waiting:
+        attempts = min(len(WAIT_DELAYS), (previous.get("attempts", 0) if previous.get("waiting") else 0) + 1)
+        delay = WAIT_DELAYS[attempts - 1]
+    else:
+        failures += 1
+        if failures > len(DELAYS):
+            return False
+        attempts, delay = failures, DELAYS[failures - 1]
+    next_at = now + delay
     if next_at >= visit["expires_at"]:
-        return False
+        if not waiting or visit["expires_at"] <= now:
+            return False
+        next_at = visit["expires_at"]  # The existing lease ends the wait at its own clock.
     retry = {"phase": cursor["phase"], "cursor": copy.deepcopy(cursor), "attempts": attempts,
              "next_at": next_at, "category": category}
+    if waiting:
+        retry["waiting"] = True
+    if failures:
+        retry["failures"] = failures
     if isinstance(candidate, dict):
         retry["candidate"] = copy.deepcopy(candidate)
     visit["model_retry"] = retry

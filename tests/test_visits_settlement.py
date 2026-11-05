@@ -36,7 +36,8 @@ class VisitSettlementTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(old, self.a._state["visits"])
         await self.a.tick()
         self.assertIn(old, self.a_actor.memories)
-        self.assertNotIn(old, self.a._state["visits"])
+        self.assertIn(old, self.a._state["visits"])
+        self.assertNotIn("end_pending", self.a._state["visits"][old])
         self.assertEqual(self.b._state["visits"][old]["status"], "completed")
 
     async def test_already_written_memory_still_retains_pending_farewell(self):
@@ -50,7 +51,8 @@ class VisitSettlementTests(unittest.IsolatedAsyncioTestCase):
         await self.a.invite("life-a", self.peer)
         self.assertIn(old, self.a._state["visits"])
         await self.a.tick()
-        self.assertNotIn(old, self.a._state["visits"])
+        self.assertIn(old, self.a._state["visits"])
+        self.assertNotIn("end_pending", self.a._state["visits"][old])
 
     async def test_one_memory_failure_does_not_block_the_next_real_trip(self):
         visit = await self.completed_pending()

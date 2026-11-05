@@ -80,9 +80,10 @@ class VisitActorTests(unittest.IsolatedAsyncioTestCase):
     async def test_receiver_busy_with_a_person_postpones_without_model(self):
         async with self.engine.session_state(fixture.SESSION) as state:
             state.recent_chat = [{"text": "有人正在找她", "at": self.clock.now(), "is_self": False, "addressing": "me"}]
-        value = await self.port.decide(fixture.SESSION, "receive", self.visit)
-        self.assertFalse(value["accept"])
-        self.assertIn("稍后", value["say"])
+        with self.assertRaises(VisitDecisionError) as caught:
+            await self.port.decide(fixture.SESSION, "receive", self.visit)
+        self.assertEqual(caught.exception.category, "life_busy")
+        self.assertFalse(caught.exception.request_started)
         self.assertFalse(self.llm.calls)
 
     async def test_nested_critical_event_prevents_travel(self):
@@ -119,8 +120,9 @@ class VisitActorTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(VisitDecisionError) as error:
             await self.port.decide(fixture.SESSION, "propose", self.visit)
         self.assertEqual(error.exception.category, "format")
-        value = await self.port.decide(fixture.SESSION, "turn", self.visit)
-        self.assertIs(value["leave"], False)
+        with self.assertRaises(VisitDecisionError) as error:
+            await self.port.decide(fixture.SESSION, "turn", self.visit)
+        self.assertEqual(error.exception.category, "format")
 
     async def test_prompt_excludes_private_chat_and_unrelated_memories(self):
         async with self.engine.session_state(fixture.SESSION) as state:

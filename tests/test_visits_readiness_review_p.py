@@ -148,14 +148,18 @@ class VisitReadinessReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.requests)
         self.assertFalse(self.llm.calls)
 
-    async def test_scheduled_reading_keeps_its_appointment_gate(self):
+    async def test_scheduled_interruptible_reading_can_pause_without_losing_progress(self):
         await self.connect()
         await self.start("read", speech_kind="schedule")
         state = await self.advance_home()
         self.assertIsNone(state.current_plan)
         self.assertEqual(state.current_action["speech_kind"], "schedule")
-        await self.assert_automatic_blocked("手头的活动")
-    async def test_real_planned_next_step_still_blocks_a_call_during_interruptible_reading(self):
+        self.assertTrue((await self.port.describe(engine_fixture.SESSION))["ready"])
+        await self.a.tick()
+        self.assertEqual((await self.engine.load_state(engine_fixture.SESSION)).current_action, state.current_action)
+        self.assertEqual(sum(row["op"] == "offer" for row in self.requests), 1)
+
+    async def test_original_plan_is_preserved_while_interruptible_reading_accepts_a_call(self):
         await self.connect()
         await self.start("read")
         async with self.engine.session_state(engine_fixture.SESSION) as state:
@@ -167,7 +171,12 @@ class VisitReadinessReviewTests(unittest.IsolatedAsyncioTestCase):
         state = await self.advance_home()
         self.assertTrue(state.current_plan)
         self.assertEqual(state.current_action["elapsed_ticks"], 1)
-        await self.assert_automatic_blocked("手头的活动")
+        self.assertTrue((await self.port.describe(engine_fixture.SESSION))["ready"])
+        await self.a.tick()
+        after = await self.engine.load_state(engine_fixture.SESSION)
+        self.assertEqual(after.current_action, state.current_action)
+        self.assertEqual(after.current_plan, state.current_plan)
+        self.assertEqual(sum(row["op"] == "offer" for row in self.requests), 1)
 
     async def test_uninterruptible_reading_still_blocks_a_call(self):
         await self.connect()
@@ -200,12 +209,11 @@ class VisitReadinessReviewTests(unittest.IsolatedAsyncioTestCase):
         self.llm.calls.clear()
         await self.assert_automatic_blocked("需要休息")
 
-    async def test_drowsiness_low_energy_and_critical_events_keep_their_gates(self):
+    async def test_drowsiness_and_critical_events_keep_their_gates(self):
         await self.connect()
         await self.start("read")
         await self.advance_home()
         for condition, reason in (({"state": "drowsy"}, "需要休息"),
-                                  ({"energy": .2}, "需要休息"),
                                   ({"event_threads": [{"status": "open", "root": {"critical": True}}]}, "紧急")):
             with self.subTest(condition=condition):
                 async with self.engine.session_state(engine_fixture.SESSION) as state:
@@ -213,6 +221,15 @@ class VisitReadinessReviewTests(unittest.IsolatedAsyncioTestCase):
                     for key, value in condition.items():
                         setattr(state, key, value)
                 await self.assert_automatic_blocked(reason)
+
+    async def test_low_energy_alone_can_still_accept_a_friend(self):
+        await self.connect()
+        await self.start("read")
+        async with self.engine.session_state(engine_fixture.SESSION) as state:
+            state.energy = .2
+        self.assertTrue((await self.port.describe(engine_fixture.SESSION))["ready"])
+        await self.a.tick()
+        self.assertEqual(sum(row["op"] == "offer" for row in self.requests), 1)
 
     async def test_native_human_turn_still_blocks_only_the_automatic_invitation(self):
         await self.connect()

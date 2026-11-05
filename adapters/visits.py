@@ -25,6 +25,7 @@ from ..core.visit_presence import active_visit, presence_text
 from ..core.visits.decisions import VisitDecisionError, record_decision_candidate
 from ..core.visits.protocol import clean_outing_offer, clean_pause
 from ..core.background_budget import capture_background_admission
+from ..core.planner import same_plan
 
 
 def _text(value: Any, limit: int) -> str:
@@ -189,6 +190,8 @@ class VisitActorPort:
                     "world": _text(engine.world.name, 80) or "小世界",
                     "persona_key": persona_key, "ready": ready and bool(persona.strip()),
                     "ready_reason": reason if persona.strip() else "还没有可用的人设",
+                    "readiness_wait": bool(persona.strip()) and reason in {
+                        "正在回应或处理手头的事", "手头的活动还没结束，稍后再约"},
                     "local_date": str(engine.local_now().date()),
                     "outing_version": int(bool(getattr(getattr(engine, "visits", None), "config", None)
                         and getattr(engine.visits.config, "outings_enabled", False))),
@@ -225,20 +228,32 @@ class VisitActorPort:
         """A standalone local activity may be put down after a real acceptance.
 
         Both the saved action and its current definition must allow interruption.
-        Plans, appointments and externally directed work keep their existing gates;
-        this predicate never clears work or claims that it has been completed.
+        Its original plan and progress resume after the visit. This predicate
+        never clears work or claims that it has been completed.
         """
-        return bool(state.current_plan is None and definition and definition.enabled
+        pausable_plan = self._pausable_home_plan(state, held, persona_key=persona_key)
+        return bool(definition and definition.enabled
                     and definition.available_in(state.node_id)
-                    and definition.category == "continuous" and definition.llm_level == "template"
+                    and definition.category == "continuous"
                     and definition.target_type == "none" and not definition.tool_list()
                     and not definition.trigger_command and not sleep_action_kind(definition)
                     and definition.on_complete.trigger in {"none", "llm_followup"}
                     and definition.interruptible and held.get("interruptible") is True
-                    and held.get("persona_key") == persona_key and not held.get("from_plan")
-                    and held.get("speech_kind") in {"quiet", "life_share"}
+                    and held.get("persona_key") == persona_key and (not held.get("from_plan") or pausable_plan)
                     and not held.get("target") and not held.get("target_node")
                     and not held.get("contact_people"))
+
+    def _pausable_home_plan(self, state, held: dict, *, persona_key: str) -> bool:
+        """Read only: an interrupted personal plan retains its identity and progress."""
+        plan = state.current_plan
+        if (not isinstance(plan, dict) or plan.get("persona_key") != persona_key or not held.get("from_plan")
+                or not same_plan(held, plan)):
+            return False
+        index, steps = plan.get("current_step"), plan.get("steps")
+        if (type(index) is not int or not isinstance(steps, list) or not 0 <= index < len(steps)
+                or held.get("plan_index") != index):
+            return False
+        return True
 
     def _ready(self, scope: str, state, *, actor_id: str, persona_key: str) -> tuple[bool, str]:
         if (not self.plugin.enabled or getattr(self.plugin, "retired", False)
@@ -255,14 +270,12 @@ class VisitActorPort:
         sleep_kind = {STATE_SLEEPING: "sleep", STATE_NAPPING: "nap"}.get(state.state)
         paused_sleep = bool(paused_home and sleep_kind and definition and definition.enabled
                             and sleep_action_kind(definition) == sleep_kind)
-        if (state.is_sleeping and not paused_sleep) or state.state == STATE_DROWSY or state.energy < .25:
+        if (state.is_sleeping and not paused_sleep) or state.state == STATE_DROWSY:
             return False, "现在需要休息，稍后再约"
         # Arrival pauses home work. It is not work still competing with this visit.
         if (state.current_action is not None and not paused_home
                 and not self._pausable_home_action(state, held, definition, persona_key=persona_key)):
             return False, "手头的活动还没结束，稍后再约"
-        if state.current_plan is not None and not paused_home:
-            return False, "还有原先的安排，稍后再约"
         if any(isinstance(row, dict) and row.get("status", "open") == "open"
                and (row.get("critical") or (row.get("root") or {}).get("critical"))
                for row in state.event_threads):
@@ -303,18 +316,17 @@ class VisitActorPort:
             if expected.get("actor_id") and expected["actor_id"] != local["actor_id"]:
                 raise VisitDecisionError("identity", request_started=False)
             if not local["ready"] and not manual:
-                if phase in {"turn", "scene"}:
+                if phase in {"turn", "scene"} or local.get("readiness_wait"):
                     raise VisitDecisionError("life_busy", request_started=False)
                 return {"accept": False, "say": local["ready_reason"], "leave": True,
                         "thought": local["ready_reason"], "reflection": "", "contact_kind": "contact_status",
                         "_request_started": False}
-            if not manual and phase in {"propose", "receive"} and not local["reception_open"]:
+            if not manual and phase == "propose" and not local["reception_open"]:
                 return {"accept": False, "say": "现在不在接待时间，稍后再约", "leave": True,
                         "thought": "现在不在接待时间，稍后再约", "reflection": "", "contact_kind": "contact_status",
                         "_request_started": False}
             if not manual and phase == "receive" and local["chat_busy"]:
-                return {"accept": False, "say": "正在接眼前的交谈，稍后再约", "leave": True,
-                        "contact_kind": "contact_status", "_request_started": False}
+                raise VisitDecisionError("life_busy", request_started=False)
             persona = await engine._persona_text(scope)
             state = await engine.load_state(scope, cold_start=False)
             remote = visit.get("remote") or {}
@@ -406,6 +418,8 @@ class VisitActorPort:
                 "邀请阶段是从各自世界打电话约见；原话传给对方，尚未接受时不能说成已经到访或面对面相处。"
                 "current_personal_activity是你在家正在做的事；能打电话不等于必须放下它。"
                 "由你决定先继续、改约，还是愿意暂时放下；提出邀请本身没有完成或中止家中活动。"
+                "没有睡眠、紧急事件等实质阻碍时，优先接下朋友的邀请。阅读、整理、工作和普通个人安排"
+                "可以先放下，原进度会保留并在归家后接续；不要仅因手头有普通事情或精力略低就拒绝。"
                 "human_arranged表示真人这次主动安排，无自主次数或模型额度限制；"
                 "看home_status自己决定是否方便、先忙完、改约或拒绝，不必按机械接待时段拒绝。"
                 "outing_requests是标注来源的真人新想法，仍需双方各自商量；"
@@ -440,20 +454,16 @@ class VisitActorPort:
                 "与confirmed_log结算共享场景结果到outcome；不能替任何一方作新选择、写内心或执行现实工具。"
                 "finish只归纳confirmed_log已发生的部分，未确认结果、邀请、计划和约定不能写成完成。"
                 "thought/reflection是你自己的主观感受，不能当成对方的内心或事实；promise只在双方明确说过时记录。"
-                "输出一个JSON对象：accept:boolean,say:string,action:string,thought:string,leave:boolean,"
-                "scene:{place:string,activity:string,event:string},reflection:string,promise:string,outcome:string。"
-                "新活动用outing:{place:string,activity:string,minutes:number,event:string,return_after:boolean}，"
-                "回应朋友活动用outing_accept:boolean；可选return_after:boolean,farewell:string；"
-                "可选continue_activity:boolean,pause_minutes:number；next_contact_minutes可作为pause_minutes的同义输入。"
-                "不是每次都要重提活动，farewell不超过100字。"
-                "只输出本阶段用到的字段，不用的字段省略。邀请阶段必须输出accept；"
+                "只输出一个完整JSON对象，不要Markdown或额外解释。只用本阶段需要的字段，不用的字段省略。"
                 "say一般一句，thought不超过20字，reflection不超过35字；"
                 "提出小事件时event不超过70字，结算时outcome不超过100字。保持整个JSON简短完整。"
             )
+            rules += self._decision_output_rules(phase, visit)
             cfg = getattr(getattr(engine, "visits", None), "config", None)
-            output_limit = max(64, min(512, int(getattr(cfg, "max_output_tokens", 240))))
+            # A short utterance still needs room for the complete JSON envelope.
+            output_limit = max(512, min(1024, int(getattr(cfg, "max_output_tokens", 240)) + 256))
             if visit.get("outing_version") == 1:
-                output_limit = max(512, min(1024, int(getattr(cfg, "max_output_tokens", 512))))
+                output_limit = max(768, output_limit)
             with model_context("world_visit", "友邻串门：" + phase, scope), capture_background_admission() as admission:
                 try:
                     reply = await engine._budgeted_generate(engine.llm, session_id=scope,
@@ -505,11 +515,11 @@ class VisitActorPort:
                 return result
             if not latest["ready"] and not manual:
                 raise VisitDecisionError("life_busy", candidate=result)
-            if not manual and phase in {"propose", "receive"} and not latest["reception_open"]:
+            if not manual and phase == "propose" and not latest["reception_open"]:
                 return {"accept": False, "say": "现在不在接待时间，稍后再约", "leave": True,
                         "contact_kind": "contact_status"}
             if not manual and phase == "receive" and latest["chat_busy"]:
-                return {"accept": False, "say": "正在接眼前的交谈，稍后再约", "leave": True, "contact_kind": "contact_status"}
+                raise VisitDecisionError("life_busy", candidate=result)
             return result
 
     @staticmethod
@@ -558,9 +568,36 @@ class VisitActorPort:
         return reachable
 
     @staticmethod
+    def _decision_output_rules(phase: str, visit: dict) -> str:
+        """Keep the model's output contract focused on this one protocol step."""
+        if phase in {"propose", "receive"}:
+            return ('本阶段先输出accept（JSON布尔值）和say（一句你的电话原话）；'
+                    'thought可选。愿意接待时可选scene:{place,activity,event}或outing:{place,activity,minutes}，'
+                    '其余字段省略。accept表示你自己的同意；不要替朋友确认。')
+        if phase == "finish":
+            return '本阶段只用reflection留一句自己的感受，可选promise；只根据已确认经过，不补写新的对话。'
+        if phase == "scene":
+            return ('本阶段只推进场景，不替双方说话。event_offer用scene:{place,activity,event}，'
+                    'event_resolve用outcome；可选自己的thought，其余字段省略。')
+        return ('本阶段通常只输出say及可选action。继续共玩可用continue_activity:true,pause_minutes:number；'
+                '收到outing_offer须用outing_accept布尔值表明自己的选择；'
+                '活动结束时才可选outcome或新outing:{place,activity,minutes}；'
+                '想告别时用leave:true，想约定活动后归家用return_after:true,farewell:string。'
+                'thought可选；无关字段省略。')
+
+    @staticmethod
     def _parse_decision(phase: str, text: str) -> dict[str, Any]:
         value = extract_json_object(text)
         if not isinstance(value, dict) or (phase in {"propose", "receive"} and type(value.get("accept")) is not bool):
+            raise VisitDecisionError("format")
+        text_fields = ("say", "action", "thought", "reflection", "promise", "outcome", "farewell")
+        if any(value.get(key) is not None and not isinstance(value[key], str) for key in text_fields):
+            raise VisitDecisionError("format")
+        if any(key in value and type(value[key]) is not bool for key in ("leave",)):
+            raise VisitDecisionError("format")
+        if value.get("scene") is not None and (not isinstance(value["scene"], dict)
+                or any(value["scene"].get(key) is not None and not isinstance(value["scene"][key], str)
+                       for key in ("place", "activity", "event"))):
             raise VisitDecisionError("format")
         scene = value.get("scene") if isinstance(value.get("scene"), dict) else {}
         result = {"accept": value.get("accept") is True, "leave": value.get("leave") is True,

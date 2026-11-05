@@ -130,6 +130,16 @@ details[open]>.visits-entry-summary .visits-entry-arrow {transform:rotate(90deg)
 .visits-earlier-moments>summary {width:fit-content;font-size:10px;color:var(--muted);cursor:pointer;line-height:1.8;}
 .visits-earlier-moments .visits-record-page {margin:10px 0 4px;font-size:10px;padding:4px 8px;}
 .visits-earlier-moments>.visits-transcript {margin-bottom:14px;}
+.visits-record-gap {font-size:11px;line-height:1.7;color:var(--text-2);margin:9px 0 0;overflow-wrap:anywhere;}
+.visits-record-ending {max-width:720px;margin:25px auto 0;padding-top:12px;border-top:1px solid var(--line);color:var(--text-2);}
+.visits-record-ending-head {display:flex;align-items:center;gap:9px;font-size:11px;line-height:1.7;}
+.visits-record-ending-mark {color:var(--accent-ink);font-size:15px;}
+.visits-record-ending-head .visits-log-time {margin-left:auto;}
+.visits-record-ending-reason {font-size:12px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere;margin:5px 0 0;}
+.visits-record-progress {max-width:720px;margin:19px auto 0;padding-top:11px;border-top:1px dashed var(--line);display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;color:var(--text-2);font-size:11px;line-height:1.8;}
+.visits-record-progress-mark {color:var(--accent-ink);}
+.visits-progress-reason {overflow-wrap:anywhere;}
+.visits-progress-time {font-size:10px;color:var(--muted);margin-left:auto;}
 .visits-contact-notes {font-size:10px;color:var(--muted);margin:0 0 9px;}
 .visits-contact-notes>summary {cursor:pointer;}
 .visits-channel-status {font-size:11px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere;}

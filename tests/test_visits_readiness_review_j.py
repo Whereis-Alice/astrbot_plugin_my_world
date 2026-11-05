@@ -6,6 +6,7 @@ import unittest
 
 from tests import test_engine as engine_fixture
 from tests import test_visits_actor as actor_fixture
+from core.visits.decisions import VisitDecisionError
 
 
 class VisitReadinessReviewTests(unittest.IsolatedAsyncioTestCase):
@@ -32,15 +33,19 @@ class VisitReadinessReviewTests(unittest.IsolatedAsyncioTestCase):
         visit.update(scope=scope, local=card)
         return await self.port.decide(scope, "receive", visit)
 
+    async def assert_waiting(self, scope, card):
+        with self.assertRaises(VisitDecisionError) as caught:
+            await self.receive(scope, card)
+        self.assertEqual(caught.exception.category, "life_busy")
+        self.assertFalse(caught.exception.request_started)
+        self.assertFalse(self.llm.calls)
+
     async def test_group_main_honours_a_private_members_conversation(self):
         scope = engine_fixture.SESSION
         self.group(scope)
         card = await self.conversation(scope, engine_fixture.PRIVATE_SESSION)
         self.assertTrue(card["chat_busy"])
-        result = await self.receive(scope, card)
-        self.assertFalse(result["accept"])
-        self.assertEqual(result["contact_kind"], "contact_status")
-        self.assertFalse(self.llm.calls)
+        await self.assert_waiting(scope, card)
 
     async def test_private_main_does_not_turn_group_chatter_into_a_direct_conversation(self):
         scope = engine_fixture.PRIVATE_SESSION
@@ -55,8 +60,7 @@ class VisitReadinessReviewTests(unittest.IsolatedAsyncioTestCase):
         self.group(scope)
         card = await self.conversation(scope, engine_fixture.SESSION, addressing="me")
         self.assertTrue(card["chat_busy"])
-        self.assertFalse((await self.receive(scope, card))["accept"])
-        self.assertFalse(self.llm.calls)
+        await self.assert_waiting(scope, card)
 
     async def test_disabled_member_chat_does_not_block_the_remaining_life(self):
         scope = engine_fixture.SESSION
@@ -99,8 +103,7 @@ class VisitReadinessReviewTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.engine.end_native_turn, turn)
         card = await self.conversation(scope, engine_fixture.SESSION, addressing="others")
         self.assertTrue(card["chat_busy"])
-        self.assertFalse((await self.receive(scope, card))["accept"])
-        self.assertFalse(self.llm.calls)
+        await self.assert_waiting(scope, card)
 
     async def test_self_internal_and_old_private_rows_do_not_block_reception(self):
         scope = engine_fixture.SESSION

@@ -209,7 +209,7 @@ class VisitFlow(VisitRhythm):
                 return None
             if current is None:
                 if defer_decision(visit, cursor, category="state", now=self._now(),
-                                  candidate=visit["decision"]):
+                                  candidate=visit["decision"], waiting=True):
                     await self._save()
                 else:
                     await self._finish(visit, "interrupted", str(VisitDecisionError("state")))
@@ -220,7 +220,7 @@ class VisitFlow(VisitRhythm):
             if phase in {"turn", "scene"}:
                 if not visit.get("manual") and not current["ready"]:
                     if defer_decision(visit, cursor, category="life_busy", now=self._now(),
-                                      candidate=visit["decision"]):
+                                      candidate=visit["decision"], waiting=True):
                         await self._save()
                     else:
                         await self._finish(visit, "interrupted", str(VisitDecisionError("life_busy")))
@@ -231,11 +231,19 @@ class VisitFlow(VisitRhythm):
                     return None
                 return copy.deepcopy(visit["decision"])
             declining = visit["decision"].get("accept") is False or visit["decision"].get("leave") is True
+            if (not visit.get("manual") and not declining
+                    and (not current["ready"] and current.get("readiness_wait") is True
+                         or current.get("chat_busy") and (phase == "receive" or visit["automatic"]))):
+                if defer_decision(visit, cursor, category="life_busy", now=self._now(),
+                                  candidate=visit["decision"], waiting=True):
+                    await self._save()
+                else:
+                    await self._finish(visit, "interrupted", str(VisitDecisionError("life_busy")))
+                return None
             reason = (current.get("ready_reason") or "现在不方便，稍后再约") if not visit.get("manual") and not declining and not current["ready"] else ""
-            if not visit.get("manual") and not declining and not reason and not current.get("reception_open", True):
+            if (not visit.get("manual") and not declining and not reason and phase == "propose"
+                    and not current.get("reception_open", True)):
                 reason = "现在不在接待时间，稍后再约"
-            if not visit.get("manual") and not declining and not reason and current.get("chat_busy") and (phase == "receive" or visit["automatic"]):
-                reason = "正在接眼前的交谈，稍后再约"
             if reason:
                 decision = clean_decision({"accept": False, "say": reason, "leave": True})
                 decision["contact_kind"] = "contact_status"
@@ -351,12 +359,11 @@ class VisitFlow(VisitRhythm):
                             raw = candidate  # A refusal needs identity proof, not an open reception.
                         elif not snapshot.get("manual") and not current["ready"]:
                             raise VisitDecisionError("life_busy", request_started=False, candidate=candidate)
-                        elif not snapshot.get("manual") and phase in {"propose", "receive"} and not current.get("reception_open", True):
+                        elif not snapshot.get("manual") and phase == "propose" and not current.get("reception_open", True):
                             raw = {"accept": False, "leave": True, "say": "现在不在接待时间，稍后再约",
                                    "contact_kind": "contact_status"}
                         elif not snapshot.get("manual") and phase == "receive" and current.get("chat_busy"):
-                            raw = {"accept": False, "leave": True, "say": "正在接眼前的交谈，稍后再约",
-                                   "contact_kind": "contact_status"}
+                            raise VisitDecisionError("life_busy", request_started=False, candidate=candidate)
                         else:
                             raw = candidate
                     result = clean_decision(raw)
@@ -402,7 +409,10 @@ class VisitFlow(VisitRhythm):
                                 "state" if saved_candidate is not None else
                                 "timeout" if isinstance(error, TimeoutError) else "provider")
                     if defer_decision(visit, cursor, category=category, now=self._now(),
-                                      candidate=saved_candidate):
+                                      candidate=saved_candidate,
+                                      waiting=(saved_candidate is not None or isinstance(error, VisitDecisionError)
+                                               and not error.request_started
+                                               and category in {"busy", "backoff", "life_busy", "state", "provider"})):
                         await self._save()
                         return None
                     if budget is not None:
@@ -891,6 +901,59 @@ class VisitFlow(VisitRhythm):
             visit["end_reason"] = result["say"] if outing_enabled(visit) else "访客已告别归家"
             self._clear_decision_wait(visit)
 
+    @staticmethod
+    def _scene_superseded_step(visit, sender, payload):
+        """Only a host result can supersede an unadopted legacy scene turn."""
+        seq = payload.get("seq")
+        if (outing_enabled(visit) or visit["role"] != "host" or sender != visit["guest_id"]
+                or visit["status"] != "active" or visit["next_actor"] != sender
+                or visit["event_stage"] != "resolved" or type(seq) is not int
+                or not 0 <= seq < len(visit["log"])):
+            return False
+        return all(row["actor_id"] == visit["host_id"] and row["kind"] == "result"
+                   for row in visit["log"][seq:])
+
+    def _validate_superseded_step_reply(self, visit, reply, outgoing=None):
+        """Validate a non-application proof before acknowledging the durable packet."""
+        if "step_superseded" not in reply and "step_seq" not in reply:
+            return False
+        superseded = reply.get("step_superseded")
+        if superseded is True:
+            remote = validate_snapshot(visit, reply.get("visit"), now=self._now())
+            cursor = visit.get("decision_cursor")
+            cursor = cursor if isinstance(cursor, dict) else {}
+            seq = reply.get("step_seq")
+            sent = outgoing.get("payload") if isinstance(outgoing, dict) else None
+            sent = sent if isinstance(sent, dict) else {}
+            op = sent.get("op") if outgoing is not None else reply.get("delivered_op")
+            expected_seq = sent.get("seq") if outgoing is not None else cursor.get("log_seq")
+            if (op != "step" or type(expected_seq) is not int or seq != expected_seq
+                    or outing_enabled(visit) or visit["role"] != "guest"
+                    or not visit.get("unsent_turn") or type(seq) is not int
+                    or not 0 <= seq <= len(visit["log"])
+                    or cursor.get("phase") != "turn" or cursor.get("log_seq") != seq
+                    or cursor.get("event_stage") != "offered"
+                    or cursor.get("next_actor") != visit["guest_id"]
+                    or remote.get("status") != "active" or remote.get("next_actor") != visit["guest_id"]
+                    or remote.get("event_stage") != "resolved"
+                    or cursor.get("turns") != visit["turns"] or remote.get("turns") != visit["turns"]
+                    or len(remote.get("log", [])) <= seq
+                    or any(row["actor_id"] != visit["host_id"] or row["kind"] != "result"
+                           for row in remote["log"][seq:])):
+                raise ValueError("旧回合缺少已推进且未被采用的场景证明")
+            return True
+        raise ValueError("旧回合未采用标记无效")
+
+    def _synchronize_guest_reply(self, visit, reply):
+        """A signed result can discard only the exact step it did not apply."""
+        superseded = self._validate_superseded_step_reply(visit, reply)
+        self._synchronize(visit, reply["visit"], visit["host_id"])
+        if superseded:
+            for key in ("decision", "decision_cursor", "model_retry", "unsent_turn"):
+                visit.pop(key, None)
+        elif reply.get("delivered_op") == "step":
+            visit.pop("unsent_turn", None)
+
     def _record_turn(self, visit, sender, result):
         self._append(visit, sender, "say", result["say"])
         self._append(visit, sender, "action_plan", result["action"])
@@ -1125,12 +1188,12 @@ class VisitFlow(VisitRhythm):
             async with self._lock:
                 if self._closed or visit["status"] in TERMINAL:
                     return
-                self._synchronize(visit, reply["visit"], visit["host_id"])
-                if reply.get("delivered_op") == "step":
-                    visit.pop("unsent_turn", None)
+                self._synchronize_guest_reply(visit, reply)
                 await self._save()
             if visit["status"] != "active" or visit["next_actor"] != visit["guest_id"] or visit["next_at"] > self._now():
                 return
+            if visit["event_stage"] == "offered" and len(visit.get("action_plans", {})) == 2:
+                return  # The host settles both choices before a new guest turn.
             async with self._lock:
                 if visit["status"] in TERMINAL or self._closed:
                     return
@@ -1144,6 +1207,8 @@ class VisitFlow(VisitRhythm):
             async with self._lock:
                 if visit["status"] in TERMINAL or self._closed:
                     return
+                if visit.get("decision_cursor") != self._decision_cursor(visit, "turn"):
+                    return  # A confirmed scene or request advanced after inference.
                 visit["unsent_turn"] = True
                 await self._save()
                 step = {"op": "step", "seq": len(visit["log"]), "decision":
@@ -1152,8 +1217,7 @@ class VisitFlow(VisitRhythm):
             async with self._lock:
                 if self._closed or visit["status"] in TERMINAL:
                     return
-                self._synchronize(visit, reply["visit"], visit["host_id"])
-                visit.pop("unsent_turn", None)
+                self._synchronize_guest_reply(visit, reply)
                 await self._save()
             return
         retry = visit.get("model_retry") or {}

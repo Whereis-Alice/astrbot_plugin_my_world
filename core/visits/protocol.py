@@ -83,9 +83,23 @@ def envelope(key: str, sender: str, target: str, payload: dict[str, Any], now: f
     return body
 
 
+def original_envelope(body: dict[str, Any]) -> dict[str, Any]:
+    """A delivery renewal does not change the original message or its receipt."""
+    return {name: value for name, value in body.items() if name != "delivery_retry"}
+
+
+def renew_delivery(body: dict[str, Any], key: str, now: float) -> dict[str, Any]:
+    """Prove that the same authenticated sender is still delivering this exact packet."""
+    original = original_envelope(body)
+    verify(original, key, now, fresh=False)
+    proof = {"at": now, "message_digest": digest(original)}
+    proof["signature"] = hmac.new(key.encode(), canonical(proof), hashlib.sha256).hexdigest()
+    return {**original, "delivery_retry": proof}
+
+
 def verify(body: Any, key: str, now: float, *, fresh: bool = True) -> dict[str, Any]:
-    if not isinstance(body, dict) or set(body) != {
-            "version", "sender", "target", "message_id", "created_at", "payload", "signature"}:
+    fields = {"version", "sender", "target", "message_id", "created_at", "payload", "signature"}
+    if not isinstance(body, dict) or set(body) not in (fields, fields | {"delivery_retry"}):
         raise ValueError("无效协议消息")
     if body["version"] != VERSION or not isinstance(body["payload"], dict):
         raise ValueError("串门协议版本不兼容")
@@ -98,9 +112,23 @@ def verify(body: Any, key: str, now: float, *, fresh: bool = True) -> dict[str, 
         stamp = float(body["created_at"])
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("无效时间戳") from exc
-    if not math.isfinite(stamp) or (fresh and abs(now - stamp) > 300):
+    if not math.isfinite(stamp):
+        raise ValueError("无效时间戳")
+    original = original_envelope(body)
+    retry = body.get("delivery_retry")
+    if "delivery_retry" in body:
+        if (not isinstance(retry, dict) or set(retry) != {"at", "message_digest", "signature"}
+                or type(retry["at"]) not in {int, float} or not math.isfinite(retry["at"])
+                or retry["at"] < stamp or retry["message_digest"] != digest(original)):
+            raise ValueError("串门重试证明无效")
+        retry_signature = hmac.new(key.encode(), canonical({name: value for name, value in retry.items()
+                                                           if name != "signature"}), hashlib.sha256).hexdigest()
+        if not isinstance(retry["signature"], str) or not hmac.compare_digest(retry_signature, retry["signature"]):
+            raise ValueError("串门重试身份验证失败")
+        stamp = retry["at"]
+    if fresh and abs(now - stamp) > 300:
         raise ValueError("消息已过期，请重试")
-    signed = {key: value for key, value in body.items() if key != "signature"}
+    signed = {name: value for name, value in original.items() if name != "signature"}
     signature = hmac.new(key.encode(), canonical(signed), hashlib.sha256).hexdigest()
     if not isinstance(body["signature"], str) or not hmac.compare_digest(signature, body["signature"]):
         raise ValueError("串门身份验证失败")

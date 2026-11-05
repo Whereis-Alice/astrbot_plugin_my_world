@@ -12,8 +12,9 @@ from .ports import VisitActorPort, describe_local
 from .flow import VisitFlow
 from .persistence import VisitJournal
 from .protocol import (RESERVED, TERMINAL, code_id, derive_key, digest, envelope,
-                       new_id, public_actor, text, validate_actor, validate_outing_request, verify)
-from .transport import VisitTransport
+                       new_id, original_envelope, public_actor, renew_delivery, text,
+                       validate_actor, validate_outing_request, verify)
+from .transport import VisitTransport, VisitTransportError
 from .snapshots import validate_snapshot
 from .model_retry import clear_state_read
 
@@ -163,7 +164,7 @@ class VisitService(VisitFlow, VisitJournal):
     async def _cached_response(self, body, cached):
         verify(body, cached["key"], self._now(), fresh=False)
         if (digest(body["payload"]) != cached["digest"]
-                or (cached.get("request_digest") and digest(body) != cached["request_digest"])):
+                or (cached.get("request_digest") and digest(original_envelope(body)) != cached["request_digest"])):
             raise ValueError("重复编号的消息内容发生变化")
         context = await self._receipt_context(body, cached["key"], cached["response"])
         if cached.get("context") and context != cached["context"]:
@@ -267,7 +268,7 @@ class VisitService(VisitFlow, VisitJournal):
         result = envelope(key, sender, request["sender"],
                           {**payload, "reply_to": request["message_id"]}, self._now())
         self._state["receipts"][receipt_key] = {"key": key, "at": self._now(),
-            "digest": digest(request["payload"]), "request_digest": digest(request),
+            "digest": digest(request["payload"]), "request_digest": digest(original_envelope(request)),
             "context": await self._receipt_context(request, key, result, validate_identity=False), "response": result}
         await self._save()
         return result
@@ -298,8 +299,8 @@ class VisitService(VisitFlow, VisitJournal):
                 reason = "我想先把前面的几件事收好，稍后再约"
                 return {"declined": True, "reason": reason,
                         "contact": {"kind": "contact_status", "text": reason}}
-            if not manual and (not local["ready"] or local.get("chat_busy") or not local.get("reception_open", True)):
-                reason = "现在不在接待时间，稍后再约" if not local.get("reception_open", True) else local.get("ready_reason") or "眼前还有交谈，稍后再约"
+            if not manual and not local["ready"] and not local.get("readiness_wait"):
+                reason = local.get("ready_reason") or "现在不方便，稍后再约"
                 return {"declined": True, "reason": reason,
                         "contact": {"kind": "contact_status", "text": reason}}
             if not manual and getattr(self.config, "outings_enabled", False):
@@ -418,8 +419,11 @@ class VisitService(VisitFlow, VisitJournal):
             if local_request_pending:
                 candidate["manual_continuation"] = True
         self._accept_outing_request(candidate, peer["id"], payload)
+        superseded = False
         if op == "step":
-            self._receive_step(candidate, peer["id"], payload)
+            superseded = self._scene_superseded_step(candidate, peer["id"], payload)
+            if not superseded:
+                self._receive_step(candidate, peer["id"], payload)
         elif op == "sync":
             self._synchronize(candidate, payload.get("visit"), peer["id"])
         elif op != "status":
@@ -428,7 +432,8 @@ class VisitService(VisitFlow, VisitJournal):
         self._record_remote_budget_hold(peer, candidate)
         visit.clear()
         visit.update(candidate)
-        return {"visit": self._wire(visit)}
+        return {"visit": self._wire(visit),
+                **({"step_superseded": True, "step_seq": payload["seq"]} if superseded else {})}
 
     def _accept_outing_request(self, visit, sender, payload):
         request = payload.get("human_request")
@@ -516,7 +521,34 @@ class VisitService(VisitFlow, VisitJournal):
                 await self._save()
             self._enabled()  # Keep a durable pre-close wire, but do not send it now.
             peer = copy.deepcopy(peer)
-        response = await self.transport.request(peer["url"], outgoing)
+        try:
+            response = await self.transport.request(peer["url"], outgoing)
+        except VisitTransportError as error:
+            if error.http_status != 400 or self._now() - outgoing["created_at"] <= 300:
+                raise
+            # First replay the exact durable packet: an old receiver may already
+            # have its receipt. Only a stale rejection needs fresh delivery proof.
+            # Keep the original ID, contents and signature for every retry, so a
+            # lost reply or a restart cannot execute a turn twice.
+            async with self._lock:
+                self._enabled()
+                visit = self._state["visits"].get(visit_id)
+                current_peer = self._find_peer(visit["scope"], peer["id"]) if visit else None
+                if (not visit or not current_peer or current_peer["secret"] != peer["secret"]
+                        or not self._peer_trusted(current_peer) or not self._visit_belongs(visit, current_peer)
+                        or not self._exchange_allowed(current_peer, outgoing["payload"])
+                        or (visit.get("outbox") or {}).get("message_id") != outgoing["message_id"]
+                        or visit["status"] in TERMINAL and outgoing["payload"]["op"] != "end"):
+                    raise ValueError("生活或旅程已变化，旧联系不能续证") from error
+                local = await self._exchange_description(visit["scope"])
+                self._enabled()
+                if local["actor_id"] != visit["local"]["actor_id"] or local["persona_key"] != visit["local"]["persona_key"]:
+                    raise ValueError("生活身份已变化，旧联系不能续证") from error
+                if outgoing["payload"]["op"] != "end":
+                    if await self._complete_outing_if_due(visit) or visit["expires_at"] <= self._now():
+                        raise ValueError("本次停留已经结束，旧联系不能续证") from error
+                renewed = renew_delivery(outgoing, peer["secret"], self._now())
+            response = await self.transport.request(peer["url"], renewed)
         result = verify(response, peer["secret"], self._now(), fresh=False)
         if response["sender"] != peer["id"] or response["target"] != outgoing["sender"] or result.get("reply_to") != outgoing["message_id"]:
             raise ValueError("串门答复不属于本次联系")
@@ -577,6 +609,7 @@ class VisitService(VisitFlow, VisitJournal):
                 raise ValueError("对方的旅程预算不足以容纳已发出的调用")
             if remote is not None:
                 validate_snapshot(candidate, remote, now=self._now())
+                self._validate_superseded_step_reply(candidate, result, outgoing)
                 self._record_remote_budget_hold(peer, remote)
             if result.get("declined") is True and outgoing["payload"]["op"] == "offer":
                 if result.get("budget") is not None:

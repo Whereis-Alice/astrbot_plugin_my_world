@@ -114,8 +114,10 @@ class ManualVisitBudgetTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_automatic_peer_exhaustion_is_checked_before_any_proposal_and_retained(self):
         await self.exhaust(self.b)
-        self.a.service.config = replace(self.a.service.config, reception_start=0, reception_end=0, daily_tokens=0)
-        self.b.service.config = replace(self.b.service.config, reception_start=0, reception_end=0, daily_tokens=0)
+        # Keep the started allowance settings unchanged: a real configuration
+        # change deliberately invalidates cached remote observations on reload.
+        self.a.service.config = replace(self.a.service.config, reception_start=0, reception_end=0)
+        self.b.service.config = replace(self.b.service.config, reception_start=0, reception_end=0)
         binding = await self.a.service._prepare_peer(self.scope, self.peer_id)
         self.operations.clear()
         with self.assertRaises(ValueError):

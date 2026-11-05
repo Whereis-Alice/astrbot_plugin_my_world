@@ -88,9 +88,13 @@ class VisitJournal(WorldConnections):
         visits = self._state["visits"]
         past = sorted((v for v in visits.values() if v["status"] in TERMINAL),
                       key=lambda v: v.get("ended_at", v["created_at"]), reverse=True)
-        for visit in past[self.config.history_keep:]:
-            if not self._settlement_pending(visit):
-                visits.pop(visit["id"], None)
+        # Failed calls are diagnostics; they must not evict actual encounters.
+        # Both collections stay bounded by the configured retained history.
+        for arrived in (True, False):
+            entries = [visit for visit in past if bool(visit.get("arrived_at")) is arrived]
+            for visit in entries[self.config.history_keep:]:
+                if not self._settlement_pending(visit):
+                    visits.pop(visit["id"], None)
         await self.db.call("kv_set", KEY, self._state)
 
     def active(self, scope: str) -> dict[str, Any] | None:
@@ -202,7 +206,33 @@ class VisitJournal(WorldConnections):
             result["outing"]["phase"] = "playing" if self._now() < result["outing"]["until"] else "checkpoint"
         result["budget_side"] = visit.get("budget_side", "")
         result["model_wait"] = visible_wait(visit) if visit["status"] in RESERVED else {}
+        result["progress"] = self._visible_progress(visit, result["model_wait"])
         return result
+
+    def _visible_progress(self, visit: dict, model_wait: dict) -> dict:
+        """Project local continuation evidence without exporting decisions or packets."""
+        if visit["status"] not in RESERVED:
+            return {}
+        now = self._now()
+        def timestamp(value):
+            return value if type(value) in {int, float} and math.isfinite(value) and value > 0 else 0
+        next_at = timestamp(visit.get("next_at"))
+        if model_wait:
+            return {"kind": "model_wait", **model_wait}
+        if visit.get("outbox") or visit.get("contact_error"):
+            failures = visit.get("network_failures", 0)
+            return {"kind": "delivery_wait", "reason": "联系暂未送达，正在重试", "next_at": next_at,
+                    "attempts": failures if type(failures) is int and failures >= 0 else 0}
+        if visit.get("model_pending"):
+            return {"kind": "thinking", "reason": "正在组织这一步的回应", "next_at": 0}
+        outing = visit.get("outing")
+        if isinstance(outing, dict):
+            until, quiet = timestamp(outing.get("until")), timestamp(outing.get("quiet_until"))
+            if until > now and (quiet > now or outing.get("return_agreed")):
+                return {"kind": "activity_wait", "reason": "正在一起活动",
+                        "next_at": min(quiet, until) if quiet > now else until}
+        return {"kind": "next_turn", "reason": "等待下一步回应", "next_at": next_at,
+                "actor_id": str(visit.get("next_actor") or "")}
 
     async def overview(self, scope: str = "") -> dict[str, Any]:
         await self._load()

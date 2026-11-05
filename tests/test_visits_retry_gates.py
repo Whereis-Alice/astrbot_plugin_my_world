@@ -56,10 +56,45 @@ class VisitRetryGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.b_actor.memories)
 
     async def test_receive_candidate_after_reload_obeys_reception_window(self):
-        await self.assert_receive_gate({"reception_open": False}, "现在不在接待时间，稍后再约")
+        visit_id, visit = await self.offered()
+        self.hold_candidate(self.b_actor, "receive")
+        await self.b._advance(visit_id)
+        calls = copy.deepcopy(visit["calls"])
+        resumed = await self.reload_service(self.b)
+        self.change_card(self.b_actor, reception_open=False)
+        self.now += 30
+        await resumed._advance(visit_id)
+        current = resumed._state["visits"][visit_id]
+        self.assertEqual(current["status"], "active")
+        self.assertEqual(current["calls"], calls)
+        self.assertEqual(len(self.b_actor.calls), 1)
+        self.assertNotIn("model_retry", current)
 
     async def test_receive_candidate_after_reload_obeys_human_chat_gate(self):
-        await self.assert_receive_gate({"chat_busy": True}, "正在接眼前的交谈，稍后再约")
+        visit_id, visit = await self.offered()
+        self.hold_candidate(self.b_actor, "receive")
+        await self.b._advance(visit_id)
+        calls = copy.deepcopy(visit["calls"])
+        resumed = await self.reload_service(self.b)
+        original = self.b_actor.describe
+
+        async def describe(scope):
+            return {**await original(scope), "chat_busy": True}
+
+        self.b_actor.describe = describe
+        self.now += 30
+        current = resumed._state["visits"][visit_id]
+        await resumed._advance(visit_id)
+        self.assertEqual(current["status"], "offered")
+        self.assertEqual(current["model_retry"]["category"], "life_busy")
+        self.assertEqual(current["calls"], calls)
+        self.assertNotIn("arrived_at", current)
+        self.b_actor.describe = original
+        self.now = current["model_retry"]["next_at"]
+        await resumed._advance(visit_id)
+        self.assertEqual(current["status"], "active")
+        self.assertEqual(current["calls"], calls)
+        self.assertEqual(len(self.b_actor.calls), 1)
 
     async def test_proposal_candidate_after_reload_cannot_call_outside_reception(self):
         self.hold_candidate(self.a_actor, "propose")

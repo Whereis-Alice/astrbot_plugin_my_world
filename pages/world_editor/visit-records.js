@@ -6,6 +6,18 @@ const TEXT_TYPES = {
 };
 const CONTINUATIONS = new Set(["action", "action_plan", "experience"]);
 
+/** A cached prefix does not prove that a later refresh left no missing rows. */
+export function recordCursor(rows, visit = {}) {
+  const sequences = [...new Set(rows.filter(item => Number.isInteger(item?.seq) && item.seq > 0)
+    .map(item => item.seq))].sort((a, b) => a - b);
+  for (let index = sequences.length - 1; index > 0; index -= 1) {
+    if (sequences[index] > sequences[index - 1] + 1) return sequences[index] - 1;
+  }
+  if (sequences.length) return sequences[0] - 1;
+  return Number.isInteger(visit.next_before) && visit.next_before > 0 ? visit.next_before
+    : Number.isInteger(visit.log_offset) && visit.log_offset > 0 ? visit.log_offset : 0;
+}
+
 export function recordIdentity(visit, item) {
   if (!item || typeof item.actor_id !== "string" || !item.actor_id) return null;
   const actors = [visit?.local, visit?.remote].filter(Boolean);

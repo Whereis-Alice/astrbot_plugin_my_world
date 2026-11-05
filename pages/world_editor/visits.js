@@ -1,14 +1,16 @@
 /** Paired worlds use their own channel; the editor only invites and observes. */
-import {recordMoments, recordParts} from "./visit-records.js";
+import {recordCursor, recordIdentity, recordMoments, recordParts} from "./visit-records.js";
 
 const STATUS = {
   invited: "邀请已提出", inviting: "正在提出邀请", offered: "等待接待决定", pending: "等待答复", accepted: "对方已接受",
   visiting: "正在做客", active: "相见中", arrived: "已经到访", returning: "正在告别归家",
-  completed: "已告别归家", closed: "已经结束", ended: "已经结束", declined: "这次没有成行",
+  finishing: "正在告别归家", completed: "已告别归家", closed: "已经结束", ended: "已经结束", declined: "这次没有成行",
   rejected: "对方暂时不方便", cancelled: "邀请已取消", interrupted: "这次暂时中断",
   expired: "这次已结束", failed: "这次没有成行",
 };
 const WAITING = new Set(["invited", "inviting", "offered", "pending", "accepted"]);
+const ENDED = new Set(["completed", "closed", "ended", "declined", "rejected", "cancelled", "interrupted", "expired", "failed"]);
+const OPEN = new Set([...WAITING, "visiting", "active", "arrived", "returning", "finishing"]);
 
 function stamp(value) {
   if (!value) return "";
@@ -132,9 +134,13 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
       return null;
     } finally {busy = false; controls();}
   }
+  function recordRows(visit) {
+    const logs = Array.isArray(visit.log) && visit.log.length ? visit.log
+      : Array.isArray(visit.transcript) ? visit.transcript : [];
+    return logs.filter(item => item && typeof item === "object");
+  }
   function recordLogs(visit) {
-    const logs = Array.isArray(visit.transcript) ? visit.transcript : Array.isArray(visit.log) ? visit.log : [];
-    return logs.filter(item => item && !(item.kind === "activity" && /^开始相处[：:]/.test(item.text || "")));
+    return recordRows(visit).filter(item => !(item.kind === "activity" && /^开始相处[：:]/.test(item.text || "")));
   }
   function successful(visit) {
     return Boolean(visit?.arrived_at || visit?.contact_success === true);
@@ -207,16 +213,15 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     const key = `${getSession()}\n${visit.id || "preview"}`, signature = `${visit.local?.id}\n${visit.remote?.id}`;
     let draft = recordDrafts.get(key);
     if (!draft || draft.signature !== signature) {
-      draft = {signature, rows: new Map(), olderOpen: false, loading: false, fetched: false, nextBefore: 0};
+      draft = {signature, rows: new Map(), olderOpen: false, loading: false, nextBefore: 0};
       recordDrafts.set(key, draft);
     }
-    const present = recordLogs(visit);
+    const present = recordRows(visit);
     const sequenced = present.length && present.every(item => Number.isInteger(item.seq) && item.seq > 0);
     if (sequenced) for (const item of present) draft.rows.set(item.seq, item);
     const sorted = [...draft.rows.values()].sort((a, b) => a.seq - b.seq);
-    // The API cursor is a row boundary: seq 97 follows before=96.
-    if (!draft.fetched) draft.nextBefore = sorted.length ? Math.max(0, sorted[0].seq - 1)
-      : Number.isInteger(visit.next_before) ? visit.next_before : visit.log_offset > 0 ? visit.log_offset : 0;
+    // Keep protocol rows, including hidden legacy annotations, when looking for gaps.
+    draft.nextBefore = recordCursor(sorted, visit);
     const logs = (sorted.length ? sorted : present).filter(item => (diagnostic || item.kind !== "contact_status")
       && !(item.kind === "activity" && /^开始相处[：:]/.test(item.text || "")));
     const moments = recordMoments(visit, logs), split = live ? Math.max(0, moments.length - 8) : 0;
@@ -226,6 +231,9 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
       earlier.append(el("summary", "", split ? `更早的片刻 · ${split}` : "翻开更早的片刻"));
       earlier.ontoggle = () => {draft.olderOpen = earlier.open;};
       if (draft.nextBefore) {
+        const note = el("p", "visits-record-gap", sorted[0]?.seq === 1
+          ? "这里还有一段未加载的经过，继续往前翻可补齐。" : "还有更早的经过未加载。");
+        earlier.append(note);
         const previous = el("button", "ghost small visits-record-page", draft.loading ? "正在翻页…" : "继续往前翻");
         previous.type = "button"; previous.disabled = draft.loading || !getSession();
         previous.onclick = async () => {
@@ -235,10 +243,10 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
           try {
             const page = await apiPost("visits/record", {session, visit_id: visit.id, before});
             if (session !== getSession() || recordDrafts.get(key) !== draft || page?.id !== visit.id) return;
-            if (!Array.isArray(page.log) || !page.log.every(item => item && Number.isInteger(item.seq) && item.seq > 0 && item.seq <= before)) throw new Error("这页记录暂时读不到，请再试一次");
+            if (!Array.isArray(page.log) || !page.log.length || !page.log.every(item => item && Number.isInteger(item.seq) && item.seq > 0 && item.seq <= before)
+                || !page.log.some(item => !draft.rows.has(item.seq))) throw new Error("这页记录暂时读不到，请再试一次");
             for (const item of page.log) draft.rows.set(item.seq, item);
-            draft.fetched = true;
-            draft.nextBefore = Number.isInteger(page.next_before) && page.next_before > 0 && page.next_before < before ? page.next_before : 0;
+            draft.nextBefore = recordCursor([...draft.rows.values()], page);
           } catch (error) {
             if (session === getSession() && recordDrafts.get(key) === draft) toast(error.message || "这页记录暂时读不到");
           } finally {
@@ -384,6 +392,37 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
       }
       if (visit.reason && diagnostic) body.append(el("p", "muted", visit.reason));
       transcript(visit, body, diagnostic || live && !visit.arrived_at, live);
+      const progress = visit.progress;
+      if (live && progress && typeof progress.reason === "string" && progress.reason.trim()) {
+        const continuation = el("footer", "visits-record-progress");
+        continuation.dataset.progressKind = typeof progress.kind === "string" ? progress.kind : "";
+        const speaker = progress.kind === "next_turn" ? recordIdentity(visit, {actor_id: progress.actor_id}) : null;
+        const sameName = speaker && visit.local?.name === visit.remote?.name;
+        const name = speaker && (sameName ? `${speaker === visit.local ? "本方" : "对方"}的${speaker.name}` : speaker.name);
+        continuation.append(el("span", "visits-record-progress-mark", "⋯"),
+          el("span", "visits-progress-reason", name ? `接下来由${name}回应` : progress.reason));
+        if (recordDate(progress.next_at) && Number(progress.next_at) > Number(visit.observed_at || Date.now() / 1000)) {
+          const expected = el("span", "visits-progress-time", `约 ${clockStamp(progress.next_at)} 继续`);
+          expected.title = stamp(progress.next_at); continuation.append(expected);
+        }
+        body.append(continuation);
+      } else if (!live && !diagnostic) {
+        const ending = el("footer", "visits-record-ending");
+        ending.dataset.status = visit.status || "unknown";
+        const ended = ENDED.has(visit.status) || recordDate(visit.ended_at);
+        const heading = el("div", "visits-record-ending-head");
+        heading.append(el("span", "visits-record-ending-mark", ended ? "✧" : "⋯"),
+          el("span", "", STATUS[visit.status] || (ended ? "已结束，原状态未保存" : "后续状态未保存")));
+        if (recordDate(visit.ended_at)) heading.append(momentTime(visit.ended_at));
+        ending.append(heading);
+        const parts = recordLogs(visit).flatMap(recordParts);
+        const alreadyRecorded = parts.at(-1)?.text.trim() === endReason
+          || parts.findLast(part => part.type === "speech")?.text.trim() === endReason;
+        if (endReason && !alreadyRecorded) ending.append(el("p", "visits-record-ending-reason", endReason));
+        else if (!endReason) ending.append(el("p", "visits-record-ending-reason", ended
+          ? "这份旧记录没有保存结束说明。" : OPEN.has(visit.status) ? "记录到这里仍未结束。" : "这份旧记录没有保存后续状态。"));
+        body.append(ending);
+      }
     }
     if (live || diagnostic || expanded) populateBody();
     else card.ontoggle = () => {if (card.open) populateBody();};

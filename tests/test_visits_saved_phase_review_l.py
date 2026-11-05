@@ -75,20 +75,24 @@ class SavedVisitPhaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.b_actor.calls, model_calls)
         self.assertEqual(visit["calls"], calls)
 
-    async def test_busy_saved_turn_ends_after_two_cooldowns_without_regeneration(self):
-        service, visit, _ = await self.saved_host()
+    async def test_busy_saved_turn_keeps_paid_choice_after_two_cooldowns(self):
+        service, visit, result = await self.saved_host()
         calls, log = copy.deepcopy(visit["calls"]), copy.deepcopy(visit["log"])
         self.b_actor.ready = False
         self.now += 65
-        for attempt, wait in ((1, 30), (2, 60), (3, 0)):
+        for attempt, wait in ((1, 30), (2, 60), (3, 120), (4, 300)):
             await self.tick(service)
-            if attempt < 3:
-                self.assertEqual(visit["model_retry"]["attempts"], attempt)
-                self.assertEqual(visit["model_retry"]["next_at"], self.now + wait)
-                self.now += wait
-        self.assertEqual(visit["status"], "interrupted")
+            self.assertEqual(visit["model_retry"]["attempts"], attempt)
+            self.assertEqual(visit["model_retry"]["next_at"], self.now + wait)
+            self.now += wait
+        self.assertEqual(visit["status"], "active")
         self.assertEqual(visit["calls"], calls)
         self.assertEqual(visit["log"], log)
+        self.assertEqual(len(self.b_actor.calls), 1)
+        self.b_actor.ready = True
+        await self.tick(service)
+        self.assertEqual(sum(row["text"] == result["say"] for row in visit["log"]), 1)
+        self.assertEqual(visit["calls"], calls)
         self.assertEqual(len(self.b_actor.calls), 1)
 
     async def test_saved_event_offer_resumes_before_the_guest_turn_at_final_allocation(self):
@@ -139,8 +143,8 @@ class SavedVisitPhaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(visit["calls"], calls)
         self.assertEqual(len(self.b_actor.calls), 1)
 
-    async def test_saved_turn_final_state_read_has_bounded_recovery(self):
-        service, visit, _ = await self.saved_host()
+    async def test_saved_turn_final_state_read_keeps_choice_until_recovered(self):
+        service, visit, result = await self.saved_host()
         service.config = replace(service.config, timeout_seconds=.01)
         original, reads = self.b_actor.describe, 0
         async def describe(scope):
@@ -152,15 +156,17 @@ class SavedVisitPhaseTests(unittest.IsolatedAsyncioTestCase):
         calls = copy.deepcopy(visit["calls"])
         self.now += 65
         with patch.object(self.b_actor, "describe", side_effect=describe):
-            for attempt, wait in ((1, 30), (2, 60), (3, 0)):
+            for attempt, wait in ((1, 30), (2, 60), (3, 120)):
                 await self.tick(service)
-                if attempt < 3:
-                    self.assertEqual(visit["model_retry"]["category"], "state")
-                    self.assertEqual(visit["model_retry"]["attempts"], attempt)
-                    self.now += wait
-        self.assertEqual(visit["status"], "interrupted")
+                self.assertEqual(visit["model_retry"]["category"], "state")
+                self.assertEqual(visit["model_retry"]["attempts"], attempt)
+                self.now += wait
+        self.assertEqual(visit["status"], "active")
         self.assertEqual(visit["calls"], calls)
         self.assertEqual(len(self.b_actor.calls), 1)
+        await self.tick(service)
+        self.assertEqual(sum(row["text"] == result["say"] for row in visit["log"]), 1)
+        self.assertEqual(visit["calls"], calls)
 
     async def test_saved_event_cannot_cross_a_persona_change_during_final_recheck(self):
         service, visit, _ = await self.saved_host("scene")
