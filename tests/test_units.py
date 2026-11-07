@@ -3917,7 +3917,7 @@ class TestPromptBuilder(unittest.TestCase):
         self.assertNotIn("…", body)
 
     def test_chat_blocks_say_whose_conversation_it_is(self):
-        """别人在互相说话时要写明"没点名找你"，还要点破「你」不是指她。"""
+        """没有当前对象证据时保留不确定，不凭邻接或旧附注认领发言。"""
 
         others = self.builder.chat_blocks(
             [
@@ -3928,8 +3928,8 @@ class TestPromptBuilder(unittest.TestCase):
             mine_names=["凶猛蓝色虎鲸"],
         )
         joined = "\n".join(others)
-        self.assertIn("他们是在互相说话", joined)
-        self.assertIn("不是指你", joined)
+        self.assertIn("对象不明确时保留不确定", joined)
+        self.assertIn("不需要先被点名", joined)
 
         # 她刚说过话、别人接着往下说：不能一律说成"没找你"
         with_self = self.builder.chat_blocks(
@@ -3939,7 +3939,7 @@ class TestPromptBuilder(unittest.TestCase):
             ],
             mine_names=["凶猛蓝色虎鲸"],
         )
-        self.assertIn("你刚说过话", "\n".join(with_self))
+        self.assertIn("不能证明最新一句在对你说", "\n".join(with_self))
 
         # 有人 @ 她（插件在记录里写的就是这个措辞）时反过来
         mine = self.builder.chat_blocks(
@@ -3949,11 +3949,12 @@ class TestPromptBuilder(unittest.TestCase):
                     "name": "不相疑",
                     "text": "在吗\n［这条消息 @ 了：你（凶猛蓝色虎鲸💢(9)）］",
                     "is_self": False,
+                    "at_targets": [{"id": "9", "self": True}],
                 }
             ],
             mine_names=["凶猛蓝色鲸鱼"],
         )
-        self.assertIn("是对你说的", "\n".join(mine))
+        self.assertIn("最后一句有面向你的 @ 或引用线索", "\n".join(mine))
 
     def test_chat_blocks_say_her_own_line_got_no_reply(self):
         """她自己说完、没人接：要说清"这不是新输入"，别让她追着自己的话再解释一遍。"""
@@ -3974,7 +3975,7 @@ class TestPromptBuilder(unittest.TestCase):
         # 她自己的那一行仍然留在记录里，只是提示语变了
         self.assertIn("在书房翻配置", joined)
 
-        # 她说过话、别人接着往下说：还是原来那句"接着你往下说"，不能说成没人答
+        # 后面有人说话不代表必然在回应她，但也不能说没人答。
         with_reply = "\n".join(
             self.builder.chat_blocks(
                 [
@@ -3989,7 +3990,8 @@ class TestPromptBuilder(unittest.TestCase):
                 mine_names=["凶猛蓝色虎鲸"],
             )
         )
-        self.assertIn("接着你往下说的多半是对你说的", with_reply)
+        self.assertNotIn("接着你往下说的多半是对你说的", with_reply)
+        self.assertIn("不能证明最新一句在对你说", with_reply)
         self.assertNotIn("没有人接", with_reply)
 
     def test_autonomous_prompt_says_her_line_got_no_reply(self):

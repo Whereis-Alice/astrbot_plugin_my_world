@@ -5,6 +5,7 @@ import re
 import json
 
 from .json_actions import extract_json_object, strip_reasoning
+from .chat_scene import SCENE_RELATION_RULES, project_chat_scene
 
 
 SILENCE_MARKER = re.compile(r"<\s*(?:NO_RESPONSE|SILENT|NO_REPLY)\s*/?\s*>", re.I)
@@ -72,34 +73,28 @@ CHAT_ONLY_MANNERS = (
 def build_participation_prompt(*, persona: str, life: dict, rows: list[dict],
                                now: float, live_window: int | None = 180,
                                style: str = "", background: str = "",
-                               natural_silence: bool = False, reply_seqs: frozenset[int] | None = None) -> tuple[str, str, dict[str, str]]:
+                               natural_silence: bool = False, reply_seqs: frozenset[int] | None = None,
+                               quote_chars: int = 1000) -> tuple[str, str, dict[str, str]]:
     """A single decision with a bounded scene, no life planner/action schema.
 
     Callers supply only the destination's rows. IDs are local capabilities: the
     model cannot introduce a platform ID or select a message in another session.
     """
-    scene, targets = [], {}
-    for index, row in enumerate(rows, 1):
-        tag = f"m{index}"
+    scene, targets = project_chat_scene(rows, quote_chars=quote_chars), {}
+    for item, row in zip(scene, rows):
+        tag = item["ref"]
         age = max(0, int(now - float(row.get("at") or 0)))
-        item = {"ref": tag, "who": "我" if row.get("is_self") else str(row.get("name") or row.get("user_id") or "群友"),
-                "text": str(row.get("text") or "")[:500], "age_seconds": age}
-        if row.get("user_id"):
-            item["user_id"] = str(row["user_id"])
-        for key in ("at_targets", "reply_to", "addressing"):
-            if row.get(key):
-                item[key] = row[key]
+        item["age_seconds"] = age
         mid = str(row.get("message_id") or "").strip()
         if (mid and not row.get("is_self") and (live_window is None or age < live_window)
                 and (reply_seqs is None or int(row.get("seq") or 0) in reply_seqs)):
             targets[tag] = mid
             item["can_reply"] = True
-        scene.append(item)
     from .speech_decision import DECISION_OUTPUT
     system = (persona + "\n\n# 此刻的你\n" + json.dumps(life, ensure_ascii=False)
               + ("\n\n" + background if background else "")
               + "\n" + (style[:600] + "\n" if style else "")
-              + participation_manners(natural_silence) + CHAT_ONLY_MANNERS
+              + participation_manners(natural_silence) + CHAT_ONLY_MANNERS + SCENE_RELATION_RULES
               + DECISION_OUTPUT
               + "reply_to 仅选 can_reply=true 的编号；接较早的一句或需要明确对象时引用，"
               "顺接全场时留空。")

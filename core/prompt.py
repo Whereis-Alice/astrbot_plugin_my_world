@@ -169,21 +169,6 @@ _REASONING_LABELS = {
 }
 
 
-def _mentions_me(text: str, names: list[str]) -> bool:
-    """这条群聊记录里有没有点名找她：@ 了她，或者叫了她的名字/名片。
-
-    别人消息里的「你」不算——中文里那个「你」几乎总是指群里另一个人。
-    """
-
-    body = str(text or "")
-    if not body:
-        return False
-    # 新旧措辞都认：留档里可能还存着旧版的注解（那是历史数据，不会自己改写）
-    if "@ 了你" in body or "@ 了：你" in body or "你（" in body:
-        return True
-    return any(name and name in body for name in names)
-
-
 def _one_line(value: Any, limit: int = 140) -> str:
     """把任意内容压成一行：转发、引用、多段文本在提示词里都会把排版撑乱。"""
 
@@ -1772,27 +1757,12 @@ class PromptBuilder:
         # 「最近在聊什么」那几条不参与丢弃（预算是先给它们的），这里恒为 0：
         # 单条过长只会被 clip_line 掐短并标明还剩多少字，不会整条消失。
         dropped_fresh = 0
-        names = [str(item).strip() for item in (mine_names or []) if str(item).strip()]
-        mentioned = any(
-            _mentions_me(str(item.get("text") or ""), names) for item in fresh
-        )
-        # 最后一条是谁说的、她说过话之后有没有人接上——这两件事决定了这几条
-        # 到底是不是"对她说的话"。以前只看"出现过 self"，于是她自己刚说完、
-        # 没人接的时候也会被说成"接着你往下说的多半是对你说的"，
-        # 模型就追着自己那一句重新解释一遍。
+        # Only this last message supplies current targeting evidence. Old @,
+        # quoted names and speaking earlier are not a new invitation to reply.
+        latest = fresh[-1] if fresh else {}
         last_is_self = bool(fresh) and bool(fresh[-1].get("is_self"))
-        last_self_at = max(
-            (index for index, item in enumerate(fresh) if item.get("is_self")),
-            default=-1,
-        )
-        other_after_last_self = last_self_at >= 0 and any(
-            not item.get("is_self") for item in fresh[last_self_at + 1 :]
-        )
-        spoke = last_self_at >= 0
-        # 「最后一条是她自己说的」比"这几条里有人 @ 你"更具体，所以先判：
-        # 她刚说完没人接的时候，@ 是更早的历史命中——拿它去盖"没人接"，
-        # 模型会以为那句话是对她说的，于是追着自己那一句重新解释一遍。
-        # 最后一条不是她说的时，mention 仍然优先（那确实是冲她来的）。
+        addressed_self = any(entry.get("self") is True for entry in (latest.get("at_targets") or [])
+                             if isinstance(entry, dict))
         if current_input_pending:
             # Reply preparation deliberately removes the current batch from
             # this background. Its last speaker cannot establish that nobody
@@ -1810,20 +1780,23 @@ class PromptBuilder:
                 "也别重新解释同一件事；\n"
                 "要接就接别人的话，没人接就换点别的说，或者先安静着。\n"
             )
-        elif mentioned:
-            address_line = "这几条里有人 @ 你 / 叫了你的名字：其中有话是对你说的。\n"
-        elif spoke and other_after_last_self:
+        elif latest.get("addressing") == "others" and not addressed_self:
             address_line = (
-                "这几条里你刚说过话：接着你往下说的多半是对你说的；"
-                "但他们俩之间互相说的那部分别揽到自己身上，\n"
-                "不确定是在问谁时，别用「主人」这类专属称呼。\n"
+                "最后一句的引用或 @ 连接另一位参与者，先看它与那位的承接关系；"
+                "被引用旧消息里的 @ 和称呼不自动成为最新一句的对象。"
+                "可以自然加入话题，但不要自动把别人的经历或指责认作自己的。\n"
+            )
+        elif addressed_self or latest.get("addressing") == "me":
+            address_line = (
+                "最后一句有面向你的 @ 或引用线索，请按它本句的语义理解回应；"
+                "引用正文仍是原消息，不能把旧内容当成对方这次重新向你提问。\n"
             )
         else:
             address_line = (
-                "这几条里没有人 @ 你、也没有叫你的名字：他们是在互相说话。\n"
-                "别人句子里的「你」指的是群里另一个人，**不是指你**——"
-                "没点名找你时你只是在旁边看着，\n"
-                "想接话就自然接一句，但别写成「他们在跟你说话」。\n"
+                "每句话各有自己的回应对象，要结合本句 @、引用链和语义逐条理解。"
+                "你先前说过话、旧消息叫过你，都不能证明最新一句在对你说；"
+                "‘你／你们／你俩’的对象不明确时保留不确定。"
+                "仍可自然接公共话题，不需要先被点名；不要为了加入就把自己当成被问的人。\n"
             )
         chat_header = (
             "# 这里最近在聊什么（按时间顺序，最后一条最新；带「你:」的是你自己说的）\n"

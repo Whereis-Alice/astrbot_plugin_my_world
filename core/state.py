@@ -1481,13 +1481,18 @@ class WorldState:
         if at_list:
             # 注意别用 "at"：那是这条消息的时间戳
             item["at_targets"] = at_list
-        if isinstance(reply_to, dict) and (reply_to.get("id") or reply_to.get("name")):
+        if isinstance(reply_to, dict) and (reply_to.get("id") or reply_to.get("name")
+                                           or reply_to.get("message_id") or reply_to.get("text")):
             item["reply_to"] = {
                 "id": str(reply_to.get("id") or ""),
                 "name": str(reply_to.get("name") or ""),
             }
             if reply_to.get("message_id"):
                 item["reply_to"]["message_id"] = str(reply_to["message_id"])
+            if reply_to.get("text"):
+                item["reply_to"]["text"] = str(reply_to["text"])[:500]
+            if type(reply_to.get("is_self")) is bool:
+                item["reply_to"]["is_self"] = reply_to["is_self"]
         if str(addressing or "") in ("me", "others"):
             item["addressing"] = str(addressing)
         refs = _chat_image_refs(images)

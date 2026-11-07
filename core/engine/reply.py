@@ -246,12 +246,15 @@ class ReplyMixin:
                 info.get(field_name) or ""
             ).strip():
                 record[field_name] = str(info[field_name]).strip()
-        for field_name in ("at_targets", "reply_to", "addressing", "images"):
+        for field_name in ("at_targets", "reply_to", "images"):
             incoming = info.get(field_name)
             if not record.get(field_name) and incoming:
                 record[field_name] = (
                     dict(incoming) if isinstance(incoming, dict) else list(incoming)
                 )
+        if (not record.get("addressing") and isinstance(info.get("addressing"), str)
+                and info["addressing"] in {"me", "others"}):
+            record["addressing"] = info["addressing"]
         return record
 
     @staticmethod

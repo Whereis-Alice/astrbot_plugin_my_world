@@ -333,7 +333,8 @@ class ParticipationMixin:
                        "有值得回应的新内容时仍可继续，不输出宣布沉默、等待或结束的占位台词。")
         result = build_participation_prompt(persona=persona, life=life, rows=rows,
             now=self._now(), live_window=self._participation_window(source), style=style,
-            background=background, natural_silence=natural_silence, reply_seqs=reply_seqs)
+            background=background, natural_silence=natural_silence, reply_seqs=reply_seqs,
+            quote_chars=self.world.context.quote_chars)
         request.trace["scene"] = {"rows": len(rows), "characters": len(result[1])}
         request.trace["natural_silence"] = natural_silence
         request.trace["silence_policy"] = {

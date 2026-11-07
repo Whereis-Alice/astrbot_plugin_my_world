@@ -11,6 +11,7 @@ from ..models import ActionDef
 from ..state import (
     WorldState,
     chat_core_text,
+    chat_event_key,
 )
 from ..state_dynamics import SOOTHE_VALENCE_BELOW
 from .constants import (
@@ -88,18 +89,27 @@ class AddressingMixin:
         "有人在指使我"，答非所问还会乱做动作。
         """
 
-        if ctx.is_private or ctx.is_mentioned or ctx.addressing == "me":
+        if ctx.is_private or any(isinstance(row, dict) and row.get("self") for row in (ctx.at_targets or [])):
             return "direct"
-        if ctx.addressing == "others" or (ctx.at_targets and ctx.addressing != "me"):
+        if ctx.is_mentioned and not ctx.is_soft_wake:
+            return "direct"
+        structural = self._structured_addressing(state, ctx)
+        if structural == "me":
+            return "direct"
+        if structural == "others" or ctx.addressing == "others":
             return "interject"
+        if ctx.addressing == "me" and not ctx.at_targets and not ctx.reply_to:
+            return "direct"
         if ctx.is_soft_wake:
             # 没人 @ 她，但路由判定这句就是冲她说的：按"对她说"处理，
             # 只是提示词里会写清"没人点名"，别写成"有人 @ 你"。
             return "soft"
-        text = str(ctx.text or "")
+        text = chat_core_text(str(ctx.raw_text or ctx.text or ""))
         for name in self.bot_names(state):
             if name and name in text:
                 return "direct"
+        if ctx.at_targets or ctx.reply_to:
+            return "interject"  # An unresolved reference is not proof of adjacency to me.
         # 上下文里最后一条通常就是刚记下的这条消息（先记后回），
         # 把它去掉，看前一条是谁说的：她刚说完话就有人接上，多半还在同一个话题里。
         context = self.chat_window(state, ctx.session_id)
@@ -113,6 +123,39 @@ class AddressingMixin:
                 and (self._router_row_for(ctx) or {}).get("directed") is not False):
             return "soft"
         return "interject"
+
+    def _structured_addressing(self, state: WorldState, ctx: MessageContext,
+                               item: dict | None = None) -> str:
+        """Resolve this message's recipients without inheriting a quoted message's targets."""
+        stored = item if isinstance(item, dict) else {}
+        targets = ctx.at_targets or stored.get("at_targets") or []
+        targets = [row for row in targets if isinstance(row, dict)]
+        if any(row.get("self") for row in targets):
+            return "me"
+        reference = ctx.reply_to or stored.get("reply_to") or {}
+        reference = reference if isinstance(reference, dict) else {}
+        if type(reference.get("is_self")) is bool:
+            return "me" if reference["is_self"] else "others"
+        message_id = str(reference.get("message_id") or "")
+        if message_id:
+            quoted = [row for row in (state.recent_chat or []) if isinstance(row, dict)
+                      and self._chat_origin(row, state) == ctx.session_id
+                      and str(row.get("message_id") or "") == message_id]
+            if len(quoted) == 1:
+                # Being quoted identifies the author; the author's earlier @
+                # or model verdict does not turn the new utterance toward us.
+                return "me" if quoted[0].get("is_self") else "others"
+        if reference.get("id") or reference.get("name"):
+            # The current context was labelled from the platform's actual
+            # sender ID. The saved row may have an old model label, so only
+            # retain a saved non-self target here, never promote a saved 'me'.
+            if ctx.reply_to and ctx.addressing in {"me", "others"}:
+                return ctx.addressing
+            if stored.get("addressing") == "others":
+                return "others"
+        if targets:
+            return "others"
+        return ""
 
     def speech_density_hint(self, state: WorldState, *, direct: bool = False) -> str:
         """「最近话太密」的提示：把事实摆给模型，让她这轮少说多做。
@@ -340,22 +383,35 @@ class AddressingMixin:
     ) -> str:
         """把"这句其实是在跟别人说话"记在那条消息上。
 
-        结构化信息（@ 名单、引用对象）只能认出"明说"的情况；一句没有 @ 的
-        「你倒是说啊」得靠主模型判。它说是别人就信它：下一轮渲染聊天记录时
-        会带上「（这句是冲别人说的，不是在问你）」，免得她再揽一次。
+        只更新当前会话的同一个事件。结构化的 @ 与引用对象保留；没有明确
+        对象的一句「你倒是说啊」才采用模型判定，不据同一作者猜另一条消息。
         """
 
         kind = str(addressing or "")
         if kind not in ("me", "others"):
             return ""
-        for item in reversed(list(state.recent_chat or [])[-5:]):
-            if not isinstance(item, dict):
-                continue
-            if str(item.get("user_id")) != str(ctx.user_id or ""):
-                continue
-            item["addressing"] = kind
-            return kind
-        return ""
+        uid = str(ctx.user_id or "")
+        if not uid:
+            return ""
+        candidates = [item for item in (state.recent_chat or []) if isinstance(item, dict)
+                      and not item.get("is_self") and not item.get("internal")
+                      and self._chat_origin(item, state) == ctx.session_id
+                      and str(item.get("user_id") or "") == uid]
+        if ctx.event_key:
+            candidates = [item for item in candidates
+                          if (str(item.get("event_key") or "") or chat_event_key(
+                              ctx.session_id, item.get("message_id"), item.get("event_id"))) == ctx.event_key]
+        else:
+            body = chat_core_text(str(ctx.raw_text or ctx.text or ""))
+            candidates = [item for item in candidates
+                          if 0 <= self._now() - float(item.get("at") or 0) <= 120
+                          and (not body or chat_core_text(str(item.get("reading_text") or item.get("text") or "")) == body)]
+        if len(candidates) != 1:
+            return ""
+        item = candidates[0]
+        effective = self._structured_addressing(state, ctx, item) or kind
+        item["addressing"] = effective
+        return effective
 
     def _comfort_pulse(
         self, state: WorldState, tone: str, *, user_id: str = ""

@@ -47,13 +47,16 @@ class SpeechDecisionsMixin:
 
     def expression_contract(self, state, target, kind, *, token="", extra_intents=(), options=None):
         import json
+        from ..chat_scene import SCENE_RELATION_RULES, project_chat_scene
         allowed, rows, targets = options or self.expression_options(state, target, kind, token=token)
         allowed = list(allowed)
         allowed.extend(intent for intent in extra_intents if intent not in allowed)
-        scene = [{"ref": ref, "who": str(row.get("name") or row.get("user_name") or row.get("user_id") or "群友"),
-                  "user_id": str(row.get("user_id") or ""), "text": str(row.get("text") or "")[:500],
-                  **{key: row[key] for key in ("reply_to", "at_targets", "addressing") if row.get(key)}}
-                 for ref, mid in targets.items() for row in rows if str(row.get("message_id")) == mid]
+        quote_chars = getattr(getattr(getattr(self, "world", None), "context", None), "quote_chars", 1000)
+        scene = project_chat_scene(rows, prefix="c", archive=state.recent_chat, current_session=target,
+                                   quote_chars=quote_chars)
+        for item in scene:
+            if item["ref"] in targets:
+                item["can_reply"] = True
         descriptions = {
             "life_share": "life_share 分享有记录的生活事实，不借分享追答旧话题。",
             "outreach": "outreach 有具体缘由地找人，不催促未回应的人。",
@@ -72,7 +75,7 @@ class SpeechDecisionsMixin:
                 + "没有想说的内容可以 listen；观察机会不是发言任务。"
                 "问题已解决、明确结束或换题时不追答；不把生活分享伪装成续聊。"
                 "对方引用或附和不要求再接一句；没有新的内容、问题或情绪变化时自然收尾，不发收尾占位台词。listen 不发言。\n"
-                + json.dumps(scene, ensure_ascii=False) + recipient_note)
+                + SCENE_RELATION_RULES + json.dumps(scene, ensure_ascii=False) + recipient_note)
 
     async def autonomous_plan_choice(self, state, outcome, plan, raw, *, target, options, candidates):
         from .plan_expression import choose_autonomous_plan

@@ -6052,22 +6052,21 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_she_marks_a_line_that_was_actually_meant_for_someone_else(self):
         """主模型判断"这句是在跟别人说话"时，要记在那条消息上，下一轮别再揽到自己身上。"""
 
-        await self.engine.note_presence(
-            self.ctx(session_id=SESSION, user_id="42", user_name="小明", text="你倒是说啊")
-        )
+        ctx = self.ctx(session_id=SESSION, user_id="42", user_name="小明", text="你倒是说啊")
+        await self.engine.note_presence(ctx)
         async with self.engine.session_state(SESSION) as state:
             self.assertEqual(
                 self.engine._mark_reply_addressing(
-                    state, self.ctx(user_id="42"), "others"
+                    state, ctx, "others"
                 ),
                 "others",
             )
             self.assertEqual(str(state.recent_chat[-1].get("addressing")), "others")
             # 判成是跟她说的就不加提示
-            self.engine._mark_reply_addressing(state, self.ctx(user_id="42"), "me")
+            self.engine._mark_reply_addressing(state, ctx, "me")
             self.assertEqual(str(state.recent_chat[-1].get("addressing")), "me")
             # 没判（或判成不确定）时不动它
-            self.engine._mark_reply_addressing(state, self.ctx(user_id="42"), "")
+            self.engine._mark_reply_addressing(state, ctx, "")
             self.assertEqual(str(state.recent_chat[-1].get("addressing")), "me")
 
     async def test_the_router_verdict_lands_on_every_message_it_judged(self):
@@ -6147,7 +6146,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             )
         )
         async with self.engine.session_state(SESSION) as state:
-            self.engine._mark_reply_addressing(state, self.ctx(user_id="42"), "me")
+            self.engine._mark_reply_addressing(state, self.ctx(
+                user_id="42", message_id="m-9", event_id="e-9", text="你倒是说啊"), "me")
         # 路由的重投会再走一遍旁观钩子：这条被身份去重挡下（不新增记录），但判定要盖上
         await self.engine.note_presence(
             self.ctx(
@@ -12206,7 +12206,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("最近在聊什么", system)
 
     async def test_her_line_then_a_reply_keeps_the_pickup_hint(self):
-        """她说完之后有人接上：记录里留着她那句，提示语还是"接着你往下说"。"""
+        """她说完之后有人接上：保留原话，不凭说话顺序替当前句认领对象。"""
 
         async with self.engine.session_state(SESSION) as state:
             state.note_chat(
@@ -12229,7 +12229,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             current_session=SESSION,
         )
         self.assertIn("我在书房翻配置呢", system)
-        self.assertIn("接着你往下说的多半是对你说的", system)
+        self.assertNotIn("接着你往下说的多半是对你说的", system)
+        self.assertIn("不能证明最新一句在对你说", system)
         self.assertNotIn("这不是新的对话输入", system)
 
     async def test_native_reply_after_life_share_does_not_claim_nobody_responded(self):

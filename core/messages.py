@@ -17,7 +17,9 @@ def _is_at_bot(event: Any) -> bool:
     """
 
     self_id = str(getattr(event, "get_self_id", lambda: "")() or "")
-    if not self_id:
+    if not self_id or _is_soft_wake(event):
+        # The router's replay marker means its self-mention was not user input.
+        # Keep this predicate aligned with _at_targets and _mention_note.
         return False
     message_obj = getattr(event, "message_obj", None)
     for component in list(getattr(message_obj, "message", []) or []):
@@ -297,7 +299,7 @@ def _at_targets(event: Any) -> list[dict]:
 
 
 def _reply_target(event: Any) -> dict:
-    """这条消息引用 / 回复的是谁（拿不到就是空的）。"""
+    """Retain native quote identity and body even when its author is unavailable."""
 
     message_obj = getattr(event, "message_obj", None)
     for component in list(getattr(message_obj, "message", []) or []):
@@ -313,12 +315,25 @@ def _reply_target(event: Any) -> dict:
                 or ""
             ).split()
         )
-        if uid or name:
-            result = {"id": uid, "name": name or uid}
-            message_id = str(getattr(component, "id", "") or "").strip()
-            if message_id:
-                result["message_id"] = message_id
-            return result
+        message_id = str(getattr(component, "id", "") or "").strip()
+        from .message_parts import _chain_plain_text
+        text = " ".join(str(getattr(component, "message_str", "") or "").split())
+        text = text or _chain_plain_text(component)
+        if not uid and not name and not message_id and not text:
+            continue
+        result = {"id": uid, "name": name or uid} if uid or name else {}
+        if message_id:
+            # The message ID is a local relation, never an unknown sender ID.
+            result["message_id"] = message_id
+        if text:
+            result["text"] = text[:500]
+        try:
+            self_id = str(event.get_self_id() or "")
+        except Exception:
+            self_id = ""
+        if uid and self_id:
+            result["is_self"] = uid == self_id
+        return result
     return {}
 
 
@@ -331,13 +346,15 @@ def _addressing_kind(
     """
 
     mine = any(item.get("self") for item in targets or [])
+    if (reply_to or {}).get("is_self") is True:
+        mine = True
     if str((reply_to or {}).get("id") or "") and str((reply_to or {}).get("id")) == str(
         self_id or ""
     ):
         mine = True
     if mine:
         return "me"
-    if targets or reply_to:
+    if targets or (reply_to or {}).get("id") or (reply_to or {}).get("name"):
         return "others"
     return ""
 
