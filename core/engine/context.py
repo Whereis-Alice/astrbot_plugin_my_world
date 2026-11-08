@@ -58,7 +58,8 @@ class ContextMixin:
         from ..visit_presence import active_visit
         inner = self.prompts._inner_voice(
             state, request.session, dialogue_only=request.task in {"reply", "participation"},
-            persona_key=request.life_persona, subjective_only=bool(active_visit(self, request.session)))
+            persona_key=request.life_persona, subjective_only=bool(active_visit(self, request.session)),
+            shared_only=request.task in {"plan", "sleep", "diary"})
         if inner:
             materials.append(ContextItem("inner:current", "thought",
                 "# 当时的内心活动（主观想法，仅你可见，不直接复述）\n" + inner))
@@ -74,7 +75,7 @@ class ContextMixin:
         note = state.chat_note_text(
             request.session,
             max_minutes=int(getattr(self.world.context, "chat_note_max_minutes", 30)),
-            now=request.now)
+            now=request.now, persona_key=request.life_persona)
         if note:
             materials.append(ContextItem("chat:note", "topic", "# 刚才的话题备忘\n" + note))
         materials = [item for item in materials if context_eligible(request, item)]

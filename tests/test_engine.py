@@ -7562,7 +7562,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         """按实跑的方式组装提示词：会话目录、当前会话、会话标签都要带上。"""
 
         return self.engine.prompts.build_autonomous_system_prompt(
-            persona_text="测试人格",
+            persona_text=self.persona.text,
             state=state,
             node=self.engine.node(state.node_id),
             available_tools=self.engine.available_tools(),

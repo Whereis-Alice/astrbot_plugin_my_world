@@ -1045,6 +1045,7 @@ class PromptBuilder:
                     ),
                     # now 是 datetime（提示词里显示用），过期判定要的是时间戳
                     now=float(now.timestamp()) if hasattr(now, "timestamp") else float(now or 0.0),
+                    persona_key=life_persona_key,
                 ),
                 preview=state.chat_preview_text(session_key),
                 # 三个"带几行"都来自世界配置：渲染这一层不再写死。
@@ -1438,11 +1439,14 @@ class PromptBuilder:
 
     @staticmethod
     def _inner_voice(state: WorldState, session_id: str = "", *, dialogue_only: bool = False,
-                     persona_key: str | None = None, subjective_only: bool = False) -> str:
+                     persona_key: str | None = None, subjective_only: bool = False,
+                     shared_only: bool = False) -> str:
         """内心活动 = 最近一次推理草稿；模型没写草稿时退回她留下的心里话。"""
 
         from .chat_browse import dialogue_origin, thought_visible
         reasoning = state.reasoning_for(session_id, persona_key=persona_key)
+        if shared_only and reasoning.get("_session"):
+            reasoning = {}  # A dialogue draft cannot direct shared autonomous life.
         if dialogue_only and not (reasoning.get("_session") or reasoning.get("_source") in {"reply", "reflect"}):
             reasoning = {}
         if reasoning:
@@ -1460,6 +1464,7 @@ class PromptBuilder:
             and (persona_key is None or not item.get("persona_key") or item["persona_key"] == persona_key)
             and thought_visible(item, session_id, 0)
             and (not dialogue_only or dialogue_origin(item))
+            and (not shared_only or dialogue_origin(item) == "")
         ][-3:]
         if thoughts:
             return "\n".join(f"- {text}" for text in thoughts)

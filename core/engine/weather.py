@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from hashlib import sha256
-
 from ..model_calls import model_operation
 from ..context_sources import paused_home_event_context
 
@@ -12,6 +10,7 @@ from ..visit_presence import (
     active_visit,
     presence_text,
     visit_activity_text,
+    visit_context_identity,
     visit_context_maybe_referential,
     visit_context_relevant,
     visit_context_text,
@@ -95,12 +94,15 @@ class WeatherMixin:
         _, persona_key = await self._journal_persona(session_id)
         if visit.get("local", {}).get("persona_key") != persona_key:
             return "", False
-        context = visit_context_text(visit, now=self._now())
+        # Relevance concerns the people and confirmed interaction. Keep elapsed
+        # minutes out of this material; the final scene still uses the live clock.
+        context = visit_context_text(visit)
+        context_key = visit_context_identity(visit)
         relevant = await self.memory.semantic.related(
             session_id, query, [context],
-            cache_key=f"visit:{visit.get('id') or ''}:{len(visit.get('log') or [])}",
+            cache_key=context_key,
         )
-        return sha256(context.encode("utf-8")).hexdigest(), relevant
+        return context_key, relevant
 
     async def runtime_notes(self, session_id: str, *, query: str = "",
                             visit_semantic_match: tuple[str, bool] | None = None) -> dict[str, str]:
@@ -132,13 +134,13 @@ class WeatherMixin:
                 notes["visit_context"] = visit_context_text(visit, now=self._now())
             elif visit_context_maybe_referential(query):
                 context = visit_context_text(visit, now=self._now())
-                context_key = sha256(context.encode("utf-8")).hexdigest()
+                context_key = visit_context_identity(visit)
                 relevant = (visit_semantic_match[1] if visit_semantic_match
                             and visit_semantic_match[0] == context_key
                             else False if visit_semantic_match is not None
                             else await self.memory.semantic.related(
-                                session_id, query, [context],
-                                cache_key=f"visit:{visit.get('id') or ''}:{len(visit.get('log') or [])}",
+                                session_id, query, [visit_context_text(visit)],
+                                cache_key=context_key,
                             ))
                 if relevant:
                     notes["visit_context"] = context

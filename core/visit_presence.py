@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from typing import Any
 
 
@@ -159,3 +160,11 @@ def visit_context_text(visit: dict, *, now: float | None = None) -> str:
             + material
             + "\n对方问起同伴、近况或刚才的经历时，依据这些事实，用自己的口气自然回答；"
             "未记录的细节保留未知，无关话题无需主动汇报，也不照抄这段说明。")
+
+
+def visit_context_identity(visit: dict) -> str:
+    """Bind relevance to confirmed evidence, not the changing elapsed-minute label."""
+    identity = [visit.get("id"), visit.get("scope"), visit.get("arrived_at"),
+                (visit.get("local") or {}).get("persona_key"), visit.get("outing"),
+                visit_context_text(visit)]
+    return sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()

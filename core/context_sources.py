@@ -341,7 +341,8 @@ def runtime_context(prompts: Any, state: Any, node: Any, request: ContextRequest
         # The latest externally-owned state remains authoritative and is not rewritten.
         base.append(external)
     inner = prompts._inner_voice(state, request.session, dialogue_only=request.task in {"reply", "participation"},
-                                 persona_key=request.life_persona, subjective_only=bool(visit_presence))
+                                 persona_key=request.life_persona, subjective_only=bool(visit_presence),
+                                 shared_only=request.task in {"plan", "sleep", "diary"})
     if inner:
         candidates.append(ContextItem("inner:current", "thought",
             "# 当时的内心活动（主观想法，仅你可见，不直接复述）\n" + inner))
@@ -356,7 +357,8 @@ def runtime_context(prompts: Any, state: Any, node: Any, request: ContextRequest
                 session=str(topic.get("session") or state.session_id)))
     # A note summarising previous dialogue is a candidate, not an extra instruction.
     note = state.chat_note_text(request.session,
-        max_minutes=int(getattr(prompts.world.context, "chat_note_max_minutes", 30)), now=request.now)
+        max_minutes=int(getattr(prompts.world.context, "chat_note_max_minutes", 30)), now=request.now,
+        persona_key=request.life_persona)
     if note:
         candidates.append(ContextItem("chat:note", "topic", "# 刚才的话题备忘\n" + note))
     selection = select_context(request, candidates)

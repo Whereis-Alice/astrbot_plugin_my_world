@@ -363,7 +363,7 @@ class SnapshotMixin:
             "events_enabled": bool(getattr(self.world.events, "enabled", True)),
             # 本会话近期消息与话题备忘，编辑器可查看和清空。
             **self._chat_counts(state, session_id),
-            "chat_note": self.chat_note_for(state, session_id),
+            "chat_note": self.chat_note_for(state, session_id, persona_key=event_persona),
             "chat_notes": {
                 str(key): str(dict(value or {}).get("text") or "")
                 for key, value in dict(state.chat_notes or {}).items()

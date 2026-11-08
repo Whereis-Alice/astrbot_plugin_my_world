@@ -1612,7 +1612,8 @@ class WorldState:
         return kept
 
     def chat_note_text(
-        self, session_id: str = "", *, max_minutes: int = 0, now: float = 0.0
+        self, session_id: str = "", *, max_minutes: int = 0, now: float = 0.0,
+        persona_key: str | None = None,
     ) -> str:
         """这个会话「刚才在聊什么」：模型上一轮顺手写的那句背景。
 
@@ -1626,6 +1627,8 @@ class WorldState:
 
         target = str(session_id or self.session_id or "")
         entry = dict((self.chat_notes or {}).get(target) or {})
+        if persona_key is not None and entry.get("persona_key") and entry["persona_key"] != persona_key:
+            return ""  # A foreign note must not reactivate the unowned legacy fallback.
         text = str(entry.get("text") or "").strip()
         try:
             at = float(entry.get("at") or 0.0)

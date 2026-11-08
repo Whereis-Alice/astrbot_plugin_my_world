@@ -425,14 +425,17 @@ class GroupChatMixin:
         target = str(session_id or state.session_id)
         state.chat_notes = {
             **dict(state.chat_notes or {}),
-            target: {"text": _clip_text(note, 80), "at": self._now()},
+            target: {"text": _clip_text(note, 80), "at": self._now(),
+                     "persona_key": self._matter_persona_key(state) or ""},
         }
 
-    def chat_note_for(self, state: WorldState, session_id: str = "") -> str:
+    def chat_note_for(self, state: WorldState, session_id: str = "", *,
+                      persona_key: str | None = None) -> str:
         """这个会话「刚才在聊什么」（老存档回落全局那份；过期的不算）。"""
 
         limit = max(0, int(getattr(self.world.context, "chat_note_max_minutes", 30) or 0))
-        return state.chat_note_text(session_id, max_minutes=limit, now=self._now())
+        owner = self._matter_persona_key(state) if persona_key is None else persona_key
+        return state.chat_note_text(session_id, max_minutes=limit, now=self._now(), persona_key=owner)
 
     def chat_preview_for(self, state: WorldState, session_id: str = "") -> str:
         """这个会话「她刚回应过的那批」的概览（留档被裁掉时的兜底背景）。"""
