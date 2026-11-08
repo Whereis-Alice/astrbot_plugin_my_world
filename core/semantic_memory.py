@@ -55,6 +55,7 @@ class SemanticMemory:
         # durable life memories get a rebuildable SQLite vector index.
         self.relevance_scores: dict[tuple, float] = {}
         self.relevance_times: dict[tuple, float] = {}
+        self.relevance_locks: dict[tuple, tuple[asyncio.Lock, int]] = {}
         self.locks: dict[tuple, asyncio.Lock] = {}
         self.retry_at = 0.0
         self.status = "未启用"
@@ -159,24 +160,42 @@ class SemanticMemory:
         now = time.time()
         if now - self.relevance_times.get(digest, 0.0) <= 300:
             return self.relevance_scores.get(digest, 0.0) >= threshold
+        lock, users = self.relevance_locks.get(digest, (asyncio.Lock(), 0))
+        self.relevance_locks[digest] = (lock, users + 1)
         try:
-            with model_context("embedding", "判断本轮消息是否与当前生活片段相关", session):
-                vectors = await self.embed([query, *texts])
-            score = max((cosine(vectors[0], vector) for vector in vectors[1:]), default=0.0)
-            self.relevance_scores[digest] = score
-            self.relevance_times[digest] = now
-            # Keep this cache bounded independently from durable-memory scores.
-            if len(self.relevance_scores) > 64:
-                keep = sorted(self.relevance_times, key=self.relevance_times.get, reverse=True)[:64]
-                self.relevance_scores = {key: self.relevance_scores[key] for key in keep}
-                self.relevance_times = {key: self.relevance_times[key] for key in keep}
-            return score >= threshold
+            async with lock:
+                # Overlapping reply hooks may prepare the same follow-up before
+                # the first embedding finishes. Reuse that completed result,
+                # without spawning a detached inference task on cancellation.
+                if time.time() - self.relevance_times.get(digest, 0.0) <= 300:
+                    return self.relevance_scores.get(digest, 0.0) >= threshold
+                if time.time() < self.retry_at or not self._ready():
+                    return False
+                with model_context("embedding", "判断本轮消息是否与当前生活片段相关", session):
+                    vectors = await self.embed([query, *texts])
+                score = max((cosine(vectors[0], vector) for vector in vectors[1:]), default=0.0)
+                self.relevance_scores[digest] = score
+                self.relevance_times[digest] = time.time()
+                # Keep this cache bounded independently from durable-memory scores.
+                if len(self.relevance_scores) > 64:
+                    keep = sorted(self.relevance_times, key=self.relevance_times.get, reverse=True)[:64]
+                    self.relevance_scores = {key: self.relevance_scores[key] for key in keep}
+                    self.relevance_times = {key: self.relevance_times[key] for key in keep}
+                return score >= threshold
         except asyncio.CancelledError:
             raise
         except Exception:
             self.status = "嵌入暂不可用，已使用关键词召回"
             self.retry_at = time.time() + 60
             return False
+        finally:
+            # A queued caller owns its reference before awaiting the lock, so
+            # a third caller can never slip onto a different lock in between.
+            _, users = self.relevance_locks[digest]
+            if users == 1:
+                self.relevance_locks.pop(digest)
+            else:
+                self.relevance_locks[digest] = (lock, users - 1)
 
     @staticmethod
     def _query_text(query: str) -> str:

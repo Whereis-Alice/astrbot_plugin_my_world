@@ -8,7 +8,6 @@ from pathlib import Path
 import tempfile
 from typing import Any
 from urllib.parse import urlsplit
-from urllib.request import url2pathname
 
 from ..core.visit_card import (CARD_SCALE, CARD_WIDTH, build_visit_card_pages,
                                render_visit_card_html, visit_card_template)
@@ -40,22 +39,59 @@ def _local_endpoint(value: str) -> bool:
 
 def _page_text(page: dict) -> str:
     """A complete readable fallback, with the same evidence labels as the card."""
-    lines = ["# 小世界 · 相见札记", f"## {page['title']}",
+    lines = ["小世界 · 相见札记", page["title"],
              f"{page['local_name']} 与 {page['remote_name']}",
              f"{page['date']}　{page['interval']}"]
     for entry in page["entries"]:
         if entry["category"] == "route":
-            lines.append("### 一起走过")
+            lines.append("一起走过")
             for stop in entry["stops"]:
                 lines.append(f"{stop['index']}. {stop['place']} · {stop['activity']}")
             continue
-        lines.append("\n" + " · ".join(str(value) for value in
-                     (entry.get("speaker"), entry.get("time")) if value))
+        label = entry.get("tag") if entry["category"] in {"chronicle", "result"} else entry.get("speaker")
+        lines.append("\n" + " · ".join(str(value) for value in (label, entry.get("time")) if value))
         for part in entry["parts"]:
             lines.append((part["label"] + "：" if part["label"] else "") + part["text"])
     if page["last"]:
         lines.extend(["\n" + page["status"], page["end_reason"]])
     return "\n\n".join(lines)
+
+
+def _draw_plain_card(page: dict, target: Path) -> str:
+    """Render source strings literally; Markdown must never load transcript URLs."""
+    from astrbot.core.utils.t2i.local_strategy import FontManager
+    from PIL import Image, ImageDraw
+
+    font = FontManager.get_font(25)
+    margin, available = 54, CARD_WIDTH - 108
+    rows: list[str] = []
+    text = _page_text(page).replace("\r\n", "\n").replace("\r", "\n").expandtabs(4)
+    for line in text.split("\n"):
+        if not line:
+            rows.append("")
+        while line:
+            low, high = 1, len(line)
+            while low <= high:
+                middle = (low + high) // 2
+                if font.getlength(line[:middle]) <= available:
+                    low = middle + 1
+                else:
+                    high = middle - 1
+            count = max(1, high)
+            rows.append(line[:count])
+            line = line[count:]
+    try:
+        ascent, descent = font.getmetrics()
+        line_height = ascent + descent + 10
+    except AttributeError:
+        left, top, right, bottom = font.getbbox("Ag国")
+        line_height = bottom - top + 10
+    with Image.new("RGB", (CARD_WIDTH, margin * 2 + line_height * len(rows)), "#272b48") as image:
+        draw = ImageDraw.Draw(image)
+        for index, line in enumerate(rows):
+            draw.text((margin, margin + index * line_height), line, fill="#f1edff", font=font)
+        image.save(target, "PNG")
+    return target.resolve().as_uri()
 
 
 class VisitCardRenderer:
@@ -115,30 +151,12 @@ class VisitCardRenderer:
             visit_card_template(), page, return_url=False, options=self._options()), 45)) for page in pages]
 
     async def _plain_pages(self, pages: list[dict]) -> list[str]:
-        from astrbot.core import html_renderer
-        from PIL import Image, ImageOps
-
         temporary = tempfile.TemporaryDirectory(prefix="my_world_visit_text_")
         refs: list[str] = []
-
-        def tint(source: str, target: Path) -> str:
-            # Preserve the SDK's complete typesetting, including CJK fonts, but
-            # keep its fallback in the same indigo palette as the HTML card.
-            ref = _image_ref(source)
-            parsed = urlsplit(ref)
-            if parsed.scheme != "file" or parsed.netloc:
-                raise ValueError("local text renderer returned a non-local image")
-            with Image.open(url2pathname(parsed.path)) as image:
-                ImageOps.colorize(ImageOps.grayscale(image),
-                                  black="#f1edff", white="#272b48").save(target, "PNG")
-            return target.resolve().as_uri()
-
         try:
             for index, page in enumerate(pages):
-                source = await asyncio.wait_for(
-                    html_renderer.local_strategy.render(_page_text(page)), 30)
                 worker = asyncio.create_task(asyncio.to_thread(
-                    tint, source, Path(temporary.name) / f"card-{index + 1:04}.png"))
+                    _draw_plain_card, page, Path(temporary.name) / f"card-{index + 1:04}.png"))
                 try:
                     refs.append(await asyncio.shield(worker))
                 except BaseException:

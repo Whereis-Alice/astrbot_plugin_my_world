@@ -83,7 +83,7 @@ def _recall_excerpt(row: dict, meta: dict, limit: int = 450) -> str:
     # Keep the first encounter, latest settled event (or penultimate turn),
     # and final words. The same row can satisfy several roles only once.
     resolution = next((index for index in range(len(facts) - 1, -1, -1)
-                       if facts[index].startswith("[outcome] ")), max(0, len(facts) - 2))
+                       if facts[index].startswith(("[outcome] ", "[result] "))), max(0, len(facts) - 2))
     selected = sorted({0, resolution, len(facts) - 1})
     note = "已经确认的经过（节选，中段省略）："
 
@@ -295,6 +295,8 @@ class VisitActorPort(VisitCardActorMixin):
             try:
                 meta = json.loads(row.get("context") or "{}")
             except (TypeError, ValueError):
+                continue
+            if not isinstance(meta, dict):
                 continue
             if (row.get("source") == "life_event" and meta.get("kind") == "world_visit" and meta.get("peer_id") == partner
                     and meta.get("persona_key") == persona_key):

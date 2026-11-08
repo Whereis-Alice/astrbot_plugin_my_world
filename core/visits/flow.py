@@ -1144,13 +1144,14 @@ class VisitFlow(VisitRhythm):
             async with self._lock:
                 if visit["status"] != "offered" or self._closed or not self.config.enabled:
                     return
-                if not result and visit.get("model_retry"):
+                if not result:
+                    return  # No completed choice is not a refusal.
+                if visit.get("decision_cursor") != self._decision_cursor(visit, "receive"):
                     return
-                if not result or not result["accept"] or result["leave"]:
+                if not result["accept"] or result["leave"]:
                     if visit["status"] not in TERMINAL:
-                        if result:
-                            self._append(visit, self._local_id(visit), result["contact_kind"], result["say"])
-                        await self._finish(visit, "declined", result["say"] if result and result["say"] else "现在不方便，稍后再约")
+                        self._append(visit, self._local_id(visit), result["contact_kind"], result["say"])
+                        await self._finish(visit, "declined", result["say"] or "现在不方便，稍后再约")
                     return
                 visit["intro"] = result["say"]
                 if visit["role"] == "host":
@@ -1244,6 +1245,8 @@ class VisitFlow(VisitRhythm):
         async with self._lock:
             if not result or visit["status"] in TERMINAL or self._closed:
                 return
+            if visit.get("decision_cursor") != self._decision_cursor(visit, "turn"):
+                return
             self._record_turn(visit, visit["host_id"], result)
             if result["leave"] or not visit.get("manual") and visit["turns"][visit["host_id"]] >= visit["turn_limit"]:
                 await self._finish(visit, "completed", "告别归家")
@@ -1334,6 +1337,8 @@ class VisitFlow(VisitRhythm):
         result = await self._decide(visit_id, "scene")
         async with self._lock:
             if not result or visit["status"] in TERMINAL or self._closed:
+                return
+            if visit.get("decision_cursor") != self._decision_cursor(visit, "scene"):
                 return
             if stage == "event_offer":
                 event = result["scene"]["event"]

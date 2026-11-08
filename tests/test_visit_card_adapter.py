@@ -1,13 +1,15 @@
 """Card subscriptions and renderer fallbacks never broaden delivery permission."""
 from __future__ import annotations
 
+import asyncio
 import importlib
 from pathlib import Path
 import sys
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
 
@@ -109,32 +111,79 @@ class CardAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("发生的结果：散步遇到下雨", text)
         self.assertNotIn("1 / 1", text)
 
-    async def test_text_fallback_is_one_dark_image_and_owns_only_its_copy(self):
-        from PIL import Image
-        with tempfile.TemporaryDirectory() as source_dir:
-            source = Path(source_dir) / "sdk.png"
-            image = Image.new("RGB", (20, 100), "white")
-            image.putpixel((2, 2), (0, 0, 0))
-            image.save(source)
-            local = SimpleNamespace(local_strategy=SimpleNamespace(
-                render=AsyncMock(return_value=str(source))))
-            renderer = cards.VisitCardRenderer(self.plugin)
-            page = cards.build_visit_card_pages(self.visit)[0]
-            with patch.dict(sys.modules, {"astrbot.core.html_renderer": local}), patch.object(
-                    sys.modules["astrbot.core"], "html_renderer", local, create=True):
-                refs = await renderer._plain_pages([page])
-            self.assertEqual(len(refs), 1)
-            copy = Path(url2pathname(urlsplit(refs[0]).path))
-            self.assertNotEqual(source, copy)
-            with Image.open(copy) as result:
-                self.assertEqual(result.size, (20, 100))
-                self.assertEqual(result.getpixel((0, 0)), (39, 43, 72))
-                self.assertEqual(result.getpixel((2, 2)), (241, 237, 255))
-            with Image.open(source) as original:
-                self.assertEqual(original.getpixel((0, 0)), (255, 255, 255))
-            renderer.release(refs)
-            self.assertFalse(copy.exists())
-            self.assertTrue(source.exists())
+    async def test_fallback_shared_events_do_not_become_an_actors_utterance(self):
+        self.visit["local"]["id"] = "self"
+        self.visit["log"] = [{"actor_id": "self", "kind": "event", "text": "窗边落下一片花瓣。"}]
+        page = cards.build_visit_card_pages(self.visit)[0]
+        text = cards._page_text(page)
+        self.assertIn("途中小事", text)
+        self.assertNotIn("\n艾拉\n", text)
+        self.assertIn("窗边落下一片花瓣。", text)
+
+    async def test_text_fallback_draws_all_source_literally_without_markdown_or_remote_images(self):
+        from PIL import Image, ImageDraw, ImageFont
+        font = ImageFont.load_default(size=25)
+        sdk_fonts = SimpleNamespace(FontManager=SimpleNamespace(get_font=Mock(return_value=font)))
+        host_markdown = SimpleNamespace(local_strategy=SimpleNamespace(
+            render=AsyncMock(side_effect=AssertionError("must not interpret the record as Markdown"))))
+        raw = "**原话** <字面标签>\n![图片](http://127.0.0.1:6185/private)\n```\n#仍是原话\n" + "完整保留" * 250
+        visit = {**self.visit, "log": [{"kind": "say", "text": raw}]}
+        page = cards.build_visit_card_pages(visit)[0]
+        original_draw, drawn = ImageDraw.Draw, []
+
+        def capture(image):
+            draw = original_draw(image)
+            original_text = draw.text
+            def text(position, value, **kwargs):
+                drawn.append(value)
+                self.assertLessEqual(font.getlength(value), cards.CARD_WIDTH - 108)
+                original_text(position, value, **kwargs)
+            draw.text = text
+            return draw
+
+        renderer = cards.VisitCardRenderer(self.plugin)
+        with patch.dict(sys.modules, {"astrbot.core.html_renderer": host_markdown,
+                "astrbot.core.utils.t2i.local_strategy": sdk_fonts}), patch.object(ImageDraw, "Draw", capture):
+            refs = await renderer._plain_pages([page])
+        host_markdown.local_strategy.render.assert_not_awaited()
+        self.assertEqual("".join(drawn), cards._page_text(page).replace("\n", ""))
+        self.assertEqual(len(refs), 1)
+        path = Path(url2pathname(urlsplit(refs[0]).path))
+        with Image.open(path) as result:
+            self.assertEqual(result.width, cards.CARD_WIDTH)
+            self.assertGreater(result.height, 1000)
+            self.assertEqual(result.getpixel((0, 0)), (39, 43, 72))
+        renderer.release(refs)
+        self.assertFalse(path.exists())
+
+    async def test_cancelled_fallback_joins_writer_before_removing_owned_directory(self):
+        renderer = cards.VisitCardRenderer(self.plugin)
+        entered, finish = threading.Event(), threading.Event()
+        written = []
+
+        def slow(page, target):
+            entered.set()
+            if not finish.wait(2):
+                raise TimeoutError("test writer did not resume")
+            self.assertTrue(target.parent.is_dir())
+            target.write_bytes(b"complete")
+            written.append(target)
+            return target.as_uri()
+
+        with patch.object(cards, "_draw_plain_card", slow):
+            task = asyncio.create_task(renderer._plain_pages([cards.build_visit_card_pages(self.visit)[0]]))
+            try:
+                self.assertTrue(await asyncio.to_thread(entered.wait, 1))
+                task.cancel()
+                await asyncio.sleep(.01)
+                self.assertFalse(task.done())
+            finally:
+                finish.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertEqual(len(written), 1)
+        self.assertFalse(written[0].parent.exists())
+        self.assertFalse(renderer._files)
 
     def test_release_cleans_only_owned_images(self):
         renderer = cards.VisitCardRenderer(self.plugin)
