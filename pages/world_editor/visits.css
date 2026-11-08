@@ -1,4 +1,28 @@
 /* An illustrated journal, using the same materials as all six world themes. */
+.visits-export {margin:0 0 22px;padding:15px 17px;border:1px solid var(--line-strong);border-radius:12px;background:linear-gradient(135deg,var(--surface-highlight),transparent 75%),var(--panel);min-width:0;}
+.visits-export-head {display:flex;align-items:center;justify-content:space-between;gap:12px;}
+.visits-export-copy {min-width:0;}
+.visits-export-copy>strong {font-size:12px;color:var(--accent-ink);font-weight:600;letter-spacing:.04em;}
+.visits-export-copy>p {font-size:11px;line-height:1.7;margin:5px 0 0;overflow-wrap:anywhere;}
+.visits-export-head>button {flex-shrink:0;}
+.visits-export-status {font-size:11px;line-height:1.7;margin:12px 0 0;overflow-wrap:anywhere;}
+.visits-export-status.is-error {color:var(--warn);}
+.visits-export-toolbar {display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:13px 0 0;}
+.visits-export-pager,.visits-export-downloads {display:flex;align-items:center;gap:7px;flex-wrap:wrap;}
+.visits-export-page-number {font-size:11px;color:var(--text-2);font-variant-numeric:tabular-nums;white-space:nowrap;}
+.visits-export-preview-head {display:flex;align-items:center;justify-content:space-between;gap:8px;margin:16px 0 7px;font-size:10px;}
+.visits-export-preview {max-height:560px;overflow:auto;border:1px solid var(--line-strong);border-radius:8px;background:#fbfaf7;overscroll-behavior:contain;scrollbar-gutter:stable;}
+.visits-export-preview:focus-visible {outline:2px solid var(--accent-ring);outline-offset:3px;}
+.visits-export-image {display:block;width:100%;height:auto;max-width:100%;}
+.visits-export-preview.is-zoomed .visits-export-image {width:900px;max-width:none;}
+.visits-export-preview-error {margin-top:8px;}
+@media(max-width:600px) {
+  .visits-export {padding:13px 12px;}
+  .visits-export-head {align-items:flex-start;flex-wrap:wrap;}
+  .visits-export-head>button {margin-left:auto;}
+  .visits-export-preview {max-height:450px;}
+  .visits-export-downloads {margin-left:auto;}
+}
 .visits-journal {--visit-paper:color-mix(in srgb,var(--panel) 94%,var(--scene-a));}
 .visits-heading {display:flex;justify-content:space-between;align-items:center;gap:16px;margin:0 0 18px;}
 .visits-title {display:flex;align-items:center;gap:11px;min-width:0;}

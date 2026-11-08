@@ -606,6 +606,9 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
             except (asyncio.CancelledError, Exception):
                 pass
         await self._close_response_tasks()
+        exports = getattr(self, "visit_card_exports", None)
+        if exports is not None:
+            await exports.close()
         extraction = getattr(getattr(self, 'profile_weaver_service', None), 'extraction_queue', None)
         if extraction is not None:
             await extraction.close()

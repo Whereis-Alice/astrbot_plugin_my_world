@@ -12,7 +12,7 @@ from typing import Any
 import aiohttp
 
 from .config import normalize_url
-from .protocol import ID, RESERVED, code_id, derive_key, digest, envelope, new_id, public_actor, text, validate_actor, verify
+from .protocol import ID, RESERVED, TERMINAL, code_id, derive_key, digest, envelope, new_id, public_actor, text, validate_actor, verify
 from .ports import VisitStateError, describe_local
 from .transport import VisitTransportError
 
@@ -184,6 +184,26 @@ class WorldConnections:
             result.update(log=copy.deepcopy(rows[start:end]), log_offset=start, log_count=len(rows),
                           next_before=start, has_more=start > 0)
             return result
+
+    async def record_card_snapshot(self, scope: str, visit_id: str) -> dict[str, Any]:
+        """Copy an ended record for editor-only rendering, without delivery work.
+
+        Manual historical previews need no transport or automatic-card permission.
+        The same life must still own the record; only the journal's public card
+        fields leave the lock, including every confirmed log row and route stop.
+        """
+        if not isinstance(scope, str) or not scope or not isinstance(visit_id, str) or not visit_id:
+            raise ValueError("请选择有效的生活和相见记录")
+        await self._load()
+        async with self._lock:
+            canonical = self._canonical_life(scope)
+            visit = self._state["visits"].get(visit_id)
+            if (not canonical or not visit or visit.get("scope") != canonical
+                    or self._canonical_life(visit["scope"]) != canonical):
+                raise ValueError("这份记录不属于当前生活或原生活归属已变化")
+            if visit.get("status") not in TERMINAL:
+                raise ValueError("相见结束后才能生成完整长卡片")
+            return self._record_card_snapshot(visit)
 
     async def set_enabled_scopes(self, scopes: list[str]) -> dict[str, Any]:
         self._enabled()

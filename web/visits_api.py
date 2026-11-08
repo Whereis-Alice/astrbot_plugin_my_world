@@ -5,7 +5,7 @@ from __future__ import annotations
 import functools
 from typing import Any
 
-from astrbot.api.web import error_response, json_response, request
+from astrbot.api.web import error_response, file_response, json_response, request
 
 
 def _public(value: Any) -> Any:
@@ -99,6 +99,25 @@ def _save_record_card_settings(plugin: Any, payload: dict[str, Any]) -> dict[str
     return _record_card_settings(plugin)
 
 
+def _exports(plugin: Any):
+    service = getattr(plugin, "visit_card_exports", None)
+    if service is None:
+        from .visit_card_exports import VisitCardExports
+        service = plugin.visit_card_exports = VisitCardExports(plugin)
+    return service
+
+
+def _page_index(payload: Any, *, optional: bool = False) -> int | None:
+    value = payload.get("page")
+    if value is None and optional:
+        return None
+    if isinstance(value, str) and value.isascii() and value.isdecimal() and len(value) <= 6:
+        value = int(value)
+    if type(value) is not int or value < 0:
+        raise ValueError("请选择有效卡片页码")
+    return value
+
+
 def register_visit_apis(plugin: Any, plugin_id: str) -> None:
     """Register dashboard controls and mark their handlers for unload cleanup."""
     operations = {
@@ -111,6 +130,10 @@ def register_visit_apis(plugin: Any, plugin_id: str) -> None:
         "visits/refresh": ("POST", "刷新友邻可见的角色"),
         "visits/invite": ("POST", "提出串门邀请"),
         "visits/record": ("POST", "读取本生活相见记录的更早经过"),
+        "visits/card-export": ("POST", "生成单条相见记录卡片，仅供预览下载"),
+        "visits/card-export-status": ("GET", "查看相见卡片生成进度"),
+        "visits/card-export-page": ("GET", "预览相见卡片单页"),
+        "visits/card-export-download": ("GET", "下载相见卡片或全部图片压缩包"),
         "visits/return": ("POST", "结束串门并归家"),
     }
 
@@ -148,6 +171,23 @@ def register_visit_apis(plugin: Any, plugin_id: str) -> None:
                 result = await service.set_enabled_scopes(_enabled_scopes(plugin, payload))
             elif endpoint == "visits/record-card-settings":
                 result = _save_record_card_settings(plugin, payload)
+            elif endpoint.startswith("visits/card-export"):
+                scope = _scope(plugin, payload)
+                visit_id = _text(payload, "visit_id", limit=200, required=True)
+                exports = _exports(plugin)
+                if endpoint == "visits/card-export":
+                    result = await exports.start(scope, visit_id)
+                else:
+                    job_id = _text(payload, "job_id", limit=100, required=True)
+                    if endpoint == "visits/card-export-status":
+                        result = await exports.status(scope, visit_id, job_id)
+                    elif endpoint == "visits/card-export-page":
+                        result = await exports.page(scope, visit_id, job_id, _page_index(payload))
+                    else:
+                        path, filename, mime = await exports.download(scope, visit_id, job_id,
+                                                                     _page_index(payload, optional=True))
+                        return file_response(path, filename=filename, content_type=mime,
+                                             headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
             elif endpoint == "visits/refresh":
                 result = await service.refresh_connection(_text(payload, "connection_id", limit=200, required=True))
             elif endpoint == "visits/invite":
