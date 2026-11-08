@@ -1,55 +1,83 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>小世界 · 相见札记</title>
 <style>
-*{box-sizing:border-box}html,body{margin:0;padding:0;width:900px;background:#f3f3f7;color:#293044}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;width:900px;background:#272b48;color:#eef0fa}
 body{font-family:"Noto Sans CJK SC","Noto Sans SC","WenQuanYi Micro Hei","Microsoft YaHei","PingFang SC",sans-serif;-webkit-font-smoothing:antialiased}
-.card{width:900px;overflow:hidden;background:#fbfaf7}.cover{position:relative;isolation:isolate;overflow:hidden;color:#f8f6ff;background:#272b48;padding:45px 54px 40px}
+.card{width:900px;overflow:hidden;background:#272b48}
+.cover{position:relative;isolation:isolate;overflow:hidden;background:#272b48;padding:45px 54px 38px}
 .cover:after{content:"";position:absolute;width:430px;height:430px;border-radius:50%;top:-220px;right:-60px;background:radial-gradient(circle,#b4a7e926,transparent 68%);z-index:-1}
-.eyebrow{font-size:17px;letter-spacing:5px;color:#d2c8ef;display:flex;gap:12px;align-items:center}.star{font-size:23px;color:#b9addf}
-.brand{margin-left:auto;font-size:17px;letter-spacing:2px;color:#c2c4d6}.title{position:relative;max-width:640px;margin:29px 0 15px;font-family:"Noto Serif CJK SC","Source Han Serif SC","Songti SC","SimSun","Noto Sans CJK SC",serif;font-size:43px;font-weight:600;line-height:1.5;letter-spacing:2px;overflow-wrap:anywhere}
-.activity{position:relative;margin:0;max-width:600px;font-size:22px;line-height:1.7;letter-spacing:.4px;color:#d6d8e7;white-space:pre-wrap;overflow-wrap:anywhere}
-.companions{margin-top:29px;display:flex;align-items:center;gap:18px;flex-wrap:wrap;overflow-wrap:anywhere;font-size:24px;font-weight:600;letter-spacing:1px}.companions b:first-child{color:#d9cff6}.companions b:last-child{color:#9ad1ca}.companions i{font-weight:400;font-style:normal;color:#989bb3;font-size:19px}
-.cover-meta{margin-top:25px;display:flex;align-items:center;flex-wrap:wrap;gap:17px;color:#b9bdd1;font-size:18px;letter-spacing:.5px}.cover-meta .line{height:15px;width:1px;background:#666984}.cover-meta .page-number{margin-left:auto;font-variant-numeric:tabular-nums;letter-spacing:2px}
-.sky{position:absolute;right:30px;bottom:78px;width:218px;height:146px;opacity:.65;z-index:-1}
-.content{padding:30px 54px 4px}.section-head{display:flex;align-items:center;gap:16px;margin:14px 0 22px;color:#77768e;font-size:16px;letter-spacing:3px}.section-head:after{content:"";height:1px;flex:1;background:#dedee4}
+.eyebrow{font-size:17px;letter-spacing:5px;color:#d2c8ef;display:flex;gap:12px;align-items:center}
+.star{font-size:23px;color:#c8b9ed}.brand{margin-left:auto;font-size:17px;letter-spacing:2px;color:#c2c4d6}
+.title{position:relative;max-width:640px;margin:29px 0 15px;font-family:"Noto Serif CJK SC","Source Han Serif SC","Songti SC","SimSun","Noto Sans CJK SC",serif;font-size:43px;font-weight:600;line-height:1.5;letter-spacing:2px;overflow-wrap:anywhere}
+.cover-activity{position:relative;margin:0;max-width:600px;font-size:22px;line-height:1.7;letter-spacing:.4px;color:#d6d8e7;white-space:pre-wrap;overflow-wrap:anywhere}
+.companions{margin-top:29px;display:flex;align-items:center;gap:18px;flex-wrap:wrap;overflow-wrap:anywhere;font-size:24px;font-weight:600;letter-spacing:1px}
+.companions b:first-child{color:#d9cff6}.companions b:last-child{color:#9ad1ca}.companions i{font-weight:400;font-style:normal;color:#b0b3cb;font-size:19px}
+.cover-meta{margin-top:25px;display:flex;align-items:center;flex-wrap:wrap;gap:17px;color:#b9bdd1;font-size:18px;letter-spacing:.5px}
+.cover-meta .line{height:15px;width:1px;background:#666984}
+.sky{position:absolute;right:30px;bottom:67px;width:218px;height:146px;opacity:.65;z-index:-1}
+.content{padding:0 54px 4px;background:#272b48}
+.section-head{display:flex;align-items:center;gap:16px;margin:0 0 18px;padding-top:18px;color:#bcb5d5;font-size:16px;letter-spacing:3px}
+.section-head:after{content:"";height:1px;flex:1;background:#474962}
 .entry{display:grid;grid-template-columns:70px minmax(0,1fr);column-gap:19px;padding:20px 0 25px;break-inside:avoid}
-.time{font-family:"Segoe UI",sans-serif;font-variant-numeric:tabular-nums;line-height:1.5;font-size:19px;color:#8a8f9e;padding-top:1px}.time small{display:block;font-size:14px;letter-spacing:1px;margin-top:2px;color:#a2a5af}
-.entry-body{min-width:0}.speaker{display:flex;align-items:center;gap:10px;font-size:21px;color:#796b9e;font-weight:700;margin-bottom:9px;line-height:1.5}.speaker:before{content:"";width:7px;height:7px;border-radius:50%;background:#9988ba;flex:none}.remote .speaker{color:#397c78}.remote .speaker:before{background:#69a59c}.unknown .speaker{color:#7c7c87}.unknown .speaker:before{background:#a2a2aa}
-.continuation{font-size:14px;font-weight:400;letter-spacing:1px;color:#9595a2}.part{margin:0 0 12px;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;line-height:1.75;font-size:25px;letter-spacing:.25px}.part:last-child{margin-bottom:0}.part-label{display:block;font-size:15px;letter-spacing:1px;color:#817b8d;margin-bottom:4px;font-weight:500}
-.intent,.experience{font-size:22px;line-height:1.75;color:#777684;padding-left:16px;border-left:2px solid #e4deeb}.experience{border-color:#d5e5e0}.result{font-size:23px;color:#536e69}.chronicle{font-size:23px;color:#6d7180}.tag{display:flex;align-items:center;gap:10px;font-size:15px;letter-spacing:2px;color:#81788f;margin-bottom:10px;font-weight:500}.tag:before{content:"✧";font-size:18px;color:#9b8fb6}.shared{padding-top:21px;padding-bottom:24px}.shared .entry-body{padding:18px 22px;background:#f1f0f3;border:1px solid #e8e5eb;border-radius:12px}.shared.arrival .entry-body{background:transparent;border:0;border-bottom:1px solid #e6e3e9;border-radius:0;padding:4px 0 16px}.shared.arrival .tag{color:#9583b2;margin-bottom:0;letter-spacing:3px}
-.route-entry{display:block;padding:10px 0 22px}.route-title{font-size:16px;letter-spacing:3px;color:#8a819c;margin:0 0 13px}.route-list{display:grid;gap:12px;padding:0;margin:0;list-style:none}.route-stop{display:grid;grid-template-columns:26px minmax(0,1fr);gap:11px;align-items:start}.route-index{width:23px;height:23px;border:1px solid #d0c6dd;color:#9180a9;border-radius:50%;font-size:12px;display:flex;align-items:center;justify-content:center;margin-top:3px}.route-place{font-size:20px;line-height:1.5;color:#66667a;overflow-wrap:anywhere}.route-activity{font-size:18px;line-height:1.65;color:#797887;white-space:pre-wrap;overflow-wrap:anywhere;margin:3px 0 0}
-.ending{margin:12px 54px 0;padding:28px 0 23px;border-top:1px solid #ddd9e5}.ending-head{display:flex;align-items:center;gap:12px;color:#8976a4;font-size:20px;letter-spacing:1px}.ending-head .end-time{margin-left:auto;color:#9694a3;font-size:17px;letter-spacing:1px}.ending p{font-size:21px;color:#7b7b89;line-height:1.8;margin:13px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}.footer{display:flex;align-items:center;justify-content:space-between;margin:0 54px;padding:21px 0 29px;color:#a5a0af;font-size:15px;letter-spacing:2px}.footer .folio{color:#a199ae;font-size:15px}.continued-note{padding:15px 54px 2px;color:#9a94a5;font-size:18px;line-height:1.7}.cover.is-continuation{padding-top:30px;padding-bottom:26px}.cover.is-continuation .title{font-size:29px;margin:19px 0 10px;max-width:none}.cover.is-continuation .companions{margin-top:13px;font-size:20px}.cover.is-continuation .cover-meta{margin-top:16px}.cover.is-continuation .activity,.cover.is-continuation .sky{display:none}.date-divider{font-size:14px;color:#9b97a7;letter-spacing:2px;border-bottom:1px solid #ebe7ee;padding:0 0 9px;margin:9px 0 3px}
-</style></head>
+.time{font-family:"Segoe UI",sans-serif;font-variant-numeric:tabular-nums;line-height:1.5;font-size:19px;color:#b8bdd4;padding-top:1px}
+.time small{display:block;font-size:14px;letter-spacing:1px;margin-top:2px;color:#a6abc4}
+.entry-body{min-width:0}
+.speaker{display:flex;align-items:center;gap:10px;font-size:21px;color:#d9cff6;font-weight:700;margin-bottom:9px;line-height:1.5;overflow-wrap:anywhere}
+.speaker:before{content:"";width:7px;height:7px;border-radius:50%;background:#c4afea;flex:none}
+.remote .speaker{color:#9ad1ca}.remote .speaker:before{background:#8bc6bc}.unknown .speaker{color:#c4c7d8}.unknown .speaker:before{background:#adb3ca}
+.part{margin:0 0 12px;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;line-height:1.75;font-size:25px;letter-spacing:.25px;color:#eef0fa}
+.part:last-child{margin-bottom:0}.part-label{display:block;font-size:15px;letter-spacing:1px;color:#b6b1cd;margin-bottom:4px;font-weight:500}
+.part.intent,.part.experience{font-size:22px;line-height:1.75;color:#c6c5db;padding-left:16px;border-left:2px solid #696084}
+.part.experience{border-color:#547c7d}.part.result{font-size:23px;color:#bbdbd5}.part.chronicle{font-size:23px;color:#d5d8e9}
+.tag{display:flex;align-items:center;gap:10px;font-size:15px;letter-spacing:2px;color:#c8bbdf;margin-bottom:10px;font-weight:500}
+.tag:before{content:"✧";font-size:18px;color:#c1afe2}
+.shared{padding-top:17px;padding-bottom:21px}.shared .entry-body{padding:17px 21px;background:#2e324f;border:1px solid #454761;border-radius:12px}
+.shared.kind-arrival .entry-body{background:transparent;border:0;border-bottom:1px solid #474760;border-radius:0;padding:4px 0 16px}
+.shared.kind-arrival .tag{color:#c8b9e5;margin-bottom:0;letter-spacing:3px}
+.route-entry{display:block;padding:12px 0 27px}.route-title{font-size:16px;font-weight:500;letter-spacing:3px;color:#c8bbdf;margin:0 0 16px}
+.route-list{display:grid;gap:15px;padding:0;margin:0;list-style:none}.route-stop{display:grid;grid-template-columns:26px minmax(0,1fr);gap:11px;align-items:start}
+.route-index{width:23px;height:23px;border:1px solid #74698f;color:#cfbfe7;border-radius:50%;font-size:12px;display:flex;align-items:center;justify-content:center;margin-top:3px}
+.route-place{font-size:20px;line-height:1.5;color:#e0dced;overflow-wrap:anywhere}.route-activity{font-size:18px;line-height:1.65;color:#bfc3d8;white-space:pre-wrap;overflow-wrap:anywhere;margin:3px 0 0}
+.date-divider{font-size:14px;color:#b8b0cb;letter-spacing:2px;border-bottom:1px solid #474760;padding:0 0 9px;margin:9px 0 3px}
+.ending{margin:12px 54px 0;padding:28px 0 23px;border-top:1px solid #55516d}
+.ending-head{display:flex;align-items:center;gap:12px;color:#d2bfea;font-size:20px;letter-spacing:1px}.ending-head .end-time{margin-left:auto;color:#bab7cd;font-size:17px;letter-spacing:1px}
+.ending p{font-size:21px;color:#c6c8db;line-height:1.8;margin:13px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}
+.footer{display:flex;align-items:center;justify-content:space-between;gap:18px;margin:0 54px;padding:21px 0 29px;color:#aba7c1;font-size:15px;letter-spacing:2px}.footer .imprint{white-space:nowrap;color:#b7accb}
+</style>
+</head>
 <body><article class="card">
-<header class="cover{% if not first %} is-continuation{% endif %}">
+<header class="cover">
   <div class="eyebrow"><span class="star">✦</span><span>相 见 札 记</span><span class="brand">小世界</span></div>
   <h1 class="title">{{ title|e }}</h1>
-  {% if activity %}<p class="activity">{{ activity|e }}</p>{% endif %}
+  {% if activity %}<p class="cover-activity">{{ activity|e }}</p>{% endif %}
   <div class="companions"><b>{{ local_name|e }}</b><i>与</i><b>{{ remote_name|e }}</b></div>
-  <div class="cover-meta"><span>{{ date|e }}</span><span class="line"></span><span>{{ interval|e }}</span>{% if duration %}<span class="line"></span><span>{{ duration|e }}</span>{% endif %}<span class="page-number">{{ "%02d"|format(page) }} / {{ "%02d"|format(pages) }}</span></div>
+  <div class="cover-meta"><span>{{ date|e }}</span><span class="line"></span><span>{{ interval|e }}</span>{% if duration %}<span class="line"></span><span>{{ duration|e }}</span>{% endif %}</div>
   <svg class="sky" viewBox="0 0 218 146" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="163" cy="39" r="14" fill="#ddd4f4"/><circle cx="163" cy="39" r="24" fill="none" stroke="#a69bbd" stroke-opacity=".22"/><path d="M0 119Q36 83 72 112T154 108T218 91V146H0Z" fill="#525b81"/><path d="M-5 134Q44 100 93 126T181 116T230 113" fill="none" stroke="#7ba4a2" stroke-width="4" stroke-opacity=".5"/><path d="M82 108h42v11q0 12-21 12t-21-12zM124 111h5q9 0 9 7t-12 7M77 135h53M94 100q-7-7 0-14M110 100q-7-7 0-14" fill="none" stroke="#c8c4df" stroke-width="1.3"/><circle cx="32" cy="33" r="1.7" fill="#aeb8c9"/><circle cx="95" cy="19" r="1.2" fill="#aeb8c9"/><circle cx="196" cy="64" r="1.5" fill="#aeb8c9"/><path d="M45 65v8m-4-4h8" stroke="#b4a7d7" stroke-width="1"/></svg>
 </header>
-{% if not first %}<div class="continued-note">接着上一张，沿着那天的经过继续读。</div>{% endif %}
 <main class="content">
-{% if first %}<div class="section-head">那天 · 一起</div>{% endif %}
+<div class="section-head">那天 · 一起</div>
 {% set day = namespace(value="") %}
 {% for entry in entries %}
   {% if entry.category == "route" %}
-    <section class="route-entry"><h2 class="route-title">{% if entry.continued %}走过的地方 · 续{% else %}走过的地方{% endif %}</h2><ol class="route-list">{% for stop in entry.stops %}<li class="route-stop"><span class="route-index">{{ stop.index }}</span><div><div class="route-place">{{ stop.place|e }}</div>{% if stop.activity %}<p class="route-activity">{{ stop.activity|e }}</p>{% endif %}</div></li>{% endfor %}</ol></section>
+    <section class="route-entry"><h2 class="route-title">走过的地方</h2><ol class="route-list">{% for stop in entry.stops %}<li class="route-stop"><span class="route-index">{{ stop.index }}</span><div><div class="route-place">{{ stop.place|e }}</div>{% if stop.activity %}<p class="route-activity">{{ stop.activity|e }}</p>{% endif %}</div></li>{% endfor %}</ol></section>
   {% else %}
     {% if entry.day and day.value and entry.day != day.value %}<div class="date-divider">{{ entry.day|e }}</div>{% endif %}{% if entry.day %}{% set day.value = entry.day %}{% endif %}
-    <section class="entry {{ entry.side|e }} {{ entry.kind_class|e }}{% if entry.category in ['chronicle','result'] %} shared{% endif %}" data-seq="{{ entry.seq|e }}">
+    <section class="entry {{ entry.side|e }} kind-{{ entry.kind_class|e }}{% if entry.category in ['chronicle','result'] %} shared{% endif %}" data-seq="{{ entry.seq|e }}">
       <div class="time">{{ entry.time|e }}{% if entry.day %}<small>{{ entry.day|e }}</small>{% endif %}</div>
       <div class="entry-body">
-        {% if entry.category in ['chronicle','result'] %}<div class="tag">{{ entry.tag|e }}{% if entry.continued %}<span class="continuation">续</span>{% endif %}</div>
-        {% else %}<div class="speaker">{{ entry.speaker|e }}{% if entry.continued %}<span class="continuation">续</span>{% endif %}</div>{% endif %}
+        {% if entry.category in ['chronicle','result'] %}<div class="tag">{{ entry.tag|e }}</div>
+        {% else %}<div class="speaker">{{ entry.speaker|e }}</div>{% endif %}
         {% for part in entry.parts %}<p class="part {{ part.type|e }}">{% if part.label and entry.category not in ['chronicle','result'] %}<span class="part-label">{{ part.label|e }}</span>{% endif %}{{ part.text|e }}</p>{% endfor %}
       </div>
     </section>
   {% endif %}
 {% endfor %}
 </main>
-{% if last %}<section class="ending"><div class="ending-head"><span>✧</span><span>{{ status|e }}</span><span class="end-time">{{ end_time|e }}</span></div>{% if end_reason %}<p>{{ end_reason|e }}</p>{% endif %}</section>{% else %}<div class="continued-note">未完，下一张继续。</div>{% endif %}
-<footer class="footer"><span>{% if met %}把一起度过的时间，留在这里。{% else %}一次约见的经过，留在这里。{% endif %}</span><span class="folio">小世界 · {{ page }} / {{ pages }}</span></footer>
+<section class="ending"><div class="ending-head"><span>✧</span><span>{{ status|e }}</span><span class="end-time">{{ end_time|e }}</span></div>{% if end_reason %}<p>{{ end_reason|e }}</p>{% endif %}</section>
+<footer class="footer"><span>{% if met %}把一起度过的时间，留在这里。{% else %}一次约见的经过，留在这里。{% endif %}</span><span class="imprint">小世界 · 相见札记</span></footer>
 </article></body></html>

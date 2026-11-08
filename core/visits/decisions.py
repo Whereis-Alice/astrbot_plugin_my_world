@@ -47,15 +47,30 @@ WAITING = {
     "state": "暂时无法确认接待状态",
 }
 
+# Only these structural labels may survive a failed model choice. Never save
+# response bodies, arbitrary keys, provider errors or private thoughts here.
+FORMAT_ISSUES = {
+    "json_object": "没有得到完整的JSON对象",
+    "invitation_accept": "邀请缺少真正的布尔值accept",
+    "text_fields": "文字字段没有使用字符串",
+    "leave_boolean": "leave没有使用布尔值",
+    "scene_fields": "scene不是包含文字字段的对象",
+    "choice_boolean": "活动选择没有使用布尔值",
+    "pause_number": "停留时间没有使用有限数字",
+    "empty_choice": "没有留下本阶段可执行的选择",
+}
+
 
 class VisitDecisionError(ValueError):
     """Expose only a known failure category as the trip's ending reason."""
 
     def __init__(self, category: Literal["budget", "busy", "backoff", "timeout", "provider", "format", "life_busy", "state", "identity"],
-                 *, request_started: bool = True, candidate: dict | None = None):
+                 *, request_started: bool = True, candidate: dict | None = None, format_issue: str = ""):
         self.category = category if category in FAILURES else "provider"
         self.request_started = request_started
         self.candidate = copy.deepcopy(candidate) if isinstance(candidate, dict) else None
+        self.format_issue = (format_issue if self.category == "format" and isinstance(format_issue, str)
+                             and format_issue in FORMAT_ISSUES else "")
         super().__init__(FAILURES[self.category])
 
     @classmethod

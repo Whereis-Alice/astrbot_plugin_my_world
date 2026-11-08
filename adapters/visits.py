@@ -22,7 +22,7 @@ from ..core.life_matters import stable_interests
 from ..core.state import STATE_DROWSY, STATE_NAPPING, STATE_SLEEPING
 from ..core.recovery import sleep_action_kind
 from ..core.visit_presence import active_visit, presence_text
-from ..core.visits.decisions import VisitDecisionError, record_decision_candidate
+from ..core.visits.decisions import FORMAT_ISSUES, VisitDecisionError, record_decision_candidate
 from ..core.visits.protocol import clean_outing_offer, clean_pause
 from ..core.background_budget import capture_background_admission
 from ..core.planner import same_plan
@@ -494,7 +494,19 @@ class VisitActorPort(VisitCardActorMixin):
                 error = VisitDecisionError.unavailable(getattr(reply, "error", ""))
                 error.request_started = admission.started
                 raise error
-            result = self._parse_decision(phase, reply.text)
+            try:
+                result = self._parse_decision(phase, reply.text)
+            except VisitDecisionError as exc:
+                trace = getattr(engine, "decision_trace", None)
+                if callable(trace):
+                    try:
+                        trace(scope, "world_visit", "invalid_format", "串门模型选择未通过格式校验",
+                              visit_id=str(visit.get("id") or "")[:80], phase=phase,
+                              format_issue=exc.format_issue, output_chars=len(reply.text or ""),
+                              max_output_tokens=output_limit)
+                    except Exception:
+                        pass  # Diagnostics must not replace the original failure.
+                raise
             record_decision_candidate(result)
             try:
                 if (not engine.is_enabled(scope) or engine.state_key(scope) != scope
@@ -571,35 +583,63 @@ class VisitActorPort(VisitCardActorMixin):
     @staticmethod
     def _decision_output_rules(phase: str, visit: dict) -> str:
         """Keep the model's output contract focused on this one protocol step."""
+        rules = VisitActorPort._phase_output_rules(phase, visit)
+        retry = visit.get("model_retry") or {}
+        if (isinstance(retry, dict) and retry.get("category") == "format" and retry.get("phase") == phase
+                and type(retry.get("failures", retry.get("attempts"))) is int
+                and 1 <= retry.get("failures", retry.get("attempts")) <= 2):
+            issue_key = retry.get("format_issue")
+            issue = (FORMAT_ISSUES.get(issue_key, "上次选择没有通过结构校验") if isinstance(issue_key, str)
+                     else "上次选择没有通过结构校验")
+            rules += ("\n格式重试：" + issue + "。上次输出未执行，也没有转给朋友。"
+                      "重新作出你自己的本阶段选择；只写一个完整JSON对象，不要解释或复述错误。"
+                      "say/action/thought/reflection/promise/outcome/farewell均用字符串，"
+                      "accept/leave/outing_accept/continue_activity/return_after用true或false，不能加引号；"
+                      "pause_minutes用数字。不要为了补格式而改变或猜测双方是否同意。")
+        return rules
+
+    @staticmethod
+    def _phase_output_rules(phase: str, visit: dict) -> str:
+        """Concrete wire shapes prevent roleplay prose from replacing the envelope."""
         if phase in {"propose", "receive"}:
             return ('本阶段先输出accept（JSON布尔值）和say（一句你的电话原话）；'
                     'thought可选。愿意接待时可选scene:{place,activity,event}或outing:{place,activity,minutes}，'
-                    '其余字段省略。accept表示你自己的同意；不要替朋友确认。')
+                    '其余字段省略。accept表示你自己的同意；不要替朋友确认。'
+                    '结构示例：{"accept":true,"say":"你自己的电话原话"}；'
+                    '示例不代表你的选择，不愿意时accept用false，原话也由你自己写。')
         if phase == "finish":
-            return '本阶段只用reflection留一句自己的感受，可选promise；只根据已确认经过，不补写新的对话。'
+            return ('本阶段只用reflection留一句自己的感受，可选promise；只根据已确认经过，不补写新的对话。'
+                    '结构示例：{"reflection":"你对已确认经历的感受"}。')
         if phase == "scene":
+            shape = ('{"outcome":"根据双方行动确定的公开结果"}' if visit.get("scene_stage") == "event_resolve" else
+                     '{"scene":{"event":"一件尚未解决的公开小事"}}')
             return ('本阶段只推进场景，不替双方说话。event_offer用scene:{place,activity,event}，'
-                    'event_resolve用outcome；可选自己的thought，其余字段省略。')
+                    'event_resolve用outcome；可选自己的thought，其余字段省略。结构示例：' + shape + '。')
         return ('本阶段通常只输出say及可选action。继续共玩可用continue_activity:true,pause_minutes:number；'
                 '收到outing_offer须用outing_accept布尔值表明自己的选择；'
                 '活动结束时才可选outcome或新outing:{place,activity,minutes}；'
                 '想告别时用leave:true，想约定活动后归家用return_after:true,farewell:string。'
-                'thought可选；无关字段省略。')
+                'thought可选；无关字段省略。结构示例：{"say":"你接对方这句话的原话","action":"你自己的行动打算"}。'
+                'say/action必须是字符串，不要输出对话数组或actions动作列表。'
+                '想安静继续当前活动时可用{"continue_activity":true,"pause_minutes":5}，'
+                '不必强行说话；有待确认的outing_offer时仍须独立给outing_accept。')
 
     @staticmethod
     def _parse_decision(phase: str, text: str) -> dict[str, Any]:
         value = extract_json_object(text)
-        if not isinstance(value, dict) or (phase in {"propose", "receive"} and type(value.get("accept")) is not bool):
-            raise VisitDecisionError("format")
+        if not isinstance(value, dict):
+            raise VisitDecisionError("format", format_issue="json_object")
+        if phase in {"propose", "receive"} and type(value.get("accept")) is not bool:
+            raise VisitDecisionError("format", format_issue="invitation_accept")
         text_fields = ("say", "action", "thought", "reflection", "promise", "outcome", "farewell")
         if any(value.get(key) is not None and not isinstance(value[key], str) for key in text_fields):
-            raise VisitDecisionError("format")
+            raise VisitDecisionError("format", format_issue="text_fields")
         if any(key in value and type(value[key]) is not bool for key in ("leave",)):
-            raise VisitDecisionError("format")
+            raise VisitDecisionError("format", format_issue="leave_boolean")
         if value.get("scene") is not None and (not isinstance(value["scene"], dict)
                 or any(value["scene"].get(key) is not None and not isinstance(value["scene"][key], str)
                        for key in ("place", "activity", "event"))):
-            raise VisitDecisionError("format")
+            raise VisitDecisionError("format", format_issue="scene_fields")
         scene = value.get("scene") if isinstance(value.get("scene"), dict) else {}
         result = {"accept": value.get("accept") is True, "leave": value.get("leave") is True,
                   "outing": clean_outing_offer(value.get("outing")),
@@ -613,16 +653,16 @@ class VisitActorPort(VisitCardActorMixin):
                   "scene": {name: _text(scene.get(name), limit)
                             for name, limit in (("place", 80), ("activity", 120), ("event", 240))}}
         if any(key in value and type(value[key]) is not bool for key in ("outing_accept", "return_after", "continue_activity")):
-            raise VisitDecisionError("format")
+            raise VisitDecisionError("format", format_issue="choice_boolean")
         for key in ("pause_minutes", "next_contact_minutes"):
             if key in value and (type(value[key]) not in {int, float} or not math.isfinite(value[key])):
-                raise VisitDecisionError("format")
+                raise VisitDecisionError("format", format_issue="pause_number")
         if phase not in {"propose", "receive"} and not (result["leave"] or result["outing"]
                 or any(key in value for key in ("outing_accept", "return_after", "continue_activity",
                                                "pause_minutes", "next_contact_minutes")) or any(
                 result[name] for name in ("say", "action", "thought", "reflection", "promise", "outcome"))
                 or any(result["scene"].values())):
-            raise VisitDecisionError("format")
+            raise VisitDecisionError("format", format_issue="empty_choice")
         return result
 
     async def remember(self, scope: str, visit: dict) -> None:

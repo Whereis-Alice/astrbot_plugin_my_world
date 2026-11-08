@@ -84,31 +84,30 @@ def test_actor_ids_are_exact_and_same_names_are_disambiguated():
     assert entries(build_visit_card_pages(visit(logs[:1], local="malformed")))[0]["side"] == "unknown"
 
 
-def test_complete_transcript_and_route_survive_pagination_without_mutation():
+def test_complete_transcript_and_route_stay_in_one_card_without_mutation():
     logs = [{"seq": index, "actor_id": "home:isla", "kind": "say", "text": f"片刻{index}：" + "记下这一天。" * 65}
             for index in range(1, 57)]
     source = visit(logs, outing={"route": [{"place": f"地点{i}", "activity": f"活动{i}"} for i in range(13)]})
     original = deepcopy(source)
-    pages = build_visit_card_pages(source)
-    assert len(pages) > 3
+    pages = build_visit_card_pages(source, max_page_height=120)
+    assert len(pages) == 1
     assert source == original
     assert [row["seq"] for row in entries(pages)] == list(range(1, 57))
     assert [part["text"] for row in entries(pages) for part in row["parts"]] == [row["text"] for row in logs]
     assert [stop["place"] for page in pages for row in page["entries"] if row["category"] == "route"
             for stop in row["stops"]] == [f"地点{i}" for i in range(13)]
-    assert [page["page"] for page in pages] == list(range(1, len(pages) + 1))
-    assert all(page["pages"] == len(pages) for page in pages)
-    assert pages[0]["first"] and pages[-1]["last"]
-    assert all(not page["last"] for page in pages[:-1])
-    assert all(render_visit_card_html(page) for page in pages)
+    assert pages[0]["page"] == pages[0]["pages"] == 1
+    assert pages[0]["first"] and pages[0]["last"]
+    html = render_visit_card_html(pages[0])
+    assert "未完" not in html and "接着上一张" not in html and "page-number" not in html
 
 
-def test_oversized_legacy_paragraph_splits_without_losing_characters():
+def test_oversized_legacy_paragraph_remains_whole_without_losing_characters():
     paragraph = "这一页很长。Mixed text, \n" * 900
     rows = entries(build_visit_card_pages(visit([{"kind": "say", "text": paragraph}])))
-    assert len(rows) > 3
-    assert "".join(part["text"] for row in rows for part in row["parts"]) == paragraph.strip()
-    assert all(row["continued"] for row in rows[1:])
+    assert len(rows) == 1
+    assert rows[0]["parts"][0]["text"] == paragraph.strip()
+    assert not rows[0]["continued"]
 
 
 def test_ongoing_and_unaccepted_offers_cannot_be_presented_as_a_shared_trip():
@@ -192,5 +191,50 @@ def test_real_browser_layout_wraps_long_tokens_and_retains_full_page():
             assert page.locator(".speech").count() == 2
             assert page.locator(".ending").bounding_box()["y"] > page.locator(".entry").last.bounding_box()["y"]
             assert not requests
+        finally:
+            browser.close()
+
+
+def test_real_browser_activity_is_compact_and_long_card_keeps_one_dark_theme():
+    playwright = pytest.importorskip("playwright.sync_api")
+    logs = [
+        {"seq": 1, "kind": "arrival", "text": "双方接受邀请，开始在东道主世界相处。"},
+        {"seq": 2, "kind": "activity", "text": "喝热红茶搭配茶点闲聊"},
+        {"seq": 3, "kind": "event", "text": "窗外的雨声渐渐小了。"},
+        {"seq": 4, "kind": "result", "text": "两个人已经把茶点吃完。"},
+    ]
+    logs += [{"seq": index, "actor_id": "home:isla" if index % 2 else "away:alice",
+              "kind": "say", "at": 1793657400 + index * 30,
+              "text": f"第{index}个片刻。" + "还想再陪你坐一会儿，听听窗外的雨声。" * 3}
+             for index in range(5, 85)]
+    cards = build_visit_card_pages(visit(logs))
+    assert len(cards) == 1
+    with playwright.sync_playwright() as runtime:
+        try:
+            browser = runtime.chromium.launch(headless=True)
+        except playwright.Error as exc:
+            if "Executable doesn't exist" in str(exc):
+                pytest.skip("Install Chromium for browser layout verification")
+            raise
+        try:
+            page = browser.new_page(viewport={"width": 900, "height": 1000})
+            page.set_content(render_visit_card_html(cards[0]))
+            activity = page.locator(".kind-activity .entry-body")
+            assert activity.bounding_box()["height"] < 150
+            assert page.locator(".kind-activity").evaluate("node => getComputedStyle(node).whiteSpace") == "normal"
+            assert page.locator(".kind-result").evaluate("node => getComputedStyle(node).fontSize") == "16px"
+            assert page.locator(".entry").count() == len(logs)
+            assert page.locator(".card").bounding_box()["height"] > 5200
+            backgrounds = [page.locator(selector).evaluate("node => getComputedStyle(node).backgroundColor")
+                           for selector in ("body", ".card", ".cover", ".content")]
+            assert backgrounds == ["rgb(39, 43, 72)"] * 4
+            assert page.locator(".part.speech").first.evaluate("node => getComputedStyle(node).fontSize") == "25px"
+            last_entry = page.locator(".entry").last.bounding_box()
+            ending = page.locator(".ending").bounding_box()
+            card = page.locator(".card").bounding_box()
+            assert ending["y"] >= last_entry["y"] + last_entry["height"]
+            assert ending["y"] + ending["height"] <= card["height"]
+            assert page.locator("body").evaluate("node => node.scrollWidth") == 900
+            assert not page.locator(".continued-note,.page-number,.folio").count()
         finally:
             browser.close()

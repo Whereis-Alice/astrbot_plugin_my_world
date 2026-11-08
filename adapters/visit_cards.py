@@ -8,6 +8,7 @@ from pathlib import Path
 import tempfile
 from typing import Any
 from urllib.parse import urlsplit
+from urllib.request import url2pathname
 
 from ..core.visit_card import (CARD_SCALE, CARD_WIDTH, build_visit_card_pages,
                                render_visit_card_html, visit_card_template)
@@ -41,7 +42,7 @@ def _page_text(page: dict) -> str:
     """A complete readable fallback, with the same evidence labels as the card."""
     lines = ["# 小世界 · 相见札记", f"## {page['title']}",
              f"{page['local_name']} 与 {page['remote_name']}",
-             f"{page['date']}　{page['interval']}　{page['page']} / {page['pages']}"]
+             f"{page['date']}　{page['interval']}"]
     for entry in page["entries"]:
         if entry["category"] == "route":
             lines.append("### 一起走过")
@@ -115,13 +116,48 @@ class VisitCardRenderer:
 
     async def _plain_pages(self, pages: list[dict]) -> list[str]:
         from astrbot.core import html_renderer
-        return [_image_ref(await asyncio.wait_for(
-            html_renderer.local_strategy.render(_page_text(page)), 30)) for page in pages]
+        from PIL import Image, ImageOps
+
+        temporary = tempfile.TemporaryDirectory(prefix="my_world_visit_text_")
+        refs: list[str] = []
+
+        def tint(source: str, target: Path) -> str:
+            # Preserve the SDK's complete typesetting, including CJK fonts, but
+            # keep its fallback in the same indigo palette as the HTML card.
+            ref = _image_ref(source)
+            parsed = urlsplit(ref)
+            if parsed.scheme != "file" or parsed.netloc:
+                raise ValueError("local text renderer returned a non-local image")
+            with Image.open(url2pathname(parsed.path)) as image:
+                ImageOps.colorize(ImageOps.grayscale(image),
+                                  black="#f1edff", white="#272b48").save(target, "PNG")
+            return target.resolve().as_uri()
+
+        try:
+            for index, page in enumerate(pages):
+                source = await asyncio.wait_for(
+                    html_renderer.local_strategy.render(_page_text(page)), 30)
+                worker = asyncio.create_task(asyncio.to_thread(
+                    tint, source, Path(temporary.name) / f"card-{index + 1:04}.png"))
+                try:
+                    refs.append(await asyncio.shield(worker))
+                except BaseException:
+                    # Join the writer before deleting its directory on unload.
+                    await asyncio.gather(worker, return_exceptions=True)
+                    raise
+            for ref in refs:
+                self._files[ref] = temporary
+            return refs
+        except BaseException:
+            temporary.cleanup()
+            raise
 
     async def render(self, scope: str, visit: dict, *, timezone: str) -> list[str]:
         pages = build_visit_card_pages(visit, timezone=timezone)
         if not pages:
             return []
+        if len(pages) != 1:
+            raise ValueError("相见记录应生成一张完整长图")
         endpoint = self._endpoint(scope)
         strategies = []
         if endpoint and _local_endpoint(endpoint):

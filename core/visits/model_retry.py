@@ -4,7 +4,7 @@ from __future__ import annotations
 import copy
 import math
 
-from .decisions import RETRYABLE, WAITING
+from .decisions import FORMAT_ISSUES, RETRYABLE, WAITING
 
 DELAYS = (30, 60)
 WAIT_DELAYS = (30, 60, 120, 300)
@@ -69,7 +69,7 @@ def valid_retry(visit: dict, cursor: dict) -> bool:
 
 
 def defer_decision(visit: dict, cursor: dict, *, category: str, now: float, candidate=None,
-                   waiting: bool = False) -> bool:
+                   waiting: bool = False, format_issue: str = "") -> bool:
     """Unissued waits keep their phase; only unsuccessful inference spends recovery."""
     old = visit.get("model_retry") or {}
     previous = old if valid_retry(visit, cursor) else {}
@@ -91,6 +91,8 @@ def defer_decision(visit: dict, cursor: dict, *, category: str, now: float, cand
         next_at = visit["expires_at"]  # The existing lease ends the wait at its own clock.
     retry = {"phase": cursor["phase"], "cursor": copy.deepcopy(cursor), "attempts": attempts,
              "next_at": next_at, "category": category}
+    if category == "format" and isinstance(format_issue, str) and format_issue in FORMAT_ISSUES:
+        retry["format_issue"] = format_issue
     if waiting:
         retry["waiting"] = True
     if failures:

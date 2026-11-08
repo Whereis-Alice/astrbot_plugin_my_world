@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
+from urllib.parse import urlsplit
+from urllib.request import url2pathname
 
 from tests import fake_astrbot
 
@@ -104,6 +107,34 @@ class CardAdapterTests(unittest.IsolatedAsyncioTestCase):
         text = cards._page_text(page)
         self.assertIn("当时的打算：打算去散步", text)
         self.assertIn("发生的结果：散步遇到下雨", text)
+        self.assertNotIn("1 / 1", text)
+
+    async def test_text_fallback_is_one_dark_image_and_owns_only_its_copy(self):
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as source_dir:
+            source = Path(source_dir) / "sdk.png"
+            image = Image.new("RGB", (20, 100), "white")
+            image.putpixel((2, 2), (0, 0, 0))
+            image.save(source)
+            local = SimpleNamespace(local_strategy=SimpleNamespace(
+                render=AsyncMock(return_value=str(source))))
+            renderer = cards.VisitCardRenderer(self.plugin)
+            page = cards.build_visit_card_pages(self.visit)[0]
+            with patch.dict(sys.modules, {"astrbot.core.html_renderer": local}), patch.object(
+                    sys.modules["astrbot.core"], "html_renderer", local, create=True):
+                refs = await renderer._plain_pages([page])
+            self.assertEqual(len(refs), 1)
+            copy = Path(url2pathname(urlsplit(refs[0]).path))
+            self.assertNotEqual(source, copy)
+            with Image.open(copy) as result:
+                self.assertEqual(result.size, (20, 100))
+                self.assertEqual(result.getpixel((0, 0)), (39, 43, 72))
+                self.assertEqual(result.getpixel((2, 2)), (241, 237, 255))
+            with Image.open(source) as original:
+                self.assertEqual(original.getpixel((0, 0)), (255, 255, 255))
+            renderer.release(refs)
+            self.assertFalse(copy.exists())
+            self.assertTrue(source.exists())
 
     def test_release_cleans_only_owned_images(self):
         renderer = cards.VisitCardRenderer(self.plugin)

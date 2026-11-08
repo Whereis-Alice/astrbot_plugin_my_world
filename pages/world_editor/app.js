@@ -10,7 +10,7 @@ import { memorySearchFields } from "./memory-settings.js?v=4.46.18";
 import { familiarityDescriptionEditor, relationshipPromptEditor } from "./relationship-prompt.js";
 import { thoughtDate, updateThoughtDates } from "./thought-history.js";
 import { mountLifeWorkspace } from "./life-workspace.js";
-import { createVisitsPage } from "./visits.js?v=4.46.25";
+import { createVisitsPage } from "./visits.js?v=4.46.26";
 import { openBrowseSettings } from "./browse-settings.js?v=4.34.7";
 import { personAvatar, personColor, bindPeopleSort } from "./people-ui.js";
 import { openRelationshipRulesEditor } from "./relationship-rules.js";

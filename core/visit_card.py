@@ -5,7 +5,6 @@ from the Jinja template so record text can never become executable template code
 """
 from __future__ import annotations
 
-from copy import deepcopy
 from datetime import datetime, timezone as datetime_timezone, tzinfo
 from functools import lru_cache
 import math
@@ -117,19 +116,6 @@ def _lines(text: str, width: int = 49) -> int:
     return sum(max(1, math.ceil(_units(line) / width)) for line in text.split("\n"))
 
 
-def _split_text(text: str, limit: int = 1450) -> list[str]:
-    """Bound one paragraph without silently dropping long legacy record text."""
-    pieces, start, units = [], 0, 0
-    for index, char in enumerate(text):
-        units += 2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
-        if units >= limit:
-            pieces.append(text[start:index + 1])
-            start, units = index + 1, 0
-    if start < len(text):
-        pieces.append(text[start:])
-    return pieces or [text]
-
-
 def _entry_height(entry: dict) -> int:
     if entry["category"] == "route":
         return 76 + sum(48 + _lines(stop["place"] + " · " + stop["activity"], 62) * 27
@@ -161,9 +147,9 @@ def _entries(visit: dict, zone: tzinfo) -> list[dict]:
              for index, row in enumerate(route) if isinstance(row, dict)
              and (_text(row.get("place")) or _text(row.get("location"))
                   or _text(row.get("activity")) or _text(row.get("title")))]
-    for offset in range(0, len(stops), 5):
-        entries.append({"category": "route", "side": "shared", "stops": stops[offset:offset + 5],
-                        "continued": offset > 0, "parts": [], "seq": None})
+    if stops:
+        entries.append({"category": "route", "side": "shared", "stops": stops,
+                        "continued": False, "parts": [], "seq": None})
     logs = visit.get("log") if isinstance(visit.get("log"), list) else []
     moments: list[dict] = []
     can_continue = False
@@ -209,29 +195,21 @@ def _entries(visit: dict, zone: tzinfo) -> list[dict]:
         can_continue = True
 
     for moment in moments:
-        parts = moment.pop("parts")
         moment.pop("source_row")
         moment.pop("source_kinds")
-        entry = {**moment, "parts": []}
-        # Keep each source row represented, splitting only oversized individual
-        # paragraphs; action plans and feelings keep their own explicit labels.
-        for part in parts:
-            for piece in _split_text(part["text"]):
-                if entry["parts"] and _entry_height({**entry, "parts": [*entry["parts"], {**part, "text": piece}]}) > 2100:
-                    entries.append(entry)
-                    entry = {**entry, "parts": [], "continued": True}
-                entry["parts"].append({**part, "text": piece})
-        if entry["parts"] or entry["kind"] == "arrival":
-            entries.append(entry)
+        # One complete keepsake: paragraphs and source moments need no page
+        # boundaries. Let the renderer capture their natural full height.
+        if moment["parts"] or moment["kind"] == "arrival":
+            entries.append(moment)
     return entries
 
 
 def build_visit_card_pages(visit: dict, *, timezone: str | tzinfo | None = None,
                            max_page_height: int = 5200) -> list[dict]:
-    """Build complete, bounded pages from an ended visit's confirmed transcript.
+    """Build one complete tall card from an ended visit's confirmed transcript.
 
-    ``max_page_height`` is a conservative layout budget rather than a screenshot
-    crop; the renderer must capture full content, never clip to this estimate.
+    The list-shaped API and ``max_page_height`` remain compatible with callers;
+    height is never a pagination or cropping boundary. Render the entire card.
     No invitations, private thoughts or unconfirmed plans outside ``log`` are read.
     """
     if not isinstance(visit, dict) or _text(visit.get("status")) not in _TERMINAL:
@@ -265,25 +243,8 @@ def build_visit_card_pages(visit: dict, *, timezone: str | tzinfo | None = None,
         rows = [{"category": "chronicle", "kind": "empty", "kind_class": "empty", "side": "shared", "tag": "相见记录",
                  "seq": None, "time": "", "day": "", "continued": False,
                  "parts": [{"type": "chronicle", "label": "", "text": "这次相见没有留下逐句经过。" if met else "这次约见没有留下逐句经过。"}]}]
-    try:
-        height = max(2400, min(12000, int(max_page_height)))
-    except (ValueError, TypeError, OverflowError):
-        height = 5200
-    pages: list[dict] = []
-    current: list[dict] = []
-    used = 640
-    for row in rows:
-        size = _entry_height(row)
-        if current and used + size + 280 > height:
-            pages.append({**deepcopy(base), "entries": current, "estimated_height": used + 240})
-            current, used = [], 380
-        current.append(row)
-        used += size
-    if current:
-        pages.append({**deepcopy(base), "entries": current, "estimated_height": used + 280})
-    for index, page in enumerate(pages):
-        page.update(page=index + 1, pages=len(pages), first=index == 0, last=index == len(pages) - 1)
-    return pages
+    return [{**base, "entries": rows, "estimated_height": 920 + sum(_entry_height(row) for row in rows),
+             "page": 1, "pages": 1, "first": True, "last": True}]
 
 
 def render_visit_card_html(page: dict) -> str:

@@ -1,5 +1,6 @@
 """Per-record card preview and downloads stay local and scoped to the chosen life."""
 import base64
+import os
 from pathlib import Path
 import unittest
 
@@ -14,7 +15,7 @@ class VisitCardExportBrowserTests(unittest.TestCase):
 
     def setUp(self):
         visits_browser.VisitsBrowserTests.setUp(self)
-        sample = Path(r"D:\CodexData\Artifacts\my-world-visit-card-preview.png")
+        sample = Path(os.environ.get("MY_WORLD_CARD_PREVIEW", "__no_card_preview__"))
         png = base64.b64encode(sample.read_bytes()).decode() if sample.exists() else (
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZrNwAAAAASUVORK5CYII=")
         self.page.evaluate("""dataUrl => {
@@ -23,10 +24,10 @@ class VisitCardExportBrowserTests(unittest.TestCase):
             local:{id:'home:isla',name:'艾拉'},remote:{id:'friend',name:'爱丽丝'},end_reason:'告别归家',
             log:[{actor_id:'friend',kind:'say',text:'下次一起喝茶。'}]}];
           window.cardExportStarts=[];window.cardExportReads=[];window.cardExportDownloads=[];
-          window.cardExportMode='pending';window.cardPageMode='ok';window.cardDownloadMode='ok';
+          window.cardExportMode='pending';window.cardPageMode='ok';window.cardDownloadMode='ok';window.cardPageCount=1;
           window.exportJob=()=>({job_id:'job-one',state:cardExportMode==='defer'?'pending':cardExportMode,
-            filename:'my-world-visit-past-call.zip',pages:cardExportMode==='ready'?
-              [0,1].map(index=>({index,filename:`visit-${index+1}.png`,mime:'image/png',width:1350,height:4428})):[],
+            filename:'my-world-visit-past-call.png',pages:cardExportMode==='ready'?
+              Array.from({length:cardPageCount},(_,index)=>({index,filename:`visit-${index+1}.png`,mime:'image/png',width:1350,height:4428})):[],
             error:'生成暂时失败，请重试'});
           const read=AstrBotPluginPage.apiGet,write=AstrBotPluginPage.apiPost;
           AstrBotPluginPage.apiPost=(endpoint,payload)=>{
@@ -82,29 +83,30 @@ class VisitCardExportBrowserTests(unittest.TestCase):
         expect(self.panel().locator('img')).to_be_visible()
         self.assertEqual(self.page.evaluate('cardExportDownloads.length'), 0)
         self.assertEqual(self.page.evaluate("cardExportReads.filter(item=>item.endpoint==='visits/card-export-page').map(item=>item.payload.page)"), [0])
-        self.panel().get_by_role('button', name='下一张', exact=True).click()
-        expect(self.panel().locator('img')).to_have_attribute('alt', '相见记录长卡片，第 2 张，共 2 张')
-        self.panel().get_by_role('button', name='下载当前图片', exact=True).click()
+        expect(self.panel().locator('img')).to_have_attribute('alt', '本次相见的完整长卡片')
+        self.assertEqual(self.panel().get_by_role('button', name='上一张', exact=True).count(), 0)
+        self.assertEqual(self.panel().get_by_role('button', name='下一张', exact=True).count(), 0)
+        self.assertEqual(self.panel().get_by_role('button', name='下载全部 ZIP', exact=True).count(), 0)
+        self.panel().get_by_role('button', name='下载图片', exact=True).click()
         self.page.wait_for_function('cardExportDownloads.length===1')
-        self.panel().get_by_role('button', name='下载全部 ZIP', exact=True).click()
-        self.page.wait_for_function('cardExportDownloads.length===2')
         downloads = self.page.evaluate('cardExportDownloads')
-        self.assertEqual(downloads[0], {'endpoint': 'visits/card-export-download', 'filename': 'visit-2.png',
+        self.assertEqual(downloads[0], {'endpoint': 'visits/card-export-download', 'filename': 'visit-1.png',
                                       'payload': {'config_scope': '', 'session': 'test:GroupMessage:100',
-                                                  'visit_id': 'past-call', 'job_id': 'job-one', 'page': 1}})
-        self.assertNotIn('page', downloads[1]['payload'])
-        self.assertEqual(downloads[1]['filename'], 'my-world-visit-past-call.zip')
+                                                  'visit_id': 'past-call', 'job_id': 'job-one', 'page': 0}})
+        self.assertEqual(len(downloads), 1)
         self.assertEqual(self.page.evaluate('visitWrites.length'), 0)
         self.assertEqual(self.errors, [])
 
     def test_ready_preview_and_zoom_stay_inside_desktop_and_mobile(self):
         self.ready()
         expect(self.panel()).to_contain_text('不发送到 QQ')
+        expect(self.panel()).to_contain_text('完整记录生成一张长图')
+        expect(self.panel()).to_contain_text('已生成完整长图')
         for width, height in [(1440, 1000), (390, 844)]:
             self.host.set_viewport_size({'width': width, 'height': height})
             self.panel().scroll_into_view_if_needed()
             self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'))
-            self.host.screenshot(path=str(self.shots / f'visit-card-export-{width}.png'))
+            self.host.screenshot(path=str(self.shots / f'visit-card-export-single-{width}.png'))
         self.panel().get_by_role('button', name='放大预览', exact=True).click()
         expect(self.panel().get_by_role('button', name='适应宽度', exact=True)).to_have_attribute('aria-pressed', 'true')
         self.assertTrue(self.page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'))
@@ -125,9 +127,9 @@ class VisitCardExportBrowserTests(unittest.TestCase):
         self.panel().get_by_role('button', name='重试预览', exact=True).click()
         expect(self.panel().locator('img')).to_be_visible()
         self.page.evaluate("cardDownloadMode='fail'")
-        self.panel().get_by_role('button', name='下载当前图片', exact=True).click()
+        self.panel().get_by_role('button', name='下载图片', exact=True).click()
         expect(self.panel()).to_contain_text('下载暂时失败，请重试')
-        expect(self.panel().get_by_role('button', name='下载当前图片', exact=True)).to_be_enabled()
+        expect(self.panel().get_by_role('button', name='下载图片', exact=True)).to_be_enabled()
         self.assertEqual(self.page.evaluate('visitWrites.length'), 0)
         self.assertEqual(self.errors, [])
 
@@ -153,4 +155,18 @@ class VisitCardExportBrowserTests(unittest.TestCase):
         self.page.evaluate("visitData.active={...visitData.history[0],id:'active-call',status:'active'}")
         self.refresh()
         self.assertEqual(self.page.locator('.visits-current .visits-export').count(), 0)
+        self.assertEqual(self.errors, [])
+
+    def test_legacy_multiple_images_are_not_silently_truncated(self):
+        self.page.evaluate("cardExportMode='ready';cardPageCount=3")
+        self.generate().click()
+        expect(self.panel()).to_contain_text('卡片结果不是完整长图，请重新生成')
+        self.assertEqual(self.panel().locator('img').count(), 0)
+        self.assertEqual(self.page.evaluate('cardExportReads.length'), 0)
+        expect(self.generate()).to_be_enabled()
+        self.page.evaluate('cardPageCount=1')
+        self.generate().click()
+        expect(self.panel().locator('img')).to_be_visible()
+        self.assertEqual(self.page.evaluate('cardExportStarts.length'), 2)
+        self.assertEqual(self.page.evaluate('visitWrites.length'), 0)
         self.assertEqual(self.errors, [])

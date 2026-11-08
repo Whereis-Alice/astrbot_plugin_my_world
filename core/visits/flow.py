@@ -410,6 +410,7 @@ class VisitFlow(VisitRhythm):
                                 "timeout" if isinstance(error, TimeoutError) else "provider")
                     if defer_decision(visit, cursor, category=category, now=self._now(),
                                       candidate=saved_candidate,
+                                      format_issue=getattr(error, "format_issue", ""),
                                       waiting=(saved_candidate is not None or isinstance(error, VisitDecisionError)
                                                and not error.request_started
                                                and category in {"busy", "backoff", "life_busy", "state", "provider"})):

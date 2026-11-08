@@ -117,7 +117,7 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     const session = getSession(), key = `${session}\0${visit.id}`;
     let state = cardExports.get(key);
     if (!state) {
-      state = {phase: "idle", pages: [], page: 0, pageData: null, pageRequest: 0, epoch: exportEpoch};
+      state = {phase: "idle", image: null, pageData: null, pageRequest: 0, epoch: exportEpoch};
       cardExports.set(key, state);
     }
     const panel = el("section", "visits-export"); panel.setAttribute("aria-label", "本条记录的长卡片");
@@ -125,16 +125,16 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     const params = () => ({session, visit_id: visit.id, job_id: state.job_id});
     const redraw = () => {if (current()) state.draw();};
     async function loadPage() {
-      if (!current() || state.phase !== "ready" || state.pageData?.index === state.page) return;
-      const selected = state.page, request = ++state.pageRequest;
+      if (!current() || state.phase !== "ready" || state.pageData) return;
+      const request = ++state.pageRequest;
       state.pageLoading = true; state.pageError = ""; state.pageData = null; redraw();
       try {
-        const result = await apiGet("visits/card-export-page", {...params(), page: selected});
-        if (!current() || request !== state.pageRequest || selected !== state.page) return;
+        const result = await apiGet("visits/card-export-page", {...params(), page: 0});
+        if (!current() || request !== state.pageRequest) return;
         if (typeof result.data_url !== "string" || !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=\s]+$/.test(result.data_url)) {
           throw new Error("预览图片暂时不可用，请重试");
         }
-        state.pageData = {index: selected, data_url: result.data_url};
+        state.pageData = {data_url: result.data_url};
       } catch (error) {
         if (current() && request === state.pageRequest) state.pageError = error.message || "预览图片加载失败";
       } finally {
@@ -146,9 +146,9 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
       state.job_id = result.job_id;
       if (result.state === "failed") throw new Error(result.error || "卡片生成失败，请重试");
       if (result.state === "ready") {
-        if (!Array.isArray(result.pages) || !result.pages.length) throw new Error("没有生成可预览的卡片，请重试");
-        state.phase = "ready"; state.pages = result.pages; state.filename = result.filename;
-        state.page = 0; state.pageData = null; state.pageError = "";
+        if (!Array.isArray(result.pages) || result.pages.length !== 1) throw new Error("卡片结果不是完整长图，请重新生成");
+        state.phase = "ready"; state.image = result.pages[0];
+        state.pageData = null; state.pageError = "";
         redraw(); void loadPage(); return;
       }
       if (result.state !== "pending") throw new Error("卡片状态暂时不可用，请重试");
@@ -167,7 +167,7 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     async function generateCard() {
       if (!current() || state.phase === "pending") return;
       clearTimeout(state.timer); state.pageRequest += 1;
-      Object.assign(state, {phase: "pending", pages: [], page: 0, pageData: null, pageLoading: false,
+      Object.assign(state, {phase: "pending", image: null, pageData: null, pageLoading: false,
         error: "", pageError: "", downloadError: "", started: Date.now(), zoom: false});
       redraw();
       try {
@@ -177,15 +177,12 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
         if (current()) {state.phase = "failed"; state.error = error.message || "卡片生成失败，请重试"; redraw();}
       }
     }
-    async function downloadCard(all = false) {
+    async function downloadCard() {
       if (!current() || state.downloading || state.phase !== "ready" || typeof download !== "function") return;
       state.downloading = true; state.downloadError = ""; redraw();
       try {
-        const request = params();
-        if (!all) request.page = state.page;
-        const filename = all ? state.filename || "my-world-visit-cards.zip"
-          : state.pages[state.page]?.filename || `my-world-visit-card-${state.page + 1}.png`;
-        await download("visits/card-export-download", request, filename);
+        await download("visits/card-export-download", {...params(), page: 0},
+          state.image?.filename || "my-world-visit-card.png");
       } catch (error) {
         if (current()) state.downloadError = error.message || "下载失败，请重试";
       } finally {
@@ -195,33 +192,21 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     state.draw = () => {
       panel.replaceChildren();
       const head = el("div", "visits-export-head"), copy = el("div", "visits-export-copy");
-      copy.append(el("strong", "", "把这一页留下来"), el("p", "muted", "生成长卡片，在这里预览或下载。仅保存到本地，不发送到 QQ。"));
+      copy.append(el("strong", "", "把这次相见留下来"), el("p", "muted", "完整记录生成一张长图，在这里预览或下载。仅保存到本地，不发送到 QQ。"));
       const generate = el("button", "ghost small visits-export-generate", state.phase === "pending" ? "正在生成…" : state.phase === "ready" ? "重新生成" : "生成卡片");
       generate.type = "button"; generate.disabled = state.phase === "pending"; generate.onclick = generateCard;
       head.append(copy, generate); panel.append(head);
       const status = el("p", "visits-export-status muted"); status.setAttribute("role", "status");
       if (state.phase === "pending") status.textContent = "正在整理完整记录并生成高清卡片，可以继续查看记录。";
       else if (state.phase === "failed") {status.textContent = state.error; status.classList.add("is-error");}
-      else if (state.phase === "ready") status.textContent = `已生成 ${state.pages.length} 张卡片 · 原始清晰度下载`;
+      else if (state.phase === "ready") status.textContent = "已生成完整长图 · 原始清晰度下载";
       if (status.textContent) panel.append(status);
       if (state.phase !== "ready") return;
-      const toolbar = el("div", "visits-export-toolbar"), pager = el("div", "visits-export-pager");
-      if (state.pages.length > 1) {
-        const previous = el("button", "ghost small", "上一张"), next = el("button", "ghost small", "下一张");
-        previous.type = next.type = "button";
-        previous.disabled = state.page === 0 || state.pageLoading; next.disabled = state.page >= state.pages.length - 1 || state.pageLoading;
-        previous.onclick = () => {state.page -= 1; state.zoom = false; void loadPage();};
-        next.onclick = () => {state.page += 1; state.zoom = false; void loadPage();};
-        pager.append(previous, el("span", "visits-export-page-number", `${state.page + 1} / ${state.pages.length}`), next);
-      } else pager.append(el("span", "visits-export-page-number", "第 1 张"));
-      const actions = el("div", "visits-export-downloads"), save = el("button", "ghost small", state.pages.length > 1 ? "下载当前图片" : "下载图片");
+      const toolbar = el("div", "visits-export-toolbar");
+      const actions = el("div", "visits-export-downloads"), save = el("button", "ghost small", "下载图片");
       save.type = "button"; save.disabled = state.downloading || typeof download !== "function"; save.onclick = () => downloadCard();
       actions.append(save);
-      if (state.pages.length > 1) {
-        const all = el("button", "ghost small", "下载全部 ZIP"); all.type = "button";
-        all.disabled = save.disabled; all.onclick = () => downloadCard(true); actions.append(all);
-      }
-      toolbar.append(pager, actions); panel.append(toolbar);
+      toolbar.append(actions); panel.append(toolbar);
       if (state.downloadError) {const error = el("p", "visits-export-status is-error", state.downloadError); error.setAttribute("role", "status"); panel.append(error);}
       if (state.pageLoading) panel.append(el("p", "visits-export-status muted", "正在加载预览…"));
       else if (state.pageError) {
@@ -232,9 +217,9 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
         const zoom = el("button", "ghost small", state.zoom ? "适应宽度" : "放大预览"); zoom.type = "button";
         zoom.setAttribute("aria-pressed", String(Boolean(state.zoom))); zoom.onclick = () => {state.zoom = !state.zoom; redraw();}; previewHead.append(zoom);
         const preview = el("div", "visits-export-preview" + (state.zoom ? " is-zoomed" : "")); preview.tabIndex = 0;
-        preview.setAttribute("aria-label", `第 ${state.page + 1} 张相见长卡片预览`);
+        preview.setAttribute("aria-label", "完整相见长卡片预览");
         const image = el("img", "visits-export-image"); image.src = state.pageData.data_url;
-        image.alt = `相见记录长卡片，第 ${state.page + 1} 张，共 ${state.pages.length} 张`;
+        image.alt = "本次相见的完整长卡片";
         preview.append(image); panel.append(previewHead, preview);
       }
     };
