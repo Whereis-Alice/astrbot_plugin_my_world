@@ -593,7 +593,8 @@ class MemoryEngine:
                 session=recalled.session_id if recalled.source_scoped else "",
                 priority=(base if related or topic or semantic.get(recalled.id, 0) else 0)
                 + semantic.get(recalled.id, 0) * 3 + (0.2 if row.get("pinned") else 0),
-                source=recalled.source, match_text=content))
+                source=recalled.source, match_text=content,
+                semantic_score=recalled.semantic_score))
         selected = select_context(request, materials, budget=min(config.recall_max_chars, request.budget // 2),
                                   channel="memories", max_items=limit)
         return [by_key[item.key] for item, _ in selected.rows]

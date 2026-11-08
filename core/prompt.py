@@ -1126,14 +1126,14 @@ class PromptBuilder:
                 continue
             if stamp and due and due > stamp:
                 continue
-            if focus_user and str(item.get("who") or "") not in ("", focus_user):
+            if focus_user and str(item.get("who") or item.get("user_id") or "") not in ("", focus_user):
                 continue
             picked.append(item)
         # 同一个人最多两条：多了她会像客服在逐条回访
         by_who: dict[str, int] = {}
         result: list[dict[str, Any]] = []
         for item in picked:
-            who = str(item.get("who") or "")
+            who = str(item.get("who") or item.get("user_id") or "")
             if by_who.get(who, 0) >= 2:
                 continue
             by_who[who] = by_who.get(who, 0) + 1

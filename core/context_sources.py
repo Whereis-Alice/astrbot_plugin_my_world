@@ -346,6 +346,7 @@ def runtime_context(prompts: Any, state: Any, node: Any, request: ContextRequest
         candidates.append(ContextItem("inner:current", "thought",
             "# 当时的内心活动（主观想法，仅你可见，不直接复述）\n" + inner))
     for index, topic in enumerate(prompts._due_open_topics(state, request.session,
+                                                        focus_user=request.focus_user,
                                                         persona_key=request.life_persona)):
         body = prompts.open_topics_layer([topic], who_name="", pronoun="她")
         if body:
