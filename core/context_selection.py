@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from hashlib import sha256
 from typing import Any
 
 
@@ -51,6 +52,8 @@ class ContextRequest:
     people_queries: dict[str, str] = field(default_factory=dict)
     focus_user: str = ""
     instant_action: dict[str, Any] | None = None  # This request's execution; never a persisted completion.
+    node_id: str = ""
+    semantic_context: dict[str, float] = field(default_factory=dict)
 
     @property
     def budget(self) -> int:
@@ -62,7 +65,7 @@ class ContextRequest:
 
 def request_for(*, task: str, session: str, now: float, query: str = "",
                 rows: list[dict] | None = None, focus: str = "", persona: str = "",
-                evidence: bool = False) -> ContextRequest:
+                evidence: bool = False, node_id: str = "") -> ContextRequest:
     rows = [row for row in (rows or []) if isinstance(row, dict)
             and str(row.get("origin") or row.get("session") or session) == session]
     people = [str(focus)] if focus else []
@@ -78,7 +81,8 @@ def request_for(*, task: str, session: str, now: float, query: str = "",
                         for row in rows[-12:])
     query = split_external_memory(query)[0]
     request = ContextRequest(task, session, now, (context + "\n" + query).strip(),
-                             tuple(people), persona, evidence, focus_user=str(focus or ""))
+                             tuple(people), persona, evidence, focus_user=str(focus or ""),
+                             node_id=str(node_id or ""))
     from .evidence import direct_text
     for uid in people:
         spoken = [direct_text(str(row.get("raw_text") or row.get("text") or ""))
@@ -105,6 +109,7 @@ class ContextItem:
     supersedes: tuple[str, ...] = ()
     source: str = ""
     match_text: str | None = None
+    semantic_score: float = 0
 
     @property
     def topic_text(self) -> str:
@@ -119,6 +124,19 @@ class ContextSelection:
 
     def render(self) -> str:
         return "\n\n".join(text for _, text in self.rows)
+
+
+def context_identity(item: ContextItem) -> str:
+    """A score is valid only for this source and its current matching text."""
+    return item.key + ":" + sha256(item.topic_text.encode("utf-8")).hexdigest()
+
+
+def context_eligible(request: ContextRequest, item: ContextItem) -> bool:
+    """Use the same visibility boundary before embedding and before selection."""
+    return not ((item.session and item.session != request.session)
+                or (item.persona and item.persona != request.persona)
+                or (item.expires and item.expires <= request.now)
+                or item.at > request.now + 60) and bool(item.summary.strip())
 
 
 _PREFER = {
@@ -142,10 +160,7 @@ def select_context(request: ContextRequest, items: list[ContextItem], *,
     hidden = 0
     for item in items:
         # Filter BEFORE scoring, deduplication, logging or any external retrieval.
-        if ((item.session and item.session != request.session)
-                or (item.persona and item.persona != request.persona)
-                or (item.expires and item.expires <= request.now)
-                or item.at > request.now + 60):
+        if not context_eligible(request, item):
             hidden += 1
             continue
         if item.summary.strip():
@@ -155,7 +170,8 @@ def select_context(request: ContextRequest, items: list[ContextItem], *,
     ranked = []
     preferred = _PREFER.get(request.task, set())
     for item in eligible.values():
-        match = relevance(request.query, item.topic_text)
+        semantic = max(item.semantic_score, request.semantic_context.get(context_identity(item), 0))
+        match = max(relevance(request.query, item.topic_text), semantic)
         person = bool(set(item.people) & set(request.people))
         age = max(0, request.now - item.at) if item.at else float("inf")
         recent = max(0, 1 - age / 86400) if item.kind not in {"relationship", "world"} else 0
@@ -163,6 +179,7 @@ def select_context(request: ContextRequest, items: list[ContextItem], *,
         score += .6 * recent + .4 * (item.kind in preferred)
         reasons = (["当前任务必需"] if item.required else [])
         reasons += (["话题相关"] if match else []) + (["涉及本轮参与者"] if person else [])
+        reasons += (["语义相关"] if semantic else [])
         reasons += (["事情尚在延续"] if item.continuing else [])
         reasons += (["近期生活依据"] if recent else [])
         ranked.append((item, score, match, reasons))

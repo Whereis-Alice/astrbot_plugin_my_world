@@ -1039,7 +1039,8 @@ ECHO_TYPE_ALIASES: dict[str, tuple[str, ...]] = {
 class MemoryConfig(Permissive):
     sleep_review: bool = True
     """睡眠时整理生活经历，可与人物资料整理分别开关。"""
-    semantic_enabled: bool = False
+    semantic_enabled: bool = True
+    """Use the configured embedding provider for semantic life-memory recall when available."""
     semantic_source: Literal["provider", "custom"] = "provider"
     semantic_provider_id: str = ""
     semantic_endpoint: str = ""

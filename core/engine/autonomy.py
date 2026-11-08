@@ -366,7 +366,7 @@ class AutonomyMixin:
         context_target = self.profile_session(state, focus_user) if focus_user else state.session_id
         request = self.context_request(state, context_target, task="plan", text=hint,
             rows=[] if quiet else None, focus=focus_user)
-        await self.prepare_context_memory(request)
+        await self.prepare_context_memory(request, state=state)
         # Building a prompt is not yet a decision: admission may defer it, the
         # provider may fail, or life may change while it thinks. Keep this outing
         # reminder pending until a usable plan returns (staying home counts too).

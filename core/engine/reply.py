@@ -702,12 +702,10 @@ class ReplyMixin:
         texts = [self._record_text(record) for record in batch]
         async with self.session_state(ctx.session_id) as state:
             query_records = [*self.chat_context_for_reply(state, ctx, exclude_entries=self.reply_batch_entries(batch)), *batch]
-        if (self.world.memory.semantic_enabled and self.world.memory.automatic_recall != "manual"
-                and self.world.memory.recall_max_chars > 0):
-            life_persona = (await self._journal_persona(ctx.session_id))[1]
-            for query in self.memory.participant_queries(query_records, ctx.session_id).values():
-                await self.memory.semantic.prepare(ctx.session_id, ctx.persona_id, query, automatic=True,
-                                                   life_persona_key=life_persona)
+            recall_request = self.context_request(state, ctx.session_id, task="reply", text="\n".join(texts),
+                rows=query_records, focus=ctx.user_id, persona=ctx.persona_id)
+        await self.prepare_context_memory(recall_request, state=state)
+        visit_semantic_match = await self.prepare_visit_context(ctx.session_id, "\n".join(texts))
         # 这一轮实际回了哪几条：等真的发出去了再拿去推水位线
         self._remember_replied_batch(batch)
         # handle_incoming 攒下的临时提示（冷启动这类它自己算不出来的）：这一轮用完就丢
@@ -762,7 +760,7 @@ class ReplyMixin:
                 if vocabulary:
                     extra_notes = [*(extra_notes or []), vocabulary]
                 request = self.context_request(state, ctx.session_id, task="reply", text="\n".join(texts),
-                    focus=ctx.user_id, persona=ctx.persona_id)
+                    rows=recall_records, focus=ctx.user_id, persona=ctx.persona_id)
                 persona_text = await self._persona_text(state.session_id)
                 request.life_persona = sha256(persona_text.encode("utf-8")).hexdigest()[:24]
                 memories = self.context_memories(state, request, recall_records)
@@ -775,7 +773,9 @@ class ReplyMixin:
                 )
                 # 配额用尽的动作：这一轮既不列进提示词，也不接受模型写它
                 blocked_actions = self._hidden_actions(state, ctx.session_id)
-                runtime_notes = await self.runtime_notes(state.session_id)
+                runtime_notes = await self.runtime_notes(
+                    state.session_id, query="\n".join(texts),
+                    visit_semantic_match=visit_semantic_match)
                 samples = self.voice_sample_lines(
                     state, ctx.session_id, signal=self.tone_signal(state, ctx.text)
                 )
@@ -943,6 +943,14 @@ class ReplyMixin:
                 record["absorbed"] = True
                 record["picked"] = True
             texts = [self._record_text(record) for record in batch]
+            async with self.session_state(ctx.session_id) as state:
+                query_records = [*self.chat_context_for_reply(
+                    state, ctx, exclude_entries=self.reply_batch_entries(batch)), *batch]
+                recall_request = self.context_request(state, ctx.session_id, task="reply",
+                    text="\n".join(texts), rows=query_records, focus=ctx.user_id,
+                    persona=ctx.persona_id)
+            await self.prepare_context_memory(recall_request, state=state)
+            visit_semantic_match = await self.prepare_visit_context(ctx.session_id, "\n".join(texts))
             # 合并重启会改变这一轮的范围：重记一遍（后面提交水位线时用它）
             self._remember_replied_batch(batch)
             self._log(

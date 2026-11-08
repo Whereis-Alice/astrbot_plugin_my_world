@@ -1264,7 +1264,7 @@ class ActionsRunMixin:
         current = str(session_id or state.session_id or "")
         request = self.context_request(state, current, task="expression", text=instruction, focus=focus_user)
         request.instant_action = dict(instant_action) if isinstance(instant_action, dict) else None
-        await self.prepare_context_memory(request)
+        await self.prepare_context_memory(request, state=state)
         system_prompt = self.prompts.build_autonomous_system_prompt(
             persona_text=persona_text,
             state=state,

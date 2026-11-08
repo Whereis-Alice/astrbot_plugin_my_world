@@ -5,6 +5,56 @@ import json
 from typing import Any
 
 
+_VISIT_QUERY_MARKERS = (
+    "串门", "来访", "拜访", "同伴", "跟谁", "和谁", "陪谁", "一起玩",
+    "你在哪", "你现在在哪", "你在哪里", "你在干嘛", "现在在干嘛", "在干嘛", "你在做什么", "你在干什么",
+    "你刚才", "刚才你", "你刚刚", "你出去", "你在外面", "回去了吗", "回家了吗", "回家了没",
+    "你在忙", "忙不忙", "怎么没回", "怎么不回", "回消息", "不回我", "没回我",
+)
+_VISIT_REFERENCE_MARKERS = (
+    "她", "他", "她们", "他们", "你们", "你俩", "她俩", "那边", "那里", "那件事",
+    "那次", "后来", "之后", "接着", "然后", "还在", "结束了没", "刚才", "刚刚", "怎么样", "好玩吗",
+)
+
+
+def visit_context_relevant(query: str, visit: dict | None = None) -> bool:
+    """Whether a direct message asks for the detailed shared-visit context.
+
+    The short presence overlay remains available for every turn. This gate is
+    only for the bounded transcript and shared-event evidence, so ordinary
+    greetings and unrelated questions do not pay for the six recent rows.
+    """
+    text = " ".join(str(query or "").split()).strip().lower()
+    if not text:
+        return False
+    remote = (visit or {}).get("remote") or {}
+    names = {
+        " ".join(str(remote.get(key) or "").split()).lower()
+        for key in ("name", "id", "actor_id")
+    }
+    if any(name and len(name) >= 2 and name in text for name in names):
+        return True
+    # Match confirmed scene labels, never a proposed next stop or a generic
+    # word such as "game"/"message" inside an unrelated technical question.
+    scene = (visit or {}).get("scene") or {}
+    outing = (visit or {}).get("outing") or {}
+    if (visit or {}).get("outing_version") == 1:
+        scene = outing  # Empty until a joint stage is actually confirmed.
+    elif outing:
+        scene = outing
+    labels = [str(scene.get(key) or "").strip().lower() for key in ("place", "activity")]
+    if any(len(label) >= 2 and label in text for label in labels):
+        return True
+    return any(marker in text for marker in _VISIT_QUERY_MARKERS)
+
+
+def visit_context_maybe_referential(query: str) -> bool:
+    """Cheaply detect short follow-ups whose visit subject is omitted."""
+
+    text = " ".join(str(query or "").split()).strip().lower()
+    return 0 < len(text) <= 80 and any(marker in text for marker in _VISIT_REFERENCE_MARKERS)
+
+
 def presence_epoch(engine: Any, session_id: str) -> int:
     """A scope's persisted arrival generation, including already finished visits."""
     service = getattr(engine, "visits", None)

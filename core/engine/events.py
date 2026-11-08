@@ -760,7 +760,7 @@ class EventsMixin:
                 genre = {"name": thread["genre"]}
         request = self.context_request(state, state.session_id, task="event", rows=[],
             text="\n".join((seed, thread_digest(thread, complete=True) if thread else "", tone)))
-        await self.prepare_context_memory(request)
+        await self.prepare_context_memory(request, state=state)
         system, prompt = self.prompts.build_event_package_prompt(
             persona_brief=await self.event_persona_brief(state.session_id),
             scene_line=self.prompts.scene_compact(node),

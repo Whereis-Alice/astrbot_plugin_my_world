@@ -752,6 +752,7 @@ class Database(
         if not ids:
             return 0
         placeholders = ",".join("?" * len(ids))
+        self._execute(f"DELETE FROM memory_vector WHERE memory_id IN ({placeholders})", ids)
         self._execute(f"DELETE FROM node_memory WHERE id IN ({placeholders})", ids)
         return len(ids)
 
@@ -762,6 +763,7 @@ class Database(
         if not clean:
             return 0
         placeholders = ",".join("?" * len(clean))
+        self._execute(f"DELETE FROM memory_vector WHERE memory_id IN ({placeholders})", clean)
         cursor = self._execute(
             f"DELETE FROM node_memory WHERE id IN ({placeholders})", clean
         )
@@ -771,10 +773,15 @@ class Database(
         """清空记忆（可按会话）。返回删除条数。"""
 
         if session_id:
+            self._execute(
+                "DELETE FROM memory_vector WHERE memory_id IN "
+                "(SELECT id FROM node_memory WHERE session_id = ?)", (session_id,)
+            )
             cursor = self._execute(
                 "DELETE FROM node_memory WHERE session_id = ?", (session_id,)
             )
         else:
+            self._execute("DELETE FROM memory_vector")
             cursor = self._execute("DELETE FROM node_memory")
         return int(cursor.rowcount or 0)
 

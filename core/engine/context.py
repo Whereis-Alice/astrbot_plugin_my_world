@@ -18,7 +18,8 @@ class ContextMixin:
             focus = parts[2]
         # An explicit action target is an ID; a nickname in generated text is not.
         return request_for(task=task, session=target, now=self._now(), query=text,
-                           rows=rows, focus=focus, persona=persona)
+                           rows=rows, focus=focus, persona=persona,
+                           node_id=str(getattr(state, "node_id", "") or ""))
 
     @staticmethod
     def _context_origins(state, rows: list[dict]) -> list[dict]:
@@ -27,20 +28,57 @@ class ContextMixin:
         return [{**row, "origin": str(row.get("origin") or row.get("session") or state.session_id)}
                 for row in rows if isinstance(row, dict)]
 
-    async def prepare_context_memory(self, request: ContextRequest) -> None:
-        persona = await self._persona_text(request.session)
-        request.life_persona = sha256(persona.encode("utf-8")).hexdigest()[:24]
-        if self.world.memory.semantic_enabled and request.task not in {"sleep", "diary", "review", "generation"}:
-            await self.memory.semantic.prepare(request.session, request.persona, request.query, automatic=True,
-                                               life_persona_key=request.life_persona)
+    def semantic_context_items(self, state, request: ContextRequest) -> list:
+        from ..context_selection import context_eligible, relevance
+        from ..context_sources import life_items, profile_fact_items
+        materials = life_items(state, request) if self.world.state_dynamics.own_topic_enabled else []
+        focus = request.focus_user or (request.people[0] if request.task == "participation" and request.people else "")
+        if self.profiles.enabled() and focus and focus in request.people:
+            person = self.person_payload(request.session, focus)
+            if person:
+                facts = [item for item in person.get("facts", []) if item.get("status", "active") == "active"]
+                materials += profile_fact_items(focus, facts, request.session)
+        materials = [item for item in materials if context_eligible(request, item)]
+        materials.sort(key=lambda item: (relevance(request.query, item.topic_text), item.continuing, item.at), reverse=True)
+        return materials[:64]
+
+    def restore_context_semantics(self, request: ContextRequest) -> None:
+        config = self.world.memory
+        request.semantic_context = (self.memory.semantic.cached_context(
+            request.session, request.persona, [request.query, *request.people_queries.values()],
+            life_persona_key=request.life_persona, node_id=request.node_id)
+            if config.semantic_enabled and config.automatic_recall != "manual" and config.recall_max_chars > 0 else {})
+
+    async def prepare_context_memory(self, request: ContextRequest, *, state=None) -> None:
+        if not request.life_persona:
+            persona = await self._persona_text(request.session)
+            request.life_persona = sha256(persona.encode("utf-8")).hexdigest()[:24]
+        if request.task in {"sleep", "diary", "review", "generation"}:
+            return
+        config = self.world.memory
+        if (config.semantic_enabled and config.automatic_recall != "manual" and config.recall_max_chars > 0
+                and self.memory.semantic._ready()):
+            from ..context_selection import context_identity
+            if state is None:
+                state = await self.load_state(request.session, cold_start=False)
+            materials = self.semantic_context_items(state, request)
+            await self.memory.semantic.prepare_many(
+                request.session, request.persona,
+                [request.query, *request.people_queries.values()],
+                automatic=True, life_persona_key=request.life_persona,
+                node_id=request.node_id, task=request.task, people=request.people,
+                context_texts={context_identity(item): item.topic_text for item in materials})
+        self.restore_context_semantics(request)
 
     def context_memories(self, state, request: ContextRequest, rows: list[dict] | None = None):
+        self.restore_context_semantics(request)
         if self.world.limits.max_think_memory <= 0:
             return []
         return self.memory.recall_context(request, node_id=state.node_id, records=rows,
                                          limit=self.world.limits.max_think_memory)
 
     def context_profiles(self, state, request: ContextRequest) -> str:
+        self.restore_context_semantics(request)
         focus = request.focus_user or (request.people[0] if request.task == "participation" and request.people else "")
         blocks = []
         if focus and focus in request.people:
@@ -102,7 +140,7 @@ class ContextMixin:
         from ..context_selection import CONTEXT_GUIDANCE, ContextItem, select_context
         if request is None:
             request = self.context_request(state, state.session_id, task=task, text=query, rows=[])
-            await self.prepare_context_memory(request)
+            await self.prepare_context_memory(request, state=state)
         request.evidence = evidence
         materials = life_items(state, request) if self.world.state_dynamics.own_topic_enabled else []
         # Sleep and diary use their bounded evidence, never a random social memory.

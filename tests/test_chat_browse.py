@@ -386,7 +386,7 @@ class ChatBrowseTests(unittest.IsolatedAsyncioTestCase):
         action = await self.prepare(reply_enabled=False)
         await self.complete(action)
         self.engine.world.chat_browse.reply_enabled = True
-        async def change_persona(request):
+        async def change_persona(request, **_):
             self.persona.text = "另一份人设"
         self.engine.prepare_context_memory = AsyncMock(side_effect=change_persona)
         await self.engine.maybe_participate(S, source="browse", browse_id=action["id"])

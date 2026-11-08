@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
+
 from ..model_calls import model_operation
 from ..context_sources import paused_home_event_context
 
 from typing import Any
-from ..visit_presence import active_visit, presence_text, visit_activity_text, visit_context_text
+from ..visit_presence import (
+    active_visit,
+    presence_text,
+    visit_activity_text,
+    visit_context_maybe_referential,
+    visit_context_relevant,
+    visit_context_text,
+)
 from ..defaults import DEFAULT_WEATHER_PROMPT
 from ..json_actions import (
     PlannedAction,
@@ -75,7 +84,26 @@ class WeatherMixin:
         record = await self.weather_record()
         return weather_banner(record, self._now(), tz=self._resolve_tz())
 
-    async def runtime_notes(self, session_id: str) -> dict[str, str]:
+    async def prepare_visit_context(self, session_id: str, query: str) -> tuple[str, bool] | None:
+        """Resolve an ambiguous visit follow-up before the reply state lock."""
+
+        visit = active_visit(self, session_id)
+        if visit_context_relevant(query, visit) or not visit_context_maybe_referential(query):
+            return None
+        if not visit or not visit.get("arrived_at") or visit.get("scope") != self.state_key(session_id):
+            return "", False
+        _, persona_key = await self._journal_persona(session_id)
+        if visit.get("local", {}).get("persona_key") != persona_key:
+            return "", False
+        context = visit_context_text(visit, now=self._now())
+        relevant = await self.memory.semantic.related(
+            session_id, query, [context],
+            cache_key=f"visit:{visit.get('id') or ''}:{len(visit.get('log') or [])}",
+        )
+        return sha256(context.encode("utf-8")).hexdigest(), relevant
+
+    async def runtime_notes(self, session_id: str, *, query: str = "",
+                            visit_semantic_match: tuple[str, bool] | None = None) -> dict[str, str]:
         """提示词里那几段"此刻的事实"：天气 + 最近查过什么。"""
 
         notes = {
@@ -97,7 +125,23 @@ class WeatherMixin:
         if paused_home:
             notes["world_visit"] = presence_text(visit, now=self._now())
             notes["visit_activity"] = visit_activity_text(visit, now=self._now())
-            notes["visit_context"] = visit_context_text(visit, now=self._now())
+            # The short presence overlay above is part of the character's
+            # current scene. The bounded transcript is only useful when the
+            # incoming message asks about this shared visit.
+            if visit_context_relevant(query, visit):
+                notes["visit_context"] = visit_context_text(visit, now=self._now())
+            elif visit_context_maybe_referential(query):
+                context = visit_context_text(visit, now=self._now())
+                context_key = sha256(context.encode("utf-8")).hexdigest()
+                relevant = (visit_semantic_match[1] if visit_semantic_match
+                            and visit_semantic_match[0] == context_key
+                            else False if visit_semantic_match is not None
+                            else await self.memory.semantic.related(
+                                session_id, query, [context],
+                                cache_key=f"visit:{visit.get('id') or ''}:{len(visit.get('log') or [])}",
+                            ))
+                if relevant:
+                    notes["visit_context"] = context
         try:
             state = await self.load_state(session_id, cold_start=False)
         except Exception:

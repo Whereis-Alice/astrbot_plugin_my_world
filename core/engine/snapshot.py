@@ -771,6 +771,7 @@ class SnapshotMixin:
         request = self.context_request(state, session_id, task="plan", persona=persona_id)
         persona = await self._persona_text(session_id)
         request.life_persona = sha256(persona.encode("utf-8")).hexdigest()[:24]
+        await self.prepare_context_memory(request, state=state)
         text = self.prompts.build_autonomous_system_prompt(
             persona_text=persona,
             state=state,

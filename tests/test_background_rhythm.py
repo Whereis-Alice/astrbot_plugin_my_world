@@ -2,6 +2,7 @@
 import asyncio
 import unittest
 from datetime import datetime
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 from unittest.mock import AsyncMock
 
@@ -56,6 +57,9 @@ class BackgroundRhythmTests(unittest.IsolatedAsyncioTestCase):
     async def test_interactive_and_visit_calls_bypass_pacing_but_visits_keep_hard_limit(self):
         self.at(0)
         self.engine.world.limits.background_daily_calls = 24
+        # Visits now default to unlimited; exercise an explicitly configured
+        # visit limit rather than borrowing the independent background quota.
+        self.engine.visits = SimpleNamespace(config=SimpleNamespace(daily_calls=24, daily_tokens=0))
         self.assertTrue((await self.generate()).ok)
         self.assertFalse((await self.generate()).ok)
         self.assertTrue((await self.generate("reflection")).ok)

@@ -1054,7 +1054,7 @@ class TickMixin:
         home = outcome.home()
         request = self.context_request(state, home, task="reply" if outcome.speech_kind == "reply" else "expression",
             text=hint + "\n" + tool_result, focus=next(iter(outcome.contact_people), ""))
-        await self.prepare_context_memory(request)
+        await self.prepare_context_memory(request, state=state)
         system_prompt = self.prompts.build_autonomous_system_prompt(
             persona_text=persona_text,
             state=state,

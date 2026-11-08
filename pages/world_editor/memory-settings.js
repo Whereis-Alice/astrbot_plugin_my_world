@@ -12,7 +12,8 @@ export function memorySearchFields({container, memory, providers = [], defaultPr
     root.append(wrap); return input;
   }
   function check(key, label, hint) {
-    const input = el("input"); input.type = "checkbox"; input.checked = Boolean(memory[key]);
+    const input = el("input"); input.type = "checkbox";
+    input.checked = memory[key] == null ? key === "semantic_enabled" : Boolean(memory[key]);
     field(label, input, hint); input.addEventListener("change", () => { memory[key] = input.checked; onChange(); });
   }
   function select(key, label, choices, fallback) {
@@ -24,7 +25,7 @@ export function memorySearchFields({container, memory, providers = [], defaultPr
   }
   function render() {
     root.replaceChildren();
-    check("semantic_enabled", "启用语义召回", "用意思相近的表达查找自己的生活经历。可选；关闭或请求失败时继续使用关键词检索。");
+    check("semantic_enabled", "启用语义召回", "默认使用意思相近的表达查找生活记忆；关闭或嵌入模型不可用时继续使用关键词检索。");
     select("semantic_source", "嵌入模型来源", [["provider", "AstrBot 已配置的嵌入模型"], ["custom", "自定义兼容接口"]], "provider");
     if ((memory.semantic_source || "provider") === "provider") {
       const choices = [["", defaultProvider ? `跟随插件配置 · ${defaultProvider}` : "跟随插件配置（尚未指定）"], ...providers.map(p => [p.id, p.model ? `${p.id} · ${p.model}` : p.id])];

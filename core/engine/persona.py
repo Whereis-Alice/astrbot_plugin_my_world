@@ -224,6 +224,7 @@ class PersonaMixin:
                         task="participation" if variant == "participation" else "reply",
                         rows=eval_rows, text=text, focus=str(item.get("user_id") or who_id or ""))
                     request.life_persona = sha256(persona.encode("utf-8")).hexdigest()[:24]
+                    await self.prepare_context_memory(request, state=state)
                     # Read-only retrieval: evaluations must not count recalls, log or mutate state.
                     if variant == "participation":
                         system_prompt, user_prompt, quote_targets = self.participation_prompt(

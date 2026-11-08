@@ -179,6 +179,15 @@ def life_memory_metadata(source: str, context: Any) -> dict:
         return {}
 
 
+def profile_fact_items(user_id: str, facts: list[dict], session: str) -> list[ContextItem]:
+    """Identity and active status are established before semantic ranking."""
+    return [ContextItem(f"profile:{user_id}:fact:{i}", "relationship", str(item.get("text") or ""),
+        people=(user_id,), session=session,
+        required=item.get("kind") in {"基本信息", "关系", "厌恶", "约定"},
+        priority=.4 if item.get("kind") in {"basic", "基本信息", "promise", "约定"} else 0)
+        for i, item in enumerate(facts)]
+
+
 def memory_context_items(state: Any, request: ContextRequest, memories, *, stamp=None,
                          life_enabled: bool = True) -> list[ContextItem]:
     """Recall a dated fragment together with its current matter, or omit it."""
@@ -206,7 +215,7 @@ def memory_context_items(state: Any, request: ContextRequest, memories, *, stamp
         elif memory.source == "life_matter":
             if not life_enabled:
                 continue
-            if request.task == "participation" and not relevance(request.query, memory.content):
+            if request.task == "participation" and not (relevance(request.query, memory.content) or memory.semantic_score):
                 continue  # A fresh life memory is not an invitation to announce it.
             label = "# 当时的生活进展（准备与模拟不等于现实兑现，以所附最新状态为准）\n"
             mid = str(meta.get("matter_id") or "")
@@ -226,7 +235,7 @@ def memory_context_items(state: Any, request: ContextRequest, memories, *, stamp
         key = f"memory:{memory.id}"
         result[key] = ContextItem(key, "memory", body, at=memory.created_at, people=people,
             session=memory.session_id if memory.source_scoped else "", dependencies=dependencies,
-            source=memory.source, match_text=memory.content)
+            source=memory.source, match_text=memory.content, semantic_score=memory.semantic_score)
     return list(result.values())
 
 

@@ -394,7 +394,7 @@ class ParticipationMixin:
                 and (window is None or self._now() - float(row.get("at") or 0) <= max(600, window))
                 and not self.is_plugin_command(str(row.get("text") or ""))]
         request = self.context_request(state, target, task="participation", rows=rows)
-        await self.prepare_context_memory(request)
+        await self.prepare_context_memory(request, state=state)
         self.style_for(state, target)
         persona = await self._persona_text(target)
         if source == "browse":

@@ -106,19 +106,82 @@ class VisitChatAwarenessTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("艾拉", plan.runtime_part)
         self.assertIn("双方下一步尚未确认", plan.runtime_part)
         self.active["status"] = "completed"
-        notes = await self.engine.runtime_notes(fixture.SESSION)
+        notes = await self.engine.runtime_notes(fixture.SESSION, query="有在跟谁玩吗")
         self.assertNotIn("visit_context", notes)
 
     async def test_legacy_dialogue_and_autonomous_preview_keep_the_same_grounded_facts(self):
         self.together()
-        notes = await self.engine.runtime_notes(fixture.SESSION)
+        notes = await self.engine.runtime_notes(fixture.SESSION, query="有在跟谁玩吗")
         state = await self.engine.load_state(fixture.SESSION)
         node = self.engine.node(state.node_id)
         _, runtime = self.engine.prompts.build_dialogue_prompt(
             state=state, node=node, persona_text=self.persona.text, **notes)
         self.assertTrue(runtime.endswith(notes["visit_context"]))
         preview = await self.engine.preview_autonomous_prompt(fixture.SESSION)
-        self.assertTrue(preview.endswith(notes["visit_context"]))
+        self.assertIn("当前动作：与艾拉在茶会客厅", preview)
+        self.assertNotIn("最近已记录的互动", preview)
+
+    async def test_omitted_subject_followup_uses_semantic_visit_relevance(self):
+        self.together()
+        self.engine.memory.semantic.related = AsyncMock(return_value=True)
+        notes = await self.engine.runtime_notes(fixture.SESSION, query="后来怎么样了")
+        self.assertIn("visit_context", notes)
+        self.assertIn("一起收好了茶具", notes["visit_context"])
+        self.engine.memory.semantic.related.assert_awaited_once()
+
+    async def test_unrelated_message_does_not_call_embedding_for_visit_context(self):
+        self.together()
+        self.engine.memory.semantic.related = AsyncMock(return_value=True)
+        notes = await self.engine.runtime_notes(fixture.SESSION, query="今天吃什么")
+        self.assertNotIn("visit_context", notes)
+        self.engine.memory.semantic.related.assert_not_awaited()
+
+    async def test_generic_game_and_message_words_do_not_import_the_visit_transcript(self):
+        self.together()
+        self.engine.memory.semantic.related = AsyncMock(return_value=True)
+        for query in ("这个游戏怎么玩", "群里谁能帮我看看这条报错消息", "帮我写一个信息查询函数"):
+            notes = await self.engine.runtime_notes(fixture.SESSION, query=query)
+            self.assertNotIn("visit_context", notes)
+        self.engine.memory.semantic.related.assert_not_awaited()
+
+    async def test_confirmed_visit_place_can_trigger_details_without_an_embedding_check(self):
+        self.together()
+        self.engine.memory.semantic.related = AsyncMock(return_value=True)
+        notes = await self.engine.runtime_notes(fixture.SESSION, query="茶会客厅布置得好看吗")
+        self.assertIn("visit_context", notes)
+        self.engine.memory.semantic.related.assert_not_awaited()
+
+    async def test_long_unrelated_message_with_pronoun_does_not_check_visit_semantics(self):
+        self.together()
+        self.engine.memory.semantic.related = AsyncMock(return_value=True)
+        query = "她在故事里修理风车，这段描写应该怎么理解。" * 12
+        self.assertIsNone(await self.engine.prepare_visit_context(fixture.SESSION, query))
+        notes = await self.engine.runtime_notes(fixture.SESSION, query=query)
+        self.assertNotIn("visit_context", notes)
+        self.engine.memory.semantic.related.assert_not_awaited()
+
+    async def test_explicit_companion_question_needs_no_extra_relevance_request(self):
+        self.together()
+        self.engine.memory.semantic.related = AsyncMock(return_value=True)
+        query = "艾拉她怎么样了"
+        self.assertIsNone(await self.engine.prepare_visit_context(fixture.SESSION, query))
+        notes = await self.engine.runtime_notes(fixture.SESSION, query=query)
+        self.assertIn("visit_context", notes)
+        self.engine.memory.semantic.related.assert_not_awaited()
+
+    async def test_unrelated_chat_keeps_only_the_short_scene_overlay(self):
+        self.together()
+        notes = await self.engine.runtime_notes(fixture.SESSION, query="今天吃什么")
+        self.assertNotIn("visit_context", notes)
+        self.assertIn("艾拉", notes["world_visit"])
+        self.assertIn("茶会客厅", notes["visit_activity"])
+        state = await self.engine.load_state(fixture.SESSION)
+        node = self.engine.node(state.node_id)
+        _, runtime = self.engine.prompts.build_dialogue_prompt(
+            state=state, node=node, persona_text=self.persona.text, **notes)
+        self.assertIn("当前动作：与艾拉在茶会客厅", runtime)
+        self.assertNotIn("最近已记录的互动", runtime)
+        self.assertNotIn("一起收好了茶具", runtime)
 
     async def test_reflection_uses_the_actual_visit_instead_of_the_home_checkpoint(self):
         self.together()

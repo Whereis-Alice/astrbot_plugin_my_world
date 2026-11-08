@@ -6,7 +6,7 @@ import { createSocialLearning } from "./social-learning.js";
 import { createRelationshipsPage } from "./relationships.js";
 import { createModelCallsPage } from "./model-calls.js?v=4.35.0";
 import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js?v=4.38.0";
-import { memorySearchFields } from "./memory-settings.js";
+import { memorySearchFields } from "./memory-settings.js?v=4.46.18";
 import { familiarityDescriptionEditor, relationshipPromptEditor } from "./relationship-prompt.js";
 import { thoughtDate, updateThoughtDates } from "./thought-history.js";
 import { mountLifeWorkspace } from "./life-workspace.js";

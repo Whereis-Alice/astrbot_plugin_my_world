@@ -3,12 +3,16 @@ import types
 import unittest
 from unittest.mock import AsyncMock
 
+from core.models import MemoryConfig
 from core.model_calls import model_context
 from tests import test_scope_api as fixture
 
 
 class EmbeddingProviderTests(unittest.IsolatedAsyncioTestCase):
     asyncSetUp = fixture.ScopeApiTests.asyncSetUp
+
+    def test_semantic_recall_is_default_on_but_can_still_fall_back_without_provider(self):
+        self.assertTrue(MemoryConfig().semantic_enabled)
 
     def install_provider(self):
         self.provider = types.SimpleNamespace(
@@ -44,6 +48,16 @@ class EmbeddingProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("不能外传", str(self.provider.get_embeddings.await_args))
         self.provider.provider_config["embedding_model"] = "different-dimension"
         self.assertNotEqual(before, semantic.model_identity())
+
+    async def test_deleting_memories_also_reclaims_their_rebuildable_vectors(self):
+        semantic = self.install_provider()
+        self.plugin.engine.world.memory.semantic_enabled = True
+        mid = self.plugin.engine.memory.remember(session_id=self.session, persona_id="", node_id="study",
+                                                 content="记得的一次散步")
+        await semantic.prepare(self.session, "", "散步")
+        self.assertEqual(1, self.plugin.db.raw._query("SELECT COUNT(*) AS c FROM memory_vector")[0]["c"])
+        self.plugin.db.raw.delete_memories_by_ids([mid])
+        self.assertEqual(0, self.plugin.db.raw._query("SELECT COUNT(*) AS c FROM memory_vector")[0]["c"])
 
     async def test_native_config_dropdown_contains_only_embedding_ids_and_no_credentials(self):
         self.install_provider()

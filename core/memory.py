@@ -109,6 +109,7 @@ class RecalledMemory:
 
     source: str = ""
     session_id: str = ""
+    semantic_score: float = 0
 
     @property
     def private_matter(self) -> bool:
@@ -412,7 +413,7 @@ class MemoryEngine:
                          or not (row.get("participants") or row.get("related_users")))]
 
         semantic = self.semantic.cached(session_id, persona_id, keyword, mode=mode, automatic=automatic,
-                                        life_persona_key=life_persona_key) if config and config.semantic_enabled and keyword else {}
+                                        life_persona_key=life_persona_key, node_id=node_id) if config and config.semantic_enabled and keyword else {}
         semantic = {mid: score for mid, score in semantic.items() if score >= config.semantic_min_similarity}
         candidates = query(terms)
         if semantic:
@@ -447,7 +448,7 @@ class MemoryEngine:
                         tuple(sorted(item.get("related_users") or [])), tuple(sorted(item.get("participants") or [])))
             if not body or identity in seen:
                 continue
-            recalled = self._to_recalled(score, item)
+            recalled = self._to_recalled(score, item, semantic_score=semantic.get(item["id"], 0))
             # Budget the complete line, including date and original context.
             cost = len(recalled.render(stamp="YYYY-MM-DD 午夜")) + 1
             if automatic and config and used_chars + cost > config.recall_max_chars:
@@ -526,6 +527,11 @@ class MemoryEngine:
         config = self.world.memory
         if config.automatic_recall == "manual" or config.recall_max_chars <= 0:
             return []
+        # Context preparation keys semantic scores by the request's current
+        # location.  Callers commonly omit the optional override here, so use
+        # the same location by default instead of silently reading a different
+        # cache scope and losing a semantic-only match.
+        node_id = str(node_id or getattr(request, "node_id", "") or "")
         mode = self.world.memory_scope_mode
         sessions = self.sessions(request.session)
         # Text predicates run before LIMIT, so an older match survives a busy month.
@@ -542,10 +548,11 @@ class MemoryEngine:
         candidates = _dedupe(candidates)
         semantic: dict[int, float] = {}
         if config.semantic_enabled:
-            queries = [request.query, *self.participant_queries(records or [], request.session).values()]
+            queries = [request.query, *request.people_queries.values()]
             for query in queries:
                 for mid, score in self.semantic.cached(request.session, request.persona, query, automatic=True,
-                                                       life_persona_key=request.life_persona).items():
+                                                       life_persona_key=request.life_persona,
+                                                       node_id=node_id).items():
                     if score >= config.semantic_min_similarity:
                         semantic[mid] = max(score, semantic.get(mid, 0))
         by_key, materials = {}, []
@@ -571,7 +578,8 @@ class MemoryEngine:
                 continue
             base = self._score(row, focus_user=request.people[0] if request.people else "",
                                node_id=node_id, now=request.now)
-            recalled = self._to_recalled(base + topic * 3 + semantic.get(row["id"], 0) * 3, row)
+            recalled = self._to_recalled(base + topic * 3 + semantic.get(row["id"], 0) * 3, row,
+                                         semantic_score=semantic.get(row["id"], 0))
             key = f"memory:{recalled.id}"
             by_key[key] = recalled
             # Keep date and source labels even in the shorter view.
@@ -740,7 +748,7 @@ class MemoryEngine:
         return 1.0 + min(1.5, 0.5 * hits)
 
     @staticmethod
-    def _to_recalled(score: float, item: dict[str, Any]) -> RecalledMemory:
+    def _to_recalled(score: float, item: dict[str, Any], *, semantic_score: float = 0) -> RecalledMemory:
         return RecalledMemory(
             id=int(item["id"]),
             content=str(item.get("content", "")),
@@ -756,6 +764,7 @@ class MemoryEngine:
             participants=[str(u) for u in (item.get("participants") or [])],
             source=str(item.get("source") or ""),
             session_id=str(item.get("session_id") or ""),
+            semantic_score=semantic_score,
         )
 
     # ---------------- 衰减 ----------------

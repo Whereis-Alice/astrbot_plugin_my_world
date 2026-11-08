@@ -196,13 +196,10 @@ class ProfilesMixin:
         if person is not None:
             person = self._apply_grudge_coldness(state, user_id, person, session_id=session_id)
         if person is not None and context_request is not None:
-            from ..context_selection import ContextItem, select_context
+            from ..context_selection import select_context
+            from ..context_sources import profile_fact_items
             facts = [item for item in person.get("facts", []) if item.get("status", "active") == "active"]
-            selected = select_context(context_request, [ContextItem(
-                f"profile:{user_id}:fact:{i}", "relationship", str(item.get("text") or ""),
-                people=(user_id,), required=item.get("kind") in {"基本信息", "关系", "厌恶", "约定"},
-                priority=.4 if item.get("kind") in {"basic", "基本信息", "promise", "约定"} else 0)
-                for i, item in enumerate(facts)],
+            selected = select_context(context_request, profile_fact_items(user_id, facts, session_id),
                 budget=max(360, 1400 // max(1, len(context_request.people))), channel=f"profile:{user_id}")
             # Keep selection order: the renderer caps each kind, so restoring DB
             # recency order here would discard an older but more relevant fact.
