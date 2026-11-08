@@ -26,6 +26,7 @@ from ..core.visits.decisions import VisitDecisionError, record_decision_candidat
 from ..core.visits.protocol import clean_outing_offer, clean_pause
 from ..core.background_budget import capture_background_admission
 from ..core.planner import same_plan
+from .visit_cards import VisitCardActorMixin
 
 
 def _text(value: Any, limit: int) -> str:
@@ -107,7 +108,7 @@ def _recall_excerpt(row: dict, meta: dict, limit: int = 450) -> str:
     return render(selected) or render(sorted({0, len(facts) - 1})) or prefix()
 
 
-class VisitActorPort:
+class VisitActorPort(VisitCardActorMixin):
     """Every participant is decided by its own configured main model."""
 
     def __init__(self, plugin: Any) -> None:

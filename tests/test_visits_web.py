@@ -120,8 +120,8 @@ class VisitEditorApiTests(unittest.IsolatedAsyncioTestCase):
         self.service.pair_world.assert_not_awaited()
 
     async def test_handlers_bind_their_own_operations_and_are_owned(self):
-        self.assertEqual(len(self.routes), 9)
-        self.assertEqual(len(self.plugin._web_api_handlers), 9)
+        self.assertEqual(len(self.routes), 10)
+        self.assertEqual(len(self.plugin._web_api_handlers), 10)
         await self.call("visits/remove", connection_id="server")
         await self.call("visits/return")
         self.service.remove_connection.assert_awaited_once_with("server")

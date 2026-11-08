@@ -32,6 +32,7 @@ function clockStamp(value) {
 export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, confirm}) {
   let revision = 0, globalRevision = 0, renderedGlobalRead = 0, secretRevision = 0, busy = false;
   let data = null, lifeData = null, lifeSession = null, refreshTimer, secretTimer, scopeDraft = null, phoneConnection = null;
+  let cardDraft = null, cardFeedback = "", cardSaving = false;
   const friendDrafts = new Map();
   const recordDrafts = new Map();
   let historyLimit = 20;
@@ -47,6 +48,21 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
   const settings = el("details", "visits-settings card");
   const settingsSummary = el("summary", "", "友邻与生活设置"); settings.append(settingsSummary);
   const settingsBody = el("div", "visits-settings-body");
+  const recordCards = el("section", "visits-card-settings"); recordCards.setAttribute("aria-label", "相见长卡片设置");
+  const cardHeading = el("div", "visits-card-settings-head"), cardMark = el("span", "visits-card-settings-mark", "✧");
+  cardMark.setAttribute("aria-hidden", "true");
+  const cardIntro = el("div"); cardIntro.append(el("h3", "", "把相见寄到聊天里"),
+    el("p", "muted", "相见结束后，将已确认的经过排成清晰长图，发到勾选会话。优先本地渲染，失败自动回退。"));
+  cardHeading.append(cardMark, cardIntro);
+  const cardToggleRow = el("label", "visits-card-toggle"), cardToggle = el("input"); cardToggle.type = "checkbox";
+  cardToggle.setAttribute("aria-label", "自动发送相见长卡片");
+  cardToggleRow.append(cardToggle, el("span", "", "自动发送相见长卡片"));
+  const cardChoices = el("div", "visits-card-choices"); cardChoices.setAttribute("aria-label", "接收长卡片的会话");
+  const cardNote = el("p", "visits-card-note muted", "只发送开启后结束的新相见记录，历史记录不补发。共享生活的会话也需分别勾选；只收到自己所属生活的记录。");
+  const cardFooter = el("div", "visits-card-settings-footer"), saveCards = el("button", "primary", "保存长卡片设置");
+  saveCards.type = "button";
+  const cardStatus = el("p", "visits-card-status muted"); cardStatus.setAttribute("role", "status");
+  cardFooter.append(saveCards, cardStatus); recordCards.append(cardHeading, cardToggleRow, cardChoices, cardNote, cardFooter);
   const lives = el("section", "visits-lives"); lives.setAttribute("aria-label", "参与串门的生活");
   const lifeChoices = el("div", "visits-life-choices");
   const saveScopes = el("button", "primary", "保存参与生活"); saveScopes.type = "button";
@@ -77,7 +93,7 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
   form.append(el("h3", "", "或者，使用对方给你的配对码"), address.wrap, foreign.wrap, alias.wrap, pair);
   pairBody.append(form, el("p", "muted", "串门默认关闭。请在 AstrBot 的小世界插件配置中开启串门并保存、重载。默认监听端口 38471；使用域名时，将域名反向代理到本机该端口。配对码与 AstrBot 管理密钥相互独立。"));
   pairing.append(pairBody);
-  settingsBody.append(lives, connections, pairing, listenerInfo); settings.append(settingsBody);
+  settingsBody.append(recordCards, lives, connections, pairing, listenerInfo); settings.append(settingsBody);
   const history = el("section", "visits-history"); history.setAttribute("aria-label", "通话与相见记录");
   const diagnostics = el("details", "visits-diagnostics");
   diagnostics.append(el("summary", "", "联系诊断"));
@@ -104,6 +120,11 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     const historyMore = history.querySelector(".visits-history-more");
     if (historyMore) historyMore.disabled = busy || !lifeData || lifeSession !== getSession();
     saveScopes.disabled = busy || !enabled || scopeDraft === null;
+    saveCards.disabled = busy || cardDraft === null || !data?.record_card;
+    for (const input of recordCards.querySelectorAll("input")) input.disabled = busy || !data?.record_card;
+    cardStatus.textContent = cardSaving ? "正在保存…" : cardDraft !== null
+      ? cardFeedback || "有未保存的更改" : cardFeedback || (data?.record_card?.enabled
+        ? `已开启 · ${data.record_card.sessions?.length || 0} 个接收会话` : "默认关闭 · 由你选择是否寄出");
     for (const checkbox of lifeChoices.querySelectorAll("input")) checkbox.disabled = busy || !enabled;
     for (const button of [...peers.querySelectorAll("button"), ...phone.querySelectorAll("button"), ...connections.querySelectorAll("button")]) {
       const invite = button.dataset.visitInvite === "true";
@@ -122,18 +143,55 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
   async function mutation(endpoint, payload = {}, global = false) {
     if (busy || (!global && !getSession())) return null;
     const session = getSession(); busy = true;
+    cardSaving = endpoint === "visits/record-card-settings";
     if (global) globalRevision += 1;
     controls();
     try {
       const result = await apiPost(endpoint, global ? payload : {session, ...payload});
       if (endpoint === "visits/scopes") scopeDraft = null;
+      if (endpoint === "visits/record-card-settings") {
+        cardDraft = null; cardFeedback = "已保存，立即生效";
+        data.record_card = result; renderRecordCards();
+      }
       if (global || session === getSession()) await reload();
       return result;
     } catch (error) {
+      if (endpoint === "visits/record-card-settings") cardFeedback = "保存失败，当前选择已保留";
       if (global || session === getSession()) toast(error.message || "这次操作未完成");
       return null;
-    } finally {busy = false; controls();}
+    } finally {busy = false; cardSaving = false; controls();}
   }
+  function editRecordCards() {
+    if (cardDraft === null) cardDraft = {enabled: data?.record_card?.enabled === true,
+      sessions: new Set(data?.record_card?.sessions || [])};
+    cardFeedback = "";
+    return cardDraft;
+  }
+  function renderRecordCards() {
+    const config = data?.record_card || {enabled: false, sessions: [], choices: []};
+    const selected = cardDraft?.sessions || new Set(config.sessions || []);
+    cardToggle.checked = cardDraft ? cardDraft.enabled : config.enabled === true;
+    cardChoices.replaceChildren();
+    const choices = Array.isArray(config.choices) ? [...config.choices] : [];
+    const known = new Set(choices.map(item => item.session_id));
+    for (const id of selected) if (!known.has(id)) choices.push({session_id: id, label: "已移除的会话，请取消勾选", enabled: false});
+    for (const choice of choices) {
+      const row = el("label", "visits-card-choice"), checkbox = el("input");
+      checkbox.type = "checkbox"; checkbox.value = choice.session_id; checkbox.checked = selected.has(choice.session_id);
+      checkbox.setAttribute("aria-label", `接收相见长卡片：${choice.label || choice.session_id}`);
+      checkbox.onchange = () => {
+        const draft = editRecordCards();
+        if (checkbox.checked) draft.sessions.add(choice.session_id); else draft.sessions.delete(choice.session_id);
+        controls();
+      };
+      const description = el("span", "visits-card-choice-copy");
+      description.append(el("span", "", choice.label || choice.session_id),
+        el("small", "muted", `${choice.session_id}${choice.enabled === false ? " · 会话已停用" : ""}`));
+      row.append(checkbox, description); cardChoices.append(row);
+    }
+    if (!choices.length) cardChoices.append(el("p", "muted", "先在「会话」中创建接收记录的群聊或私聊，再回来勾选。"));
+  }
+  cardToggle.onchange = () => {editRecordCards().enabled = cardToggle.checked; controls();};
   function recordRows(visit) {
     const logs = Array.isArray(visit.log) && visit.log.length ? visit.log
       : Array.isArray(visit.transcript) ? visit.transcript : [];
@@ -431,6 +489,7 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
   }
   function renderGlobal(result) {
     data = result; peers.replaceChildren(); lifeChoices.replaceChildren(); connections.replaceChildren();
+    renderRecordCards();
     const listener = result.listener || {port: result.listen_port, public_url: result.public_url, error: result.error};
     notice.hidden = result.enabled === true && !listener.error;
     notice.textContent = listener.error || (!result.enabled ? "串门尚未开启 · 在插件配置中开启后即可联系友邻" : "");
@@ -610,6 +669,10 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
   }
   refresh.onclick = reload;
   saveScopes.onclick = () => mutation("visits/scopes", {sessions: [...(scopeDraft || [])]}, true);
+  saveCards.onclick = async () => {
+    if (cardDraft === null) return;
+    await mutation("visits/record-card-settings", {enabled: cardDraft.enabled, sessions: [...cardDraft.sessions]}, true);
+  };
   home.onclick = async () => {
     const waiting = waitingForVisit();
     if (await mutation("visits/return")) toast(waiting ? "这次邀请已取消" : "这次串门准备结束，保留已确认的经历");

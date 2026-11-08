@@ -12,13 +12,14 @@ from .connections import WorldConnections
 from .protocol import RESERVED, TERMINAL, new_id, public_actor
 from .model_retry import valid_retry, visible_wait
 from .history_pages import LOG_PAGE_SIZE, ROUTE_PAGE_SIZE, extended_history, write_page
+from .record_cards import VisitRecordCards
 
 KEY = "world_visits.v1"
 MAX_MEMORY_WORKERS = 2
 MEMORY_WAIT_SECONDS = .05
 
 
-class VisitJournal(WorldConnections):
+class VisitJournal(VisitRecordCards, WorldConnections):
     def __init__(self, db, config, actor_port, clock, random):
         self.db, self.config, self.actor_port = db, config, actor_port
         self._now, self._random = clock, random
@@ -29,6 +30,7 @@ class VisitJournal(WorldConnections):
         self._touched: dict[str, float] = {}
         self._remembering: set[str] = set()
         self._memory_tasks: dict[str, asyncio.Task] = {}
+        self._record_card_tasks: dict[str, asyncio.Task] = {}
         self.error = ""
 
     async def _load(self):
@@ -55,6 +57,11 @@ class VisitJournal(WorldConnections):
                     if visit.get("arrived_at"):
                         self._mark_arrival(visit)
             self._loaded = True
+            # Mark every pre-existing ending before recovery can finish an
+            # interrupted active visit and save the whole journal again.
+            for visit in self._state["visits"].values():
+                if visit["status"] in TERMINAL:
+                    self._recover_record_card(visit)
             # Unknown in-flight inference cannot be regenerated. A paid candidate
             # under read-only verification can resume its existing recovery phase.
             for visit in list(self._state["visits"].values()):
@@ -80,6 +87,7 @@ class VisitJournal(WorldConnections):
 
     async def _save(self):
         now = self._now()
+        self._prepare_record_cards()
         self._state["codes"] = {k: v for k, v in self._state["codes"].items() if v["expires_at"] > now}
         receipts = sorted(self._state["receipts"].items(), key=lambda item: item[1]["at"], reverse=True)
         self._state["receipts"] = dict(receipts[:512])
@@ -93,7 +101,7 @@ class VisitJournal(WorldConnections):
         for arrived in (True, False):
             entries = [visit for visit in past if bool(visit.get("arrived_at")) is arrived]
             for visit in entries[self.config.history_keep:]:
-                if not self._settlement_pending(visit):
+                if not self._settlement_pending(visit) and not self._record_card_pending(visit):
                     visits.pop(visit["id"], None)
         await self.db.call("kv_set", KEY, self._state)
 

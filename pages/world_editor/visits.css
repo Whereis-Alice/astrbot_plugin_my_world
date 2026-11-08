@@ -156,6 +156,22 @@ details[open]>.visits-entry-summary .visits-entry-arrow {transform:rotate(90deg)
 .visits-settings[open] {width:100%;}
 .visits-settings-body {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px 24px;padding:16px 0 0;}
 .visits-settings h3 {font-size:12px;margin:0 0 8px;}
+.visits-card-settings {grid-column:1/-1;min-width:0;padding:20px 22px;border:1px solid var(--line);border-radius:14px;background:linear-gradient(120deg,var(--accent-soft),transparent 70%);}
+.visits-card-settings-head {display:flex;gap:12px;align-items:flex-start;}
+.visits-card-settings-mark {font:30px Georgia,serif;color:var(--accent-ink);line-height:1;flex:none;margin-top:2px;}
+.visits-card-settings-head h3 {font:500 15px Georgia,"Noto Serif SC","SimSun",serif;letter-spacing:.06em;margin-bottom:7px;}
+.visits-card-settings p {font-size:11px;line-height:1.8;margin:0;overflow-wrap:anywhere;}
+.visits-card-toggle {display:flex;align-items:center;gap:9px;margin:17px 0 12px;cursor:pointer;font-size:12px;}
+.visits-card-settings input[type=checkbox] {width:15px;height:15px;flex:0 0 15px;accent-color:var(--accent-ink);margin:2px 0 0;}
+.visits-card-choices {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;}
+.visits-card-choice {display:flex;align-items:flex-start;gap:9px;padding:10px 12px;min-width:0;border:1px solid var(--line);border-radius:9px;cursor:pointer;background:var(--panel);font-size:11px;line-height:1.6;}
+.visits-card-choice:has(input:checked) {border-color:var(--accent-ring);background:var(--accent-soft);}
+.visits-card-choice-copy {display:grid;gap:3px;min-width:0;overflow-wrap:anywhere;}
+.visits-card-choice-copy small {font-size:10px;line-height:1.6;}
+.visits-card-settings .visits-card-note {margin-top:12px;}
+.visits-card-settings-footer {display:flex;gap:10px 14px;align-items:center;flex-wrap:wrap;margin-top:15px;}
+.visits-card-settings-footer button {font-size:11px;}
+.visits-card-status {flex:1;min-width:min(150px,100%);}
 .visits-lives,.visits-connections {min-width:0;}
 .visits-lives>p,.visits-pair-body>p {font-size:11px;line-height:1.8;}
 .visits-life-choices {display:grid;gap:7px;margin:10px 0;}
@@ -195,6 +211,8 @@ details[open]>.visits-entry-summary .visits-entry-arrow {transform:rotate(90deg)
   .visits-phone.card {padding:13px 14px;}
   .visits-phone-body .field,.visits-phone-body .field:has(select) {flex:1 1 100%;}
   .visits-settings-body {grid-template-columns:minmax(0,1fr);row-gap:20px;}
+  .visits-card-settings {padding:17px 15px;}
+  .visits-card-choices {grid-template-columns:minmax(0,1fr);}
   .visits-connection-row {align-items:flex-start;flex-direction:column;gap:8px;}
   .visits-entry-summary {grid-template-columns:38px minmax(0,1fr) 18px;padding:12px 13px;gap:11px;}
   .visits-entry-date {padding-right:10px;}

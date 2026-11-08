@@ -51,6 +51,54 @@ def _enabled_scopes(plugin: Any, payload: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(scopes))
 
 
+def _record_card_settings(plugin: Any) -> dict[str, Any]:
+    """Keep destinations as actual conversations, even when their lives are shared."""
+    config = getattr(plugin, "config", {})
+    configured = config.get("visits_record_card_sessions", [])
+    sessions = list(dict.fromkeys(value for value in configured
+                    if isinstance(value, str) and value and len(value) <= 500)) if isinstance(configured, list) else []
+    choices = []
+    seen = set()
+    for session in getattr(getattr(plugin.engine, "sessions", None), "sessions", []):
+        session_id = session.session_id
+        if session_id in seen:
+            continue
+        seen.add(session_id)
+        choices.append({"session_id": session_id, "label": session.note or session_id,
+                        "enabled": session.enabled is True})
+    return {"enabled": config.get("visits_record_card_enabled", False) is True,
+            "sessions": sessions, "choices": choices}
+
+
+def _save_record_card_settings(plugin: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    enabled, sessions = payload.get("enabled"), payload.get("sessions")
+    if type(enabled) is not bool:
+        raise ValueError("相见长卡片开关必须是布尔值")
+    if not isinstance(sessions, list) or len(sessions) > 256:
+        raise ValueError("接收长卡片的会话必须是列表，最多 256 项")
+    known = {item["session_id"] for item in _record_card_settings(plugin)["choices"]}
+    for value in sessions:
+        if not isinstance(value, str) or not value or len(value) > 500 or value != value.strip() or value not in known:
+            raise ValueError("请选择已创建的实际会话；共享生活需分别选择接收会话")
+    config = getattr(plugin, "config", None)
+    if config is None or not callable(getattr(config, "save_config", None)):
+        raise ValueError("暂时无法保存插件配置，请重新加载后再试")
+    missing = object()
+    updates = {"visits_record_card_enabled": enabled, "visits_record_card_sessions": list(dict.fromkeys(sessions))}
+    previous = {key: config.get(key, missing) for key in updates}
+    try:
+        config.update(updates)
+        config.save_config()
+    except Exception as exc:
+        for key, value in previous.items():
+            if value is missing:
+                config.pop(key, None)
+            else:
+                config[key] = value
+        raise ValueError("相见长卡片设置保存失败，请保留当前选择并重试") from exc
+    return _record_card_settings(plugin)
+
+
 def register_visit_apis(plugin: Any, plugin_id: str) -> None:
     """Register dashboard controls and mark their handlers for unload cleanup."""
     operations = {
@@ -59,6 +107,7 @@ def register_visit_apis(plugin: Any, plugin_id: str) -> None:
         "visits/pair": ("POST", "配对友邻世界"),
         "visits/remove": ("POST", "解除友邻世界配对"),
         "visits/scopes": ("POST", "选择参与串门的生活"),
+        "visits/record-card-settings": ("POST", "设置相见长卡片与接收会话"),
         "visits/refresh": ("POST", "刷新友邻可见的角色"),
         "visits/invite": ("POST", "提出串门邀请"),
         "visits/record": ("POST", "读取本生活相见记录的更早经过"),
@@ -84,6 +133,7 @@ def register_visit_apis(plugin: Any, plugin_id: str) -> None:
         try:
             if endpoint == "visits":
                 result = await service.global_overview(_scope(plugin, payload, optional=True))
+                result = {**result, "record_card": _record_card_settings(plugin)}
             elif endpoint == "visits/pair-code":
                 # This is the only route permitted to return a pairing credential.
                 result = await service.create_pair_code()
@@ -96,6 +146,8 @@ def register_visit_apis(plugin: Any, plugin_id: str) -> None:
                 result = await service.remove_connection(_text(payload, "connection_id", limit=200, required=True))
             elif endpoint == "visits/scopes":
                 result = await service.set_enabled_scopes(_enabled_scopes(plugin, payload))
+            elif endpoint == "visits/record-card-settings":
+                result = _save_record_card_settings(plugin, payload)
             elif endpoint == "visits/refresh":
                 result = await service.refresh_connection(_text(payload, "connection_id", limit=200, required=True))
             elif endpoint == "visits/invite":

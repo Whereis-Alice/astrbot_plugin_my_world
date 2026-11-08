@@ -18,6 +18,16 @@
     "hint": "默认关闭。开启后在小世界页面「友邻与串门」配对双方世界，先提出邀请、对方接受后才到访。只开放专用串门接口。修改通信配置后重载插件。",
     "type": "bool", "default": false, "obvious_hint": true
   },
+  "visits_record_card_enabled": {
+    "description": "相见结束后自动发送记录长卡片",
+    "hint": "默认关闭。将已到访的相见经过排成清晰长图，优先本地 t2i 渲染，失败自动回退。仅发送开启后结束的新相见记录，历史记录不补发。在小世界「友邻与串门 → 友邻与生活设置」选择接收会话。",
+    "type": "bool", "default": false, "obvious_hint": true
+  },
+  "visits_record_card_sessions": {
+    "description": "接收相见长卡片的会话",
+    "hint": "推荐在小世界「友邻与串门」中勾选实际群聊或私聊。只向勾选会话发送其所属生活的相见记录；共享生活的多个会话需分别选择。留空不发送。",
+    "type": "list", "default": []
+  },
   "visits_listen_host": {
     "description": "串门监听地址",
     "hint": "默认 0.0.0.0；域名反向代理在本机时可设为 127.0.0.1。关闭串门时不监听。",

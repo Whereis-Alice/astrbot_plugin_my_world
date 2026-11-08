@@ -39,7 +39,10 @@ class VisitService(VisitFlow, VisitJournal):
     async def close(self) -> None:
         self._closed = True
         try:
-            await self._close_memory_tasks()
+            try:
+                await self._close_record_card_tasks()
+            finally:
+                await self._close_memory_tasks()
         finally:
             await self.transport.close()
 
@@ -656,4 +659,5 @@ class VisitService(VisitFlow, VisitJournal):
             await self._finish(current, "interrupted", "真人要求告别归家")
         await self._notify_end(visit["id"])
         await self._observe_memory(visit["id"])
+        await self._observe_record_card(visit["id"])
         return {"ok": True, "status": "interrupted"}
