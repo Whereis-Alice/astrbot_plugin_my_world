@@ -270,9 +270,14 @@ class SemanticMemory:
                            if known.get(int(row["id"])) != versions[int(row["id"])]]
                 missing = missing[:32]
 
+                context_scope = (session, persona, life_persona_key, self.model_identity())
+                material_keys = {identity: (*context_scope, revision(value))
+                                 for identity, value in context_texts.items()}
+                context_identities = set(material_keys)
                 vectors_by_key: dict[tuple, list[float]] = {}
                 pending_queries: list[tuple[str, tuple]] = []
-                needs_scoring = bool(missing) or bool(context_texts)
+                memory_score_keys: set[tuple] = set()
+                context_score_keys: set[tuple] = set()
                 for query, key in keys:
                     vector = self.query_vectors.get(key)
                     vector_fresh = (vector is not None
@@ -280,18 +285,24 @@ class SemanticMemory:
                                     and valid_vector(vector))
                     cached_scores = self.cached(session, persona, query, mode=mode, automatic=automatic,
                                                 life_persona_key=life_persona_key, node_id=node_id)
-                    scores_current = (self.score_versions.get(key) == versions and bool(cached_scores))
-                    needs_scoring = needs_scoring or not scores_current
+                    score_fresh = time.time() - self.score_times.get(key, 0) <= 300
+                    memory_scores_current = (score_fresh and self.score_versions.get(key) == versions
+                                             and (bool(cached_scores) or not candidates))
+                    context_scores_current = (score_fresh and context_identities.issubset(
+                        self.context_scores.get(key, {})))
+                    update_memory_scores = bool(missing) or not memory_scores_current
+                    update_context_scores = bool(context_identities) and not context_scores_current
+                    if update_memory_scores:
+                        memory_score_keys.add(key)
+                    if update_context_scores:
+                        context_score_keys.add(key)
                     if vector_fresh:
                         vectors_by_key[key] = vector
-                    elif missing or not scores_current:
+                    elif update_memory_scores or update_context_scores:
                         pending_queries.append((query, key))
 
-                if not needs_scoring:
+                if not memory_score_keys and not context_score_keys:
                     return
-                context_scope = (session, persona, life_persona_key, self.model_identity())
-                material_keys = {identity: (*context_scope, revision(value))
-                                 for identity, value in context_texts.items()}
                 context_vectors = {key: self.context_vectors[key] for key in set(material_keys.values())
                                    if key in self.context_vectors
                                    and time.time() - self.context_vector_times.get(key, 0) <= 300
@@ -328,43 +339,48 @@ class SemanticMemory:
                             "ON CONFLICT(memory_id,model_key) DO UPDATE SET revision=excluded.revision,vector=excluded.vector",
                             (row["id"], model_key, digest, json.dumps(vector)))
 
-                indexed_scores: dict[tuple, dict[int, float]] = {key: {} for _, key in keys}
+                indexed_scores: dict[tuple, dict[int, float]] = {key: {} for key in memory_score_keys}
                 # Read no more than sixteen vectors at a time and retain only
                 # scalar scores, keeping the in-memory query cache small.
-                for start in range(0, len(ids), 16):
-                    batch = ids[start:start + 16]
-                    marks = ",".join("?" for _ in batch)
-                    rows = self.memory.db._query(
-                        f"SELECT memory_id,revision,vector FROM memory_vector WHERE model_key=? AND memory_id IN ({marks})",
-                        (model_key, *batch))
-                    for row in rows:
-                        memory_id = int(row["memory_id"])
-                        if row["revision"] != versions.get(memory_id):
-                            continue
-                        try:
-                            vector = json.loads(row["vector"])
-                        except (ValueError, TypeError):
-                            vector = None
-                        if not valid_vector(vector) or any(
-                                len(vector) != len(query_vector) for query_vector in vectors_by_key.values()):
-                            self.memory.db._execute(
-                                "DELETE FROM memory_vector WHERE memory_id=? AND model_key=? AND revision=?",
-                                (memory_id, model_key, row["revision"]))
-                            continue
-                        for key, query_vector in vectors_by_key.items():
-                            if len(vector) == len(query_vector):
-                                indexed_scores.setdefault(key, {})[memory_id] = cosine(query_vector, vector)
+                if memory_score_keys:
+                    for start in range(0, len(ids), 16):
+                        batch = ids[start:start + 16]
+                        marks = ",".join("?" for _ in batch)
+                        rows = self.memory.db._query(
+                            f"SELECT memory_id,revision,vector FROM memory_vector WHERE model_key=? AND memory_id IN ({marks})",
+                            (model_key, *batch))
+                        for row in rows:
+                            memory_id = int(row["memory_id"])
+                            if row["revision"] != versions.get(memory_id):
+                                continue
+                            try:
+                                vector = json.loads(row["vector"])
+                            except (ValueError, TypeError):
+                                vector = None
+                            if not valid_vector(vector) or any(
+                                    len(vector) != len(vectors_by_key[key]) for key in memory_score_keys
+                                    if key in vectors_by_key):
+                                self.memory.db._execute(
+                                    "DELETE FROM memory_vector WHERE memory_id=? AND model_key=? AND revision=?",
+                                    (memory_id, model_key, row["revision"]))
+                                continue
+                            for key in memory_score_keys:
+                                query_vector = vectors_by_key.get(key)
+                                if query_vector is not None and len(vector) == len(query_vector):
+                                    indexed_scores[key][memory_id] = cosine(query_vector, vector)
 
                 for query, key in keys:
-                    if key not in vectors_by_key:
+                    if key not in vectors_by_key or key not in memory_score_keys | context_score_keys:
                         continue
-                    self.scores.pop(key, None)
-                    self.scores[key] = indexed_scores.get(key, {})
-                    self.score_versions[key] = versions
+                    if key in memory_score_keys:
+                        self.scores.pop(key, None)
+                        self.scores[key] = indexed_scores.get(key, {})
+                        self.score_versions[key] = versions
                     self.score_times[key] = time.time()
-                    self.context_scores[key] = {
-                        identity: cosine(vectors_by_key[key], context_vectors[material_key])
-                        for identity, material_key in material_keys.items() if material_key in context_vectors}
+                    if key in context_score_keys:
+                        self.context_scores[key] = {
+                            identity: cosine(vectors_by_key[key], context_vectors[material_key])
+                            for identity, material_key in material_keys.items() if material_key in context_vectors}
                 keep = list(self.scores)[-16:]
                 self.scores = {key: self.scores[key] for key in keep}
                 self.score_versions = {key: self.score_versions[key] for key in keep if key in self.score_versions}

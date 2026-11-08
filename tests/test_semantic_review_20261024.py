@@ -165,6 +165,58 @@ class SemanticReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, self.provider.embed.await_count)
         self.assertNotIn("充电", self.provider.embed.await_args.args[0])
 
+    async def test_semantic_context_includes_events_due_topics_inner_voice_and_chat_note(self):
+        self.enable_embedding()
+        state = await self.engine.load_state(SESSION, cold_start=False)
+        _, owner = await self.engine._journal_persona(SESSION)
+        now = self.clock.now()
+        state.recent_events = [
+            {"kind": "event", "detail": {"title": "旧钟的齿轮卡住了"}, "at": now, "persona_key": owner},
+            {"kind": "event", "detail": {"title": "另一角色的秘密"}, "at": now,
+             "persona_key": "foreign-character"},
+            {"kind": "conversation", "detail": {"title": "没有发生的闲聊"}, "at": now,
+             "persona_key": owner},
+        ]
+        state.open_topics = [
+            {"text": "上次说的相机送修结果", "who": "42", "who_name": "小明", "session": SESSION,
+             "persona_key": owner, "at": now - 3600, "next_ask_at": now - 1},
+            {"text": "其他会话的私事", "who": "42", "session": fixture.OTHER_SESSION,
+             "persona_key": owner, "at": now - 3600, "next_ask_at": now - 1},
+        ]
+        state.note_reasoning({"mood": "惦记", "inner": "旧钟还没有修好"},
+                            source="reply", session_id=SESSION, persona_key=owner)
+        state.chat_notes[SESSION] = {"text": "正在聊小镇的旧钟", "at": now}
+        request = self.engine.context_request(state, SESSION, text="旧钟后来怎样了", rows=[], focus="42")
+
+        await self.engine.prepare_context_memory(request, state=state)
+
+        embedded = "\n".join(self.provider.embed.await_args.args[0])
+        for visible in ("旧钟的齿轮卡住了", "相机送修结果", "旧钟还没有修好", "正在聊小镇的旧钟"):
+            self.assertIn(visible, embedded)
+        for hidden in ("另一角色的秘密", "没有发生的闲聊", "其他会话的私事"):
+            self.assertNotIn(hidden, embedded)
+
+    async def test_repeated_context_preparation_skips_cached_cosine_scoring(self):
+        semantic = self.enable_embedding()
+        self.remember("留作语义评分基准的生活记忆")
+        state = await self.engine.load_state(SESSION, cold_start=False)
+        _, owner = await self.engine._journal_persona(SESSION)
+        state.life_matters = [make("想继续修旧钟", now=self.clock.now(), session=SESSION,
+                                   persona_key=owner)]
+        request = self.engine.context_request(state, SESSION, text="旧钟维修", rows=[])
+        await self.engine.prepare_context_memory(request, state=state)
+        self.assertEqual(1, self.provider.embed.await_count)
+
+        from unittest.mock import patch
+        with patch("core.semantic_memory.cosine", wraps=cosine) as score:
+            await self.engine.prepare_context_memory(request, state=state)
+
+        self.assertEqual(0, score.call_count)
+        self.assertEqual(1, self.provider.embed.await_count)
+        self.assertTrue(semantic.cached_context(SESSION, "", [request.query],
+                                                life_persona_key=request.life_persona,
+                                                node_id=request.node_id))
+
     async def test_context_embedding_excludes_foreign_private_and_expired_sources(self):
         self.enable_embedding()
         state = await self.engine.load_state(SESSION, cold_start=False)
