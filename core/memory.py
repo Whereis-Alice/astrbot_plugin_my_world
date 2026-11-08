@@ -354,6 +354,7 @@ class MemoryEngine:
         keyword: str = "",
         memory_type: str = "",
         focus_user: str = "",
+        participants: list[str] | None = None,
         mode: str | None = None,
         limit: int = 5,
         now: float | None = None,
@@ -370,6 +371,7 @@ class MemoryEngine:
         ``node_id`` / ``nodes``：按地点过滤（``nodes`` 用于"回想某个区域里的所有地点"）。
         ``keyword``：先在作用域内查找主题，命中越多排越前；无命中时可回退近期记忆。
         ``strict_keyword``：有主题时不回退无关记忆。
+        ``participants``：只召回涉及这些用户之一的记录，先筛选再计算排名和条数。
         """
 
         if limit <= 0:
@@ -398,6 +400,8 @@ class MemoryEngine:
                 session_ids=wanted_sessions,
                 text_terms=terms,
                 life_persona_key=life_persona_key,
+                participants=participants,
+                exclude_source_scoped=not include_reading and not include_private_matters,
             )
             # Unknown-persona compatibility stays inside the current life group.
             if not rows and fallback and not persona_id:
@@ -405,6 +409,8 @@ class MemoryEngine:
                     session_id, persona_id, SCOPE_GROUP, node_id,
                     nodes=wanted_nodes, memory_type=memory_type,
                     session_ids=wanted_sessions, text_terms=terms, life_persona_key=life_persona_key,
+                    participants=participants,
+                    exclude_source_scoped=not include_reading and not include_private_matters,
                 )
             return [row for row in rows
                     if (include_reading or row.get("source") != "chat_browse")
@@ -611,6 +617,8 @@ class MemoryEngine:
         session_ids: list[str] | None = None,
         text_terms: list[str] | None = None,
         life_persona_key: str | None = None,
+        participants: list[str] | None = None,
+        exclude_source_scoped: bool = False,
     ) -> list[dict[str, Any]]:
         """按作用域模式取候选记忆。
 
@@ -639,6 +647,8 @@ class MemoryEngine:
                 memory_type=memory_type or None,
                 text_terms=text_terms,
                 life_persona_key=life_persona_key,
+                participants=participants,
+                exclude_source_scoped=exclude_source_scoped,
                 limit=200,
             )
             rows.extend(
@@ -658,7 +668,8 @@ class MemoryEngine:
                     self.db.query_memories(
                         source_session=session_id,
                         scope=scope, memory_type=memory_type or None,
-                        text_terms=text_terms, limit=500, life_persona_key=life_persona_key
+                        text_terms=text_terms, limit=500, life_persona_key=life_persona_key,
+                        participants=participants, exclude_source_scoped=exclude_source_scoped,
                     )
                 )
 
@@ -668,7 +679,8 @@ class MemoryEngine:
                 for item in self.db.query_memories(
                     source_session=session_id,
                     session_ids=scoped, memory_type=memory_type or None,
-                    text_terms=text_terms, limit=500, life_persona_key=life_persona_key
+                    text_terms=text_terms, limit=500, life_persona_key=life_persona_key,
+                    participants=participants, exclude_source_scoped=exclude_source_scoped,
                 )
                 if item.get("scope") in (SCOPE_GROUP, SCOPE_GROUP_PERSONA)
             )
@@ -678,7 +690,8 @@ class MemoryEngine:
                 for item in self.db.query_memories(
                     source_session=session_id,
                     persona_id=persona_id, memory_type=memory_type or None,
-                    text_terms=text_terms, limit=500, life_persona_key=life_persona_key
+                    text_terms=text_terms, limit=500, life_persona_key=life_persona_key,
+                    participants=participants, exclude_source_scoped=exclude_source_scoped,
                 )
                 if item.get("scope") in (SCOPE_PERSONA, SCOPE_GROUP_PERSONA)
             )
@@ -686,7 +699,8 @@ class MemoryEngine:
             self.db.query_memories(
                 source_session=session_id,
                 scope=SCOPE_GLOBAL, memory_type=memory_type or None,
-                text_terms=text_terms, limit=200, life_persona_key=life_persona_key
+                text_terms=text_terms, limit=200, life_persona_key=life_persona_key,
+                participants=participants, exclude_source_scoped=exclude_source_scoped,
             )
         )
         if wanted_nodes:

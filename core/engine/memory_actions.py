@@ -43,30 +43,37 @@ class MemoryActionsMixin:
             outcome=self._echo_into(outcome, state),
         )
 
-        limit = max(1, min(5, int(query.get("limit") or 3)))
+        try:
+            limit = max(1, min(5, int(query.get("limit") or 3)))
+        except (TypeError, ValueError, OverflowError):
+            limit = 3
+        session_id = str(outcome.place or outcome.session_id or state.session_id)
+        keyword = str(query.get("keyword") or "")
+        nodes = list(query.get("nodes") or [])
+        memory_type = str(query.get("type") or "")
+        persona_key = self._matter_persona_key(state)
+        focus = self._recall_focus_user(state, f"{intent} {keyword}")
+        participants = [focus] if focus else None
+        # Deliberate recall uses the same embedding route even when automatic
+        # recall is disabled. Prepare only sources the action may actually read.
+        await self.memory.semantic.prepare(session_id, "", keyword,
+            mode=self.world.memory_scope_mode, life_persona_key=persona_key,
+            nodes=nodes, memory_type=memory_type, participants=participants,
+            exclude_source_scoped=True)
         memories = self.memory.recall(
-            session_id=str(outcome.place or outcome.session_id or state.session_id),
+            session_id=session_id,
             persona_id="",
-            nodes=list(query.get("nodes") or []),
-            keyword=str(query.get("keyword") or ""),
+            nodes=nodes,
+            keyword=keyword,
             strict_keyword=True,
-            memory_type=str(query.get("type") or ""),
+            memory_type=memory_type,
+            focus_user=focus,
+            participants=participants,
             mode=(self.world.memory_scope_mode if self.world else None),
             limit=limit,
             now=self._now(),
-            life_persona_key=self._matter_persona_key(state),
+            life_persona_key=persona_key,
         )
-        # 「回想一下关于主人的事」：她点名了某个人时，优先给跟这个人有关的记忆
-        focus = self._recall_focus_user(state, f"{intent} {query.get('keyword') or ''}")
-        if focus:
-            related = [
-                item
-                for item in memories
-                if focus in [str(entry) for entry in (item.participants or [])]
-                or focus in [str(entry) for entry in (item.related_users or [])]
-            ]
-            if related:
-                memories = related
         try:
             stamp_now = self.local_now()
         except Exception:
@@ -75,7 +82,6 @@ class MemoryActionsMixin:
             item.render(stamp=self.prompts._memory_stamp(item.created_at, stamp_now))
             for item in memories
         )
-        keyword = str(query.get("keyword") or "")
         where = "、".join(query.get("node_names") or []) or "任何地方"
         await self._log_event(
             state,

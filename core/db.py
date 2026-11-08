@@ -625,20 +625,23 @@ class Database(
                 f"instr({searchable}, lower(?)) > 0" for _ in text_terms
             ) + ")"
             params.extend(text_terms)
+        wanted = list(dict.fromkeys(str(item) for item in (participants or []) if str(item)))
+        if wanted:
+            marks = ",".join("?" for _ in wanted)
+            # Match whole IDs before LIMIT; newer records about other people
+            # must not hide this person's older experiences.
+            clauses = []
+            for field in ("participants", "related_users"):
+                array = (f"CASE WHEN json_valid({field}) THEN CASE WHEN json_type({field})='array' "
+                         f"THEN {field} ELSE '[]' END ELSE '[]' END")
+                clauses.append(f"EXISTS (SELECT 1 FROM json_each({array}) AS person "
+                               f"WHERE person.type IN ('text','integer','real') "
+                               f"AND CAST(person.value AS TEXT) IN ({marks}))")
+                params.extend(wanted)
+            sql += " AND (" + " OR ".join(clauses) + ")"
         sql += f" ORDER BY {order} LIMIT ?"
         params.append(int(limit))
         rows = [self._memory_row(row) for row in self._query(sql, params)]
-        wanted = [str(item) for item in (participants or []) if str(item)]
-        if wanted:
-            rows = [
-                row
-                for row in rows
-                if any(
-                    user in [str(entry) for entry in (row.get("participants") or [])]
-                    or user in [str(entry) for entry in (row.get("related_users") or [])]
-                    for user in wanted
-                )
-            ]
         return rows
 
     @staticmethod

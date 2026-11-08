@@ -186,15 +186,21 @@ class SemanticMemory:
         return text[-2000:]
 
     async def prepare(self, session: str, persona: str, query: str, *, mode: str = "", automatic: bool = False,
-                      life_persona_key: str | None = None, node_id: str = "") -> None:
+                      life_persona_key: str | None = None, node_id: str = "",
+                      nodes: list[str] | None = None, memory_type: str = "",
+                      participants: list[str] | None = None, exclude_source_scoped: bool = False) -> None:
         await self.prepare_many(session, persona, [query], mode=mode, automatic=automatic,
-                                life_persona_key=life_persona_key, node_id=node_id)
+                                life_persona_key=life_persona_key, node_id=node_id,
+                                nodes=nodes, memory_type=memory_type, participants=participants,
+                                exclude_source_scoped=exclude_source_scoped)
 
     async def prepare_many(self, session: str, persona: str, queries: list[str] | tuple[str, ...], *,
                            mode: str = "", automatic: bool = False,
                            life_persona_key: str | None = None, node_id: str = "",
                            task: str = "reply", people: tuple[str, ...] = (),
-                           context_texts: dict[str, str] | None = None) -> None:
+                           context_texts: dict[str, str] | None = None,
+                           nodes: list[str] | None = None, memory_type: str = "",
+                           participants: list[str] | None = None, exclude_source_scoped: bool = False) -> None:
         """Embed a request and related speaker queries with one provider call."""
 
         config = self.memory.world.memory
@@ -227,12 +233,15 @@ class SemanticMemory:
                     self.memory._query, session, persona,
                     mode or self.memory.world.memory_scope_mode,
                     session_ids=self.memory.sessions(session),
-                    life_persona_key=life_persona_key)
+                    life_persona_key=life_persona_key, nodes=nodes, memory_type=memory_type,
+                    participants=participants, exclude_source_scoped=exclude_source_scoped)
                 if node_id:
                     node_rows = await asyncio.to_thread(
                         self.memory.db.query_memories,
                         source_session=session, session_ids=self.memory.sessions(session),
-                        scope="node", node_id=node_id, life_persona_key=life_persona_key)
+                        scope="node", node_id=node_id, life_persona_key=life_persona_key,
+                        memory_type=memory_type or None, participants=participants,
+                        exclude_source_scoped=exclude_source_scoped)
                     existing_ids = {int(row["id"]) for row in candidates}
                     candidates.extend(
                         row for row in node_rows
@@ -241,16 +250,16 @@ class SemanticMemory:
                     )
                 if automatic:
                     from .life_memory import scoped_emotion
-                    participants = {str(item) for item in people if str(item)}
+                    present_people = {str(item) for item in people if str(item)}
                     filtered = []
                     for row in candidates:
                         related = {str(item) for item in
                                    (*row.get("participants", []), *row.get("related_users", [])) if str(item)}
                         if scoped_emotion(str(row.get("source") or ""), row.get("context")):
-                            if task in {"plan", "sleep", "diary"} or related and not participants.intersection(related):
+                            if task in {"plan", "sleep", "diary"} or related and not present_people.intersection(related):
                                 continue
                         if row.get("source") == "life_matter" and related:
-                            if task in {"plan", "sleep", "diary"} or not participants.intersection(related):
+                            if task in {"plan", "sleep", "diary"} or not present_people.intersection(related):
                                 continue
                         filtered.append(row)
                     candidates = filtered
