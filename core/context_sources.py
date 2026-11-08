@@ -332,7 +332,7 @@ def runtime_context(prompts: Any, state: Any, node: Any, request: ContextRequest
         # The latest externally-owned state remains authoritative and is not rewritten.
         base.append(external)
     inner = prompts._inner_voice(state, request.session, dialogue_only=request.task in {"reply", "participation"},
-                                 persona_key=request.life_persona)
+                                 persona_key=request.life_persona, subjective_only=bool(visit_presence))
     if inner:
         candidates.append(ContextItem("inner:current", "thought",
             "# 当时的内心活动（主观想法，仅你可见，不直接复述）\n" + inner))

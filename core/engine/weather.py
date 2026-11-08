@@ -6,7 +6,7 @@ from ..model_calls import model_operation
 from ..context_sources import paused_home_event_context
 
 from typing import Any
-from ..visit_presence import active_visit, presence_text, visit_activity_text
+from ..visit_presence import active_visit, presence_text, visit_activity_text, visit_context_text
 from ..defaults import DEFAULT_WEATHER_PROMPT
 from ..json_actions import (
     PlannedAction,
@@ -92,10 +92,12 @@ class WeatherMixin:
         visit = active_visit(self, session_id)
         # A persona edit can precede the visit loop's identity cleanup. Keep
         # that old journey reserved, but never describe it as the new actor's.
-        paused_home = bool(visit and visit.get("local", {}).get("persona_key") == persona_key)
+        paused_home = bool(visit and visit.get("arrived_at") and visit.get("scope") == self.state_key(session_id)
+                           and visit.get("local", {}).get("persona_key") == persona_key)
         if paused_home:
             notes["world_visit"] = presence_text(visit, now=self._now())
             notes["visit_activity"] = visit_activity_text(visit, now=self._now())
+            notes["visit_context"] = visit_context_text(visit, now=self._now())
         try:
             state = await self.load_state(session_id, cold_start=False)
         except Exception:

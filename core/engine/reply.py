@@ -872,6 +872,8 @@ class ReplyMixin:
                         system_prompt=system_prompt,
                         user_prompt=user_prompt,
                         runtime_part=runtime_part,
+                        scene_snapshot={"text": runtime_notes.get("world_visit") or (node.name if node else "未知"),
+                                        "persona_key": request.life_persona, "state_key": state.session_id},
                         prompt_snapshot=prompt_snapshot,
                         batch=list(batch),
                         texts=list(texts),

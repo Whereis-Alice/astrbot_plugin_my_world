@@ -543,6 +543,7 @@ class DialoguePlan:
     system_prompt: str = ""
     user_prompt: str = ""
     runtime_part: str = ""
+    scene_snapshot: dict[str, str] = field(default_factory=dict)
     prompt_snapshot: dict[str, Any] | None = None
     batch: list[dict[str, Any]] = field(default_factory=list)
     texts: list[str] = field(default_factory=list)

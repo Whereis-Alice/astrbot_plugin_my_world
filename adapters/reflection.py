@@ -35,6 +35,7 @@ class ReflectionMixin:
                     tool_trace=list(turn.get("tools") or []),
                     persona_id=str(turn.get("persona_id") or ""),
                     interaction_entries=list(turn.get("interaction_entries") or []),
+                    scene_snapshot=dict(turn.get("scene_snapshot") or {}),
                 )
                 if result and self.debug:
                     inner = str(dict(result.get("reasoning") or {}).get("inner") or "")

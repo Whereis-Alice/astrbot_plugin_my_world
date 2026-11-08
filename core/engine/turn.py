@@ -64,6 +64,7 @@ class TurnMixin:
         tool_trace: list[dict[str, Any]] | None = None,
         persona_id: str = "",
         interaction_entries: list[dict[str, Any]] | None = None,
+        scene_snapshot: dict[str, str] | None = None,
     ) -> dict[str, Any] | None:
         """回合复盘：她说完之后，把这一轮的心情 / 好感 / 话题 / 心事补记上。
 
@@ -78,6 +79,18 @@ class TurnMixin:
         state_key = self.state_key(session_id)
         sources = self.interaction_sources(session_id, str(user_id or ""), user_text, interaction_entries)
         persona_text = await self._persona_text(session_id)
+        from hashlib import sha256
+        persona_key = sha256(persona_text.encode("utf-8")).hexdigest()[:24]
+        if scene_snapshot and (scene_snapshot.get("persona_key") != persona_key
+                               or scene_snapshot.get("state_key") != state_key):
+            return None
+        situation = str((scene_snapshot or {}).get("text") or "")
+        if not situation:
+            from ..visit_presence import active_visit, presence_text
+            visit = active_visit(self, session_id)
+            if (visit and visit.get("arrived_at") and visit.get("scope") == state_key
+                    and visit.get("local", {}).get("persona_key") == persona_key):
+                situation = presence_text(visit, now=self._now())
         ctx = MessageContext(
             session_id=session_id,
             user_id=str(user_id or ""),
@@ -106,12 +119,12 @@ class TurnMixin:
                 memories=[],
                 other_context="",
                 pronoun=pronounce_for(getattr(self.world, "gender", "female")),
+                situation=situation,
             )
             prompt += "\n\n# 基础人设（判断行为的依据，不得改写）\n" + persona_text
             prompt += "\n\n# 本轮可用的直接发言证据\n" + json.dumps(sources, ensure_ascii=False)
-            from hashlib import sha256
             prompt += "\n\n" + self._own_topic_block(state, ctx,
-                persona_key=sha256(persona_text.encode("utf-8")).hexdigest()[:24])
+                persona_key=persona_key)
         if tool_trace:
             prompt += ("\n\n# 本轮原生工具的实际记录\n只有成功的实际结果覆盖具体目标才可确认该事项完成。"
                        "检索到旧记录、获取资料、准备成功不等于外部操作已完成；失败或结果不明确就留空。\n"

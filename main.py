@@ -1502,6 +1502,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
                 "user_name": ctx.user_name,
                 "user_text": ctx.raw_text or ctx.text,
                 "interaction_entries": list(plan.batch),
+                "scene_snapshot": dict(plan.scene_snapshot),
                 "recalled_ids": list(plan.recalled_ids),
                 "persona_id": ctx.persona_id,
                 "started_at": time.time(),

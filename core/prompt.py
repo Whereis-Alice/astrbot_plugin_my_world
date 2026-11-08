@@ -955,7 +955,7 @@ class PromptBuilder:
             if line:
                 lines.append(line)
         event_text = "\n".join(lines[-5:]) or "（没什么特别的事）"
-        thought_text = self._inner_voice(state, persona_key=life_persona_key)
+        thought_text = self._inner_voice(state, persona_key=life_persona_key, subjective_only=bool(world_visit))
 
         blocks = [
             "# 你的状态\n"
@@ -1438,7 +1438,7 @@ class PromptBuilder:
 
     @staticmethod
     def _inner_voice(state: WorldState, session_id: str = "", *, dialogue_only: bool = False,
-                     persona_key: str | None = None) -> str:
+                     persona_key: str | None = None, subjective_only: bool = False) -> str:
         """内心活动 = 最近一次推理草稿；模型没写草稿时退回她留下的心里话。"""
 
         from .chat_browse import dialogue_origin, thought_visible
@@ -1448,7 +1448,7 @@ class PromptBuilder:
         if reasoning:
             lines = [
                 f"- {_REASONING_LABELS.get(key, key)}：{reasoning[key]}"
-                for key in _REASONING_ORDER
+                for key in (("mood", "inner") if subjective_only else _REASONING_ORDER)
                 if reasoning.get(key)
             ]
             if lines:
@@ -2588,6 +2588,7 @@ class PromptBuilder:
         life_context: str = "",
         world_visit: str = "",
         visit_activity: str = "",
+        visit_context: str = "",
         session_directory: str = "",
         current_session: str = "",
         session_labels: dict[str, str] | None = None,
@@ -2680,6 +2681,8 @@ class PromptBuilder:
         )
         if sample_text:
             layers.append(sample_text)
+        if world_visit and visit_context:
+            layers.append(visit_context)
         return "\n\n".join(layers)
 
     # ---------------- 注入模式（新版接管） ----------------
@@ -2756,6 +2759,7 @@ class PromptBuilder:
         life_context: str = "",
         world_visit: str = "",
         visit_activity: str = "",
+        visit_context: str = "",
         session_directory: str = "",
         current_session: str = "",
         session_labels: dict[str, str] | None = None,
@@ -2818,14 +2822,18 @@ class PromptBuilder:
         runtime = f"{runtime}\n\n{self.dialogue_reminder_layer()}"
         if context_request is not None:
             sample_text = self.samples_layer(samples, pronoun=pronoun_for(getattr(self.world, "gender", "female")))
-            return system_prompt, runtime + ("\n\n" + sample_text if sample_text else "")
+            runtime += "\n\n" + sample_text if sample_text else ""
+            if world_visit and visit_context:
+                runtime += "\n\n" + visit_context
+            return system_prompt, runtime
         from .chat_browse import feeling_context
         from .context_sources import life_memory_metadata
         from hashlib import sha256
         persona_key = sha256(persona_text.encode("utf-8")).hexdigest()[:24]
         now = self._now()
         sid = current_session or state.session_id
-        inner = self._inner_voice(state, sid, dialogue_only=True, persona_key=persona_key)
+        inner = self._inner_voice(state, sid, dialogue_only=True, persona_key=persona_key,
+                                  subjective_only=bool(world_visit))
         if inner:
             runtime += "\n\n# 本会话留下的内心活动（只供当前交谈参考，不直接复述）\n" + inner
         feelings = feeling_context(state, sid, now.timestamp() if now else 0, persona_key=persona_key)
@@ -2848,6 +2856,8 @@ class PromptBuilder:
         )
         if sample_text:
             runtime = f"{runtime}\n\n{sample_text}"
+        if world_visit and visit_context:
+            runtime += "\n\n" + visit_context
         return system_prompt, runtime
 
     # ---------------- 回合复盘（注入模式专用） ----------------
@@ -2865,6 +2875,7 @@ class PromptBuilder:
         memories: list[Any] | None = None,
         other_context: str = "",
         pronoun: str = "她",
+        situation: str = "",
     ) -> tuple[str, str]:
         """回合复盘：她刚说完，让判断模型把这一轮真正发生了什么抽成结构化字段。
 
@@ -2931,7 +2942,8 @@ class PromptBuilder:
             f"{user_name or '他'}：{str(user_text or '').strip() or '（没有文字）'}",
             "# 她回的那句话（已经发出去了，不要改）\n"
             + (str(reply_text or "").strip() or "（她这一轮没有说话）"),
-            f"# 她当时在哪\n{(node.name if node else '未知')}｜心情：{state.mood}",
+            f"# 她当时在哪（本轮实际场景，不由回复台词改写）\n"
+            f"{situation or (node.name if node else '未知')}｜心情：{state.mood}",
         ]
         if chat_lines:
             blocks.append("# 前面几句（背景）\n" + "\n".join(chat_lines))
