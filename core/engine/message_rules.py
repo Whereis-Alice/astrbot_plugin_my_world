@@ -1,20 +1,40 @@
 """Current-message provenance, command detection and content rules."""
 from __future__ import annotations
 
-from ..evidence import source_snapshot
+from ..evidence import direct_text, source_snapshot
 
 
 class MessageRulesMixin:
     def mark_context_sources(self, state, ctx, batch) -> None:
         """Keep provenance for profile extraction without saving chat memories."""
         selected = [*self.chat_context_for_reply(state, ctx, exclude_entries=self.reply_batch_entries(batch)), *batch]
+        local = [row for row in self.chat_window(state, ctx.session_id)
+                 if isinstance(row, dict) and self._chat_origin(row, state) == ctx.session_id]
         for row in selected:
             if not isinstance(row, dict):
                 continue
             if str(row.get("origin") or row.get("session") or ctx.session_id) != ctx.session_id:
                 continue
+            # Pending batches use a monotonic clock and omit the archive's source
+            # ID. Mark the original message, preserving its author/body/wall time.
+            source_id = str(row.get("source_id") or "")
+            event_key = self.event_key_of(row)
+            original = next((item for item in reversed(local) if
+                             (source_id and item.get("source_id") == source_id)
+                             or (event_key and self.event_key_of(item) == event_key)), None)
+            if original is None and not source_id and not event_key:
+                body = direct_text(str(row.get("raw_text") or row.get("text") or ""))
+                original = next((item for item in reversed(local) if body
+                                 and str(item.get("user_id") or "") == str(row.get("user_id") or "")
+                                 and bool(item.get("is_self")) == bool(row.get("is_self"))
+                                 and direct_text(str(item.get("text") or "")) == body), None)
+            if original is None:
+                continue
+            original["eligible"] = True
+            source = source_snapshot(original, ctx.session_id)
+            row["source_id"] = source["id"]
             row["eligible"] = True
-            self.db.raw.observe_source(source_snapshot(row, ctx.session_id), eligible=True)
+            self.db.raw.observe_source(source, eligible=True)
 
     def _passes_safety(self, text: str) -> bool:
         blocked = self.world.content_safety.blocked_words or []

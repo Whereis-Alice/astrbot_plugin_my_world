@@ -275,6 +275,10 @@ class SocialDirectoryApiTests(unittest.IsolatedAsyncioTestCase):
         from core.json_actions import PlannedAction
 
         async with engine.session_state(self.session) as state:
+            row = state.note_chat(user_id=self.uid, name="测试联系人", text="我喜欢热茶",
+                                  now=engine._now(), keep=20, origin=self.other)
+            row["eligible"] = True
+            engine._tag_chat_origin(state, self.other, row)
             await engine._run_remember(state, TickOutcome(session_id=self.session, place=self.other),
                 PlannedAction(type="remember", params={"user": self.uid, "text": "喜欢热茶",
                     "evidence": "我喜欢热茶", "affinity_delta": 2}))

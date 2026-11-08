@@ -1434,7 +1434,7 @@ function knobEditor(world, onChange) {
           "p",
           "muted knob-hint knob-off-note",
           "最低档只是「很克制」，不是关闭。想让她完全不自主搭话，请用右上角的「全局自主搭话」开关；"
-            + "日程与事件仍然照常发言。",
+            + "生活继续推进，主动发言与生活分享还需要白名单授权。",
         ),
       );
     }
@@ -1844,6 +1844,7 @@ function checkboxField(label, checked, onChange, opts = {}) {
   if (opts.adv) wrapper.dataset.adv = "1";
   const input = document.createElement("input");
   input.type = "checkbox";
+  input.setAttribute("aria-label", label);
   input.checked = !!checked;
   input.addEventListener("change", () => onChange(input.checked));
   wrapper.appendChild(input);
@@ -17260,7 +17261,7 @@ function renderSettings() {
   const wizardButton = el("button", "small primary", "重新运行设置向导…");
   wizardButton.type = "button";
   wizardButton.disabled = Boolean(ui.scope);
-  wizardButton.title = "把「她在哪儿生活 / 她是谁 / 模型 / 手感 / 记忆」再走一遍（每一步都会预填当前值）";
+  wizardButton.title = "按当前值配置会话、角色、模型、作息与记忆，最后核对并保存。";
   wizardButton.addEventListener("click", () => openWizard());
   wizardRow.appendChild(wizardButton);
   wizardRow.appendChild(
@@ -17768,6 +17769,9 @@ function renderSettings() {
       toast("先在「实时状态」里选一个会话（她要拿这个会话的角色卡去写）");
       return;
     }
+    const draft = personaBriefDraft(world);
+    const current = () => ui.config.world === world && ui.scope === renderScope &&
+      $("status-session")?.value === sessionId && personaBriefDraftCurrent(world, draft);
     let added = 0;
     // 生成要调一次模型，几秒到几十秒：**弹窗等生成完再关**，
     // 出错也留在弹窗里显示（渲染在 #dialog-error），不然看着就是"点了没反应"。
@@ -17798,8 +17802,12 @@ function renderSettings() {
             session: sessionId,
             scenes: values.scenes,
             // 同上：拿编辑器里这份角色卡（向导里可能还没保存）
-            persona: ((ui.config.world || {}).persona || {}).text || "",
+            ...draft,
           });
+          if (!current()) {
+            toast("角色或会话已变化，本次候选未加入；请按当前角色重新生成");
+            return true;
+          }
           const items = [];
           (data.scenes || []).forEach((group) => {
             (group.candidates || []).forEach((cand) => {
@@ -20864,6 +20872,35 @@ async function loadTools(loaded = null) {
  * 省得新用户面对 20 多个小节不知道从哪下手。之后可以在全局设置里随时重开。
  */
 
+/** Refresh registered sessions without discarding edits made in this editor. */
+function wizardMergeSessions(remote) {
+  const draft = ui.config.sessions || {};
+  let baseline = {};
+  try { baseline = JSON.parse(ui.configSnapshot || "[]")[2] || {}; } catch (_) { /* No loaded baseline. */ }
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const mergeRows = (key, id) => {
+    const old = new Map((baseline[key] || []).map(row => [row[id], row]));
+    const local = new Map((draft[key] || []).map(row => [row[id], row]));
+    const fresh = new Map((remote[key] || []).map(row => [row[id], {...row}]));
+    for (const [sid, row] of old) {
+      if (!local.has(sid)) fresh.delete(sid);
+      else if (!same(row, local.get(sid))) {
+        const changed = local.get(sid);
+        const merged = fresh.get(sid) || {...row};
+        for (const field of new Set([...Object.keys(row), ...Object.keys(changed)])) {
+          if (same(row[field], changed[field])) continue;
+          if (Object.hasOwn(changed, field)) merged[field] = changed[field];
+          else delete merged[field];
+        }
+        fresh.set(sid, merged);
+      }
+    }
+    for (const [sid, row] of local) if (!old.has(sid)) fresh.set(sid, row);
+    return [...fresh.values()];
+  };
+  return {...remote, sessions: mergeRows("sessions", "session_id"), groups: mergeRows("groups", "id")};
+}
+
 /**
  * 第一步：她在哪儿生活。
  *
@@ -20895,6 +20932,7 @@ function wizardSessionStep(body) {
         markDirty();
       });
       row.appendChild(box);
+      box.setAttribute("aria-label", `启用会话：${item.note || item.session_id}`);
       row.appendChild(
         el("span", "", `${item.session_id}${item.note ? `（${item.note}）` : ""}`),
       );
@@ -20904,22 +20942,19 @@ function wizardSessionStep(body) {
   draw();
   body.appendChild(listBox);
 
-  const groups = (ui.groups || [])
-    .map((group) => {
+  const groupNote = el("p", "muted");
+  function drawGroups() {
+    const groups = (ui.config.sessions.groups || []).map(group => {
       const members = (group.sessions || []).length;
       return members ? `${group.name || group.id}（${members} 个会话）` : "";
-    })
-    .filter(Boolean);
-  body.appendChild(
-    el(
-      "p",
-      "muted",
-      groups.length
+    }).filter(Boolean);
+    groupNote.textContent = groups.length
         ? `勾上的才算「她在这儿生活」。会话组（${groups.join("、")}）在「会话」页里管，` +
             "组里的会话共享状态和记忆。"
-        : "勾上的才算「她在这儿生活」；想让几个会话共享状态和记忆，去「会话」页建一个会话组。",
-    ),
-  );
+        : "勾上的才算「她在这儿生活」；想让几个会话共享状态和记忆，去「会话」页建一个会话组。";
+  }
+  drawGroups();
+  body.appendChild(groupNote);
 
   const row = el("div", "row");
   const again = el("button", "small primary", "重新获取");
@@ -20929,24 +20964,32 @@ function wizardSessionStep(body) {
     const restore = busyButton(again, "获取中…");
     try {
       const data = await apiGet("config");
-      const sessions = (data.sessions && data.sessions.sessions) || [];
-      const groups = (data.sessions && data.sessions.groups) || [];
+      if (!again.isConnected) return;
+      ui.config.sessions = wizardMergeSessions(data.sessions || {sessions: [], groups: []});
+      const sessions = ui.config.sessions.sessions;
       ui.sessions = sessions;
-      ui.groups = groups;
-      // **整份替换**：只更新 ui.sessions 的话，之后点「保存」会把旧白名单写回去，
-      // 刚加的那个会话又没了
-      ui.config.sessions = data.sessions || { sessions, groups };
+      ui.groups = ui.config.sessions.groups;
       if (typeof renderSessionSelects === "function") renderSessionSelects();
       draw();
+      drawGroups();
+      permissions.replaceChildren();
+      renderProactiveAccess(permissions);
       toast(sessions.length ? `拿到 ${sessions.length} 个会话` : "还是空的");
     } catch (error) {
-      toast(error.message || "获取失败");
+      if (again.isConnected) toast(error.message || "获取失败");
     } finally {
       restore();
     }
   });
   row.appendChild(again);
   body.appendChild(row);
+  const access = el("details", "wizard-options");
+  access.append(el("summary", "", "主动发言与生活分享权限"));
+  access.append(el("p", "muted", "会话启用后可以正常回答。主动接话、找人和分享生活，还要单独授权；这里的「应用全局白名单」与总开关立即生效。"));
+  const permissions = el("div");
+  renderProactiveAccess(permissions);
+  access.append(permissions);
+  body.append(access);
 }
 
 function wizardPersonaStep(body) {
@@ -20957,7 +21000,7 @@ function wizardPersonaStep(body) {
     inputField("她的名字（Bot 名称）", world.bot_name || "", (value) => {
       world.bot_name = value;
       markDirty();
-    }, { hint: "互动动作里的「{bot}」会换成它。留空就先用群名片原名。", placeholder: "例如：小鲸鱼" }),
+    }, { hint: "互动动作里的「{bot}」会换成它。留空就先用群名片原名。", placeholder: "例如：爱丽丝" }),
   );
   body.appendChild(
     pillsField("性别（决定文案里的称呼）", world.gender || "female", GENDERS, (value) => {
@@ -20968,13 +21011,13 @@ function wizardPersonaStep(body) {
   );
   body.appendChild(
     selectField("人设从哪来", world.persona.mode || "astrbot", [
-      { key: "astrbot", label: "跟随 AstrBot（每个会话各自的人格）" },
-      { key: "plugin", label: "用下面这一份（所有会话共用）" },
+      { key: "astrbot", label: "跟随 AstrBot 当前会话的人格（推荐）" },
+      { key: "plugin", label: "使用本配置范围内的角色卡" },
       { key: "append", label: "AstrBot 那份 + 下面这一份（接在后面）" },
     ], (value) => {
       world.persona.mode = value;
       markDirty();
-    }, { hint: "想让她不随会话漂移就选「用下面这一份」。" }),
+    }, { hint: "跟随 AstrBot 可保留宿主人格；插件角色卡用于继承本配置的会话。" }),
   );
   const area = document.createElement("textarea");
   area.rows = 8;
@@ -20987,6 +21030,8 @@ function wizardPersonaStep(body) {
   const wrap = el("div", "field");
   wrap.appendChild(fieldHead("角色卡（她是谁）"));
   wrap.appendChild(area);
+  wrap.appendChild(el("p", "muted", `导入与生成人设使用当前会话：${$("status-session")?.value || "尚未选择"}。导入只复制为草稿，完成保存后生效。`));
+  const modeSelect = body.querySelector("select");
   const importRow = el("div", "row");
   const importButton = el("button", "small ghost", "从 AstrBot 导入当前人设");
   importButton.type = "button";
@@ -21007,6 +21052,7 @@ function wizardPersonaStep(body) {
       }
       world.persona.text = text;
       world.persona.mode = "plugin";
+      if (modeSelect) modeSelect.value = "plugin";
       area.value = text;
       markDirty();
       toast(`导入了 ${data.chars || text.length} 字`);
@@ -21024,8 +21070,8 @@ function wizardPersonaStep(body) {
 function wizardProviderStep(body) {
   const slots = ui.config.providers || {};
   const rows = [
-    ["主模型", "llm", "说话用的那个"],
-    ["打杂模型", "helper", "补工具参数、压上下文"],
+    ["插件主模型", "llm", "自主决策与主动发言"],
+    ["辅助模型", "helper", "理解查询、辅助生成"],
     ["判断模型", "judge", "挑一个 / 打分这类轻决策"],
     ["看图模型", "vision", "把图片转成文字"],
     ["内容生成模型", "creator", "编她身边发生的事"],
@@ -21045,16 +21091,43 @@ function wizardProviderStep(body) {
     el(
       "p",
       "muted",
-      "这些在 AstrBot 面板 → 插件 → 小世界 里选；留空的会按括号里的规则回落到别的槽位，" +
-        "所以这里全是回落值也能跑。想省钱就把打杂 / 判断换便宜快的模型。",
+      "正常聊天沿用 AstrBot 当前会话的主模型、人格与工具链，小世界按需补充生活状态。上面是插件自主调用的模型；在 AstrBot → 插件 → 小世界的配置中选择，括号表示回落规则。看图模型为空时不转述图片。",
     ),
   );
+  body.appendChild(el("p", "muted", "嵌入模型在「记忆与画像」这一步选择，用于按意思查找记忆；它与聊天模型分开配置。"));
+}
+
+function wizardLifeStep(body) {
+  const world = ui.config.world;
+  world.sleep ||= {};
+  world.limits ||= {};
+  ui.config.schedules.auto ||= {};
+  body.appendChild(selectField("作息模式", world.sleep.mode || "autonomous", [
+    {key: "autonomous", label: "自主作息（推荐）"},
+    {key: "fixed", label: "固定作息"},
+    {key: "activity", label: "无需睡眠，通过活动恢复"},
+  ], value => { world.sleep.mode = value; markDirty(); }));
+  body.appendChild(inputField("生活与作息偏好", world.sleep.rhythm_prompt || "",
+    value => { world.sleep.rhythm_prompt = value; markDirty(); },
+    {hint: "例如喜欢晚起、夜间安静阅读；无需睡眠的角色请配置合适的恢复动作。"}));
+  body.appendChild(checkboxField("自动安排每天的生活", ui.config.schedules.auto.enabled !== false,
+    value => { ui.config.schedules.auto.enabled = value; markDirty(); },
+    {hint: "按角色与现有地图安排日程；关闭后保留已有日程，可在生活页手动编辑。"}));
+  body.appendChild(checkboxField("自动推进自己的打算", world.limits.life_matter_enabled !== false,
+    value => { world.limits.life_matter_enabled = value; markDirty(); },
+    {hint: "持续推进个人项目与约定；有无主动发言权限都可以安静生活。"}));
+  body.appendChild(el("p", "muted", "无需睡眠的角色还需在「生活与作息」中选择可用的充电、冥想等恢复动作。地图、动作与具体日程可在完成后继续调整。"));
+  const knobs = el("details", "wizard-options");
+  knobs.append(el("summary", "", "调整说话频率、情绪与生活手感（可选）"), knobEditor(world));
+  body.append(knobs);
 }
 
 function wizardMemoryStep(body) {
   const world = ui.config.world;
   world.profile = world.profile || {};
   world.context = world.context || {};
+  world.memory ||= {};
+  body.appendChild(el("p", "muted", "小世界保存自己的生活经历与人物资料；Anamnesis 等聊天记忆插件可继续负责聊天往事。回忆按地点、人物和当前话题挑选，字符预算控制自动带入的长度。"));
   body.appendChild(
     checkboxField("记住每个人（通讯录）", world.profile.enabled !== false, (value) => {
       world.profile.enabled = value;
@@ -21067,7 +21140,18 @@ function wizardMemoryStep(body) {
       markDirty();
     }, { hint: "从可见原话整理事实、关系与人物速写；生活整理在回忆设置中单独开关。" }),
   );
-
+  body.appendChild(checkboxField("休息时整理自己的生活经历", world.memory.sleep_review !== false,
+    value => { world.memory.sleep_review = value; markDirty(); }));
+  body.appendChild(selectField("何时回想生活", world.memory.automatic_recall || "auto", [
+    {key: "auto", label: "根据地点与话题自动回想（推荐）"},
+    {key: "manual", label: "只在主动查询时回想"},
+  ], value => { world.memory.automatic_recall = value; markDirty(); }));
+  body.appendChild(inputField("自动回忆字符预算", num(world.memory.recall_max_chars, 1200),
+    value => { world.memory.recall_max_chars = Math.max(0, Math.min(12000, Math.round(num(value, 1200)))); markDirty(); },
+    {type: "number", min: 0, max: 12000, hint: "0 关闭自动生活回忆注入；人物资料和当前生活状态有各自的按需规则。"}));
+  memorySearchFields({container: body, memory: world.memory, providers: ui.config.embedding_providers,
+    defaultProvider: ui.config.embedding_default, el, onChange: markDirty});
+  body.appendChild(el("p", "muted", "嵌入模型不可用时回落到关键词；默认不启用额外的模型重排。人物资料、生活回忆与串门经历按需检索，共用嵌入配置。"));
 }
 
 function wizardGenerateStep(body) {
@@ -21174,8 +21258,38 @@ function wizardGenerateStep(body) {
   body.appendChild(sampleWrap);
 }
 
-function openWizard() {
+function wizardReviewStep(body) {
   const world = ui.config.world;
+  const enabled = ui.sessions.filter(item => item.enabled !== false);
+  const name = item => item.note || item.group_name || item.session_id;
+  const allowed = new Set(world.proactive_session_whitelist || []);
+  const share = new Set(world.life_share_session_whitelist || []);
+  const memory = world.memory || {};
+  const embedding = memory.semantic_enabled === false ? "已关闭，使用关键词检索"
+    : memory.semantic_source === "custom" ? (memory.semantic_endpoint && memory.semantic_model
+      ? `自定义接口 · ${memory.semantic_model}` : "自定义接口尚未填完整，将回落到关键词")
+    : memory.semantic_provider_id || ui.config.embedding_default || "尚未指定，将回落到关键词";
+  const rows = [
+    ["启用会话", enabled.map(name).join("、") || "尚未启用任何会话"],
+    ["人物来源", {astrbot: "跟随 AstrBot 当前会话", plugin: "本配置的角色卡", append: "AstrBot 人格 + 补充角色卡"}[world.persona?.mode || "astrbot"]],
+    ["生活作息", {autonomous: "自主决定休息", fixed: "固定作息", activity: "活动恢复，无需睡眠"}[world.sleep?.mode || "autonomous"]],
+    ["每日生活", ui.config.schedules.auto?.enabled === false ? "不自动安排新日程" : "自动安排日程"],
+    ["主动发言", world.proactive_chat_paused ? "全局已暂停" : enabled.filter(item => allowed.has(item.session_id)).map(name).join("、") || "未授权会话，只回应正常对话"],
+    ["生活分享", enabled.filter(item => allowed.has(item.session_id) && share.has(item.session_id)).map(name).join("、") || "未授权会话，被问起仍可回答"],
+    ["生活回忆", memory.automatic_recall === "manual" || Number(memory.recall_max_chars) === 0
+      ? "只在主动查询时回想" : `按需回想，最多 ${memory.recall_max_chars ?? 1200} 字符`],
+    ["嵌入模型", embedding],
+  ];
+  const list = el("dl", "wizard-review");
+  for (const [label, value] of rows) list.append(el("dt", "muted", label), el("dd", "", value));
+  body.append(list);
+  if (!enabled.length) body.append(el("p", "hint-line", "尚无启用会话：可以保存当前配置，之后添加会话并启用。"));
+  body.append(el("p", "muted", "串门需要在「友邻与串门」中启用并配对世界；已配对的配置会保留。相处时仍可自然回复收到的消息，具体经历按需带入。"));
+  body.append(el("p", "muted", "点击「完成并保存」后配置生效。摘要与口吻候选仅在前一步点击生成按钮时调用模型；生成的候选仍需挑选采用。"));
+}
+
+function openWizard() {
+  if (!ui.config?.world || ui.scope || document.querySelector(".wizard-backdrop")) return;
   const steps = [
     {
       title: "她在哪儿生活",
@@ -21193,13 +21307,13 @@ function openWizard() {
       build: (body) => wizardProviderStep(body),
     },
     {
-      title: "调手感",
-      hint: "不用逐个调参数：拖这几个滑块，它会同时改掉一组相关的设置。中间那档就是默认。",
-      build: (body) => body.appendChild(knobEditor(world)),
+      title: "她怎样过自己的生活",
+      hint: "选择作息与日常安排，现有值会保留；想微调表达和情绪，可以展开手感滑块。",
+      build: (body) => wizardLifeStep(body),
     },
     {
       title: "记忆与画像",
-      hint: "要不要记住每个人、要不要在她睡觉时消化这些经历。",
+      hint: "人物资料、生活经历与按需回忆分开设置，嵌入模型可复用 AstrBot。",
       build: (body) => wizardMemoryStep(body),
     },
     {
@@ -21207,13 +21321,22 @@ function openWizard() {
       hint: "这两样要调模型生成，跳过也完全能用。",
       build: (body) => wizardGenerateStep(body),
     },
+    {
+      title: "核对并开始生活",
+      hint: "核对启用会话、发言权限与回忆方式，再保存这次配置。",
+      build: (body) => wizardReviewStep(body),
+    },
   ];
   let index = 0;
 
   const backdrop = el("div", "wizard-backdrop");
   const card = el("div", "wizard-card");
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-modal", "true");
+  card.setAttribute("aria-label", "小世界设置向导");
   const head = el("div", "wizard-head");
   const title = el("div", "wizard-title", "");
+  title.tabIndex = -1;
   const stepNote = el("div", "muted wizard-step", "");
   head.appendChild(title);
   head.appendChild(stepNote);
@@ -21233,11 +21356,11 @@ function openWizard() {
   const foot = el("div", "wizard-foot");
   const back = el("button", "small ghost", "上一步");
   back.type = "button";
-  const skip = el("button", "small ghost", "跳过这步");
+  const skip = el("button", "small ghost", "沿用当前设置");
   skip.type = "button";
   const next = el("button", "small primary", "下一步");
   next.type = "button";
-  const done = el("button", "small ghost", "以后再说");
+  const done = el("button", "small ghost", "暂时关闭");
   done.type = "button";
   foot.appendChild(done);
   foot.appendChild(skip);
@@ -21249,6 +21372,7 @@ function openWizard() {
 
   function close() {
     backdrop.remove();
+    renderEverything();
   }
 
   function render() {
@@ -21260,19 +21384,34 @@ function openWizard() {
     step.build(body, render);
     back.disabled = index === 0;
     skip.style.display = index === steps.length - 1 ? "none" : "";
-    next.textContent = index === steps.length - 1 ? "完成" : "下一步";
+    next.textContent = index === steps.length - 1 ? "完成并保存" : "下一步";
+    title.focus();
   }
 
   async function finish() {
-    ui.config.world.wizard_done = true;
-    markDirty();
-    close();
-    toast("向导走完了，这就保存…");
+    if (next.disabled) return;
+    const restore = busyButton(next, "保存中…");
+    back.disabled = skip.disabled = done.disabled = true;
+    body.inert = true;
     try {
-      await saveAll();
+      if (!await saveAll()) return;
+      // Mark completion only after every configuration file was saved.
+      if (ui.config.world.wizard_done !== true) {
+        await apiPost("config/world", {world: {...ui.config.world, wizard_done: true}});
+        ui.config.world.wizard_done = true;
+        if (ui.config.global_config) ui.config.global_config.world.wizard_done = true;
+        ui.configSnapshot = configFingerprint();
+      }
+      close();
       toast("已保存，可以开始用了");
     } catch (error) {
-      toast(`保存失败：${error.message || error}（点右上角「保存」重试）`);
+      toast(`保存失败：${error.message || error}，配置保留，可再次点「完成并保存」`);
+    } finally {
+      restore();
+      back.disabled = index === 0;
+      skip.disabled = done.disabled = false;
+      body.inert = false;
+      if (backdrop.isConnected) render();
     }
   }
 
@@ -21298,12 +21437,12 @@ function openWizard() {
       finish();
     }
   });
-  // 「以后再说」也标记已看过：不然每次打开都弹
+  // Keep edits as an explicit unsaved draft; closing never silently saves.
   done.addEventListener("click", () => {
     ui.config.world.wizard_done = true;
     markDirty();
     close();
-    toast("向导先关了；全局设置顶部有按钮可以再打开");
+    toast("向导已关闭，修改保留为未保存草稿；可点右上角保存，或在基础设置重新打开");
   });
   render();
 }

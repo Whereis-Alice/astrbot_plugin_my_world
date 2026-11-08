@@ -122,3 +122,35 @@ class WorkspaceSourcesApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(await engine.event_persona_brief(self.session), '草稿摘要')
         engine._persona_text.return_value = '草稿人设'
         self.assertEqual(await engine.event_persona_brief(self.session), '草稿摘要')
+
+    async def test_voice_samples_resolve_current_persona_modes_and_shared_representative(self):
+        second = await self.add_group()
+        generate = AsyncMock(return_value={'ok': True, 'scenes': []})
+        self.plugin.engine.generate_voice_samples = generate
+        self.plugin.persona_port = types.SimpleNamespace(astrbot_persona_text=AsyncMock(return_value='宿主人格'))
+        for mode, own, expected in [('astrbot', '未启用的卡', '宿主人格'),
+                                    ('plugin', '草稿卡', '草稿卡'), ('plugin', '', '宿主人格'),
+                                    ('append', '补充设定', '宿主人格\n\n补充设定')]:
+            with self.subTest(mode=mode, own=own):
+                generate.reset_mock()
+                response = await self.call('voice-samples/generate', method='POST', session='shared',
+                                           persona_mode=mode, persona=own, scenes=['night'])
+                self.assertEqual(response['status_code'], 200, response)
+                generate.assert_awaited_once_with(second, ['night'], persona_text=expected)
+
+    async def test_voice_samples_reject_empty_or_invalid_persona_without_live_fallback(self):
+        generate = AsyncMock()
+        self.plugin.engine.generate_voice_samples = generate
+        self.plugin.engine._persona_text = AsyncMock(return_value='过时的正式人设')
+        self.plugin.persona_port = types.SimpleNamespace(astrbot_persona_text=AsyncMock(return_value=''))
+        for mode in ('plugin', 'invalid'):
+            with self.subTest(mode=mode):
+                response = await self.call('voice-samples/generate', method='POST', session=self.session,
+                                           persona_mode=mode, persona='')
+                self.assertNotEqual(response['status_code'], 200)
+        generate.assert_not_awaited()
+
+    async def test_unconfigured_helper_reports_the_actual_main_model_fallback(self):
+        self.plugin.helper_provider_id = ''
+        self.plugin.vision_provider_id = 'vision-only'
+        self.assertEqual(self.plugin._provider_slots()['helper'], '（跟插件用模型）')

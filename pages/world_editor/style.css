@@ -4534,6 +4534,41 @@ body.dragging-map-node {
   width: 100%;
 }
 
+.wizard-options > summary {
+  cursor: pointer;
+  padding: 8px 0;
+}
+
+.wizard-review {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px 16px;
+  margin: 0;
+}
+
+.wizard-review dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.wizard-body .picker-row {
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
+}
+
+.wizard-card:focus-within .wizard-title:focus {
+  outline: none;
+}
+
+@media (max-width: 600px) {
+  .wizard-backdrop { padding: 12px 8px; }
+  .wizard-card { padding: 14px 12px; min-width: 0; }
+  .wizard-head { flex-wrap: wrap; }
+  .wizard-body { max-height: 65vh; }
+  .wizard-foot { flex-wrap: wrap; }
+  .wizard-review { gap: 8px 12px; }
+}
+
 .wizard-list {
   display: flex;
   flex-direction: column;

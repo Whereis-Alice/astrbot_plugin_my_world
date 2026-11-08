@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from ..model_calls import model_operation
-
+import math
 from typing import Any
+
+from ..evidence import direct_text, source_snapshot
 from ..json_actions import (
     PlannedAction,
     extract_json_object,
 )
+from ..model_calls import model_operation
 from ..models import NodeDef
 from ..state import WorldState
 from .models import TickOutcome
@@ -16,6 +18,27 @@ from .util import _clip_log
 
 
 class MemoryActionsMixin:
+    def _remember_chat_sources(self, state: WorldState, session_id: str) -> list[dict[str, Any]]:
+        """Read eligible local speech, retaining immutable author/body/time when saved."""
+        sources = []
+        for row in self.chat_window(state, session_id):
+            if not isinstance(row, dict) or self._chat_origin(row, state) != session_id:
+                continue
+            snapshot = source_snapshot(row, state.session_id)
+            stored = self.db.raw.source_record(snapshot["id"])
+            if ((stored is not None and not stored["eligible"])
+                    or (stored is None and row.get("eligible") is False)):
+                continue
+            original = stored or snapshot
+            if (original.get("session") != session_id
+                    or original.get("kind") not in {"direct_speech", "self_statement"}):
+                continue
+            # Keep empty human messages as intervening speakers for relationship
+            # confirmation, but their quoted content supplies no evidence.
+            sources.append({**original, "text": direct_text(str(original.get("text") or "")),
+                            "origin": original["session"], "is_self": original["kind"] == "self_statement"})
+        return sources
+
     async def _run_recall(
         self,
         state: WorldState,
@@ -148,8 +171,7 @@ class MemoryActionsMixin:
                 outcome=outcome,
             )
             return
-        known = {str(row.get("user_id") or "") for row in store.list_people(session_id, limit=500)}
-        if user_id not in known:
+        if store.profile(session_id, user_id) is None:
             # 只认她真的见过的人：编出来的号码不进通讯录
             outcome.notes.append(f"「记住」里那个人（{user_id}）她还没见过，已跳过")
             await self._log_event(
@@ -172,29 +194,46 @@ class MemoryActionsMixin:
             )
             return
         written: list[str] = []
+        sources = self._remember_chat_sources(state, session_id) if text or bond else []
         if text:
-            result = store.note_fact(
-                session_id,
-                user_id,
-                text=text,
-                kind=kind,
-                evidence=evidence,
-                context="她当场记住的",
-                confidence=0.9,
-                source_session=session_id,
-            )
-            if result.get("ok"):
-                written.append(f"记住了「{text}」（{kind}）")
+            def normalized(value: Any) -> str:
+                return "".join(char for char in str(value or "").casefold() if char.isalnum())
+            quote = normalized(evidence)
+            matches = [row for row in sources if not row["is_self"] and str(row.get("user_id")) == user_id
+                       and quote and quote in normalized(row["text"])]
+            if matches:
+                times = []
+                for row in matches:
+                    try:
+                        at = float(row.get("at") or 0)
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    if math.isfinite(at) and at > 0:
+                        times.append(at)
+                result = store.note_fact(
+                    session_id,
+                    user_id,
+                    text=text,
+                    kind=kind,
+                    evidence=evidence,
+                    context="她当场记住的",
+                    confidence=0.9,
+                    source_session=session_id,
+                    observed_at=max(times) if times else None,
+                )
+                if result.get("ok"):
+                    written.append(f"记住了「{text}」（{kind}）")
+                else:
+                    notes.append(str(result.get("reason") or "事实没记下"))
             else:
-                notes.append(str(result.get("reason") or "事实没记下"))
+                notes.append("事实依据不在本会话实际可见的本人原话中")
         if bond:
             from ..relationship import grounded_relationship
             definition = self.world.profile.bond_by_name(bond)
             candidate = grounded_relationship({
                 "user_id": user_id, "evidence": evidence,
                 "confirmation": params.get("confirmation"), "asserted_by": "她的判断",
-            }, [row for row in self.chat_window(state, session_id)
-                if str(row.get("origin") or session_id) == session_id], exclusive=bool(
+            }, sources, exclusive=bool(
                 definition and (store._unique_slot(definition.slot)
                                 or definition.name not in {stage.bond for stage in self.world.profile.friendship_stages}
                                 and not definition.negative)))

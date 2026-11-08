@@ -7191,6 +7191,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         ctx = self.ctx(text="我最喜欢喝冰美式了", user_id="2692047521", user_name="不相疑")
         await self.engine.handle_incoming(ctx)
         async with self.engine.session_state(SESSION) as state:
+            self.engine.mark_context_sources(state, ctx, self.engine.chat_window(state, SESSION))
             outcome = TickOutcome(session_id=SESSION)
             await self.engine._run_remember(
                 state,

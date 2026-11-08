@@ -1881,6 +1881,22 @@ class WebApiMixin(LifeApiMixin):
             }
         )
 
+    async def _editor_persona_text(self, session_id: str, payload: dict[str, Any]) -> str:
+        """Resolve the visible persona draft for editor generation requests."""
+        text = str(payload.get("persona") or "").strip()
+        mode = payload.get("persona_mode")
+        if mode is None:
+            return text or await self.engine._persona_text(session_id)
+        if mode not in ("plugin", "append", "astrbot"):
+            raise ValueError("不支持的人设模式")
+        if mode == "plugin" and text:
+            return text
+        port = getattr(self, "persona_port", None)
+        if port is None or not hasattr(port, "astrbot_persona_text"):
+            raise ValueError("人设通道还没就绪")
+        base = await port.astrbot_persona_text(session_id)
+        return f"{base}\n\n{text}".strip() if mode == "append" and text else base
+
     async def api_persona_brief(self):
         """简易人设：按人格缓存。POST 时 ``generate=true`` 表示用模型从主人设生成。"""
 
@@ -1896,21 +1912,10 @@ class WebApiMixin(LifeApiMixin):
         if request.method == "POST" or str(request.query.get("_method", "")).upper() == "POST":
             # Resolve once so generation, manual saves and the returned cache refer
             # to the same draft, even if the live persona changes while awaiting.
-            persona_text = str(payload.get("persona") or "").strip()
-            mode = payload.get("persona_mode")
-            if mode is not None:
-                if mode not in ("plugin", "append", "astrbot"):
-                    return error_response("不支持的人设模式")
-                if mode != "plugin" or not persona_text:
-                    port = getattr(self, "persona_port", None)
-                    if port is None or not hasattr(port, "astrbot_persona_text"):
-                        return error_response("人设通道还没就绪")
-                    base = await port.astrbot_persona_text(session_id)
-                    persona_text = (f"{base}\n\n{persona_text}".strip()
-                                    if mode == "append" and persona_text else base)
-            elif not persona_text:
-                # Old clients omit the draft and continue using the live persona.
-                persona_text = await self.engine._persona_text(session_id)
+            try:
+                persona_text = await self._editor_persona_text(session_id, payload)
+            except ValueError as error:
+                return error_response(str(error))
             if payload.get("generate"):
                 # 编辑器刚改过、还没保存的角色卡优先：向导里写完人设就点生成时，
                 # 读配置只会拿到旧那份。
@@ -1969,8 +1974,14 @@ class WebApiMixin(LifeApiMixin):
             return error_response("缺少 session（要拿它的角色卡去生成）")
         scenes = payload.get("scenes")
         picked = [str(item) for item in scenes] if isinstance(scenes, list) else None
+        try:
+            persona_text = await self._editor_persona_text(session_id, payload)
+        except ValueError as error:
+            return error_response(str(error))
+        if not persona_text.strip():
+            return error_response("还没有可用的人设，请先填写角色卡或在 AstrBot 选择人格")
         result = await self.engine.generate_voice_samples(
-            session_id, picked, persona_text=str(payload.get("persona") or "")
+            session_id, picked, persona_text=persona_text
         )
         if not result.get("ok"):
             return error_response(str(result.get("reason") or "生成失败"))
@@ -2376,7 +2387,7 @@ class WebApiMixin(LifeApiMixin):
                               "life_share_whitelist": world.get("life_share_session_whitelist", [])})
 
     def _provider_slots(self) -> dict[str, str]:
-        """六个模型槽位现在指向哪个 Provider（只给 id，不含 key）。
+        """模型槽位现在指向哪个 Provider（只给 id，不含 key）。
 
         向导里要能一眼看出"哪个槽位还没配"——这些槽位在 AstrBot 的插件配置里，
         编辑器本身改不了，所以只做展示 + 告诉用户去哪配。
@@ -2387,7 +2398,7 @@ class WebApiMixin(LifeApiMixin):
 
         return {
             "llm": show(self.llm_provider_id) or "（跟会话默认）",
-            "helper": show(self.helper_provider_id) or "（跟看图模型）",
+            "helper": show(self.helper_provider_id) or "（跟插件用模型）",
             "judge": show(self.judge_provider_id) or "（跟打杂模型）",
             "vision": show(self.vision_provider_id) or "（不转述图片）",
             "creator": show(self.creator_provider_id) or "（跟插件用模型）",
