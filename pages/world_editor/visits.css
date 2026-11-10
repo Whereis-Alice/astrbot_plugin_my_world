@@ -30,6 +30,7 @@
 .visits-title-mark {display:grid;place-items:center;width:29px;height:29px;flex:0 0 29px;color:var(--accent-ink);border:1px solid var(--accent-ring);border-radius:50%;font-size:18px;transform:rotate(-12deg);}
 .visits-heading .toolbar {flex:0 0 auto;gap:7px;}
 .visits-heading button {font-size:11px;padding:6px 11px;}
+.visits-history-note {font-size:11px;line-height:1.8;margin:0 2px 13px;overflow-wrap:anywhere;}
 .visits-notice[hidden],.visits-diagnostics[hidden],.visits-phone[hidden] {display:none;}
 .visits-notice {border-left:2px solid var(--warn);font-size:12px;line-height:1.6;overflow-wrap:anywhere;margin:0 0 14px;padding:4px 10px;}
 .visits-section-head,.visits-phone-head {display:flex;justify-content:space-between;align-items:center;gap:12px;}
@@ -99,9 +100,9 @@
 .visits-history>details {border:1px solid var(--line-strong);border-radius:12px;margin:9px 0;padding:0;background:linear-gradient(125deg,var(--surface-highlight),transparent 60%),var(--visit-paper);overflow:hidden;}
 .visits-history>details[open] {box-shadow:var(--card-shadow);border-color:var(--accent-ring);}
 .visits-history summary {cursor:pointer;font-size:12px;line-height:1.7;overflow-wrap:anywhere;}
-.visits-entry-summary {display:grid;grid-template-columns:48px minmax(0,1fr) 24px;gap:17px;align-items:center;padding:15px 21px;list-style:none;}
+.visits-entry-summary {display:grid;grid-template-columns:max-content minmax(0,1fr) 24px;gap:17px;align-items:center;padding:15px 21px;list-style:none;}
 .visits-entry-summary::-webkit-details-marker {display:none;}
-.visits-entry-date {display:grid;justify-items:center;gap:1px;padding-right:17px;border-right:1px solid var(--line-strong);font-family:Georgia,"Noto Serif SC","SimSun",serif;color:var(--accent-ink);}
+.visits-entry-date {display:grid;justify-items:center;gap:1px;min-width:48px;padding-right:17px;border-right:1px solid var(--line-strong);font-family:Georgia,"Noto Serif SC","SimSun",serif;color:var(--accent-ink);white-space:nowrap;overflow-wrap:normal;}
 .visits-entry-date b {font-size:25px;font-weight:400;line-height:1.1;font-variant-numeric:tabular-nums;}
 .visits-entry-date>span {font-size:10px;color:var(--text-2);letter-spacing:.1em;}
 .visits-entry-copy {display:grid;gap:3px;min-width:0;}
@@ -238,8 +239,8 @@ details[open]>.visits-entry-summary .visits-entry-arrow {transform:rotate(90deg)
   .visits-card-settings {padding:17px 15px;}
   .visits-card-choices {grid-template-columns:minmax(0,1fr);}
   .visits-connection-row {align-items:flex-start;flex-direction:column;gap:8px;}
-  .visits-entry-summary {grid-template-columns:38px minmax(0,1fr) 18px;padding:12px 13px;gap:11px;}
-  .visits-entry-date {padding-right:10px;}
+  .visits-entry-summary {grid-template-columns:max-content minmax(0,1fr) 18px;padding:12px 13px;gap:11px;}
+  .visits-entry-date {min-width:38px;padding-right:10px;}
   .visits-entry-date b {font-size:22px;}
   .visits-entry-title {font-size:13px;}
   .visits-entry-preview {font-size:11px;}

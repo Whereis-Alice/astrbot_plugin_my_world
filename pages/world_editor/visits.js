@@ -607,6 +607,10 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     if (expanded && !live) card.open = true;
     card.append(body); return card;
   }
+  function belongsToConnection(visit, connection) {
+    return visit.connection_id === connection.id || visit.remote?.instance_id === connection.id
+      || (connection.actors || []).some(actor => actor?.id && actor.id === visit.remote?.id);
+  }
   function renderGlobal(result) {
     data = result; peers.replaceChildren(); lifeChoices.replaceChildren(); connections.replaceChildren();
     renderRecordCards();
@@ -643,8 +647,9 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
       };
       footer.append(el("span", "visits-peer-count muted", actors.length > 1 ? `${actors.length} 位朋友` : actors.length ? "已认识" : "等待对方开启生活"), call);
       const meetings = (result.history || result.visits || []).filter(visit => successful(visit)
-        && (visit.connection_id === connection.id || actors.some(item => item.id === visit.remote?.id)));
+        && belongsToConnection(visit, connection));
       if (meetings.length) footer.firstChild.textContent = `${meetings.length} 次相见`;
+      footer.firstChild.title = `${getSession() ? "当前生活" : "本实例"}保留的相见记录，含正在进行的相见`;
       card.append(footer); card.classList.toggle("selected", phoneConnection === connection.id); list.append(card);
       const settingRow = el("div", "visits-connection-row"), settingInfo = el("div", "visits-connection-info");
       settingInfo.append(el("strong", "", name), el("p", "visits-address muted", connection.url || ""));
@@ -738,6 +743,9 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     const past = all.filter(item => item.id !== result.active?.id && successful(item));
     const historyHead = el("div", "visits-section-head");
     historyHead.append(el("h3", "", "通话与相见记录"), el("span", "muted", past.length ? `${past.length} 篇札记` : "")); history.append(historyHead);
+    const previousFriends = past.filter(visit => !(result.connections || []).some(connection => belongsToConnection(visit, connection)));
+    if (previousFriends.length) history.append(el("p", "visits-history-note muted",
+      `其中 ${previousFriends.length} 篇来自当前友邻列表以外的旧友邻，仍保留在这里。`));
     for (const visit of past.slice(0, historyLimit)) {
       history.append(visitCard(visit, false, false, opened.has(visit.id)));
     }

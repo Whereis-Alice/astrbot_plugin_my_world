@@ -209,6 +209,10 @@ class VisitJournal(VisitRecordCards, WorldConnections):
                       remote=copy.deepcopy(visit["remote"]),
                       calls_used=sum(visit["calls"].values()),
                       contact_error=visit.get("contact_error", ""))
+        # A neighbour's current catalog may no longer contain this historical
+        # actor. Keep the world identity on editor records, without putting
+        # local connection metadata into shared protocol snapshots.
+        result["connection_id"] = visit.get("connection_id") or visit["remote"].get("instance_id", "")
         result["observed_at"] = self._now()
         if isinstance(result.get("outing"), dict):
             result["outing"]["phase"] = "playing" if self._now() < result["outing"]["until"] else "checkpoint"
