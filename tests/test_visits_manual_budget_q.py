@@ -56,6 +56,9 @@ class ManualVisitBudgetTests(unittest.IsolatedAsyncioTestCase):
     async def make_world(self):
         world = _WorldHarness(self)
         await actor_fixture.VisitActorTests.asyncSetUp(world)
+        platform = SimpleNamespace(meta=lambda: SimpleNamespace(name="aiocqhttp"))
+        world.plugin.context = SimpleNamespace(
+            get_platform_inst=lambda platform_id: platform if platform_id == "aiocqhttp" else None)
         world.service = VisitService(world.db, self.cfg, world.port, clock=world.clock.now, rng=lambda: 0)
         world.engine.visits = world.service
         world.plugin.visits = world.service
@@ -218,7 +221,7 @@ class ManualVisitBudgetTests(unittest.IsolatedAsyncioTestCase):
         self.b.service.config = replace(self.b.service.config, outings_enabled=False)
         connection_id = self.b.service._state["instance_id"]
         result = await self.a.service.refresh_connection(connection_id)
-        self.assertEqual(result["capabilities"], {"manual_visits": 1, "outings": 0})
+        self.assertEqual(result["capabilities"], {"manual_visits": 1, "outings": 0, "scope_routing": 1})
         resumed = VisitService(self.a.db, self.a.service.config, self.a.port, clock=self.a.clock.now)
         self.addAsyncCleanup(resumed.close)
         await resumed._load()

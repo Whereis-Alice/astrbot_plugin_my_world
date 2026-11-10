@@ -611,6 +611,12 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     return visit.connection_id === connection.id || visit.remote?.instance_id === connection.id
       || (connection.actors || []).some(actor => actor?.id && actor.id === visit.remote?.id);
   }
+  function contactActors(connection) {
+    const actors = (connection.actors || []).filter(actor => actor && typeof actor.id === "string" && actor.id);
+    if (!data?.scope_routing || !getSession()) return actors;
+    const matched = new Set((data.peers || []).filter(peer => peer.connection_id === connection.id).map(peer => peer.id));
+    return actors.filter(actor => matched.has(actor.id));
+  }
   function renderGlobal(result) {
     data = result; peers.replaceChildren(); lifeChoices.replaceChildren(); connections.replaceChildren();
     renderRecordCards();
@@ -625,7 +631,7 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     connections.append(el("h3", "", "已配对的友邻"));
     const list = el("div", "visits-peer-grid");
     for (const connection of result.connections || []) {
-      const actors = (connection.actors || []).filter(actor => actor && typeof actor.id === "string" && actor.id);
+      const actors = contactActors(connection);
       const draft = friendDrafts.get(connection.id) || {actorId: "", reason: ""};
       if (!actors.some(actor => actor.id === draft.actorId)) draft.actorId = actors[0]?.id || "";
       friendDrafts.set(connection.id, draft);
@@ -645,7 +651,8 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
         renderPhone();
         if (!phone.hidden) phone.scrollIntoView({block: "nearest", behavior: "smooth"});
       };
-      footer.append(el("span", "visits-peer-count muted", actors.length > 1 ? `${actors.length} 位朋友` : actors.length ? "已认识" : "等待对方开启生活"), call);
+      footer.append(el("span", "visits-peer-count muted", actors.length > 1 ? `${actors.length} 位朋友` : actors.length ? "已认识"
+        : data?.scope_routing && getSession() ? "当前会话暂无对应生活" : "等待对方开启生活"), call);
       const meetings = (result.history || result.visits || []).filter(visit => successful(visit)
         && belongsToConnection(visit, connection));
       if (meetings.length) footer.firstChild.textContent = `${meetings.length} 次相见`;
@@ -690,7 +697,7 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
       card.querySelector("button").setAttribute("aria-expanded", String(selected));
     }
     if (!connection) return;
-    const actors = (connection.actors || []).filter(actor => actor && typeof actor.id === "string" && actor.id);
+    const actors = contactActors(connection);
     const draft = friendDrafts.get(connection.id), head = el("div", "visits-phone-head");
     const close = el("button", "ghost small", "收起"); close.type = "button"; close.dataset.phoneClose = "true";
     close.onclick = () => {phoneConnection = null; renderPhone();};
@@ -714,7 +721,9 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
         controls();
       };
     }
-    if (!actors.length) phone.append(el("p", "muted", "对方还没有开启参与串门的生活，可在设置中刷新角色。"));
+    if (!actors.length) phone.append(el("p", "muted", data?.scope_routing && getSession()
+      ? "尚未确认对方在当前群聊中的生活。请确认双方已更新并开启这个会话的串门，再刷新角色。"
+      : "对方还没有开启参与串门的生活，可在设置中刷新角色。"));
     const reason = field("这次邀请想一起做什么", "可选，例如一起下完昨天那盘棋"); reason.input.maxLength = 300;
     reason.input.value = draft.reason; reason.input.oninput = () => {draft.reason = reason.input.value;}; body.append(reason.wrap);
     const actions = el("div", "toolbar visits-phone-actions");

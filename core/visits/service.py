@@ -182,7 +182,11 @@ class VisitService(VisitFlow, VisitJournal):
 
     def _exchange_allowed(self, peer, payload):
         return (self._canonical_life(peer["scope"]) == peer["scope"]
-                and ((self._life_enabled(peer["scope"]) and self._binding_current(peer))
+                and ((self._life_enabled(peer["scope"]) and self._binding_current(peer)
+                      # A legacy pairing establishes trust only. Actual offers
+                      # must upgrade that trust to a verified conversation bind.
+                      and (payload.get("op") == "pair" or self._routing_existing_exchange(peer, payload)
+                           or self._routing_binding_current(peer)))
                      or self._settlement_exchange(peer, payload)))
 
     async def _receipt_context(self, request, key, response, *, validate_identity=True):
@@ -358,6 +362,18 @@ class VisitService(VisitFlow, VisitJournal):
                     return {"declined": True, "reason": "双方同时提出邀请，接续另一条邀请"}
                 await self._finish(self._state["visits"][current["id"]], "declined",
                                    "双方同时提出邀请，接续对方的邀请", notify=False)
+            if self._routing_required():
+                # Descriptions, allowance reads and crossing-proposal cleanup
+                # can yield after receive's first verification. A new offer
+                # must still belong to this conversation when it is created.
+                current_peer = self._find_peer(peer["scope"], peer["id"])
+                if (not current_peer or current_peer["secret"] != peer["secret"]
+                        or current_peer["local"] != peer["local"]
+                        or not self._peer_trusted(current_peer)
+                        or not self._exchange_allowed(current_peer, payload)
+                        or current_peer["local"]["actor_id"] != local["actor_id"]
+                        or current_peer["local"]["persona_key"] != local["persona_key"]):
+                    raise ValueError("接待期间会话归属或绑定已变化，旧邀请作废")
             self._state["visits"][visit_id] = visit
             return {"visit": self._wire(visit)}
         visit = self._state["visits"].get(visit_id)
@@ -523,6 +539,8 @@ class VisitService(VisitFlow, VisitJournal):
                 visit["contacted"] = True
                 await self._save()
             self._enabled()  # Keep a durable pre-close wire, but do not send it now.
+            if not self._exchange_allowed(peer, outgoing["payload"]):
+                raise ValueError("发送期间会话归属已变化，旧联系作废")
             peer = copy.deepcopy(peer)
         try:
             response = await self.transport.request(peer["url"], outgoing)
@@ -550,6 +568,8 @@ class VisitService(VisitFlow, VisitJournal):
                 if outgoing["payload"]["op"] != "end":
                     if await self._complete_outing_if_due(visit) or visit["expires_at"] <= self._now():
                         raise ValueError("本次停留已经结束，旧联系不能续证") from error
+                if not self._exchange_allowed(current_peer, outgoing["payload"]):
+                    raise ValueError("续证期间会话归属已变化，旧联系作废") from error
                 renewed = renew_delivery(outgoing, peer["secret"], self._now())
             response = await self.transport.request(peer["url"], renewed)
         result = verify(response, peer["secret"], self._now(), fresh=False)
@@ -577,6 +597,8 @@ class VisitService(VisitFlow, VisitJournal):
             if (visit.get("outbox") or {}).get("message_id") != outgoing["message_id"]:
                 raise ValueError("本次联系已被更新，旧答复作废")
             self._enabled()
+            if not self._exchange_allowed(current_peer, outgoing["payload"]):
+                raise ValueError("答复期间会话归属已变化，旧答复作废")
             candidate = copy.deepcopy(visit)
             remote = result.get("visit")
             if remote is None and not (outgoing["payload"]["op"] == "offer"

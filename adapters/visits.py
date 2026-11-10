@@ -136,6 +136,39 @@ class VisitActorPort(VisitCardActorMixin):
             result.append({"scope": scope, "label": label})
         return result
 
+    def routing_contexts(self, scope: str) -> list[str]:
+        """Local conversation identities for matching, never public cards.
+
+        Adapter instance ids are installation-local. The adapter family and
+        actual conversation id identify the same chat across paired servers.
+        Groups and private contacts use distinct namespaces.
+        """
+        engine = self.engine
+        owner = self.canonical_scope(scope)
+        if not owner:
+            return []
+        getter = getattr(getattr(self.plugin, "context", None), "get_platform_inst", None)
+        if not callable(getter):
+            return []
+        result = set()
+        for session in engine.group_sessions(owner):
+            with engine.config_scope(session):
+                if not engine.is_enabled(session) or engine.state_key(session) != owner:
+                    continue
+            parts = str(session).split(":", 2)
+            if len(parts) != 3 or parts[1] not in {"GroupMessage", "FriendMessage", "PrivateMessage"} or not parts[2]:
+                continue
+            try:
+                platform = getter(parts[0])
+                metadata = platform.meta() if platform is not None else None
+                family = getattr(metadata, "name", "")
+            except Exception:
+                continue
+            if isinstance(family, str) and family and len(family) <= 80:
+                kind = "GroupMessage" if parts[1] == "GroupMessage" else "FriendMessage"
+                result.add(f"{family}:{kind}:{parts[2]}")
+        return sorted(result)
+
     async def _identity(self, scope: str) -> str:
         key = "visits.actor." + hashlib.sha256(scope.encode()).hexdigest()
         async with self._identity_lock:

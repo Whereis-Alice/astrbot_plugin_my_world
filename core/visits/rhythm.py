@@ -232,6 +232,7 @@ class VisitRhythm:
         if (self._closed or not self.config.enabled or not self.config.auto_enabled
                 or not self.config.daily_peer_limit or self.config.auto_probability <= 0):
             return
+        discovered = not self._routing_required()
         scopes = sorted(self._participating())
         for scope in scopes:
             async with self._lock:
@@ -241,7 +242,7 @@ class VisitRhythm:
                 if record.get("next_auto_at", 0) > self._now():
                     continue
                 candidates = self._automatic_peers(scope)
-                if not candidates:
+                if not candidates and discovered:
                     continue
                 day_getter = getattr(self.actor_port, "local_date", None)
                 if record.get("rhythm_version") == 3 and callable(day_getter):
@@ -252,7 +253,7 @@ class VisitRhythm:
                         day = datetime.fromisoformat(str(raw_day)).date().isoformat()
                     except (TypeError, ValueError):
                         day = ""  # An unavailable calendar uses the original description path.
-                    if day and not any(self._has_daily_opportunity(record, self._rhythm_peer_id(peer), day,
+                    if candidates and day and not any(self._has_daily_opportunity(record, self._rhythm_peer_id(peer), day,
                                                                    self.config.daily_peer_limit)
                                        for peer in candidates):
                         continue
@@ -260,6 +261,16 @@ class VisitRhythm:
                 async with asyncio.timeout(self.config.timeout_seconds):
                     if not await self._automatic_budget_available(scope):
                         continue
+                if not discovered:
+                    # Catalog discovery is part of automatic preparation. An
+                    # exhausted local life must not contact other servers, but
+                    # missing candidates must not prevent its first discovery.
+                    await self._discover_routing_catalogs()
+                    discovered = True
+                    async with self._lock:
+                        if not self._automatic_available(scope) or not self._automatic_peers(scope):
+                            continue
+                async with asyncio.timeout(self.config.timeout_seconds):
                     local = await self.actor_port.describe(scope)
             except asyncio.CancelledError:
                 raise

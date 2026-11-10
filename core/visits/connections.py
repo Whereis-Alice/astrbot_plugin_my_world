@@ -15,14 +15,18 @@ from .config import normalize_url
 from .protocol import ID, RESERVED, TERMINAL, code_id, derive_key, digest, envelope, new_id, public_actor, text, validate_actor, verify
 from .ports import VisitStateError, describe_local
 from .transport import VisitTransportError
+from .routing import ConversationRouting, ROUTING_ERROR
 
 MAX_LIVES = 32
 CONTROL_OPS = {"world_catalog", "world_bind", "world_availability"}
 
 
-class WorldConnections:
+class WorldConnections(ConversationRouting):
     def _world_capabilities(self):
-        return {"manual_visits": 1, "outings": int(bool(self.config.outings_enabled))}
+        capabilities = {"manual_visits": 1, "outings": int(bool(self.config.outings_enabled))}
+        if self._routing_required():
+            capabilities["scope_routing"] = 1
+        return capabilities
 
     @staticmethod
     def _read_capabilities(value):
@@ -30,9 +34,12 @@ class WorldConnections:
             return {"manual_visits": 0, "outings": 0}
         if not isinstance(value, dict) or any(
                 type(value.get(key, 0)) is not int or value.get(key, 0) not in {0, 1}
-                for key in ("manual_visits", "outings")):
+                for key in ("manual_visits", "outings", "scope_routing")):
             raise ValueError("友邻世界能力声明无效")
-        return {key: value.get(key, 0) for key in ("manual_visits", "outings")}
+        capabilities = {key: value.get(key, 0) for key in ("manual_visits", "outings")}
+        if "scope_routing" in value:
+            capabilities["scope_routing"] = value["scope_routing"]
+        return capabilities
 
     def _canonical_life(self, scope):
         canonical = getattr(self.actor_port, "canonical_scope", None)
@@ -104,7 +111,7 @@ class WorldConnections:
         for conn in self._state.get("connections", {}).values():
             if not conn.get("enabled", True) or not conn.get("url"):
                 continue
-            actors = conn.get("actors", [])
+            actors = self._routed_actors(scope, conn)
             for actor in actors:
                 binding = self._find_peer(scope, actor["id"])
                 if binding and not binding.get("enabled", True):
@@ -137,6 +144,7 @@ class WorldConnections:
 
     async def global_overview(self, scope: str = "") -> dict[str, Any]:
         result = await self.overview(scope)
+        result["scope_routing"] = self._routing_required()
         for row in result.get("visits", []):
             stored = self._state["visits"].get(row["id"], {})
             for field in ("budget_side", "automatic_budget"):
@@ -239,19 +247,8 @@ class WorldConnections:
             raise VisitStateError() from error
 
     async def _read_catalog_snapshot(self):
-        cards = []
-        identities = []
-        scopes = self._participating()[:MAX_LIVES]
-        for scope in scopes:
-            local = await describe_local(self.actor_port, scope, timeout_seconds=self.config.timeout_seconds)
-            card = public_actor(local, self._state["instance_id"])
-            identities.append([scope, card, local.get("persona_key"),
-                               self._state.get("life_generations", {}).get(scope, 0)])
-            if self._life_enabled(scope) and local.get("persona_key"):
-                cards.append(card)
-        if self._participating()[:MAX_LIVES] != scopes:
-            raise ValueError("生活参与状态已变化，请刷新角色目录")
-        return cards, digest(identities)
+        cards, stamp, _ = await self._routing_catalog_snapshot()
+        return cards, stamp
 
     @staticmethod
     def _validate_catalog(value, instance_id):
@@ -349,8 +346,10 @@ class WorldConnections:
         local = None
         scope = ""
         if op == "world_catalog":
-            cards, catalog_stamp = await self._catalog_snapshot()
+            cards, catalog_stamp, routing = await self._routing_catalog_snapshot(anchor)
             result = {"actors": cards, "capabilities": self._world_capabilities()}
+            if routing is not None:
+                result["routing"] = routing
         elif op == "world_availability":
             for candidate in self._participating():
                 card = await describe_local(self.actor_port, candidate, timeout_seconds=self.config.timeout_seconds)
@@ -376,8 +375,11 @@ class WorldConnections:
                     break
             if not local:
                 raise ValueError("对方选择的生活没有开启串门，请刷新角色目录")
+            route = self._check_routing_proof(scope, anchor, payload.get("routing"))
             result = {"actor": public_actor(local, self._state["instance_id"]),
                       "actor_token": self._binding_token(scope, local, anchor)}
+            if self._routing_required():
+                result["routing"] = {"version": 1, "tokens": sorted(set(route["local"]).intersection(route["remote"]))}
         else:
             raise ValueError("未知世界管理消息")
         async with self._lock:
@@ -395,6 +397,8 @@ class WorldConnections:
                         or current_local["persona_key"] != local["persona_key"]):
                     raise ValueError("这个生活已关闭串门或身份已变化，请刷新角色目录")
             elif local:
+                if self._check_routing_proof(scope, anchor, payload.get("routing")) != route:
+                    raise ValueError("会话归属已变化，旧绑定作废")
                 current_local = await describe_local(self.actor_port, scope, timeout_seconds=self.config.timeout_seconds)
                 if (not self._life_enabled(scope) or current_local["actor_id"] != local["actor_id"]
                         or current_local["persona_key"] != local["persona_key"]
@@ -418,6 +422,8 @@ class WorldConnections:
                     peer = self._add_peer(scope, local, remote, current["url"],
                                          bound_key, register=False)
                     peer.update(connection_id=conn["id"], anchor_digest=digest(anchor))
+                    if route is not None:
+                        peer["routing"] = route
             return await self._receipt(body, result, anchor["secret"], anchor["local_id"], receipt_key)
 
     def _peer_automatic_hold(self, peer):
@@ -492,6 +498,9 @@ class WorldConnections:
             result, anchor = await self._control_request(cid, {"op": "world_catalog"})
             cards = self._validate_catalog(result.get("actors"), cid)
             capabilities = self._read_capabilities(result.get("capabilities"))
+            routing = self._read_routing_catalog(result.get("routing"), cards)
+            if capabilities.get("scope_routing") == 1 and routing is None:
+                raise ValueError("友邻没有返回会话归属目录")
         except (ValueError, ConnectionError, TimeoutError, OSError) as exc:
             async with self._lock:
                 conn = self._state["connections"].get(cid)
@@ -515,6 +524,8 @@ class WorldConnections:
                 raise ValueError("全局配对已变化")
             conn.update(actors=cards, capabilities=capabilities, catalog_error="", catalog_ready=True,
                         next_catalog_at=self._now() + max(60, self.config.auto_interval_minutes * 60))
+            conn["routing"] = routing
+            conn["routing_anchor"] = digest(anchor)
             if cards and conn.get("default_actor") not in {c["id"] for c in cards}:
                 conn["default_actor"] = cards[0]["id"]
             await self._save()
@@ -543,11 +554,12 @@ class WorldConnections:
         if not self._life_enabled(scope):
             raise ValueError("这个生活还没有开启串门，请在友邻页勾选参与的生活")
         local = await describe_local(self.actor_port, scope, timeout_seconds=self.config.timeout_seconds)
+        membership = self._routing_contexts(scope)
         existing = self._find_peer(scope, peer_id)
         if existing and not existing.get("enabled", True):
             raise ValueError("这位友邻暂未开启联系")
         existing_conn = self._state["connections"].get(existing.get("connection_id")) if existing else None
-        if (existing and self._peer_trusted(existing) and existing["local"]["persona_key"] == local["persona_key"]
+        if (not self._routing_required() and existing and self._peer_trusted(existing) and existing["local"]["persona_key"] == local["persona_key"]
                 and existing["local"]["actor_id"] == local["actor_id"] and self._binding_current(existing)
                 and not existing.get("anchor_digest") and not existing_conn.get("catalog_ready")):
             # Discover an upgraded neighbour only when preparing a real contact.
@@ -564,13 +576,23 @@ class WorldConnections:
                      or any(a["id"] == peer_id for a in c.get("actors", []))), None)
         if not conn:
             raise ValueError("请先选择已配对的友邻世界")
-        if not conn.get("actors"):
+        if (self._routing_required() and (not self._routing_catalog_current(conn)
+                or conn.get("next_catalog_at", 0) <= self._now())):
+            if await self._reserve_routing_catalog_refresh(conn["id"]):
+                await self.refresh_connection(conn["id"])
+            if not self._routing_catalog_current(conn):
+                raise ValueError(ROUTING_ERROR)
+        elif not conn.get("actors"):
             await self.refresh_connection(conn["id"])
-        actor = next((a for a in conn["actors"] if a["id"] == peer_id), None)
+        choices = self._routed_actors(scope, conn)
+        actor = next((a for a in choices if a["id"] == peer_id), None)
         if actor is None and peer_id == conn["id"]:
-            actor = next((a for a in conn["actors"] if a["id"] == conn.get("default_actor")), None)
+            actor = (choices[0] if self._routing_required() and len(choices) == 1 else
+                     next((a for a in choices if a["id"] == conn.get("default_actor")), None))
         if not actor:
-            raise ValueError("友邻暂未开放接待的生活，请稍后或刷新目录")
+            raise ValueError(ROUTING_ERROR if self._routing_required() else "友邻暂未开放接待的生活，请稍后或刷新目录")
+        if membership != self._routing_contexts(scope):
+            raise ValueError("会话归属已变化，请稍后重新联系")
         binding = self._find_peer(scope, actor["id"])
         if binding and not binding.get("enabled", True):
             raise ValueError("这位友邻暂未开启联系")
@@ -578,8 +600,10 @@ class WorldConnections:
         anchor = conn["anchors"][0]
         own_token = self._binding_token(scope, local, anchor)
         try:
-            result, anchor = await self._control_request(conn["id"], {"op": "world_bind", "actor": own,
-                "actor_token": own_token, "target_actor": actor["id"]})
+            payload = {"op": "world_bind", "actor": own, "actor_token": own_token, "target_actor": actor["id"]}
+            if self._routing_required():
+                payload["routing"] = self._routing_proof(scope, anchor)
+            result, anchor = await self._control_request(conn["id"], payload)
         except VisitTransportError as error:
             if error.http_status == 400:
                 await self._refresh_rejected_binding(scope, conn["id"])
@@ -591,6 +615,7 @@ class WorldConnections:
                     or not isinstance(remote_token, str) or len(remote_token) != 64
                     or any(c not in "0123456789abcdef" for c in remote_token)):
                 raise ValueError("友邻绑定返回了其他角色")
+            route = self._check_routing_proof(scope, anchor, result.get("routing"))
         except ValueError:
             await self._refresh_rejected_binding(scope, conn["id"])
             raise
@@ -603,9 +628,13 @@ class WorldConnections:
                 raise ValueError("建立联系期间生活或配对已变化，旧绑定作废")
             if self._binding_token(scope, current, anchor) != own_token:
                 raise ValueError("建立联系期间生活参与状态已变化，旧绑定作废")
+            if membership != self._routing_contexts(scope) or self._check_routing_proof(scope, anchor, result.get("routing")) != route:
+                raise ValueError("建立联系期间会话归属已变化，旧绑定作废")
             peer = self._add_peer(scope, local, remote, live_conn["url"],
                                  self._bound_key(anchor, own["id"], own_token, remote["id"], remote_token), live_conn.get("alias", ""), register=False)
             peer.update(connection_id=conn["id"], anchor_digest=digest(anchor))
+            if route is not None:
+                peer["routing"] = route
             await self._save()
         return peer["id"]
 
@@ -613,7 +642,8 @@ class WorldConnections:
         # The trust anchor salts private identity data; neither persona nor local
         # scope names are published, and concurrent binds derive the same key.
         identity = digest([scope, local["actor_id"], local["persona_key"],
-                           self._state.get("life_generations", {}).get(scope, 0)])
+                           self._state.get("life_generations", {}).get(scope, 0)]
+                          + ([self._routing_contexts(scope)] if self._routing_required() else []))
         return derive_key(anchor["secret"], "life", identity)
 
     @staticmethod

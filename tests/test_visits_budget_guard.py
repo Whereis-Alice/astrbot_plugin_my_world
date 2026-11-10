@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 import unittest
 
 from core.db import AsyncDatabase
@@ -20,6 +21,9 @@ class VisitBudgetGuardTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         await actor_fixture.VisitActorTests.asyncSetUp(self)
+        platform = SimpleNamespace(meta=lambda: SimpleNamespace(name="aiocqhttp"))
+        self.plugin.context = SimpleNamespace(
+            get_platform_inst=lambda platform_id: platform if platform_id == "aiocqhttp" else None)
         config = VisitConfig(enabled=True, listen_host="127.0.0.1", listen_port=0,
                              auto_enabled=False, reception_start=0, reception_end=0)
         self.a = VisitService(self.db, config, self.port, clock=self.clock.now)
@@ -27,6 +31,7 @@ class VisitBudgetGuardTests(unittest.IsolatedAsyncioTestCase):
         remote_db = AsyncDatabase(self.data_dir / "remote.db")
         self.addAsyncCleanup(remote_db.close)
         self.b = VisitService(remote_db, config, protocol_fixture.Actor("b"), clock=self.clock.now)
+        self.b.actor_port.routing_contexts = lambda scope: ["aiocqhttp:GroupMessage:1001"] if scope == "life-b" else []
         await self.a.start()
         await self.b.start()
         self.addAsyncCleanup(self.a.close)
@@ -35,6 +40,7 @@ class VisitBudgetGuardTests(unittest.IsolatedAsyncioTestCase):
         self.b.config = replace(config, public_url=f"http://127.0.0.1:{self.b.transport.bound_port}")
         code = await self.b.create_pair_code("life-b")
         self.peer = (await self.a.pair(S, self.b.config.public_url, code["code"]))["id"]
+        await self.a.refresh_connection(self.b._state["instance_id"])
         self.a.config = replace(self.a.config, auto_enabled=True)
         self.requests = []
         original = self.a.transport.request

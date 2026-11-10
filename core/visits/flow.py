@@ -484,6 +484,8 @@ class VisitFlow(VisitRhythm):
         async with self._lock:
             self._enabled()
             peer = self._peer(scope, peer_id)
+            if not self._routing_binding_current(peer):
+                raise ValueError("建立联系期间会话归属已变化，请重新联系")
             if not peer.get("enabled", True):
                 raise ValueError("这位友邻暂未开启联系")
             current = self.active(scope)
