@@ -212,6 +212,7 @@ def memory_context_items(state: Any, request: ContextRequest, memories, *, stamp
             label = "# 阅读本会话时的感想（主观想法，不是亲历或人物事实）\n"
         elif meta.get("kind") == "world_visit":
             label = "# 与另一位生活角色的串门经历（虚拟世界中的双边互动，不能证明现实用户言行）\n"
+            label += "这是已结束的经历；现在在家或睡觉不表示此前没有出门。\n"
         elif memory.source == "life_matter":
             if not life_enabled:
                 continue
@@ -231,11 +232,12 @@ def memory_context_items(state: Any, request: ContextRequest, memories, *, stamp
                 label += "旧记录缺少事项关联，只代表当时片段，不能证明当前状态或目标已完成。\n"
         person_label = "涉及生活角色：" if meta.get("kind") == "world_visit" else "涉及用户ID："
         body = label + (person_label + "、".join(people) + "\n" if people else "")
-        body += memory.render(stamp=stamp(memory.created_at) if stamp else "")
+        body += memory.render_context(stamp=stamp(memory.created_at) if stamp else "", timezone=request.timezone)
         key = f"memory:{memory.id}"
-        result[key] = ContextItem(key, "memory", body, at=memory.created_at, people=people,
+        result[key] = ContextItem(key, "memory", body, at=memory.context_at, people=people,
             session=memory.session_id if memory.source_scoped else "", dependencies=dependencies,
-            source=memory.source, match_text=memory.content, semantic_score=memory.semantic_score)
+            source=memory.source, match_text=memory.content, semantic_score=memory.semantic_score,
+            priority=memory.context_priority)
     return list(result.values())
 
 

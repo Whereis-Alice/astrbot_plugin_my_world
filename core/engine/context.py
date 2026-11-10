@@ -17,9 +17,11 @@ class ContextMixin:
         if not focus and len(parts) == 3 and parts[1] in {"FriendMessage", "PrivateMessage"}:
             focus = parts[2]
         # An explicit action target is an ID; a nickname in generated text is not.
-        return request_for(task=task, session=target, now=self._now(), query=text,
-                           rows=rows, focus=focus, persona=persona,
-                           node_id=str(getattr(state, "node_id", "") or ""))
+        request = request_for(task=task, session=target, now=self._now(), query=text,
+                              rows=rows, focus=focus, persona=persona,
+                              node_id=str(getattr(state, "node_id", "") or ""))
+        request.timezone = self.world.timezone
+        return request
 
     @staticmethod
     def _context_origins(state, rows: list[dict]) -> list[dict]:
@@ -79,13 +81,13 @@ class ContextMixin:
         if note:
             materials.append(ContextItem("chat:note", "topic", "# 刚才的话题备忘\n" + note))
         materials = [item for item in materials if context_eligible(request, item)]
-        materials.sort(key=lambda item: (relevance(request.query, item.topic_text), item.continuing, item.at), reverse=True)
+        materials.sort(key=lambda item: (relevance(request.retrieval_query, item.topic_text), item.continuing, item.at), reverse=True)
         return materials[:64]
 
     def restore_context_semantics(self, request: ContextRequest) -> None:
         config = self.world.memory
         request.semantic_context = (self.memory.semantic.cached_context(
-            request.session, request.persona, [request.query, *request.people_queries.values()],
+            request.session, request.persona, request.retrieval_queries,
             life_persona_key=request.life_persona, node_id=request.node_id)
             if config.semantic_enabled and config.automatic_recall != "manual" and config.recall_max_chars > 0 else {})
 
@@ -104,7 +106,7 @@ class ContextMixin:
             materials = self.semantic_context_items(state, request)
             await self.memory.semantic.prepare_many(
                 request.session, request.persona,
-                [request.query, *request.people_queries.values()],
+                request.retrieval_queries,
                 automatic=True, life_persona_key=request.life_persona,
                 node_id=request.node_id, task=request.task, people=request.people,
                 context_texts={context_identity(item): item.topic_text for item in materials})

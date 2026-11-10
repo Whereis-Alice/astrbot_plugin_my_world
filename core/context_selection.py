@@ -54,6 +54,24 @@ class ContextRequest:
     instant_action: dict[str, Any] | None = None  # This request's execution; never a persisted completion.
     node_id: str = ""
     semantic_context: dict[str, float] = field(default_factory=dict)
+    current_text: str = ""
+    timezone: str = "Asia/Shanghai"
+
+    @property
+    def has_current_topic(self) -> bool:
+        current = self.current_text.strip()
+        return len(current) >= 6 and len(search_terms(current)) >= 2
+
+    @property
+    def retrieval_query(self) -> str:
+        """A complete new question leads retrieval; brief continuations keep context."""
+        return self.current_text.strip() if self.has_current_topic else self.query
+
+    @property
+    def retrieval_queries(self) -> list[str]:
+        if self.has_current_topic:
+            return [self.retrieval_query]
+        return list(dict.fromkeys([self.query, *self.people_queries.values()]))
 
     @property
     def budget(self) -> int:
@@ -82,7 +100,7 @@ def request_for(*, task: str, session: str, now: float, query: str = "",
     query = split_external_memory(query)[0]
     request = ContextRequest(task, session, now, (context + "\n" + query).strip(),
                              tuple(people), persona, evidence, focus_user=str(focus or ""),
-                             node_id=str(node_id or ""))
+                             node_id=str(node_id or ""), current_text=query)
     from .evidence import direct_text
     for uid in people:
         spoken = [direct_text(str(row.get("raw_text") or row.get("text") or ""))
@@ -171,7 +189,7 @@ def select_context(request: ContextRequest, items: list[ContextItem], *,
     preferred = _PREFER.get(request.task, set())
     for item in eligible.values():
         semantic = max(item.semantic_score, request.semantic_context.get(context_identity(item), 0))
-        match = max(relevance(request.query, item.topic_text), semantic)
+        match = max(relevance(request.retrieval_query, item.topic_text), semantic)
         person = bool(set(item.people) & set(request.people))
         age = max(0, request.now - item.at) if item.at else float("inf")
         recent = max(0, 1 - age / 86400) if item.kind not in {"relationship", "world"} else 0

@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .db import Database
@@ -110,6 +110,33 @@ class RecalledMemory:
     source: str = ""
     session_id: str = ""
     semantic_score: float = 0
+    context_priority: float = 0
+
+    @property
+    def context_at(self) -> float:
+        from .context_sources import life_memory_metadata
+        from .visit_recall import visit_occurrence_interval
+        interval = visit_occurrence_interval(life_memory_metadata(self.source, self.context))
+        return interval[0] if interval else self.created_at
+
+    def render_context(self, *, stamp: str = "", timezone: str = "Asia/Shanghai") -> str:
+        """A bounded current-text view; durable memory and manual recall stay intact."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        from .context_sources import life_memory_metadata
+        from .visit_recall import visit_memory_excerpt, visit_occurrence_interval
+        meta = life_memory_metadata(self.source, self.context)
+        if meta.get("kind") != "world_visit":
+            return self.render(stamp=stamp)
+        interval = visit_occurrence_interval(meta)
+        if interval:
+            try:
+                stamp = datetime.fromtimestamp(interval[0], ZoneInfo(timezone)).strftime("%Y-%m-%d")
+            except (ZoneInfoNotFoundError, ValueError, OverflowError, OSError):
+                stamp = "相见日期未记"
+        else:
+            stamp = "相见日期未记" + ("；存入：" + stamp if stamp else "")
+        return replace(self, content=visit_memory_excerpt(self.content, meta)).render(stamp=stamp)
 
     @property
     def private_matter(self) -> bool:
@@ -530,6 +557,8 @@ class MemoryEngine:
         """
         from .context_selection import ContextItem, relevance, search_terms, select_context
         from .context_sources import life_memory_metadata
+        from .recall_time import recall_day
+        from .visit_recall import visit_occurrence_interval
         config = self.world.memory
         if config.automatic_recall == "manual" or config.recall_max_chars <= 0:
             return []
@@ -541,7 +570,9 @@ class MemoryEngine:
         mode = self.world.memory_scope_mode
         sessions = self.sessions(request.session)
         # Text predicates run before LIMIT, so an older match survives a busy month.
-        terms = search_terms(request.query)
+        query = request.retrieval_query
+        day = recall_day(query, request.now, request.timezone)
+        terms = search_terms(query)
         candidates = self._query(request.session, request.persona, mode,
                                  session_ids=sessions, text_terms=terms[:128], life_persona_key=request.life_persona) if terms else []
         candidates += self._query(request.session, request.persona, mode, session_ids=sessions,
@@ -554,9 +585,9 @@ class MemoryEngine:
         candidates = _dedupe(candidates)
         semantic: dict[int, float] = {}
         if config.semantic_enabled:
-            queries = [request.query, *request.people_queries.values()]
-            for query in queries:
-                for mid, score in self.semantic.cached(request.session, request.persona, query, automatic=True,
+            queries = request.retrieval_queries
+            for semantic_query in queries:
+                for mid, score in self.semantic.cached(request.session, request.persona, semantic_query, automatic=True,
                                                        life_persona_key=request.life_persona,
                                                        node_id=node_id).items():
                     if score >= config.semantic_min_similarity:
@@ -566,6 +597,12 @@ class MemoryEngine:
             meta = life_memory_metadata(str(row.get("source") or ""), row.get("context"))
             if meta.get("persona_key") and meta["persona_key"] != request.life_persona:
                 continue  # Filter before relevance, semantic scores and selection traces.
+            if meta.get("kind") == "world_visit":
+                interval = visit_occurrence_interval(meta)
+                if interval and interval[0] > request.now + 60:
+                    continue
+                if day and (not interval or interval[0] >= day[1] or interval[1] < day[0]):
+                    continue  # A delayed write does not turn yesterday's trip into today's.
             people = tuple(str(uid) for uid in (*row.get("related_users", []), *row.get("participants", [])))
             related = bool(set(people) & set(request.people))
             if scoped_emotion(str(row.get("source") or ""), row.get("context")):
@@ -576,7 +613,17 @@ class MemoryEngine:
                     continue
             content = self._search_text(row)
             person_query = "\n".join(request.people_queries.get(uid, "") for uid in people if uid in request.people)
-            topic = relevance(person_query or request.query, content)
+            topic = relevance(query if request.has_current_topic else person_query or query, content)
+            # Explicit indexed topics in the new question outrank incidental
+            # speaker affinity. This also works for friend names and other memories.
+            keywords = row.get("keywords") or []
+            direct_topic = bool(request.current_text and any(
+                len(str(word).strip()) >= 2 and str(word).strip().casefold() in query.casefold()
+                for word in keywords if isinstance(word, str)))
+            topical_priority = 3.0 if direct_topic else 0.0
+            if (request.has_current_topic
+                    and not topic and not semantic.get(row["id"]) and not direct_topic):
+                continue  # Knowing this speaker alone cannot answer a new, unrelated question.
             age = max(0, request.now - float(row.get("created_at") or 0))
             # Only one fresh personal experience can fill the continuity gap;
             # unrelated people's memories must not enter a directed conversation.
@@ -586,19 +633,20 @@ class MemoryEngine:
                                node_id=node_id, now=request.now)
             recalled = self._to_recalled(base + topic * 3 + semantic.get(row["id"], 0) * 3, row,
                                          semantic_score=semantic.get(row["id"], 0))
+            recalled.context_priority = topical_priority
             key = f"memory:{recalled.id}"
             by_key[key] = recalled
             # Keep date and source labels even in the shorter view.
             from datetime import datetime
             stamp = datetime.fromtimestamp(recalled.created_at).strftime("%Y-%m-%d") if recalled.created_at else "日期未记"
-            detail = recalled.render(stamp=stamp)
+            detail = recalled.render_context(stamp=stamp, timezone=request.timezone)
             if people:
                 detail = "涉及用户ID：" + "、".join(dict.fromkeys(people)) + "\n" + detail
             materials.append(ContextItem(key, "memory" if related or topic else "experience", detail,
-                at=recalled.created_at, people=people,
+                at=recalled.context_at, people=people,
                 session=recalled.session_id if recalled.source_scoped else "",
                 priority=(base if related or topic or semantic.get(recalled.id, 0) else 0)
-                + semantic.get(recalled.id, 0) * 3 + (0.2 if row.get("pinned") else 0),
+                + semantic.get(recalled.id, 0) * 3 + topical_priority + (0.2 if row.get("pinned") else 0),
                 source=recalled.source, match_text=content,
                 semantic_score=recalled.semantic_score))
         selected = select_context(request, materials, budget=min(config.recall_max_chars, request.budget // 2),
