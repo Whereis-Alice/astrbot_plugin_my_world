@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 from ..core.visit_card import (CARD_SCALE, CARD_WIDTH, build_visit_card_pages,
                                render_visit_card_html, visit_card_template)
 from ..core.visits.record_cards import RecordCardRetryableError
+from .platform_capabilities import official_delivery_hold
 
 
 def _image_ref(value: Any) -> str:
@@ -261,6 +262,9 @@ class VisitCardActorMixin:
         if session not in self.record_card_targets(scope, visit):
             raise RecordCardRetryableError("相见卡片订阅已关闭，或会话已换组")
         messenger = self.engine.messenger
+        hold = official_delivery_hold(self.plugin, session)
+        if hold:
+            raise RecordCardRetryableError(hold)
         if callable(getattr(messenger, "blocked", None)) and messenger.blocked(session):
             raise RecordCardRetryableError("平台处于发送失败冷却中")
         ref = _image_ref(page)

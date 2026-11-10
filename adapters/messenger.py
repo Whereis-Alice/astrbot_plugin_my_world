@@ -17,6 +17,7 @@ from ..core.ports import CardResult, PokeResult
 from ..core.speech_policy import segment_allowed, segment_ready, reply_target, accept_segment, contact_targets
 from .group_names import GroupNamesMixin
 from .group_mentions import GroupMentions, addressed_chain, has_body
+from .platform_capabilities import QQ_OFFICIAL, official_delivery_hold, platform_family
 
 if TYPE_CHECKING:
     from .. import MyWorldPlugin
@@ -136,6 +137,11 @@ class AstrBotMessenger(GroupNamesMixin):
                 # Permissions can change while the bounded member read is waiting.
                 if not await segment_ready(session_id, index):
                     continue
+                hold = official_delivery_hold(self.plugin, session_id)
+                if hold:
+                    self.mark_failed(session_id, hold)
+                    failed = True
+                    break
                 result = await self.plugin.context.send_message(
                     session_id, MessageChain(chain=chain)
                 )
@@ -187,6 +193,10 @@ class AstrBotMessenger(GroupNamesMixin):
         chain = [Image(file=ref) for ref in refs]
         if not await segment_ready(session_id):
             return False
+        hold = official_delivery_hold(self.plugin, session_id)
+        if hold:
+            self.mark_failed(session_id, hold)
+            return False
         try:
             result = await self.plugin.context.send_message(
                 session_id, MessageChain(chain=chain)
@@ -202,6 +212,8 @@ class AstrBotMessenger(GroupNamesMixin):
     async def set_group_card(self, session_id: str, card: str) -> CardResult:
         """设置群名片。只有 aiocqhttp（OneBot）这类支持 call_action 的平台才生效。"""
 
+        if platform_family(self.plugin, session_id) in QQ_OFFICIAL:
+            return CardResult(ok=False, reason="QQ 官方机器人不支持修改群名片")
         owner = self.group_card_owner(session_id)
         if owner:
             return CardResult(ok=False, reason=f"群名片由{owner}管理，MW 不覆盖它的名片")
@@ -243,7 +255,7 @@ class AstrBotMessenger(GroupNamesMixin):
     async def fetch_group_card(self, session_id: str) -> str:
         """读她当前在群里的名片，用作"原名"的兜底。"""
 
-        if ":GroupMessage:" not in session_id:
+        if platform_family(self.plugin, session_id) in QQ_OFFICIAL or ":GroupMessage:" not in session_id:
             return ""
         event = self.plugin.last_event(session_id)
         if event is None:
@@ -284,6 +296,8 @@ class AstrBotMessenger(GroupNamesMixin):
         target = str(user_id or "").strip()
         if not target:
             return PokeResult(False, "没有指定要戳谁")
+        if platform_family(self.plugin, session_id) in QQ_OFFICIAL:
+            return PokeResult(False, "QQ 官方机器人不支持戳一戳")
         if self.blocked(session_id):
             return PokeResult(False, "上一次发送失败，正在冷却")
         if not segment_allowed(session_id):
@@ -298,10 +312,12 @@ class AstrBotMessenger(GroupNamesMixin):
             try:
                 from astrbot.api.message_components import Poke
 
-                await self.plugin.context.send_message(
+                sent = await self.plugin.context.send_message(
                     session_id, MessageChain(chain=[Poke(id=target)])
                 )
-                return PokeResult(True, route="poke 消息段")
+                if sent:
+                    return PokeResult(True, route="poke 消息段")
+                errors.append("消息段：平台未接受发送")
             except Exception as exc:
                 errors.append(f"消息段：{type(exc).__name__}: {exc}")
         # 路线二：直接调协议端接口（私聊只有这一条：friend_poke）
