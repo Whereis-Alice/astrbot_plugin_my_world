@@ -200,6 +200,7 @@ class AstrBotLLM:
                 self.plugin.reset_self_initiated(token)
         if response is None or getattr(response, "role", "") == "err":
             return LLMReply(ok=False, error=str(getattr(response, "completion_text", "") or "Provider 返回错误响应"))
-        if self.role == "main":
+        if (self.role == "main" and self.provider_slot != "background"
+                and call_context().get("purpose") != "world_visit"):
             self.plugin.remember_llm_response(session_id, response)
         return LLMReply(text=getattr(response, "completion_text", "") or "", ok=True)

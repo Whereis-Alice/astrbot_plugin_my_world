@@ -126,6 +126,20 @@ class SpeechProviderRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen, [(engine.speech_llm, "台词"),
                                 (engine.llm, "工具中的判断"), (engine.llm, "子任务判断")])
 
+    async def test_quiet_and_visit_json_cannot_replace_chat_reply_hook_receipt(self):
+        original, response = object(), SimpleNamespace(completion_text="新结果", role="assistant")
+        self.plugin.remember_llm_response(self.session, original)
+        self.plugin.context.get_current_chat_provider_id = AsyncMock(return_value="session-default")
+        self.plugin.context.llm_generate = AsyncMock(return_value=response)
+        await self.plugin.engine.llm.generate(session_id=self.session, system_prompt="角色", prompt="生活计划")
+        self.assertIs(self.plugin._llm_responses[self.session], original)
+        calls = importlib.import_module(self.module.__name__ + ".core.model_calls")
+        with calls.model_context("world_visit", "邀请", self.session):
+            await self.plugin.engine.speech_llm.generate(session_id=self.session, system_prompt="角色", prompt="串门JSON")
+        self.assertIs(self.plugin._llm_responses[self.session], original)
+        await self.plugin.engine.speech_llm.generate(session_id=self.session, system_prompt="角色", prompt="台词")
+        self.assertIs(self.plugin.take_llm_response(self.session), response)
+
 
 class VisitSpeechRoutingTests(unittest.IsolatedAsyncioTestCase):
     node_id = "study"
