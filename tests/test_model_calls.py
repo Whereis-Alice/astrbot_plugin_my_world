@@ -171,10 +171,10 @@ class ModelCallsApiTests(unittest.IsolatedAsyncioTestCase):
         explicit = adapter(self.plugin, provider_id="explicit", role="event")
         main, helper = adapter(self.plugin), adapter(self.plugin, role="helper")
         self.assertEqual(await explicit.resolve_provider_id(self.session), "explicit")
-        self.assertEqual(await helper.resolve_provider_id(self.session), "global")
-        self.assertEqual(await main.resolve_provider_id(self.session), "global")
+        self.assertEqual(await helper.resolve_provider_id(self.session), "session-selected")
+        self.assertEqual(await main.resolve_provider_id(self.session), "session-selected")
         self.plugin.llm_provider_id = ""
-        self.assertEqual(await main.resolve_provider_id(self.session), "turn-selected")
+        self.assertEqual(await main.resolve_provider_id(self.session), "session-selected")
         self.assertEqual(await helper.resolve_provider_id(self.session), "session-selected")
         self.plugin.context.get_current_chat_provider_id.return_value = "new-session-selection"
         self.assertEqual(await helper.resolve_provider_id(self.session), "new-session-selection")

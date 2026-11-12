@@ -68,9 +68,9 @@ class SpeechProviderRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.plugin.context.get_current_chat_provider_id = AsyncMock(return_value="session-default")
         self.plugin._turn_provider_overrides[self.session] = "reply-only"
         self.assertEqual(await self.plugin.engine.llm.resolve_provider_id(self.session), "session-default")
-        self.assertEqual(await self.plugin.engine.speech_llm.resolve_provider_id(self.session), "reply-only")
+        self.assertEqual(await self.plugin.engine.speech_llm.resolve_provider_id(self.session), "session-default")
         self.plugin.llm_provider_id = "life-small"
-        self.assertEqual(await self.plugin.engine.speech_llm.resolve_provider_id(self.session), "life-small")
+        self.assertEqual(await self.plugin.engine.speech_llm.resolve_provider_id(self.session), "session-default")
 
     async def test_invalid_explicit_speech_does_not_retry_on_background(self):
         self.plugin.speech_provider_id = "missing-speech"
@@ -91,7 +91,8 @@ class SpeechProviderRoutingTests(unittest.IsolatedAsyncioTestCase):
         slots = self.plugin._provider_slots()
         self.assertEqual((slots["speech"], slots["llm"]), ("speech-best", "life-small"))
         adapter = importlib.import_module(self.module.__name__ + ".adapters.llm").AstrBotLLM
-        self.assertEqual(await adapter(self.plugin, role="creator").resolve_provider_id(self.session), "life-small")
+        self.plugin.context.get_current_chat_provider_id = AsyncMock(return_value="session-default")
+        self.assertEqual(await adapter(self.plugin, role="creator").resolve_provider_id(self.session), "session-default")
 
     async def test_background_task_inside_speech_cannot_reenter_native_speech_tools(self):
         self.plugin.llm_provider_id = "life-small"

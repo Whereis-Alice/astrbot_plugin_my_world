@@ -387,7 +387,7 @@ class ScheduleMixin:
     ) -> tuple[dict[str, Any], list[str]]:
         """保存日程时，给缺意图的工具 / 指令步骤补一句「想干什么」。
 
-      用内容生成模型（`creator_provider_id`，没配就复用主模型）写，写进日程 JSON 里，
+      用内容生成模型（`creator_provider_id`，留空使用 AstrBot 当前会话默认）写，写进日程 JSON 里，
         编辑器里能看到也能改。这样运行时不用再花钱、也不会因为缺意图被跳过。
         返回 ``(处理后的配置, 说明列表)``；模型不可用时原样返回。
         """

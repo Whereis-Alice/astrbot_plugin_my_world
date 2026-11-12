@@ -712,7 +712,9 @@ class ActionsRunMixin:
                 await self._tick_plan(state, node, outcome, depth=depth + 1)
             return answered
 
-        if action.interject:
+        if definition.id in self.INNER_ACTIONS:
+            messages = await self._instant_output(state, node, definition, action)
+        elif action.interject:
             rows = self.live_chat(state, outcome.home())
             if not rows:
                 outcome.notes.append("刚才的话题已不在现场，这轮不再补插话")
@@ -864,6 +866,15 @@ class ActionsRunMixin:
     ) -> list[str]:
         """瞬时动作的输出文本。"""
 
+        if definition.id in self.INNER_ACTIONS:
+            # Private content is retained by _remember_action after execution;
+            # it must never enter the outward generation or message pipeline.
+            if not action.content:
+                if definition.llm_level == "template":
+                    action.content = self.render_template(definition.template, state, node, action)
+                elif definition.llm_level == "single":
+                    action.content = await self._generate_private_thought(state, node, definition, action)
+            return []
         if definition.id in {"say", "share"}:
             if definition.id == "share" and not self._share_allowed(state):
                 return []
@@ -925,6 +936,45 @@ class ActionsRunMixin:
                 self.render_template(f"（{{bot}}{label}了 {{user}}）", state, node, action)
             ]
         return [self.render_template(f"（{{bot}}{label}）", state, node, action)]
+
+    @model_operation("thought", "独处时留下自己的内心活动")
+    async def _generate_private_thought(
+        self, state: WorldState, node: NodeDef | None, definition: ActionDef, action: PlannedAction
+    ) -> str:
+        """Generate one private thought with the life model, without speech tools."""
+        if self.llm is None or not self._llm_text_allowed(state):
+            return ""
+        from ..background_budget import capture_background_admission
+        from ..speech_runtime import SPEECH_REQUEST
+
+        intent = action.intent.strip() or definition.description or definition.name or definition.id
+        persona = await self._persona_text(state.session_id)
+        background = await self.task_background(state, task="plan", query=intent)
+        system_prompt = "\n\n".join(part for part in (
+            persona,
+            "你现在独处，记录一条只留给自己的主观念头，不是在回复或准备发言。"
+            "保持原有人设，只依据下面的生活记录和当下处境；未执行的计划不能当成已经做过的事，"
+            "不要虚构工具结果、共同经历或他人的内心。没有新的想法可以留空。",
+            self.prompts.dialogue_scene_layer(node),
+            self.prompts._state_block(state, tick_seconds=self.tick_seconds, sleep_config=self.world.sleep),
+            background,
+        ) if part)
+        prompt = (f"这次想事情的缘由：{intent}\n"
+                  '只输出 JSON：{"inner":"一句简短、自然的心里话；没有新念头则留空"}。'
+                  "不输出台词、动作或工具调用。")
+        speech_token = SPEECH_REQUEST.set(None)
+        channel_token = _SPEECH_ENGINE.set(None)
+        try:
+            with capture_background_admission() as admission:
+                reply = await self._ask_llm(state.session_id, system_prompt, prompt)
+        finally:
+            _SPEECH_ENGINE.reset(channel_token)
+            SPEECH_REQUEST.reset(speech_token)
+        if admission.started or not admission.deferred:
+            self._count_llm_text(state)
+        payload = extract_json_object(reply or "") or {}
+        inner = payload.get("inner")
+        return " ".join(inner.split())[:120] if isinstance(inner, str) else ""
 
     def _single_action_instruction(
         self, state: WorldState, definition: ActionDef, action: PlannedAction

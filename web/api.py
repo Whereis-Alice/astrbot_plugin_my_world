@@ -1839,7 +1839,7 @@ class WebApiMixin(LifeApiMixin):
         dry_run = bool(payload.get("dry_run"))
         result = await self.engine.consolidate_session(session_id, mode=mode, dry_run=dry_run)
         if result is None:
-            return error_response("整理没跑起来：先确认「睡眠整理模型」可用")
+            return error_response("整理没跑起来：先确认「记忆整理模型」或 AstrBot 当前会话默认模型可用")
         if not result.get("ok"):
             return json_response({"ok": False, "note": result.get("note") or "没整理出东西"})
         return json_response(result)
@@ -2097,7 +2097,7 @@ class WebApiMixin(LifeApiMixin):
         except (TypeError, ValueError):
             concurrency = 3
         provider_id = str(payload.get("provider_id") or "").strip()
-        llm = AstrBotLLM(self, provider_id or self.llm_provider_id, sampling=self.sampling_params())
+        llm = AstrBotLLM(self, provider_id, provider_slot="speech", sampling=self.sampling_params())
         director_id = str(payload.get("director_provider_id") or "").strip()
         result = await self.engine.run_eval(
             session_id,
@@ -2107,7 +2107,8 @@ class WebApiMixin(LifeApiMixin):
             variant=str(payload.get("variant") or "full"),
             director_llm=AstrBotLLM(
                 self,
-                director_id or self.judge_provider_id,
+                director_id,
+                role="judge",
                 sampling=self.sampling_params(),
             ),
         )
@@ -2397,14 +2398,14 @@ class WebApiMixin(LifeApiMixin):
             return str(value or "").strip()
 
         return {
-            "speech": show(getattr(self, "speech_provider_id", "")) or "（回复跟会话，主动跟生活模型）",
-            "llm": show(self.llm_provider_id) or "（跟会话默认）",
-            "helper": show(self.helper_provider_id) or "（跟生活思考模型）",
-            "judge": show(self.judge_provider_id) or "（跟打杂模型）",
-            "vision": show(self.vision_provider_id) or "（不转述图片）",
-            "creator": show(self.creator_provider_id) or "（跟生活思考模型）",
-            "event": show(self.event_provider_id) or "（跟打杂模型）",
-            "consolidate": show(self.consolidate_provider_id) or "（跟打杂模型）",
+            "speech": show(getattr(self, "speech_provider_id", "")) or "（跟随 AstrBot 会话默认）",
+            "llm": show(self.llm_provider_id) or "（跟随 AstrBot 会话默认）",
+            "helper": show(self.helper_provider_id) or "（跟随 AstrBot 会话默认）",
+            "judge": show(self.judge_provider_id) or "（跟随 AstrBot 会话默认）",
+            "vision": show(self.vision_provider_id) or "（AstrBot 原生图片处理）",
+            "creator": show(self.creator_provider_id) or "（跟随 AstrBot 会话默认）",
+            "event": show(self.event_provider_id) or "（跟随 AstrBot 会话默认）",
+            "consolidate": show(self.consolidate_provider_id) or "（跟随 AstrBot 会话默认）",
         }
 
     async def _vision_cache_stats(self) -> dict[str, Any]:

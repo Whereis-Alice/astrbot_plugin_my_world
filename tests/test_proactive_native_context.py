@@ -51,10 +51,11 @@ class NativeContextTests(unittest.IsolatedAsyncioTestCase):
     asyncSetUp = integration.IntegrationIntegrityTests.asyncSetUp
     response = integration.IntegrationIntegrityTests.response
 
-    async def generate_native(self, prepare, *, resolved_provider_id=None, allow_tools=False):
+    async def generate_native(self, prepare, *, resolved_provider_id=None, allow_tools=False,
+                              provider_id="provider-a"):
         runtime = importlib.import_module(self.module.__name__ + ".core.speech_runtime")
         native = importlib.import_module(self.module.__name__ + ".adapters.proactive_context")
-        adapter = self.adapter_module.AstrBotLLM(self.plugin, provider_id="provider-a", role="main")
+        adapter = self.adapter_module.AstrBotLLM(self.plugin, provider_id=provider_id, role="main")
         token = runtime.SPEECH_REQUEST.set({"target": self.session, "rows": [], "allow_tools": allow_tools})
         try:
             with patch.object(native.ProactiveContext, "prepare", prepare):
@@ -107,18 +108,30 @@ class NativeContextTests(unittest.IsolatedAsyncioTestCase):
         cleanup.assert_awaited_once()
         self.assertFalse(self.plugin.in_self_initiated_call())
 
-    async def test_unpinned_native_request_keeps_host_provider_change(self):
+    async def test_unbudgeted_native_request_cannot_replace_the_explicit_provider(self):
         self.plugin.context.tool_loop_agent = AsyncMock(return_value=self.response("切换后生成"))
 
         async def prepare(owner, options):
             return {**options, "chat_provider_id": "provider-b"}
 
         reply = await self.generate_native(prepare)
-        self.assertTrue(reply.ok, reply.error)
-        self.assertEqual(reply.text, "切换后生成")
-        self.plugin.context.tool_loop_agent.assert_awaited_once()
-        self.assertEqual(self.plugin.context.tool_loop_agent.await_args.kwargs["chat_provider_id"], "provider-b")
+        self.assertFalse(reply.ok)
+        self.assertEqual(reply.error, "主动上下文的模型路由已变化，留待重新准备")
+        self.plugin.context.tool_loop_agent.assert_not_awaited()
         self.assertFalse(self.plugin.in_self_initiated_call())
+
+    async def test_unbudgeted_native_request_cannot_replace_the_session_default(self):
+        self.plugin.context.tool_loop_agent = AsyncMock()
+        self.plugin.context.get_current_chat_provider_id = AsyncMock(return_value="provider-a")
+
+        async def prepare(owner, options):
+            self.assertEqual(options["chat_provider_id"], "provider-a")
+            return {**options, "chat_provider_id": "provider-b"}
+
+        reply = await self.generate_native(prepare, provider_id="")
+        self.assertFalse(reply.ok)
+        self.plugin.context.tool_loop_agent.assert_not_awaited()
+        self.plugin.context.get_current_chat_provider_id.assert_awaited_once_with(self.session)
 
     async def test_unchanged_pinned_native_provider_can_generate(self):
         self.plugin.context.tool_loop_agent = AsyncMock(return_value=self.response("按准入模型生成"))

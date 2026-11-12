@@ -657,8 +657,8 @@ class TurnProviderTests(BridgeCase):
         self.assertEqual(usage["total"], 60)
         self.assertEqual(usage["responses"], 1)
 
-    def test_selected_provider_is_used_for_main_call(self):
-        """别的插件临时指定的模型，本插件接管时也要用。"""
+    def test_background_default_does_not_use_reply_only_provider_hint(self):
+        """后台留空跟随会话默认，不借用临时回复模型。"""
 
         plugin = self._plugin()
         calls: list[str] = []
@@ -694,7 +694,7 @@ class TurnProviderTests(BridgeCase):
             asyncio.run(run())
         finally:
             plugin.db.raw.close()
-        self.assertEqual(calls, ["worldtree-model"])
+        self.assertEqual(calls, ["fake-provider"])
 
     def test_explicit_plugin_provider_wins_over_turn_hint(self):
         plugin = self._plugin()

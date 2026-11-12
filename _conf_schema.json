@@ -138,15 +138,15 @@
   },
   "speech_provider_id": {
     "description": "说话模型（回复 / 主动接话）",
-    "hint": "负责正常聊天回复、主动接话与活动中的对外表达，可选最擅长角色演绎的模型。正常回复仍使用 AstrBot 原生 Agent、人格与工具链。留空保持原行为：正常回复跟随当前会话模型，主动发言依次使用生活思考模型、会话模型；不把这个槽位作为后台任务的默认模型。",
+    "hint": "正常回复、主动接话和串门台词使用此模型，思考与台词在同一次请求中完成。配置后只使用所选 Provider；留空跟随 AstrBot 当前会话默认模型。正常回复保留 AstrBot 原生 Agent 与工具流程。",
     "_special": "select_provider",
     "obvious_hint": true,
     "type": "string",
     "default": ""
   },
   "llm_provider_id": {
-    "description": "生活思考与默认后台模型",
-    "hint": "负责自主生活决策、计划与内心思考，并作为未单独配置的后台模型的兜底。可选响应快、能稳定输出 JSON 的模型；留空使用当前会话 Provider。说话模型留空时，插件主动发言也沿用此模型。编辑器启用推理草稿后，可按需要关闭模型自身的长推理。",
+    "description": "生活规划模型（安静生活）",
+    "hint": "负责独处时的生活决策、计划与简短心里话，不影响其他模型槽位。配置后只使用所选 Provider；留空跟随 AstrBot 当前会话默认模型。「内心活动」记录还会收录说话时产生的心里话，不是模型完整推理过程。",
     "_special": "select_provider",
     "obvious_hint": true,
     "type": "string",
@@ -188,32 +188,32 @@
     "default": 0.0
   },
   "helper_provider_id": {
-    "description": "打杂模型（文本）",
-    "hint": "专门干零碎活：把「她想干什么」翻译成工具参数、判断图和话题的关系、把天气结果整理成一行。选便宜、快、能稳定输出 JSON 的文本模型。留空跟随生活思考模型，再回落到当前会话模型。",
+    "description": "工具整理模型（可选）",
+    "hint": "整理工具、搜索和天气结果，以及图片与话题的文字关系。可选响应快的文本模型；留空跟随 AstrBot 当前会话默认模型，不继承生活规划模型。",
     "_special": "select_provider",
     "obvious_hint": false,
     "type": "string",
     "default": ""
   },
   "vision_provider_id": {
-    "description": "看图模型（多模态）",
-    "hint": "所有「把图变成文字」的活都归它：群友发来的图片转述、天气工具返回的天气图。必须选支持图片输入的，选便宜的就够。留空＝不转述，改为把图片直接交给实际回复的模型（该模型需支持图片输入，一次最多几张见「全局设置 → 上下文 → 图片上限」）。",
+    "description": "图片转述模型（可选，多模态）",
+    "hint": "指定支持图片输入的模型，将群聊或工具返回的图片转述成文字。留空保留 AstrBot 原生图片处理，不额外调用图片转述模型；实际回复模型需支持图片，或由 AstrBot 配置图片转述。",
     "_special": "select_provider",
     "obvious_hint": false,
     "type": "string",
     "default": ""
   },
   "judge_provider_id": {
-    "description": "判断模型（只做轻决策）",
-    "hint": "专门干不要文笔、只要稳的活，越小越快越省越好（如qwen-flash）。留空＝跟随打杂模型。",
+    "description": "轻量判断模型（可选）",
+    "hint": "负责挑选、打分、工具参数补全与回合复盘等结构化判断。可选稳定输出 JSON 的模型；留空跟随 AstrBot 当前会话默认模型，不继承其他槽位。",
     "_special": "select_provider",
     "obvious_hint": false,
     "type": "string",
     "default": ""
   },
   "creator_provider_id": {
-    "description": "内容生成模型（区域 / 地点 / 动作 / 日程 / 事件）",
-    "hint": "用于自主编事件，以及编辑器中的区域、地点、动作、日程和事件草稿生成。请选择支持文本输出的模型；留空跟随生活思考模型，再回落到当前会话模型。",
+    "description": "世界内容生成模型（可选）",
+    "hint": "生成区域、地点、动作、日程、事件草稿、日历和日记。留空跟随 AstrBot 当前会话默认模型；如需单独控制生成成本，可在这里指定模型。",
     "_special": "select_provider",
     "obvious_hint": false,
     "type": "string",
@@ -227,8 +227,8 @@
     "default": 10
   },
   "consolidate_provider_id": {
-    "description": "睡眠整理模型（生活 + 人物资料）",
-    "hint": "睡眠时分开整理：聊天原话只提取人物事实、关系与速写；生活经历用于合并重复、提炼要点和写梦。两项可分别关闭，建议选择理解和归纳能力较好的模型。留空跟随打杂模型；打杂也未设置时，依次使用生活思考模型、AstrBot 当前会话模型。",
+    "description": "记忆整理模型（可选）",
+    "hint": "睡眠或手动整理时，分别归纳人物资料与生活经历，也用于提炼梦境。留空跟随 AstrBot 当前会话默认模型，不继承生活规划或工具整理模型。",
     "_special": "select_provider",
     "obvious_hint": false,
     "type": "string",
@@ -242,8 +242,8 @@
     "options": [""]
   },
   "event_provider_id": {
-    "description": "事件模型（事件结算）",
-    "hint": "事件最后怎么样了由它一句话定下场：写的是人话，还带着情绪与能力值的变化。留空跟随打杂模型。",
+    "description": "事件结算模型（可选）",
+    "hint": "根据已发生的行动与判定，整理事件结果及情绪、能力变化。留空跟随 AstrBot 当前会话默认模型，不继承其他槽位。",
     "_special": "select_provider",
     "obvious_hint": false,
     "type": "string",

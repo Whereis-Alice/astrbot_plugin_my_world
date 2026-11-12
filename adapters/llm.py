@@ -61,11 +61,15 @@ class AstrBotLLM:
 
     async def resolve_provider_id(self, session_id: str) -> str:
         """Resolve this role's current provider without generating or caching a turn."""
-        speech_id = (getattr(self.plugin, "speech_provider_id", "")
-                     if self.provider_slot == "speech" else "")
-        provider_id = (self.provider_id or speech_id or self.plugin.llm_provider_id or "").strip()
-        if not provider_id and self.role == "main" and self.provider_slot != "background":
-            provider_id = self.plugin.turn_provider_override(session_id)
+        slot = self.provider_slot or self.role
+        attribute = {
+            "speech": "speech_provider_id", "background": "llm_provider_id",
+            "helper": "helper_provider_id", "judge": "judge_provider_id",
+            "creator": "creator_provider_id", "event": "event_provider_id",
+            "consolidate": "consolidate_provider_id",
+        }.get(slot, "")
+        configured = getattr(self.plugin, attribute, "") if attribute else ""
+        provider_id = str(self.provider_id or "").strip() or str(configured or "").strip()
         if not provider_id:
             provider_id = await self.plugin.context.get_current_chat_provider_id(session_id)
         return provider_id
@@ -139,10 +143,10 @@ class AstrBotLLM:
                         agent = ProactiveAgent(self.plugin, speech)
                         native.tool_agent = agent
                     options = await native.prepare(options)
-                    if (_resolved_provider_id is not None
-                            and options.get("chat_provider_id") != _resolved_provider_id):
-                        # The native builder may change the provider; retry
-                        # admission with that route before making a request.
+                    if options.get("chat_provider_id") != provider_id:
+                        # Native preparation may select an image fallback or a
+                        # default after an invalid ID. Keep this request on the
+                        # role's resolved provider, including unbudgeted calls.
                         return LLMReply(ok=False, error="主动上下文的模型路由已变化，留待重新准备")
                     toolset = native.toolset
                 except Exception as exc:

@@ -150,7 +150,13 @@ class WorkspaceSourcesApiTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotEqual(response['status_code'], 200)
         generate.assert_not_awaited()
 
-    async def test_unconfigured_helper_reports_the_actual_main_model_fallback(self):
+    async def test_unconfigured_text_slots_report_the_astrbot_session_default(self):
         self.plugin.helper_provider_id = ''
         self.plugin.vision_provider_id = 'vision-only'
-        self.assertEqual(self.plugin._provider_slots()['helper'], '（跟生活思考模型）')
+        self.plugin.llm_provider_id = 'life-only'
+        slots = self.plugin._provider_slots()
+        self.assertEqual(slots['llm'], 'life-only')
+        for slot in ('speech', 'helper', 'judge', 'creator', 'event', 'consolidate'):
+            with self.subTest(slot=slot):
+                self.assertEqual(slots[slot], '（跟随 AstrBot 会话默认）')
+        self.assertEqual(slots['vision'], 'vision-only')

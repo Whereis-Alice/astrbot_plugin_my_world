@@ -125,7 +125,7 @@ from .adapters.embedding import AstrBotEmbedding
 from .adapters.reflection import ReflectionMixin
 from .adapters.quote_context import quoted_message_note
 from .core.model_call_runtime import observe_native_response
-from .core.model_calls import call_context, model_operation
+from .core.model_calls import call_context, model_context, model_operation
 from .adapters.messenger import AstrBotMessenger
 from .adapters.persona import AstrBotPersona
 from .adapters.participation import ParticipationHooksMixin
@@ -331,28 +331,14 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
         self.web_enabled = _cfg_bool(config.get("web_enabled"), True)
         self.speech_provider_id = str(config.get("speech_provider_id") or "").strip()
         self.llm_provider_id = str(config.get("llm_provider_id") or "").strip()
-        # 打杂模型（文本、便宜）：补工具参数、判断图和话题的关系
+        # Each role owns its setting. Empty IDs resolve to the AstrBot session
+        # default at request time, never another plugin role's configuration.
         self.vision_provider_id = str(config.get("vision_provider_id") or "").strip()
-        self.helper_provider_id = (
-            str(config.get("helper_provider_id") or "").strip()
-            # 老配置里"上下文压缩"和"关系分析"是两个独立模型：并进打杂模型，
-            # 让用户只需要理解两个便宜档（看图 / 文本）
-            or str(config.get("context_provider_id") or "").strip()
-        )
+        self.helper_provider_id = str(config.get("helper_provider_id") or "").strip()
         self.utility_provider_id = self.helper_provider_id
-        # 判断模型：只接"挑一个 / 打分 / 抽字段"这类纯判断。留空跟随打杂模型。
-        self.judge_provider_id = (
-            str(config.get("judge_provider_id") or "").strip() or self.helper_provider_id
-        )
-        self.consolidate_provider_id = (
-            str(config.get("consolidate_provider_id") or "").strip()
-            or self.utility_provider_id
-        )
-        # 事件模型：写"这件事的结果"那个模型。留空跟随打杂模型。
-        self.event_provider_id = (
-            str(config.get("event_provider_id") or "").strip() or self.utility_provider_id
-        )
-        # 内容生成模型：只在编辑器里"批量生成动作 / 地点"时用，留空回落到主模型
+        self.judge_provider_id = str(config.get("judge_provider_id") or "").strip()
+        self.consolidate_provider_id = str(config.get("consolidate_provider_id") or "").strip()
+        self.event_provider_id = str(config.get("event_provider_id") or "").strip()
         self.creator_provider_id = str(config.get("creator_provider_id") or "").strip()
         self._sampling_config = {
             "enabled": _cfg_bool(config.get("sampling_enabled"), False),
@@ -433,11 +419,11 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
             llm=AstrBotLLM(self, sampling=self.sampling_params(), provider_slot="background"),
             speech_llm=AstrBotLLM(self, sampling=self.sampling_params(), provider_slot="speech"),
             embedding=self.embedding,
-            helper_llm=AstrBotLLM(self, self.helper_provider_id, role="helper", sampling=self.sampling_params()),
-            judge_llm=AstrBotLLM(self, self.judge_provider_id, role="judge", sampling=self.sampling_params()),
-            creator_llm=AstrBotLLM(self, self.creator_provider_id, role="creator", sampling=self.sampling_params()),
-            event_llm=AstrBotLLM(self, self.event_provider_id, role="event", sampling=self.sampling_params()),
-            consolidate_llm=AstrBotLLM(self, self.consolidate_provider_id, role="consolidate", sampling=self.sampling_params()),
+            helper_llm=AstrBotLLM(self, role="helper", sampling=self.sampling_params()),
+            judge_llm=AstrBotLLM(self, role="judge", sampling=self.sampling_params()),
+            creator_llm=AstrBotLLM(self, role="creator", sampling=self.sampling_params()),
+            event_llm=AstrBotLLM(self, role="event", sampling=self.sampling_params()),
+            consolidate_llm=AstrBotLLM(self, role="consolidate", sampling=self.sampling_params()),
             describer=self.vision,
             messenger=self.messenger,
             tools=AstrBotTools(self),
@@ -1035,12 +1021,13 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
         if vision is None or not vision.enabled or not targets:
             return []
         try:
-            captions = await vision.describe(
-                targets,
-                question=str(event.get_message_str() or ""),
-                quoted=_quoted_text(event),
-                context_lines=await self._recent_chat_lines(event),
-            )
+            with model_context("vision", "转述当前会话中未随回复发送的图片", session_id):
+                captions = await vision.describe(
+                    targets,
+                    question=str(event.get_message_str() or ""),
+                    quoted=_quoted_text(event),
+                    context_lines=await self._recent_chat_lines(event),
+                )
         except Exception as exc:
             self.logger.debug(f"[my_world] 图片转述异常：{exc}")
             captions = []
@@ -1107,8 +1094,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
         """
 
         try:
-            provider_id = (getattr(self, "speech_provider_id", "")
-                           or getattr(self, "llm_provider_id", "") or "").strip()
+            provider_id = str(getattr(self, "speech_provider_id", "") or "").strip()
             if not provider_id:
                 provider_id = await self.context.get_current_chat_provider_id(session_id)
             if not provider_id:

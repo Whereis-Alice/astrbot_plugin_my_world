@@ -313,21 +313,19 @@ class MyWorldEngine(
 
         self.extensions = extensions if extensions is not None else ExtensionHost()
         self.llm = llm
-        # 所有真正对外说出的话单独选模型；没有配置时保持旧版主模型行为。
+        # AstrBot 总是传入各角色的独立适配器；配置留空由适配器解析会话默认。
+        # 下面省略端口时的复用只兼容直接构造 WorldEngine 的其它集成。
         self._speech_llm = speech_llm
         self.embedding = embedding
-        # 辅助模型：只负责"把意图翻译成工具参数"，留空时复用主模型
+        # 辅助通道：整理工具结果与文字资料。
         self.helper_llm = helper_llm or llm
-        # 判断模型：「挑一个 / 打分 / 抽字段」这类纯判断走它；没配就跟随打杂模型。
-        # 和打杂分开是有原因的——打杂里混着"要文笔"的活（例如写事件结局），
-        # 那些塞给最小的模型会明显掉质量。
+        # 判断通道：挑选、打分、抽字段和补全工具参数。
         self.judge_llm = judge_llm or self.helper_llm
         # 内容生成模型：编事件包、以及编辑器里"批量生成动作 / 地点"
         self.creator_llm = creator_llm or self.llm
-        # 事件模型：写"这件事最后怎么样了"。它决定事件读起来尬不尬，
-        # 所以单独留一个槽位——想变强就换它，不用连带换掉别的打杂活。
+        # 事件通道：按已发生的行动整理结果。
         self.event_llm = event_llm or self.helper_llm
-        # 睡眠整理模型：消化记忆、更新画像、写梦（留空时复用辅助模型）
+        # 记忆整理通道：消化记忆、更新画像、写梦。
         self.consolidate_llm = consolidate_llm or self.helper_llm
         # 看图：天气工具返回的图也要读出来（插件那边传 AstrBotVision；没有就跳过图片）
         self.describer = describer

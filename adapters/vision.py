@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from ..core.model_call_runtime import tracked_generate
+from ..core.model_calls import call_context
 
 import asyncio
 import hashlib
@@ -424,9 +425,9 @@ class AstrBotVision:
         lines = [f"图{index}：{text}" for index, text in enumerate(looks, start=1) if text]
         if not lines:
             return ["" for _ in looks]
-        provider = self._relation_provider()
         prompt = (scene + "\n\n" if scene else "") + "图片转述：\n" + "\n".join(lines)
         try:
+            provider = await self._relation_provider()
             response = await tracked_generate(self.plugin, purpose="vision_relation", reason="分析图片与当前话题的关系", role="vision",
                 chat_provider_id=provider,
                 system_prompt=self._relation_prompt(),
@@ -447,11 +448,15 @@ class AstrBotVision:
             return ["" for _ in looks]
         return parts
 
-    def _relation_provider(self) -> str:
-        """关系分析用哪个模型：打杂模型（纯文本）；没配就跟随看图模型。"""
+    async def _relation_provider(self) -> str:
+        """Text analysis uses its own setting, otherwise the AstrBot default."""
 
-        configured = str(getattr(self.plugin, "utility_provider_id", "") or "").strip()
-        return configured or self.provider_id
+        configured = str(getattr(self.plugin, "helper_provider_id", "") or "").strip()
+        if configured:
+            return configured
+        session = str(call_context().get("session_id")
+                      or getattr(getattr(self.plugin, "engine", None), "config_scope_id", "") or "")
+        return await self.plugin.context.get_current_chat_provider_id(session)
 
     async def _describe_cached(self, source: str, scene: str, *, cache_source: str | None = None) -> str:
         """看单张图（缓存由调用方先查过）：带并发去重、失败不落盘。"""

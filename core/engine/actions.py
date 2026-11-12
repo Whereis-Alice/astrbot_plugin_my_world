@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from ..model_calls import model_operation
-from ..llm_fallback import fallback_block_reason
 
 import asyncio
 import math
@@ -1427,68 +1426,68 @@ class ActionsMixin:
     async def _ask_judge(
         self, session_id: str, system_prompt: str, prompt: str, *, max_tokens: int | None = None
     ) -> str | None:
-        """纯判断通道（挑一个 / 打分 / 抽字段）：走判断模型，没配就跟随打杂模型。
-
-        判断模型不可用时可退回不同的打杂 Provider；明确拒绝或同源回退停止本轮请求。
-        """
-
-        if self.judge_llm is not None and self.judge_llm is not self.helper_llm:
-            error = ""
-            try:
-                reply = await self._background_generate(self.judge_llm,
-                    session_id=session_id,
-                    system_prompt=system_prompt,
-                    prompt=prompt,
-                    temperature=0.0,
-                    **({"max_tokens": max_tokens} if max_tokens is not None else {}),
-                )
-                if getattr(reply, "ok", False) and str(getattr(reply, "text", "") or "").strip():
-                    return reply.text
-                error = getattr(reply, "error", "")
-            except Exception as exc:
-                error = exc
-            blocked = await fallback_block_reason(self.judge_llm, self.helper_llm, session_id, error)
-            if blocked:
-                self._log("debug", f"判断模型未完成，{blocked}，停止本轮回退")
-                return None
-            self._log("debug", "判断模型未完成，这一轮退回打杂模型")
-        return await self._ask_helper(session_id, system_prompt, prompt,
-                                      **({"max_tokens": max_tokens} if max_tokens is not None else {}))
+        """Use the judgment channel once; its adapter resolves explicit/default routing."""
+        from ..llm_attempt import record_attempt
+        if self.judge_llm is None:
+            from ..background_budget import record_background_admission
+            error = "没有可用的判断模型"
+            record_background_admission(deferred=True, reason=error,
+                                        next_at=self._now() + self.tick_seconds)
+            record_attempt(session_id, error)
+            return None
+        try:
+            reply = await self._background_generate(self.judge_llm,
+                session_id=session_id,
+                system_prompt=system_prompt,
+                prompt=prompt,
+                temperature=0.0,
+                **({"max_tokens": max_tokens} if max_tokens is not None else {}),
+            )
+        except Exception as exc:
+            error = record_attempt(session_id, f"{type(exc).__name__}: {exc}")
+            self._log("debug", f"判断模型未完成：{error}")
+            return None
+        if getattr(reply, "ok", False) and str(getattr(reply, "text", "") or "").strip():
+            record_attempt(session_id)
+            return reply.text
+        error = record_attempt(session_id, getattr(reply, "error", "") or "模型没有返回内容")
+        self._log("debug", f"判断模型未完成：{error}")
+        return None
 
     async def _ask_event(
         self, session_id: str, system_prompt: str, prompt: str
     ) -> str | None:
-        """事件结算的模型通道（独立配置，留空跟随打杂模型）。
-
-        它写的是"这件事最后怎么样了"——一句话定下场，还带着情绪与能力值的变化。
-        这一段最吃"会不会写人话"，所以单独留了槽位。
-        """
-
-        if self.event_llm is not None and self.event_llm is not self.helper_llm:
-            error = ""
-            try:
-                reply = await self._background_generate(self.event_llm,
-                    session_id=session_id,
-                    system_prompt=system_prompt,
-                    prompt=prompt,
-                    temperature=0.4,
-                )
-                if getattr(reply, "ok", False) and str(getattr(reply, "text", "") or "").strip():
-                    return reply.text
-                error = getattr(reply, "error", "")
-            except Exception as exc:
-                error = exc
-            blocked = await fallback_block_reason(self.event_llm, self.helper_llm, session_id, error)
-            if blocked:
-                self._log("debug", f"事件模型未完成，{blocked}，停止本轮回退")
-                return None
-            self._log("debug", "事件模型未完成，这一轮退回打杂模型")
-        return await self._ask_helper(session_id, system_prompt, prompt)
+        """Use the selected event-settlement channel without borrowing another role."""
+        from ..llm_attempt import record_attempt
+        if self.event_llm is None:
+            from ..background_budget import record_background_admission
+            error = "没有可用的事件结算模型"
+            record_background_admission(deferred=True, reason=error,
+                                        next_at=self._now() + self.tick_seconds)
+            record_attempt(session_id, error)
+            return None
+        try:
+            reply = await self._background_generate(self.event_llm,
+                session_id=session_id,
+                system_prompt=system_prompt,
+                prompt=prompt,
+                temperature=0.4,
+            )
+        except Exception as exc:
+            error = record_attempt(session_id, f"{type(exc).__name__}: {exc}")
+            self._log("debug", f"事件模型未完成：{error}")
+            return None
+        if getattr(reply, "ok", False) and str(getattr(reply, "text", "") or "").strip():
+            record_attempt(session_id)
+            return reply.text
+        error = record_attempt(session_id, getattr(reply, "error", "") or "模型没有返回内容")
+        self._log("debug", f"事件模型未完成：{error}")
+        return None
 
     async def _ask_consolidate(
         self, session_id: str, system_prompt: str, prompt: str
     ) -> str | None:
-        """睡眠整理的模型通道（独立配置，留空回落到辅助模型）。"""
+        """记忆整理通道；留空由适配器解析 AstrBot 当前会话默认模型。"""
 
         channel = self.consolidate_llm
         if channel is None:

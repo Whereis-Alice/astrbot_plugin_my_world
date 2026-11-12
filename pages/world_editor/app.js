@@ -4011,7 +4011,7 @@ function bindButtons() {
     $("contacts-consolidate").addEventListener("click", async () => {
       const session = $("contacts-session") ? $("contacts-session").value : "";
       if (!session) return;
-      toast("正在整理…（会调用「睡眠整理模型」）");
+      toast("正在整理…（会调用「记忆整理模型」）");
       try {
         const result = await apiPost("profile/consolidate", { session });
         toast(result.note || result.summary || "整理完了");
@@ -11907,7 +11907,7 @@ function renderActionForm() {
     );
     form.appendChild(
       checkboxField(
-        "用打杂模型压成一句话再存",
+        "用工具整理模型压成一句话再存",
         action.state_summarize === true,
         (value) => (action.state_summarize = value),
         { hint: "返回是一大段时压一下更省上下文；返回本来就短就不用开。" },
@@ -17316,7 +17316,7 @@ function renderSettings() {
   world.persona = world.persona || { mode: "astrbot", text: "" };
   const personaSection = settingsSection(
     pronoun(),
-    "构成这个人的东西都在这一节：称呼与名字、说话的样子（角色卡）、给打杂模型的摘要。",
+    "构成这个人的东西都在这一节：称呼与名字、说话的样子（角色卡）、辅助任务使用的人设摘要。",
     "标题跟着性别走，默认沿用 AstrBot 那份人格；想让她不随会话漂移就选「用这一份」。",
     "persona",
   );
@@ -20036,10 +20036,10 @@ function renderSettings() {
   }
   form.appendChild(visionSection);
 
-  /* --- 简易人设（给打杂模型） --- */
+  /* --- 简易人设（辅助任务） --- */
   const briefSection = settingsSection(
-    "简易人设（给打杂模型）",
-    "生成事件、整理结果时给打杂模型的人设摘要：只留说话风格，不带世界观和背景故事。",
+    "简易人设（辅助任务）",
+    "生成事件、整理结果等辅助任务使用的人设摘要：只留说话风格，不带世界观和背景故事。",
     "按人格缓存：换人格或改主人设之后要重新生成一次（键跟着人设内容变）。没生成过就退回主人设前 200 字。",
     "persona_brief",
   );
@@ -20077,7 +20077,7 @@ function renderSettings() {
       const when = state.latest.at ? `（${agoText(Date.now() / 1000 - Number(state.latest.at))}）` : "";
       briefNote.textContent = `当前会话读出的人设和这份不一致${when}，先显示上次那份；点「从主人设生成」会按现在的人设重写。`;
     } else {
-      briefNote.textContent = "还没有生成过：打杂模型会退回到主人设前 200 字。";
+      briefNote.textContent = "还没有生成过：辅助任务会使用主人设前 200 字。";
     }
   }
   const briefRow = el("div", "row");
@@ -20132,7 +20132,7 @@ function renderSettings() {
   const briefNote = el("p", "muted", "正在读取…");
   briefFull.appendChild(briefNote);
   briefFull.appendChild(
-    el("p", "muted", "提示：这段摘要给打杂模型用，主人格用的是完整人设。它不跟预设走，按人格单独存。")
+    el("p", "muted", "提示：这段摘要供辅助任务使用，正常演绎使用完整人设。它不跟预设走，按人格单独存。")
   );
   // 打开页面就把这一份读出来：以前只在点过"生成"之后才填，重开页面看着像是被重置了
   async function loadPersonaBrief({ overwrite = false } = {}) {
@@ -21071,13 +21071,13 @@ function wizardProviderStep(body) {
   const slots = ui.config.providers || {};
   const rows = [
     ["说话模型", "speech", "正常回复、主动接话与对外表达"],
-    ["生活思考模型", "llm", "自主生活决策与后台默认模型"],
-    ["辅助模型", "helper", "理解查询、辅助生成"],
-    ["判断模型", "judge", "挑一个 / 打分这类轻决策"],
-    ["看图模型", "vision", "把图片转成文字"],
-    ["内容生成模型", "creator", "编她身边发生的事"],
-    ["事件模型", "event", "写事件最后怎么样了"],
-    ["睡眠整理模型", "consolidate", "消化记忆与画像"],
+    ["生活规划模型", "llm", "安静生活中的决策、计划与简短心里话"],
+    ["工具整理模型（可选）", "helper", "整理工具结果与文字资料"],
+    ["轻量判断模型（可选）", "judge", "挑选、打分与工具参数补全"],
+    ["图片转述模型（可选）", "vision", "额外把图片转成文字"],
+    ["世界内容生成模型（可选）", "creator", "生成世界草稿、日历与日记"],
+    ["事件结算模型（可选）", "event", "整理已发生事件的结果"],
+    ["记忆整理模型（可选）", "consolidate", "分别归纳生活经历与人物资料"],
   ];
   const box = el("div", "wizard-list");
   rows.forEach(([label, key, note]) => {
@@ -21092,7 +21092,14 @@ function wizardProviderStep(body) {
     el(
       "p",
       "muted",
-      "在 AstrBot → 插件 → 小世界中分别选择说话模型与生活思考模型，后台任务还可单独选择模型。正常回复继续使用 AstrBot 原生 Agent、人格与工具链，小世界按需补充生活状态。说话模型留空时，正常回复跟随会话模型，主动发言跟随生活思考模型；括号表示回落规则。看图模型为空时不转述图片。",
+      "在 AstrBot → 插件 → 小世界中选择模型。每个文本槽位独立生效：配置了就用指定模型，留空就跟随 AstrBot 当前会话默认模型，不继承其他槽位。后面的可选项只在需要单独分工时填写。图片转述留空时保留 AstrBot 原生图片处理。",
+    ),
+  );
+  body.appendChild(
+    el(
+      "p",
+      "muted",
+      "例如：说话模型留空、生活规划选择另一个模型，回复与主动接话就跟随 AstrBot，只有生活规划改用指定模型。要让工具、生成或整理也使用另一个模型，请分别选择。",
     ),
   );
   body.appendChild(el("p", "muted", "嵌入模型在「记忆与画像」这一步选择，用于按意思查找记忆；它与聊天模型分开配置。"));
@@ -21165,7 +21172,7 @@ function wizardGenerateStep(body) {
       "这两样都要调一次模型生成，跳过也完全能用——想让她更像她的时候再回来做。",
     ),
   );
-  // ① 简易人设：给打杂模型用的摘要，事件、整理都靠它
+  // ① 简易人设：事件、整理等辅助任务使用的摘要
   const briefArea = document.createElement("textarea");
   briefArea.rows = 4;
   briefArea.placeholder = "还没有生成，点下面的按钮从主人设生成一段";
@@ -21177,7 +21184,7 @@ function wizardGenerateStep(body) {
     ui.scope === scope && $("status-session")?.value === session && edit === version &&
     personaBriefDraftCurrent(world, draft);
   const briefWrap = el("div", "field");
-  briefWrap.appendChild(fieldHead("简易人设（给打杂模型）"));
+  briefWrap.appendChild(fieldHead("简易人设（辅助任务）"));
   briefWrap.appendChild(briefArea);
   const briefExtra = generationExtraField(briefWrap);
   const briefRow = el("div", "row");
