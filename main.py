@@ -329,6 +329,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
 
         self.enabled = _cfg_bool(config.get("enabled"), True)
         self.web_enabled = _cfg_bool(config.get("web_enabled"), True)
+        self.speech_provider_id = str(config.get("speech_provider_id") or "").strip()
         self.llm_provider_id = str(config.get("llm_provider_id") or "").strip()
         # 打杂模型（文本、便宜）：补工具参数、判断图和话题的关系
         self.vision_provider_id = str(config.get("vision_provider_id") or "").strip()
@@ -429,7 +430,8 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
         self.engine = MyWorldEngine(
             store=self.store,
             db=self.db,
-            llm=AstrBotLLM(self, sampling=self.sampling_params()),
+            llm=AstrBotLLM(self, sampling=self.sampling_params(), provider_slot="background"),
+            speech_llm=AstrBotLLM(self, sampling=self.sampling_params(), provider_slot="speech"),
             embedding=self.embedding,
             helper_llm=AstrBotLLM(self, self.helper_provider_id, role="helper", sampling=self.sampling_params()),
             judge_llm=AstrBotLLM(self, self.judge_provider_id, role="judge", sampling=self.sampling_params()),
@@ -1105,7 +1107,8 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
         """
 
         try:
-            provider_id = (getattr(self, "llm_provider_id", "") or "").strip()
+            provider_id = (getattr(self, "speech_provider_id", "")
+                           or getattr(self, "llm_provider_id", "") or "").strip()
             if not provider_id:
                 provider_id = await self.context.get_current_chat_provider_id(session_id)
             if not provider_id:
@@ -1239,6 +1242,27 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
                 self._turn_provider_overrides.pop(session_id, None)
 
     # ================= 回复路径（接管） =================
+
+    @filter.on_waiting_llm_request(priority=LLM_HOOK_PRIORITY)
+    @session_scoped
+    async def on_waiting_llm_request(self, event: AstrMessageEvent) -> None:
+        """Select explicit speech routing before AstrBot builds its native Agent.
+
+        An explicit speech setting wins over earlier routing hooks for this
+        event only. Empty settings leave the host's routing untouched. The
+        host validates the ID and reports invalid providers without fallback.
+        """
+        provider_id = str(getattr(self, "speech_provider_id", "") or "").strip()
+        if (not provider_id or not self.enabled or self.retired
+                or self.in_self_initiated_call() or event.is_stopped()
+                or event.get_extra("my_world_proactive", False)
+                or _is_command_event(event)):
+            return
+        if not self.engine.is_enabled(event.unified_msg_origin):
+            return
+        if event.get_sender_id() and event.get_sender_id() == event.get_self_id():
+            return
+        event.set_extra("selected_provider", provider_id)
 
     @filter.on_llm_request(priority=LLM_HOOK_PRIORITY)
     @session_scoped

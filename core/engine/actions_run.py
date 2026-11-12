@@ -7,6 +7,7 @@ from ..recovery import sleep_action_kind
 from ..model_calls import model_operation
 
 import math
+from contextvars import ContextVar
 from types import SimpleNamespace
 from typing import Any
 from ..json_actions import (
@@ -45,6 +46,11 @@ from .util import (
     _to_int_or_default,
     render_param_text,
 )
+
+
+# Keep channel selection local to this engine and coroutine. Calling the shared
+# method preserves existing integrations that replace _ask_llm for generation.
+_SPEECH_ENGINE: ContextVar[object | None] = ContextVar("world_speech_engine", default=None)
 
 
 class ActionsRunMixin:
@@ -892,7 +898,7 @@ class ActionsRunMixin:
             return [action.content]
         # 「单轮」动作：这一轮没有现成台词（日程、计划里的步骤都没有），
         # 就让大模型按动作语义现写一句——不然只会发一句机械文案。
-        if definition.llm_level == "single" and self.llm is not None:
+        if definition.llm_level == "single" and self.speech_llm is not None:
             instant_action = {"type": definition.id, "action_name": definition.name or definition.id,
                               "intent": action.intent, "from_plan": from_plan, "execution_kind": "instant"}
             if from_plan and isinstance(state.current_plan, dict):
@@ -1251,7 +1257,7 @@ class ActionsRunMixin:
         写死的通用短句——那句话跟谁的人设都不搭，说错话比不说伤害大得多。
         """
 
-        if self.llm is None:
+        if self.speech_llm is None:
             return []
         if not self._llm_text_allowed(state):
             self._log("debug", "自主发言的 LLM 预算用完了，这一轮保持安静")
@@ -1315,7 +1321,7 @@ class ActionsRunMixin:
                 token=speech_outcome.speech_receipt_batch, options=expression_options)
             reply = await self.ask_speech(state, current, system_prompt, prompt, rows=expression_options[1])
         else:
-            reply = await self._ask_llm(current, system_prompt, prompt)
+            reply = await self._ask_speech_llm(current, system_prompt, prompt)
         self.record_context_selection(request)
         self._count_llm_text(state)
         if not reply:
@@ -1438,6 +1444,26 @@ class ActionsRunMixin:
         self.note_tool_result(chosen, ok=True)
         return ToolCallResult(ok=True, text=text, tool=chosen, params=dict(params or {}))
 
+    async def _ask_speech_llm(
+        self,
+        session_id: str,
+        system_prompt: str,
+        prompt: str,
+        contexts: list[dict[str, Any]] | None = None,
+        image_urls: list[str] | None = None,
+    ) -> str | None:
+        """Generate outward dialogue using the same accounting as other calls."""
+        token = _SPEECH_ENGINE.set(self)
+        try:
+            options = {}
+            if contexts is not None:
+                options["contexts"] = contexts
+            if image_urls is not None:
+                options["image_urls"] = image_urls
+            return await self._ask_llm(session_id, system_prompt, prompt, **options)
+        finally:
+            _SPEECH_ENGINE.reset(token)
+
     async def _ask_llm(
         self,
         session_id: str,
@@ -1455,14 +1481,20 @@ class ActionsRunMixin:
                 "error": str(error)[:200],
             }
 
-        if self.llm is None:
+        channel = self.speech_llm if _SPEECH_ENGINE.get() is self else self.llm
+        # This override belongs to this one generation. A tool may launch quiet
+        # life inference (or a child task) while speech generation is running;
+        # it must not inherit the outward model. The wrapper restores its token.
+        if _SPEECH_ENGINE.get() is self:
+            _SPEECH_ENGINE.set(None)
+        if channel is None:
             note(False, "没有可用的模型")
             from ..background_budget import record_background_admission
             record_background_admission(deferred=True, reason="没有可用的模型",
                                         next_at=self._now() + self.tick_seconds)
             return None
         try:
-            reply = await self._background_generate(self.llm,
+            reply = await self._background_generate(channel,
                 session_id=session_id,
                 system_prompt=system_prompt,
                 prompt=prompt,

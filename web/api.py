@@ -2397,11 +2397,12 @@ class WebApiMixin(LifeApiMixin):
             return str(value or "").strip()
 
         return {
+            "speech": show(getattr(self, "speech_provider_id", "")) or "（回复跟会话，主动跟生活模型）",
             "llm": show(self.llm_provider_id) or "（跟会话默认）",
-            "helper": show(self.helper_provider_id) or "（跟插件用模型）",
+            "helper": show(self.helper_provider_id) or "（跟生活思考模型）",
             "judge": show(self.judge_provider_id) or "（跟打杂模型）",
             "vision": show(self.vision_provider_id) or "（不转述图片）",
-            "creator": show(self.creator_provider_id) or "（跟插件用模型）",
+            "creator": show(self.creator_provider_id) or "（跟生活思考模型）",
             "event": show(self.event_provider_id) or "（跟打杂模型）",
             "consolidate": show(self.consolidate_provider_id) or "（跟打杂模型）",
         }

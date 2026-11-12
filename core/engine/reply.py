@@ -882,7 +882,7 @@ class ReplyMixin:
 
             # --- 第二阶段：调用大模型（不持锁） ---
             started = time.monotonic()
-            raw = await self._ask_llm(
+            raw = await self._ask_speech_llm(
                 ctx.session_id,
                 system_prompt,
                 user_prompt,

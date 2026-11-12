@@ -12,6 +12,7 @@ from datetime import (
 from typing import Any
 import copy
 import json
+import math
 from ..event_rhythm import TONES, in_event_hours, pick_tone
 from ..events import (
     ABILITIES,
@@ -890,27 +891,40 @@ class EventsMixin:
                 return
         genre: dict[str, Any] | None = None
         tone = str((thread or {}).get("tone") or "")
-        if seed:
-            # 用户投递的事件：照着他给的种子现编一件
-            package = await self._generate_event_package(
-                state, node, tier=tier, seed=seed, thread=thread, genre=None
-            )
-            if package is None:
-                package = self._seed_package(seed, tier=tier)
-        else:
-            # 题材由代码按权重掷（模型只会挑自己偏好的那类写），每一件都临场生成
-            # A continuation keeps the original subject and tone. Re-drawing
-            # them mid-story used to turn an ordinary discovery into trouble.
-            if thread and thread.get("genre"):
-                genre = {"name": thread["genre"]}
+        from ..background_budget import capture_background_admission
+        with capture_background_admission() as admission:
+            if seed:
+                # 用户投递的事件：照着他给的种子现编一件
+                package = await self._generate_event_package(
+                    state, node, tier=tier, seed=seed, thread=thread, genre=None
+                )
+                if package is None:
+                    package = self._seed_package(seed, tier=tier)
             else:
-                genre = self._pick_genre(state)
-            if thread is None and source == "roll":
-                tone = pick_tone(config.auto.tone_weights, self.rng)
-            package = await self._generate_event_package(
-                state, node, tier=tier, thread=thread, genre=genre, tone=tone
-            )
+                # 题材由代码按权重掷（模型只会挑自己偏好的那类写），每一件都临场生成
+                # A continuation keeps the original subject and tone. Re-drawing
+                # them mid-story used to turn an ordinary discovery into trouble.
+                if thread and thread.get("genre"):
+                    genre = {"name": thread["genre"]}
+                else:
+                    genre = self._pick_genre(state)
+                if thread is None and source == "roll":
+                    tone = pick_tone(config.auto.tone_weights, self.rng)
+                package = await self._generate_event_package(
+                    state, node, tier=tier, thread=thread, genre=genre, tone=tone
+                )
         if package is None:
+            if admission.deferred and not admission.started:
+                now = self._event_time()
+                next_at = admission.next_at if math.isfinite(admission.next_at) else now
+                retry_at = now + min(900, max(60, next_at - now))
+                if source == "roll" and thread is None:
+                    state.auto_event_retry_at = retry_at
+                self._log("debug", "事件生成暂缓：" + admission.reason)
+                await self._log_event(state, "event_deferred", {
+                    "tier": tier, "note": admission.reason, "retry_at": retry_at,
+                }, outcome=outcome)
+                return
             if source == "roll" and thread is None:
                 state.auto_event_failures = min(5, state.auto_event_failures + 1)
                 state.auto_event_retry_at = self._event_time() + min(
@@ -1273,10 +1287,10 @@ class EventsMixin:
         以前是代码拼死的一句「有人吗」：不管遇上什么都一样，群里看着像机器人。
         """
 
-        helper = self.helper_llm or self.llm
+        speech = self.speech_llm
         hook = _clip_text(package.hook, 60).rstrip("。")
         fallback = [f"{hook}……这可怎么办" if hook else "遇到点事……"]
-        if helper is None:
+        if speech is None:
             return fallback
         try:
             system, prompt = self.prompts.build_help_ask_prompt(
@@ -1289,7 +1303,7 @@ class EventsMixin:
         prompt += "\n" + await self.task_background(state, task="expression", query=package.title + "\n" + package.hook)
         target = outcome.home() if outcome is not None else state.session_id
         reply = await self.ask_speech(state, target, system, prompt,
-            rows=self.expression_chat(state, target), allow_tools=False, channel="helper")
+            rows=self.expression_chat(state, target), allow_tools=False)
         if outcome is not None and getattr(reply, "native_event", None) is not None:
             outcome.native_events[target] = reply.native_event
         if not reply:

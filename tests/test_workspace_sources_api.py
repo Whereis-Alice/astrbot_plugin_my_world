@@ -153,4 +153,4 @@ class WorkspaceSourcesApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_unconfigured_helper_reports_the_actual_main_model_fallback(self):
         self.plugin.helper_provider_id = ''
         self.plugin.vision_provider_id = 'vision-only'
-        self.assertEqual(self.plugin._provider_slots()['helper'], '（跟插件用模型）')
+        self.assertEqual(self.plugin._provider_slots()['helper'], '（跟生活思考模型）')

@@ -222,7 +222,7 @@ class LifeApiMixin:
             )
         if calendar is None:
             return error_response(
-                "日历没有生成：请检查内容生成模型、后台预算与人设，或稍后重试"
+                "日历没有生成：请检查内容生成模型与人设，或稍后重试"
             )
         return json_response({"ok": True, "year": year, "calendar": calendar})
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ..model_calls import model_operation
+from ..background_budget import capture_background_admission
 
 from typing import Any
 from ..generator import (
@@ -81,29 +82,37 @@ class InterruptMixin:
             "any=不限制。日夜由世界的夜晚范围决定；普通逛店、办事、户外运动可限定白天，"
             "充电、室内安静活动通常不限制，明确的夜行活动可限定夜间；按人设和地点用途判断。"
         )
-        try:
-            if self.creator_llm is None:
-                from ..background_budget import record_background_admission
-                reason = "没有可用的内容生成模型，请在插件配置中选择模型或配置 AstrBot 默认对话模型"
-                record_background_admission(deferred=True, reason=reason,
-                                            next_at=self._now() + self.tick_seconds)
-                raise ValueError(reason)
-            reply = await self._background_generate(self.creator_llm,
-                session_id=session_id,
-                system_prompt=system_prompt,
-                prompt=prompt,
-                temperature=0.8,
-            )
-            if reply is None or not getattr(reply, "ok", True):
-                raise ValueError(getattr(reply, "error", "") or "模型没有返回内容")
-            text = getattr(reply, "text", "") or ""
-            if not text.strip():
-                raise ValueError("模型返回了空内容，请检查内容生成模型是否支持文本输出后重试")
-        except Exception as exc:
-            self._log("warning", f"内容生成模型调用失败: {exc}")
-            if raise_errors:
-                raise ValueError(f"内容生成失败：{str(exc)[:500] or type(exc).__name__}") from exc
-            return None
+        with capture_background_admission() as admission:
+            try:
+                return await self._creator_text(session_id, system_prompt, prompt)
+            except Exception as exc:
+                if admission.deferred and not admission.started:
+                    self._log("debug", f"内容生成暂缓，模型尚未调用: {exc}")
+                else:
+                    self._log("warning", f"内容生成模型调用失败: {exc}")
+                if raise_errors:
+                    label = "内容生成暂缓" if admission.deferred and not admission.started else "内容生成失败"
+                    raise ValueError(f"{label}：{str(exc)[:500] or type(exc).__name__}") from exc
+                return None
+
+    async def _creator_text(self, session_id: str, system_prompt: str, prompt: str) -> str:
+        if self.creator_llm is None:
+            from ..background_budget import record_background_admission
+            reason = "没有可用的内容生成模型，请在插件配置中选择模型或配置 AstrBot 默认对话模型"
+            record_background_admission(deferred=True, reason=reason,
+                                        next_at=self._now() + self.tick_seconds)
+            raise ValueError(reason)
+        reply = await self._background_generate(self.creator_llm,
+            session_id=session_id,
+            system_prompt=system_prompt,
+            prompt=prompt,
+            temperature=0.8,
+        )
+        if reply is None or not getattr(reply, "ok", True):
+            raise ValueError(getattr(reply, "error", "") or "模型没有返回内容")
+        text = getattr(reply, "text", "") or ""
+        if not text.strip():
+            raise ValueError("模型返回了空内容，请检查内容生成模型是否支持文本输出后重试")
         return text
 
     def _generator_session_id(self) -> str:

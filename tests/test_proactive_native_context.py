@@ -354,16 +354,29 @@ class EventNativeContextTests(unittest.IsolatedAsyncioTestCase):
         await self.start_event()
         self.assertEqual(seen, [None])
 
-    async def test_helper_composed_help_also_marks_its_public_context_request(self):
+    async def test_speech_composed_help_also_marks_its_public_context_request(self):
         self.use_pool_only({**event_tests.TEST_POOL_EVENT, "kind":"need_intervene"})
         await self.group_says()
         seen = []
-        self.helper.on_call = lambda _: seen.append(dict(SPEECH_REQUEST.get() or {}))
-        self.main.replies = ['{"pick":1,"ask_help":true}']
-        self.helper.replies = ['{"lines":["有人能帮我看一下吗"]}']
+        self.main.on_call = lambda _: seen.append(dict(SPEECH_REQUEST.get() or {}))
+        self.main.replies = ['{"pick":1,"ask_help":true}', '{"lines":["有人能帮我看一下吗"]}']
         await self.start_event()
-        self.assertEqual(seen[0]["target"], event_tests.SESSION)
-        self.assertFalse(seen[0]["allow_tools"])
+        self.assertEqual(seen[-1]["target"], event_tests.SESSION)
+        self.assertFalse(seen[-1]["allow_tools"])
+        self.assertFalse(self.helper.calls)
+
+    async def test_sleeping_character_does_not_generate_a_discarded_help_reminder(self):
+        self.use_pool_only({**event_tests.TEST_POOL_EVENT, "kind": "need_intervene"})
+        await self.group_says()
+        self.main.replies = ['{"pick":1,"ask_help":true,"say":{"plan":[{"text":"能帮我看看吗"}]}}']
+        await self.start_event()
+        async with self.engine.session_state(event_tests.SESSION) as state:
+            state.state = "sleeping"
+            outcome = TickOutcome(event_tests.SESSION)
+            with patch.object(self.engine, "_compose_remind_line", AsyncMock()) as compose:
+                await self.engine._advance_pending_help(state, self.engine.node(state.node_id),
+                    outcome, self.clock.now() + 10000)
+                compose.assert_not_awaited()
 
     async def test_event_changed_room_regenerates_only_public_wording(self):
         self.use_pool_only({**event_tests.TEST_POOL_EVENT, "kind":"need_intervene"})

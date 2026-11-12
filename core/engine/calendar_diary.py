@@ -5,9 +5,13 @@ import asyncio
 import hashlib
 import json
 import math
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
+from ..background_budget import BackgroundAdmission, capture_background_admission, record_background_admission, _finish_write
 from ..json_actions import extract_json_object
 from ..life_matters import visible
 from ..model_calls import model_context
@@ -180,6 +184,41 @@ class CalendarDiaryMixin:
             )
         )
 
+    @staticmethod
+    def _defer_journal_attempt(db, key: str, expected: dict, *, count: int, retry_at: float) -> bool:
+        """Refund this unissued attempt without replacing a newer job's state."""
+        with db.atomic():
+            if db.kv_get(key, {}) != expected:
+                return False
+            db.kv_set(key, {"day": expected["day"], "count": count, "retry_at": retry_at})
+            return True
+
+    @asynccontextmanager
+    async def _journal_attempt(
+        self, key: str, prior: Any, *, automatic: bool, delay: int
+    ) -> AsyncIterator[BackgroundAdmission]:
+        day = self._today_key(self._now())
+        count = int(prior.get("count") or 0) if isinstance(prior, dict) and prior.get("day") == day else 0
+        expected = {"day": day, "count": count + 1, "retry_at": self._now() + delay,
+                    "token": uuid4().hex}
+        with capture_background_admission() as admission:
+            try:
+                if automatic:
+                    await _finish_write(asyncio.create_task(self.db.call("kv_set", key, expected)))
+                yield admission
+            except asyncio.CancelledError:
+                if not admission.started:
+                    record_background_admission(deferred=True, reason="日历或日记准备已取消，模型尚未调用")
+                raise
+            finally:
+                if automatic and admission.deferred and not admission.started:
+                    now = self._now()
+                    next_at = admission.next_at if math.isfinite(admission.next_at) else now
+                    retry_at = now + min(delay, max(60, next_at - now))
+                    await _finish_write(asyncio.create_task(self.db.run(
+                        self._defer_journal_attempt, self.db.raw, key, expected,
+                        count=count, retry_at=retry_at)))
+
     def _calendar_config_signature(self, cfg, year: int) -> str:
         payload = {
             "year": int(year),
@@ -222,10 +261,13 @@ class CalendarDiaryMixin:
         return start, start + timedelta(days=1)
 
     async def _ask_journal(
-        self, session_id: str, purpose: str, system_prompt: str, payload: dict[str, Any]
+        self, session_id: str, purpose: str, system_prompt: str, payload: dict[str, Any],
+        *, automatic: bool = True,
     ) -> str | None:
         channel = getattr(self, "creator_llm", None)
         if channel is None:
+            record_background_admission(deferred=True, reason="没有可用的内容生成模型",
+                                        next_at=self._now() + self.tick_seconds)
             return None
         from ..context_selection import evidence_context, request_for
         request = request_for(task="diary" if purpose == "diary" else "generation",
@@ -233,8 +275,10 @@ class CalendarDiaryMixin:
         material = evidence_context(request, json.dumps(payload, ensure_ascii=False), key=purpose)
         self.record_context_selection(request)
         with model_context(purpose, f"为 {session_id} 生成生活日历与日记", session_id):
-            reply = await self._background_generate(
-                channel,
+            # Explicit editor requests use the same creator and attribution,
+            # but do not spend or inspect autonomous life allowances.
+            generate = self._background_generate if automatic else self._manual_journal_generate
+            reply = await generate(channel,
                 session_id=session_id,
                 system_prompt=system_prompt,
                 prompt=material.render(),
@@ -244,6 +288,10 @@ class CalendarDiaryMixin:
         if reply is None or not getattr(reply, "ok", True):
             return None
         return str(getattr(reply, "text", "") or "")
+
+    async def _manual_journal_generate(self, channel, **kwargs):
+        async with asyncio.timeout(self.world.limits.background_llm_timeout_seconds):
+            return await channel.generate(**kwargs)
 
     async def calendar_for_year(
         self, session_id: str, year: int | None = None
@@ -346,26 +394,14 @@ class CalendarDiaryMixin:
             "不要编造公共日历来源；没有依据的日期标成 inferred。最多 "
             f"{getattr(cfg, 'max_events', 120)} 项。"
         )
-        if automatic:
-            await self.db.call(
-                "kv_set",
-                attempt_key,
-                {
-                    "day": self._today_key(self._now()),
-                    "count": (
-                        int(prior.get("count") or 0) + 1
-                        if isinstance(prior, dict) and prior.get("day") == self._today_key(self._now())
-                        else 1
-                    ),
-                    "retry_at": self._now() + 300,
-                },
-            )
-        try:
-            prompt["本次额外要求"] = str(extra_prompt).strip()[:2000]
-            raw = await self._ask_journal(session_id, "calendar", system, prompt)
-        except Exception as exc:
-            self._log("warning", f"生活日历模型失败，保留重试机会：{type(exc).__name__}")
-            raw = None
+        async with self._journal_attempt(attempt_key, prior, automatic=automatic, delay=300) as admission:
+            try:
+                prompt["本次额外要求"] = str(extra_prompt).strip()[:2000]
+                raw = await self._ask_journal(session_id, "calendar", system, prompt, automatic=automatic)
+            except Exception as exc:
+                level = "debug" if admission.deferred and not admission.started else "warning"
+                self._log(level, f"生活日历暂未生成，保留重试机会：{type(exc).__name__}")
+                raw = None
         payload = extract_json_object(raw or "")
         try:
             validated = validate_calendar(
@@ -673,20 +709,6 @@ class CalendarDiaryMixin:
         if automatic and not await self._journal_retry_allowed(attempt_key):
             return None
         context_signature = self._journal_config_signature()
-        if automatic:
-            await self.db.call(
-                "kv_set",
-                attempt_key,
-                {
-                    "day": self._today_key(self._now()),
-                    "count": (
-                        int(prior.get("count") or 0) + 1
-                        if isinstance(prior, dict) and prior.get("day") == self._today_key(self._now())
-                        else 1
-                    ),
-                    "retry_at": self._now() + 900,
-                },
-            )
         system = (
             "你是角色生活日记的整理器。只根据给出的日程、生活事件、事项和独处内心，"
             "用角色第一人称写一篇约200到600字的日记。不要读取或想象聊天、图片、"
@@ -698,13 +720,15 @@ class CalendarDiaryMixin:
             "回应。明确区分现实公共日历、原作设定和原创设定。"
             "只输出 JSON：{\"title\":\"\",\"mood\":\"\",\"content\":\"\"}。"
         )
-        raw = await self._ask_journal(
-            session_id,
-            "diary",
-            system,
-            {"persona": persona, "day": day, "saved_life": sources,
-             "本次额外要求（不得添加未发生事实）": str(extra_prompt).strip()[:2000]},
-        )
+        async with self._journal_attempt(attempt_key, prior, automatic=automatic, delay=900):
+            raw = await self._ask_journal(
+                session_id,
+                "diary",
+                system,
+                {"persona": persona, "day": day, "saved_life": sources,
+                 "本次额外要求（不得添加未发生事实）": str(extra_prompt).strip()[:2000]},
+                automatic=automatic,
+            )
         payload = extract_json_object(raw or "")
         if not isinstance(payload, dict):
             return None

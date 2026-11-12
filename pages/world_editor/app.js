@@ -21070,7 +21070,8 @@ function wizardPersonaStep(body) {
 function wizardProviderStep(body) {
   const slots = ui.config.providers || {};
   const rows = [
-    ["插件主模型", "llm", "自主决策与主动发言"],
+    ["说话模型", "speech", "正常回复、主动接话与对外表达"],
+    ["生活思考模型", "llm", "自主生活决策与后台默认模型"],
     ["辅助模型", "helper", "理解查询、辅助生成"],
     ["判断模型", "judge", "挑一个 / 打分这类轻决策"],
     ["看图模型", "vision", "把图片转成文字"],
@@ -21091,7 +21092,7 @@ function wizardProviderStep(body) {
     el(
       "p",
       "muted",
-      "正常聊天沿用 AstrBot 当前会话的主模型、人格与工具链，小世界按需补充生活状态。上面是插件自主调用的模型；在 AstrBot → 插件 → 小世界的配置中选择，括号表示回落规则。看图模型为空时不转述图片。",
+      "在 AstrBot → 插件 → 小世界中分别选择说话模型与生活思考模型，后台任务还可单独选择模型。正常回复继续使用 AstrBot 原生 Agent、人格与工具链，小世界按需补充生活状态。说话模型留空时，正常回复跟随会话模型，主动发言跟随生活思考模型；括号表示回落规则。看图模型为空时不转述图片。",
     ),
   );
   body.appendChild(el("p", "muted", "嵌入模型在「记忆与画像」这一步选择，用于按意思查找记忆；它与聊天模型分开配置。"));

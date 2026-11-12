@@ -465,10 +465,12 @@ class EventFlowMixin:
         title: str,
         hook: str,
         asked: str,
+        target: str = "",
+        outcome: TickOutcome | None = None,
     ) -> str:
         """求助没人接时她那句自我圆场——让她自己按人设写，写不出来就不说。"""
 
-        channel = self.helper_llm
+        channel = self.speech_llm
         if channel is None:
             return ""
         try:
@@ -482,17 +484,16 @@ class EventFlowMixin:
             return ""
         prompt += "\n" + await self.task_background(state, task="expression", query=title + "\n" + hook + "\n" + asked)
         try:
-            reply = await channel.generate(
-                session_id=state.session_id,
-                system_prompt=system,
-                prompt=prompt,
-                temperature=0.4,
-            )
+            target = target or state.session_id
+            reply = await self.ask_speech(state, target, system, prompt,
+                rows=self.expression_chat(state, target), allow_tools=False)
+            if outcome is not None and getattr(reply, "native_event", None) is not None:
+                outcome.native_events[target] = reply.native_event
         except Exception as exc:
             self._log("debug", f"生成求助圆场那句失败：{exc}")
             return ""
         self._count_tool_param(state)
-        text = getattr(reply, "text", "") if getattr(reply, "ok", False) else ""
+        text = str(reply or "")
         payload = extract_json_object(str(text or ""))
         line = ""
         if isinstance(payload, dict):
@@ -528,16 +529,19 @@ class EventFlowMixin:
             ) * 60.0
             self._set_event_help(state, info)
             root = dict((thread or {}).get("root") or {})
+            self._apply_thread_target(state, outcome, thread)
             text = ""
-            if bool(getattr(config, "remind_when_ignored", True)):
+            if (bool(getattr(config, "remind_when_ignored", True))
+                    and self._event_public_speech(state)
+                    and self.speech_allowed(outcome.home(), "event")):
                 text = await self._compose_remind_line(
                     state,
                     title=str(info.get("title") or root.get("title") or "那件事"),
                     hook=str(root.get("hook") or ""),
                     asked=str(info.get("asked") or ""),
+                    target=outcome.home(),
+                    outcome=outcome,
                 )
-            # 这句话该说给哪个会话：她当初挑了别的会话就跟着她
-            self._apply_thread_target(state, outcome, thread)
             if text and self._event_public_speech(state):
                 outcome.add_speech(text, kind="event")
             elif text:

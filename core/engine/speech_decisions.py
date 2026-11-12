@@ -242,7 +242,7 @@ class SpeechDecisionsMixin:
     async def _ask_speech_media(self, state, target, system, prompt, *, rows, images=None):
         media = getattr(self, "media", None)
         if media is None:
-            return await self._ask_llm(target, system, prompt, image_urls=images)
+            return await self._ask_speech_llm(target, system, prompt, image_urls=images)
         async with media.context(target, rows, images=images) as prepared:
             evidence = prepared.get("text", "")
             if evidence:
@@ -252,7 +252,7 @@ class SpeechDecisionsMixin:
             token = SPEECH_REQUEST.set({**speech,
                 'media_event': prepared.get('media_event'), 'image_contexts': prepared.get('image_contexts', [])}) if speech else None
             try:
-                return await self._ask_llm(target, system, prompt,
+                return await self._ask_speech_llm(target, system, prompt,
                     image_urls=prepared.get("images", []))
             finally:
                 if token is not None:

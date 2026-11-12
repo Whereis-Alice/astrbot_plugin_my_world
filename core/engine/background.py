@@ -236,7 +236,9 @@ class BackgroundMixin:
                 available &= set(self.world.decider.proactive_tool_names)
             context = getattr(getattr(channel, "plugin", None), "context", None)
             if (speech and speech.get("allow_tools") and available and self.world.decider.proactive_tools
-                    and getattr(channel, "role", "") == "main" and callable(getattr(context, "tool_loop_agent", None))):
+                    and getattr(channel, "role", "") == "main"
+                    and getattr(channel, "provider_slot", "") != "background"
+                    and callable(getattr(context, "tool_loop_agent", None))):
                 reserve *= self.world.decider.proactive_tool_steps + 1
             provider_id = str(getattr(channel, "provider_id", "") or "")
             generate, generation_kwargs = channel.generate, kwargs

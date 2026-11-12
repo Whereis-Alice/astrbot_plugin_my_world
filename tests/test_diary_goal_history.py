@@ -54,7 +54,7 @@ class DiaryGoalHistoryTests(unittest.IsolatedAsyncioTestCase):
     async def test_todays_edit_does_not_invalidate_yesterdays_diary(self):
         await self.completed_day()
         entered, release = asyncio.Event(), asyncio.Event()
-        async def generate(*_args):
+        async def generate(*_args, **_kwargs):
             entered.set()
             await release.wait()
             return json.dumps({"title": "昨天的阅读", "content": "昨天在世界里读过笔记，还没有确认整个目标完成。"})
@@ -75,7 +75,7 @@ class DiaryGoalHistoryTests(unittest.IsolatedAsyncioTestCase):
                 resume_at=self.clock.now() + 3600)
         today = self.engine.local_now().date().isoformat()
         entered, release = asyncio.Event(), asyncio.Event()
-        async def generate(*_args):
+        async def generate(*_args, **_kwargs):
             entered.set()
             await release.wait()
             return json.dumps({"title": "今天的打算", "content": "今天暂时准备继续读风车笔记。"})

@@ -31,12 +31,20 @@ def current_background_admission() -> BackgroundAdmission | None:
 @contextmanager
 def capture_background_admission() -> Iterator[BackgroundAdmission]:
     """Keep unsent budget deferral distinct from an actual model decision."""
+    parent = _ADMISSION.get()
     admission = BackgroundAdmission()
     token = _ADMISSION.set(admission)
     try:
         yield admission
     finally:
         _ADMISSION.reset(token)
+        # Inner generators need their own dispatch result, while the caller's
+        # whole workflow must still retain any earlier dispatch or local wait.
+        if parent is not None:
+            parent.started |= admission.started
+            parent.deferred |= admission.deferred
+            if admission.deferred:
+                parent.reason, parent.next_at = admission.reason, admission.next_at
 
 
 def record_background_admission(*, started: bool = False, deferred: bool = False,

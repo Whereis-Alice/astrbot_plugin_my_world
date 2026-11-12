@@ -123,6 +123,7 @@ class _Filter:
 
         return wrapper
 
+    on_waiting_llm_request = _decorator
     on_llm_request = _decorator
     on_llm_response = _decorator
     on_using_llm_tool = _decorator

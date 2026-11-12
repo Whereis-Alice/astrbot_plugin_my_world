@@ -794,9 +794,9 @@ class EventEngineTest(unittest.IsolatedAsyncioTestCase):
         self.main.replies = [
             '{"pick": 1, "ask_help": true, "say": {"plan": [{"text": "有人吗"}]}}'
         ]
-        # 打杂模型的调用顺序：先写"没人接我自己来"那一句，再写收尾的结果
+        # 对外圆场用说话模型，私下事件结算用后台模型。
+        self.main.replies.append('{"line": "算了，我自己来。"}')
         self.helper.replies = [
-            '{"line": "算了，我自己来。"}',
             '{"outcome": "最后她自己把盒子塞回柜子里了"}',
         ]
         await self.group_says()
@@ -828,16 +828,16 @@ class EventEngineTest(unittest.IsolatedAsyncioTestCase):
         self.main.replies = [
             '{"pick": 1, "ask_help": true, "say": {"plan": [{"text": "有人吗"}]}}'
         ]
-        self.helper.default_reply = '{"line": "行吧，我自己弄。"}'
         await self.group_says()
         await self.start_event()
-        self.helper.calls.clear()
+        self.main.default_reply = '{"line": "行吧，我自己弄。"}'
+        self.main.calls.clear()
 
         self.clock.advance(40)
         await self.engine.tick()
 
-        self.assertTrue(self.helper.calls, "这一句该由模型写")
-        self.assertIn("一直没人接话", self.helper.calls[0]["system_prompt"])
+        self.assertTrue(self.main.calls, "这一句该由说话模型写")
+        self.assertIn("一直没人接话", self.main.calls[0]["system_prompt"])
         self.assertIn("行吧，我自己弄。", self.messenger.flat_messages)
 
     async def test_ignored_help_reminder_can_be_turned_off(self):
@@ -877,7 +877,8 @@ class EventEngineTest(unittest.IsolatedAsyncioTestCase):
             '{"pick": 1, "ask_help": true, "send_to": "别处",'
             ' "say": {"plan": [{"text": "有人吗"}]}}'
         ]
-        self.helper.replies = ['{"line": "算了，我自己来"}', '{"outcome": "她自己搞定了"}']
+        self.main.replies.append('{"line": "算了，我自己来"}')
+        self.helper.replies = ['{"outcome": "她自己搞定了"}']
         await self.group_says()
         # 会话组里的另一个落点：把解析结果固定住，测的是"有没有用它"
         self.engine.resolve_send_to = (
@@ -937,14 +938,12 @@ class EventEngineTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("打不开的盒子……", text)
 
     async def test_help_lines_come_from_the_model(self):
-        """求助那两句让她自己说（打杂模型写），不再是代码里固定的「有人吗」。"""
+        """求助台词由说话模型写。"""
 
         self.use_pool_only({**TEST_POOL_EVENT, "kind": "need_intervene"})
         await self.group_says()
-        self.main.default_reply = '{"pick": 1, "ask_help": true}'
-        self.helper.default_reply = (
-            '{"lines": ["桌上这个盒子卡死了", "谁来帮我看看怎么开"]}'
-        )
+        self.main.replies = ['{"pick": 1, "ask_help": true}',
+                             '{"lines": ["桌上这个盒子卡死了", "谁来帮我看看怎么开"]}']
 
         outcome = await self.start_event()
 

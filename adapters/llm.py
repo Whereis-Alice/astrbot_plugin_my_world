@@ -49,10 +49,11 @@ class AstrBotLLM:
     """LLMPort 实现；仅在 Provider 明确拒绝参数格式时做兼容重试。"""
 
     def __init__(self, plugin: "MyWorldPlugin", provider_id: str = "", role: str = "main",
-                 sampling: dict[str, float] | None = None) -> None:
+                 sampling: dict[str, float] | None = None, *, provider_slot: str = "") -> None:
         self.plugin = plugin
         self.provider_id = provider_id
         self.role = role
+        self.provider_slot = provider_slot
         self.sampling = dict(sampling or {})
         # Provider 可以随会话切换；某一个不支持参数不能禁用其它 Provider 的配置。
         self._sampling_rejected_providers: set[str] = set()
@@ -60,8 +61,10 @@ class AstrBotLLM:
 
     async def resolve_provider_id(self, session_id: str) -> str:
         """Resolve this role's current provider without generating or caching a turn."""
-        provider_id = (self.provider_id or self.plugin.llm_provider_id or "").strip()
-        if not provider_id and self.role == "main":
+        speech_id = (getattr(self.plugin, "speech_provider_id", "")
+                     if self.provider_slot == "speech" else "")
+        provider_id = (self.provider_id or speech_id or self.plugin.llm_provider_id or "").strip()
+        if not provider_id and self.role == "main" and self.provider_slot != "background":
             provider_id = self.plugin.turn_provider_override(session_id)
         if not provider_id:
             provider_id = await self.plugin.context.get_current_chat_provider_id(session_id)
@@ -125,7 +128,7 @@ class AstrBotLLM:
         response = None
         token = self.plugin.set_self_initiated()
         try:
-            speech_role = bool(speech and (self.role == "main" or (
+            speech_role = bool(speech and self.provider_slot != "background" and (self.role == "main" or (
                 self.role == "helper" and speech.get("channel") == "helper")))
             if speech_role and callable(getattr(context, "tool_loop_agent", None)):
                 try:

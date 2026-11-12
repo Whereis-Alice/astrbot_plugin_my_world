@@ -441,7 +441,12 @@ class VisitActorPort(VisitCardActorMixin):
                 output_limit = max(768, output_limit)
             with model_context("world_visit", "友邻串门：" + phase, scope), capture_background_admission() as admission:
                 try:
-                    reply = await engine._budgeted_generate(engine.llm, session_id=scope,
+                    # Only these phases compose the character's own utterance.
+                    # Scene resolution and private recollection stay on the
+                    # life model; the independent visit allowance is unchanged.
+                    channel = (getattr(engine, "speech_llm", engine.llm)
+                               if phase in {"propose", "receive", "turn"} else engine.llm)
+                    reply = await engine._budgeted_generate(channel, session_id=scope,
                         system_prompt=persona[:6000] + "\n\n" + rules,
                         prompt=json.dumps(materials, ensure_ascii=False), max_tokens=output_limit,
                         _visit_manual=manual,

@@ -270,12 +270,22 @@ class MyWorldEngine(
 ):
     """世界状态机。"""
 
+    @property
+    def speech_llm(self):
+        """An unconfigured speech channel follows the current background model."""
+        return self._speech_llm if self._speech_llm is not None else self.llm
+
+    @speech_llm.setter
+    def speech_llm(self, channel):
+        self._speech_llm = channel
+
     def __init__(
         self,
         *,
         store: ConfigStore,
         db: AsyncDatabase,
         llm=None,
+        speech_llm=None,
         helper_llm=None,
         judge_llm=None,
         creator_llm=None,
@@ -303,11 +313,13 @@ class MyWorldEngine(
 
         self.extensions = extensions if extensions is not None else ExtensionHost()
         self.llm = llm
+        # 所有真正对外说出的话单独选模型；没有配置时保持旧版主模型行为。
+        self._speech_llm = speech_llm
         self.embedding = embedding
         # 辅助模型：只负责"把意图翻译成工具参数"，留空时复用主模型
         self.helper_llm = helper_llm or llm
         # 判断模型：「挑一个 / 打分 / 抽字段」这类纯判断走它；没配就跟随打杂模型。
-        # 和打杂分开是有原因的——打杂里混着"要文笔"的活（写事件结局、她求助的话），
+        # 和打杂分开是有原因的——打杂里混着"要文笔"的活（例如写事件结局），
         # 那些塞给最小的模型会明显掉质量。
         self.judge_llm = judge_llm or self.helper_llm
         # 内容生成模型：编事件包、以及编辑器里"批量生成动作 / 地点"
