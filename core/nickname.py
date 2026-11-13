@@ -40,6 +40,7 @@ def compute_nickname(
     node: NodeDef | None,
     *,
     base: str = "",
+    status_override: str | None = None,
 ) -> str:
     """按优先级计算应该显示的群名片。base 为空时用状态里记录的原名。"""
 
@@ -89,6 +90,8 @@ def compute_nickname(
                 if node_label:
                     status = node_label
 
+    if status_override is not None:
+        status = status_override.strip()
     if not status:
         return original
     template = config.template or "{base} | {status}"

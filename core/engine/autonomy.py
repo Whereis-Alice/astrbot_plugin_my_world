@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 
 from ..model_calls import model_operation
 from ..background_budget import capture_background_admission
@@ -19,7 +20,7 @@ from ..planner import (
 from ..state import STATE_DROWSY, WorldState
 from .models import TickOutcome
 from .util import _clip_text
-from .life_inference import life_work
+from .life_inference import LifeWorkDiscarded, life_work
 from ..visit_presence import active_visit
 
 
@@ -123,8 +124,34 @@ class AutonomyMixin:
         if (state.energy >= .4 and not self.decider.sleep_pressure_high(state)
                 and self._now() - state.last_quiet_plan_at >= 3600
                 and self._llm_plan_allowed(state) and self.decider.should_ask_llm(state)):
-            state.last_quiet_plan_at = self._now()
-            plan = await self._ask_llm_for_plan(state, node, outcome, quiet=True) or plan
+            reserved_at = self._now()
+            state.last_quiet_plan_at = reserved_at
+            discarded = False
+            with capture_background_admission() as admission:
+                try:
+                    with self._unissued_preparation():
+                        proposed = await self._ask_llm_for_plan(state, node, outcome, quiet=True)
+                except LifeWorkDiscarded:
+                    discarded = True
+                    raise
+                except Exception:
+                    # A preparation failure did not use this hour's thought.
+                    # Real dispatches keep their cooldown and normal fallback.
+                    if admission.started or not admission.deferred:
+                        raise
+                    proposed = None
+                finally:
+                    # Shutdown may cancel local preparation before it returns.
+                    # A stale lease or newer reservation still owns its own state.
+                    if (not discarded and admission.deferred and not admission.started
+                            and state.last_quiet_plan_at == reserved_at):
+                        now = self._now()
+                        next_at = admission.next_at if math.isfinite(admission.next_at) else now
+                        retry = min(900, max(60, next_at - now))
+                        state.last_quiet_plan_at = now + retry - 3600
+            if admission.deferred and not admission.started:
+                outcome.notes.append("安静规划暂未请求模型，稍后重试；规则生活继续")
+            plan = proposed or plan
         if plan is None:
             return
         steps = []

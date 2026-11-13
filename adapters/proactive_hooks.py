@@ -117,10 +117,13 @@ async def fire_hook(plugin, event, name, *args, accepted=False):
             continue
         if name in {"OnAgentBeginEvent", "OnAgentDoneEvent"}:
             # These phases carry the private JSON task, not accepted speech.
-            expected = ("bind_group_card_reminder_context" if name == "OnAgentBeginEvent"
-                        else "release_group_card_reminder")
-            if ("astrbot_plugin_dynamic_card_plus" not in str(getattr(handler, "__module__", ""))
-                    or getattr(handler, "__name__", "") != expected):
+            phase = 0 if name == "OnAgentBeginEvent" else 1
+            owners = {"astrbot_plugin_dynamic_card_plus": (
+                          "bind_group_card_reminder_context", "release_group_card_reminder"),
+                      "astrbot_plugin_free_card": ("bind_reminder", "finish_reminder")}
+            if not any(module in str(getattr(handler, "__module__", ""))
+                       and getattr(handler, "__name__", "") == methods[phase]
+                       for module, methods in owners.items()):
                 continue
         if (name == "OnLLMRequestEvent" and args
                 and "astrbot_plugin_dynamic_card_plus" in str(getattr(handler, "__module__", ""))

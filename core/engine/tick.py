@@ -210,6 +210,7 @@ class TickMixin:
             visit = active_visit(self, session_id)
             if visit:
                 await self._tick_visit_presence(state, elapsed_life, visit)
+                await self._sync_nickname(state, node)
                 outcome.notes.append(presence_text(visit))
                 outcome.summary = {"world_time": state.world_time, "visiting": True,
                                    "node_id": state.node_id, "node_name": presence_text(visit)}

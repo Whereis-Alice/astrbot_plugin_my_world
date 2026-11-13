@@ -9801,6 +9801,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(after.affect, before.affect)
 
     async def test_template_falls_back_to_nickname_when_bot_name_empty(self):
+        from tests.schedule_delivery import settled_schedule_outcomes
+
         await self.set_state(bot_base_nickname="小蓝鱼")
         self.set_schedules(
             [
@@ -9817,7 +9819,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         )
         self.engine.reload_config()
         self.clock.set_struct(datetime(2026, 9, 10, 17, 10))
-        await self.engine.tick()
+        outcomes = await self.engine.tick()
+        await settled_schedule_outcomes(self.engine, outcomes)
         self.assertIn("（小蓝鱼抱了你一下）", self.messenger.flat_messages)
 
     async def test_cook_action_uses_llm_duration_and_shares(self):

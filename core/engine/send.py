@@ -14,6 +14,7 @@ from ..nickname import (
 )
 from ..ports import CardResult
 from ..state import WorldState
+from ..group_card_presence import engine_group_card_override
 from .constants import MAX_GROUP_IMAGES
 from .speech_decisions import traced_delivery
 from .proactive_contact import CHAT_KINDS, LIFE_KINDS
@@ -58,7 +59,12 @@ class SendMixin:
                 await self._log_event(
                     state, "nickname", {"base": fetched, "note": "记下了她原来的群名片"}
                 )
-        desired = compute_nickname(self.world, state, node, base=state.bot_base_nickname)
+        try:
+            presence = await engine_group_card_override(self, primary)
+        except RuntimeError:
+            return  # Keep the current name while confirmed visit state recovers.
+        desired = compute_nickname(self.world, state, node, base=state.bot_base_nickname,
+                                   status_override=presence["status"] if presence else None)
         now = self._now()
         # 连续失败时按倍数退避（1× → 2× → 4× …，最多 1 小时一次），
         # 否则协议端一挂，这里会每隔一个冷却就重试并打一条错误日志。

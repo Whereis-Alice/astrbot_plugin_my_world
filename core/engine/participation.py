@@ -5,6 +5,7 @@ import asyncio
 import time
 
 from ..config_scope import session_scoped
+from ..context_selection import ContextRequest
 from ..model_calls import model_operation
 from ..participation import build_participation_prompt
 from ..state import STATE_DROWSY, WorldState
@@ -250,6 +251,17 @@ class ParticipationMixin:
             return "peer_cooldown"
         return ""
 
+    def participation_context_request(self, state: WorldState, target: str, rows: list[dict], *,
+                                      reply_seqs: frozenset[int] | None = None) -> ContextRequest:
+        """Anchor recall to the actual source while short continuations keep context."""
+        from ..evidence import direct_text
+        sources = [row for row in rows if self._chat_origin(row, state) == target
+                   and not row.get("is_self") and not row.get("internal")
+                   and (reply_seqs is None or int(row.get("seq") or 0) in reply_seqs)]
+        latest = sources[-1] if sources else {}
+        text = direct_text(str(latest.get("raw_text") or latest.get("text") or ""))
+        return self.context_request(state, target, task="participation", rows=rows, text=text)
+
     def participation_prompt(self, state, target, persona, *, rows=None, request=None, source="message", browse_id="", reply_seqs=None):
         """Same builder for production and evaluation; never include another session."""
         if rows is None:
@@ -263,7 +275,7 @@ class ParticipationMixin:
             reply_seqs = frozenset(int(row.get("seq") or 0) for row in ticket.eligible(available_rows(self, state, target)))
         from ..context_selection import CONTEXT_GUIDANCE, relevance, select_context
         from ..context_sources import browse_feeling_item, life_items, memory_context_items
-        request = request or self.context_request(state, target, task="participation", rows=rows)
+        request = request or self.participation_context_request(state, target, rows, reply_seqs=reply_seqs)
         from hashlib import sha256
         request.life_persona = sha256(persona.encode("utf-8")).hexdigest()[:24]
         if source == "browse" and reply_seqs:
@@ -286,12 +298,26 @@ class ParticipationMixin:
         # unrelated unfinished project as a new topic every time she joins a chat.
         if self.world.state_dynamics.own_topic_enabled:
             materials = [item for item in life_items(state, request)
-                         if relevance(request.query, item.topic_text)]
+                         if relevance(request.retrieval_query, item.topic_text)]
             import re
-            if re.search(r"你.{0,6}(?:在(?:哪|做|干)|忙什么|刚才|最近怎么样|今天怎么样|做完)", request.query):
+            if re.search(r"你.{0,6}(?:在(?:哪|做|干)|忙什么|刚才|最近怎么样|今天怎么样|做完)", request.retrieval_query):
+                from copy import copy
+                from ..life import activity_view
+                from ..visit_presence import active_visit, presence_text, visit_activity_text
                 node = self.node(state.node_id)
                 action = state.current_action or {}
-                life.update(place=node.name if node else "", activity=str(action.get("desc") or action.get("intent") or "自由活动"))
+                foreign_action = bool(action.get("persona_key") and action["persona_key"] != request.life_persona)
+                view = copy(state)
+                idle = state.idle_activity or {}
+                if idle.get("persona_key") and idle["persona_key"] != request.life_persona:
+                    view.idle_activity = {}
+                life.update(place=node.name if node else "",
+                            activity="自由活动" if foreign_action else activity_view(view, self.world)["label"])
+                visit = active_visit(self, target)
+                if (visit and visit.get("arrived_at") and visit.get("scope") == self.state_key(target)
+                        and (visit.get("local") or {}).get("persona_key") == request.life_persona):
+                    life.update(place=presence_text(visit, now=request.now),
+                                activity=visit_activity_text(visit, now=request.now))
         memories = self.context_memories(state, request, rows)
         current_feeling = browse_feeling_item(state, request, browse_id) if source == "browse" else None
         if current_feeling:
@@ -393,7 +419,14 @@ class ParticipationMixin:
         rows = [row for row in state.recent_chat if self._chat_origin(row, state) == target
                 and (window is None or self._now() - float(row.get("at") or 0) <= max(600, window))
                 and not self.is_plugin_command(str(row.get("text") or ""))]
-        request = self.context_request(state, target, task="participation", rows=rows)
+        reply_seqs = None
+        if source == "browse":
+            from ..browse_reply import BrowseReply, available_rows
+            ticket = browse_ticket or BrowseReply.capture(self, state, target, browse_id)
+            original = ticket.eligible(available_rows(self, state, target))
+            claimed = outcome.chat_claims.get(target, []) if outcome is not None else []
+            reply_seqs = frozenset(int(seq) for seq in claimed) if claimed else frozenset(int(row["seq"]) for row in original)
+        request = self.participation_context_request(state, target, rows, reply_seqs=reply_seqs)
         await self.prepare_context_memory(request, state=state)
         self.style_for(state, target)
         persona = await self._persona_text(target)
@@ -403,13 +436,6 @@ class ParticipationMixin:
             request.life_persona = sha256(persona.encode("utf-8")).hexdigest()[:24]
             if browse_feeling_item(state, request, browse_id) is None:
                 return "", ""
-        reply_seqs = None
-        if source == "browse":
-            from ..browse_reply import BrowseReply, available_rows
-            ticket = browse_ticket or BrowseReply.capture(self, state, target, browse_id)
-            original = ticket.eligible(available_rows(self, state, target))
-            claimed = outcome.chat_claims.get(target, []) if outcome is not None else []
-            reply_seqs = frozenset(int(seq) for seq in claimed) if claimed else frozenset(int(row["seq"]) for row in original)
         system, prompt, targets = self.participation_prompt(state, target,
             persona, request=request, rows=rows, source=source, browse_id=browse_id, reply_seqs=reply_seqs)
         if reply_seqs is not None:

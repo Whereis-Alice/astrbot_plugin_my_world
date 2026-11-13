@@ -107,6 +107,7 @@ from .core.messages import (
 from .core.models import pronoun_for
 from .core.nickname import compute_nickname
 from .core.plugin_compat import profile_weaver_active
+from .core.group_card_presence import group_card_override
 from .core.profile_weaver_service import ProfileWeaverService
 from .core.prompt import clip_line, prompt_section_index, readable_caption
 from .core.request_context import (
@@ -322,6 +323,10 @@ def _extra_components(chain: Any, *, skip_plain: bool = True) -> list[Any]:
     PLUGIN_VERSION,
 )
 class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, ParticipationHooksMixin, Star):
+    async def get_group_card_override(self, session_id: str) -> dict[str, str] | None:
+        """Expose confirmed temporary presence to cooperating card plugins."""
+        return await group_card_override(self, session_id)
+
     def __init__(self, context: Context, config: AstrBotConfig) -> None:
         super().__init__(context, config)
         self.config = config

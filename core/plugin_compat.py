@@ -5,10 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 DYNAMIC_CARD_PLUGIN = "astrbot_plugin_dynamic_card_plus"
+FREE_CARD_PLUGIN = "astrbot_plugin_free_card"
 
 
 def group_card_owner(context: Any, session_id: str, event: Any = None) -> str:
-    """灵动名片已加载、启用且适用于本群时，让它独占群名片写入。"""
+    """让已启用且适用于本群的名片插件独占常态写入。"""
 
     parts = str(session_id).split(":", 2)
     if len(parts) != 3 or parts[1] != "GroupMessage":
@@ -22,10 +23,10 @@ def group_card_owner(context: Any, session_id: str, event: Any = None) -> str:
         return ""
     for star in stars:
         names = {str(getattr(star, key, "") or "") for key in ("name", "root_dir_name")}
-        if DYNAMIC_CARD_PLUGIN not in names or not getattr(star, "activated", False):
+        if not names.intersection({DYNAMIC_CARD_PLUGIN, FREE_CARD_PLUGIN}) or not getattr(star, "activated", False):
             continue
         instance = getattr(star, "star_cls", None)
-        if instance is None:
+        if instance is None or getattr(instance, "_closed", False):
             continue
         config = getattr(instance, "config", None)
         if config is None:
@@ -58,7 +59,8 @@ def group_card_owner(context: Any, session_id: str, event: Any = None) -> str:
                     pass
         if allowed is not None and "*" not in allowed and not names.intersection(allowed):
             continue
-        return "灵动名片（dynamic_card_plus）"
+        return ("随心名片（free_card）" if FREE_CARD_PLUGIN in names
+                else "灵动名片（dynamic_card_plus）")
     return ""
 
 

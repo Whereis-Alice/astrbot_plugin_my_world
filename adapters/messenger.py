@@ -222,24 +222,28 @@ class AstrBotMessenger(GroupNamesMixin):
         if ":GroupMessage:" not in session_id:
             return CardResult(ok=False, reason="这不是群聊，没有群名片")
         event = self.plugin.last_event(session_id)
-        if event is None:
-            # 这个群还没来过消息时，拿别处收到过的事件取机器人句柄也行——
-            # 句柄是同一个 Bot，真正决定改哪个群的还是上面的 session_id。
-            event = self.plugin.last_event_any()
-        if event is None:
+        if event is None or str(getattr(event, "unified_msg_origin", "")) != session_id:
             return CardResult(ok=False, reason="还没收到过这个群的消息，拿不到机器人句柄")
         bot = getattr(event, "bot", None)
         if bot is None or not hasattr(bot, "call_action"):
             return CardResult(ok=False, reason="当前平台不支持改群名片（需要 OneBot/aiocqhttp）")
-        group_id = session_id.split(":")[-1]
+        group_getter = getattr(event, "get_group_id", None)
+        group_id = group_getter() if callable(group_getter) else session_id.split(":", 2)[-1]
         self_id = event.get_self_id()
+        if not all(str(value).isascii() and str(value).isdecimal() and int(value) > 0
+                   for value in (group_id, self_id)):
+            return CardResult(ok=False, reason="群号或机器人账号无效")
         try:
-            await bot.call_action(
+            response = await asyncio.wait_for(bot.call_action(
                 "set_group_card",
-                group_id=int(group_id) if str(group_id).isdigit() else group_id,
-                user_id=int(self_id) if str(self_id).isdigit() else self_id,
+                group_id=int(group_id),
+                user_id=int(self_id),
+                self_id=str(self_id),
                 card=card,
-            )
+            ), timeout=10)
+            if isinstance(response, dict) and "status" in response and "retcode" in response:
+                if response["status"] != "ok" or response["retcode"] not in (0, "0"):
+                    return CardResult(ok=False, reason=f"平台拒绝了：retcode={response['retcode']}", card=card)
             return CardResult(ok=True, card=card)
         except Exception as exc:
             # 常见原因：机器人不是群管理/群主、群号不对、协议端不支持这个接口
@@ -258,24 +262,38 @@ class AstrBotMessenger(GroupNamesMixin):
         if platform_family(self.plugin, session_id) in QQ_OFFICIAL or ":GroupMessage:" not in session_id:
             return ""
         event = self.plugin.last_event(session_id)
-        if event is None:
+        if event is None or str(getattr(event, "unified_msg_origin", "")) != session_id:
             return ""
         bot = getattr(event, "bot", None)
         if bot is None or not hasattr(bot, "call_action"):
             return ""
-        group_id = session_id.split(":")[-1]
+        group_getter = getattr(event, "get_group_id", None)
+        group_id = group_getter() if callable(group_getter) else session_id.split(":", 2)[-1]
         self_id = event.get_self_id()
+        if not all(str(value).isascii() and str(value).isdecimal() and int(value) > 0
+                   for value in (group_id, self_id)):
+            return ""
         try:
-            info = await bot.call_action(
+            info = await asyncio.wait_for(bot.call_action(
                 "get_group_member_info",
-                group_id=int(group_id) if str(group_id).isdigit() else group_id,
-                user_id=int(self_id) if str(self_id).isdigit() else self_id,
+                group_id=int(group_id),
+                user_id=int(self_id),
+                self_id=str(self_id),
                 no_cache=True,
-            )
+            ), timeout=10)
         except Exception as exc:
             self.plugin.logger.debug(f"[my_world] 读取群名片失败：{exc}")
             return ""
         if not isinstance(info, dict):
+            return ""
+        if "status" in info and "retcode" in info:
+            if info["status"] != "ok" or info["retcode"] not in (0, "0"):
+                return ""
+            info = info.get("data")
+            if not isinstance(info, dict):
+                return ""
+        if any(key in info and str(info[key]) != str(value)
+               for key, value in (("group_id", group_id), ("user_id", self_id))):
             return ""
         return str(info.get("card") or info.get("nickname") or "").strip()
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from ..recovery import sleep_action_kind
 
 from ..model_calls import model_operation
+from ..background_budget import capture_background_admission
 
 import asyncio
 import json
@@ -18,6 +19,7 @@ from ..planner import active_plan, create_plan
 from ..pathfinding import find_path
 from ..state import STATE_DROWSY, STATE_IDLE, WorldState
 from .models import TickOutcome
+from .life_inference import LifeWorkDiscarded
 
 
 def _number(value: Any, default: float = 0.0) -> float:
@@ -157,56 +159,80 @@ class SleepRhythmMixin:
         reason = "结合清醒时长与疲劳决定休息" if decision == "sleep" else "还可以继续活动，稍后再评估"
         source = "fallback"
         if self.llm is not None:
-            schedules = []
-            for item in getattr(self.schedules, "schedules", []):
-                if item.enabled and self.schedule_in_scope(item, state.session_id) and not any(sleep_action_kind(self.world.action_map().get(step.type)) == "sleep" for step in item.action_chain):
-                    schedules.append({"id": item.id, "time": str(item.time),
-                        "actions": [step.type for step in item.action_chain]})
-            current = state.current_action or {}
-            context = {
-                "当地时间": self.local_now().isoformat(timespec="minutes"),
-                "清醒小时": round(awake, 2), "精力": round(state.energy, 3),
-                "困意": round(state.sleep_pressure, 3), "心情": state.mood,
-                "正在做": str(current.get("desc") or current.get("type") or "自由活动"),
-                "最近睡眠": state.sleep_history[-4:],
-                "日程": schedules[:12], "上次决定": str(rhythm.get("reason") or ""),
-            }
-            background = await self.task_background(state, task="sleep", query="作息 疲劳 未完事项 次日安排 休息")
-            persona = await self._persona_text(state.session_id)
-            persona_key = sha256(persona.encode("utf-8")).hexdigest()[:24]
-            bases = (matters.bookmark_basis(state, persona_key=persona_key)
-                     if self.world.limits.life_matter_enabled and self.world.state_dynamics.own_topic_enabled else [])
-            if bases:
-                context["已经投入的中途书签"] = bases
-            prompt = (
-                f"人设：\n{persona}\n作息偏好：{config.rhythm_prompt[:1200]}\n"
-                + json.dumps(context, ensure_ascii=False, default=str) + "\n" + background
-                + f"\n决定现在入睡还是继续活动。不是必须到固定钟点才睡；"
-                f"根据真实疲劳、睡眠不足、当日事情与人设作决定，不为了每天不同随便掷时间。"
-                f"小睡不足不能当完整的一晚；普通群聊热闹不代表必须一直陪聊。"
-                f"睡眠时长在 {low/3600:g}~{high/3600:g} 小时，清醒上限 {config.max_awake_hours:g} 小时。"
-                f"继续活动最多 {interval} 分钟后再看。只输出 JSON："
-                '{"decision":"sleep 或 continue","hours":8,"review_minutes":60,"reason":"具体理由",'
-                '"life_bookmark":null}。'
-                "没有实质新思路时life_bookmark保持null，已有具体笔记会原样保留。"
-                "有新思路才填对象：matter_id和step_id沿用所附书签的ID，note写具体观察、取舍或疑问；"
-                "不要把字段说明、目标或计划复述当成新笔记。可用next_focus与open_question更新接续点和未解问题；"
-                "不变的字段省略，明确解决疑问时才将open_question置空。"
-                "note最多600字，next_focus和open_question各最多240字；保留未确认限定，过长的更新会整体舍弃。"
-                "仅可整理书签中已有实际投入的个人步骤，衔接上次笔记。"
-                "focus是待做方向，不能把它说成已完成。没有新想法就省略，不重复抄写。"
-                "这些只属于角色世界内的草稿，不完成步骤、不证明现实操作成功，不写成聊天消息。"
-            )
-            try:
-                # Keep inference in the task owning STATE_LEASE. wait_for(coro)
-                # spawns another task, preventing released_life_lock from releasing
-                # this character's writer lock or rejecting concurrent changes.
-                async with asyncio.timeout(45):
-                    reply = await self._ask_llm(state.session_id,
-                        "你正在为自己的生活决定作息。只判断与解释，不发消息、不调用工具。", prompt)
-            except asyncio.TimeoutError:
-                reply = None
-            outcome.llm_calls += 1
+            reserved_until = rhythm["next_evaluation_at"]
+            discarded = False
+            with capture_background_admission() as admission:
+                try:
+                    with self._unissued_preparation():
+                        schedules = []
+                        for item in getattr(self.schedules, "schedules", []):
+                            if item.enabled and self.schedule_in_scope(item, state.session_id) and not any(sleep_action_kind(self.world.action_map().get(step.type)) == "sleep" for step in item.action_chain):
+                                schedules.append({"id": item.id, "time": str(item.time),
+                                    "actions": [step.type for step in item.action_chain]})
+                        current = state.current_action or {}
+                        context = {
+                            "当地时间": self.local_now().isoformat(timespec="minutes"),
+                            "清醒小时": round(awake, 2), "精力": round(state.energy, 3),
+                            "困意": round(state.sleep_pressure, 3), "心情": state.mood,
+                            "正在做": str(current.get("desc") or current.get("type") or "自由活动"),
+                            "最近睡眠": state.sleep_history[-4:],
+                            "日程": schedules[:12], "上次决定": str(rhythm.get("reason") or ""),
+                        }
+                        background = await self.task_background(state, task="sleep", query="作息 疲劳 未完事项 次日安排 休息")
+                        persona = await self._persona_text(state.session_id)
+                        persona_key = sha256(persona.encode("utf-8")).hexdigest()[:24]
+                        bases = (matters.bookmark_basis(state, persona_key=persona_key)
+                                 if self.world.limits.life_matter_enabled and self.world.state_dynamics.own_topic_enabled else [])
+                        if bases:
+                            context["已经投入的中途书签"] = bases
+                        prompt = (
+                            f"人设：\n{persona}\n作息偏好：{config.rhythm_prompt[:1200]}\n"
+                            + json.dumps(context, ensure_ascii=False, default=str) + "\n" + background
+                            + f"\n决定现在入睡还是继续活动。不是必须到固定钟点才睡；"
+                            f"根据真实疲劳、睡眠不足、当日事情与人设作决定，不为了每天不同随便掷时间。"
+                            f"小睡不足不能当完整的一晚；普通群聊热闹不代表必须一直陪聊。"
+                            f"睡眠时长在 {low/3600:g}~{high/3600:g} 小时，清醒上限 {config.max_awake_hours:g} 小时。"
+                            f"继续活动最多 {interval} 分钟后再看。只输出 JSON："
+                            '{"decision":"sleep 或 continue","hours":8,"review_minutes":60,"reason":"具体理由",'
+                            '"life_bookmark":null}。'
+                            "没有实质新思路时life_bookmark保持null，已有具体笔记会原样保留。"
+                            "有新思路才填对象：matter_id和step_id沿用所附书签的ID，note写具体观察、取舍或疑问；"
+                            "不要把字段说明、目标或计划复述当成新笔记。可用next_focus与open_question更新接续点和未解问题；"
+                            "不变的字段省略，明确解决疑问时才将open_question置空。"
+                            "note最多600字，next_focus和open_question各最多240字；保留未确认限定，过长的更新会整体舍弃。"
+                            "仅可整理书签中已有实际投入的个人步骤，衔接上次笔记。"
+                            "focus是待做方向，不能把它说成已完成。没有新想法就省略，不重复抄写。"
+                            "这些只属于角色世界内的草稿，不完成步骤、不证明现实操作成功，不写成聊天消息。"
+                        )
+                        # Keep inference in the task owning STATE_LEASE. wait_for(coro)
+                        # spawns another task, preventing released_life_lock from releasing
+                        # this character's writer lock or rejecting concurrent changes.
+                        async with asyncio.timeout(45):
+                            reply = await self._ask_llm(state.session_id,
+                                "你正在为自己的生活决定作息。只判断与解释，不发消息、不调用工具。", prompt)
+                except LifeWorkDiscarded:
+                    discarded = True
+                    raise
+                except asyncio.TimeoutError:
+                    reply = None
+                except Exception:
+                    if admission.started or not admission.deferred:
+                        raise
+                    reply = None
+                finally:
+                    if (not discarded and admission.deferred and not admission.started
+                            and rhythm.get("next_evaluation_at") == reserved_until):
+                        now = self._now()
+                        next_at = admission.next_at if math.isfinite(admission.next_at) else now
+                        retry = min(interval * 60, 900, max(60, next_at - now))
+                        rhythm["next_evaluation_at"] = now + retry
+            if admission.deferred and not admission.started:
+                outcome.notes.append("作息模型暂未请求，稍后重新判断；必要休息仍按规则进行")
+                if decision == "continue":
+                    return
+                interval = max(1, math.ceil((rhythm["next_evaluation_at"] - self._now()) / 60))
+            else:
+                outcome.llm_calls += 1
             try:
                 data = extract_json_object(reply or "")
                 if isinstance(data, dict) and data.get("decision") in {"sleep", "continue"}:
