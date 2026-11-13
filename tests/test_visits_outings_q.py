@@ -9,6 +9,7 @@ import unittest
 from core.visits import VisitService
 from core.visits.history_pages import LOG_PAGE_SIZE
 from core.visits.protocol import clean_decision
+from core.visits.activities import begin_shared_activity
 from core.visits.snapshots import validate_snapshot
 from tests import test_visits_manual_budget_q as manual_fixture
 
@@ -216,6 +217,7 @@ class OutingClockTests(unittest.IsolatedAsyncioTestCase):
                                "return_agreed": False, "farewells": {}}
             visit["expires_at"] = route[-1]["until"] + 3600
             visit["next_actor"], visit["next_at"] = visit["host_id"], route[-1]["until"]
+            begin_shared_activity(visit)
         wire = self.b.service._wire(host)
         self.assertEqual(wire["outing"]["stage"], 64)
         self.assertEqual(wire["outing"]["route_offset"], 1)

@@ -23,6 +23,26 @@
     "hint": "默认关闭。将已到访的相见经过排成清晰长图，优先本地 t2i 渲染，失败自动回退。仅发送开启后结束的新相见记录，历史记录不补发。在小世界「友邻与串门 → 友邻与生活设置」选择接收会话。",
     "type": "bool", "default": false, "obvious_hint": true
   },
+  "visits_card_enabled": {
+    "description": "串门群名片随行动更新",
+    "hint": "根据已确认的赶路、本人行动、共同活动和等待阶段显示短状态。正常名片由现有管理插件决定；串门结束后沿用其恢复规则。关闭后只显示接待或拜访。",
+    "type": "bool", "default": true, "obvious_hint": true
+  },
+  "visits_card_model_enabled": {
+    "description": "用模型生成串门短状态",
+    "hint": "在事实变化时后台生成简短自然的状态，并缓存结果。文案须引用当前行动或阶段，不能编造结果；生成等待或失败时使用行动短词。使用现有后台模型预算，开关不影响世界决策。",
+    "type": "bool", "default": true
+  },
+  "visits_card_provider_id": {
+    "description": "串门名片状态模型（可选）",
+    "hint": "仅负责串门群名片上的短状态，可选响应快的文本模型。留空跟随 AstrBot 当前会话默认模型，不继承生活规划或说话模型。",
+    "_special": "select_provider", "type": "string", "default": "", "obvious_hint": true
+  },
+  "visits_card_max_length": {
+    "description": "串门名片状态最多字数",
+    "hint": "6～20字，默认12字，只限制状态部分。完整群名片仍使用现有名片管理方的长度规则。",
+    "type": "int", "default": 12
+  },
   "visits_record_card_sessions": {
     "description": "接收相见长卡片的会话",
     "hint": "推荐在小世界「友邻与串门」中勾选实际群聊或私聊。只向勾选会话发送其所属生活的相见记录；共享生活的多个会话需分别选择。留空不发送。",

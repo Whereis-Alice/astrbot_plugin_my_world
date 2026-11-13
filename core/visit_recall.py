@@ -11,6 +11,27 @@ def _text(value: Any, limit: int) -> str:
     return " ".join(str(value or "").split())[:limit]
 
 
+def visit_review_rows(visit: dict, limit: int = 24) -> list[dict]:
+    """Keep the encounter, explicit public results and ending for the actor's review."""
+    rows = [row for row in visit.get("log", []) if isinstance(row, dict)]
+    limit = max(1, int(limit))
+    if len(rows) <= limit:
+        return rows
+    selected = set(range(min(2, len(rows)))) | set(range(max(0, len(rows) - min(10, limit)), len(rows)))
+    milestones = [index for index, row in enumerate(rows) if row.get("kind") in {"milestone", "result", "outcome"}]
+    for index in reversed(milestones):
+        if len(selected) >= limit:
+            break
+        selected.add(index)
+    if len(selected) > limit:
+        selected = set(sorted(selected)[-limit:])
+    for index in range(len(rows) - 1, -1, -1):
+        if len(selected) >= limit:
+            break
+        selected.add(index)
+    return [rows[index] for index in sorted(selected)]
+
+
 def visit_memory_excerpt(content: str, meta: dict, limit: int = 450) -> str:
     """Keep an unchanged receipt's opening and ending within the recall budget.
 
@@ -42,7 +63,7 @@ def visit_memory_excerpt(content: str, meta: dict, limit: int = 450) -> str:
     before, separator, reflection = content.rpartition(ending)
     header, marker, body = before.partition("已经确认的经过：")
     feeling_label = "我当时的感受（主观）："
-    if not separator or not marker or (reflection and not reflection.startswith(feeling_label)):
+    if not separator or not marker or (reflection and not reflection.startswith((feeling_label, "。本地经历与阶段回顾："))):
         return prefix()
     facts = re.split(r"；(?=\[)", body)
     if (len(facts) != len(proof["log"]) or not facts
@@ -51,7 +72,7 @@ def visit_memory_excerpt(content: str, meta: dict, limit: int = 450) -> str:
     # Keep the first encounter, latest settled event (or penultimate turn),
     # and final words. The same row can satisfy several roles only once.
     resolution = next((index for index in range(len(facts) - 1, -1, -1)
-                       if facts[index].startswith(("[outcome] ", "[result] "))), max(0, len(facts) - 2))
+                       if facts[index].startswith(("[outcome] ", "[result] ", "[milestone] ", "[共同确认片刻] "))), max(0, len(facts) - 2))
     selected = sorted({0, resolution, len(facts) - 1})
     note = "已经确认的经过（节选，中段省略）："
 

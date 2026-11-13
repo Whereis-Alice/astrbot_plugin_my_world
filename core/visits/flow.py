@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import math
 from typing import Any
 
-from .protocol import RESERVED, TERMINAL, clean_decision, clean_scene, new_id, public_actor
+from .protocol import RESERVED, TERMINAL, clean_decision, clean_scene, new_id, public_actor, digest
+from .activities import (record_action, advance_activity, apply_scene_update,
+                         next_activity_due, activity_context)
 from .outings import CHECKPOINT_LEASE_SECONDS, activity_waiting, begin_activity, outing_enabled, pause_activity, pending_outing_requests, proposed_activity
 from .rhythm import VisitRhythm
 from .snapshots import validate_snapshot
@@ -16,6 +19,68 @@ from .ports import VisitStateError, describe_local
 
 
 class VisitFlow(VisitRhythm):
+    def _activity_waiting(self, visit):
+        if visit.get("local_experience_pending") or visit.get("remote_experience_pending"):
+            return False
+        if (visit.get("next_actor") == visit.get("guest_id")
+                and visit.get("next_at", 0) <= self._now()):
+            return False  # A received new turn is an invitation to respond.
+        if activity_context(visit, self._now()).get("ready_action_ids"):
+            return False
+        due = next_activity_due(visit, self._now())
+        return activity_waiting(visit, self._now()) and (due is None or due > self._now())
+
+    async def wake_local_experience(self, visit_id, scope, actor_id, persona_key, at, seq=None, significant=True):
+        """A locally read interaction requests attention without sharing its contents."""
+        await self._load()
+        async with self._lock:
+            visit = self._state.get("visits", {}).get(visit_id)
+            if (self._closed or not visit or visit.get("status") not in {"active"} | TERMINAL
+                    or visit.get("scope") != scope or not outing_enabled(visit)
+                    or actor_id not in {self._local_id(visit), visit.get("local", {}).get("actor_id")}
+                    or visit.get("local", {}).get("persona_key") != persona_key
+                    or type(at) not in {int, float} or not math.isfinite(at)
+                    or at < visit.get("arrived_at", 0) or at > self._now() + 300
+                    or visit.get("ended_at") and at > visit["ended_at"]):
+                return False
+            previous = visit.get("local_experience_seq", 0)
+            if type(seq) is int and seq <= previous:
+                return False
+            visit["local_experience_seq"] = seq if type(seq) is int else previous + 1
+            if visit["status"] in TERMINAL:
+                self._invalidate_memory(visit)
+            elif significant:
+                visit["local_experience_pending"] = True
+                visit["next_at"] = min(visit.get("next_at", self._now()), self._now())
+            await self._save()
+            return True
+
+    def _accept_experience_wake(self, visit, sender, value):
+        if value is None:
+            return
+        if (not outing_enabled(visit) or visit["role"] != "host" or sender != visit["guest_id"]
+                or not isinstance(value, dict) or set(value) != {"seq", "at"}
+                or type(value.get("seq")) is not int or value["seq"] < 1
+                or type(value.get("at")) not in {int, float} or not math.isfinite(value["at"])
+                or not visit.get("arrived_at", 0) <= value["at"] <= self._now() + 300):
+            raise ValueError("本次外界互动提醒无效")
+        if value["seq"] > visit.get("remote_experience_seq", 0):
+            visit["remote_experience_seq"] = value["seq"]
+            visit["remote_experience_pending"] = True
+            visit["next_at"] = min(visit["next_at"], self._now())
+
+    @staticmethod
+    def _retain_private(visit, result, now):
+        moment = {key: result[key] for key in ("thought", "reflection", "promise") if result.get(key)}
+        if not moment:
+            return
+        visit.setdefault("private", {}).update(moment)
+        moments = visit.setdefault("private_moments", [])
+        if not moments or any(moments[-1].get(key) != value for key, value in moment.items()):
+            number = max((row.get("seq", 0) for row in moments), default=0) + 1
+            moments.append({"at": now, "seq": number, "log_seq": len(visit.get("log", [])), **moment})
+            del moments[:-12]
+
     def _outing_wait_at(self, visit):
         outing = visit.get("outing") or {}
         holds = visit.get("budget_holds", {})
@@ -25,8 +90,13 @@ class VisitFlow(VisitRhythm):
             return max(hold["reset_at"] for hold in holds.values())
         if pending_outing_requests(visit):
             return self._now() + (self.config.poll_seconds if visit["next_actor"] != self._local_id(visit) else 0)
+        if visit.get("local_experience_pending") or visit.get("remote_experience_pending"):
+            return self._now()
+        if activity_context(visit, self._now()).get("ready_action_ids"):
+            return self._now()
         if activity_waiting(visit, self._now()):
-            return outing.get("quiet_until", outing["until"])
+            due = next_activity_due(visit, self._now())
+            return min(outing.get("quiet_until", outing["until"]), due) if due is not None else outing.get("quiet_until", outing["until"])
         return self._now()
 
     async def _refresh_outing_budget_hold(self, visit_id):
@@ -178,6 +248,8 @@ class VisitFlow(VisitRhythm):
             cursor["outing_stage"] = (visit.get("outing") or {}).get("stage", -1)
             cursor["quiet_until"] = (visit.get("outing") or {}).get("quiet_until", 0)
             cursor["outing_offer"] = copy.deepcopy(visit.get("outing_offer"))
+            if visit.get("shared_activity"):
+                cursor["shared_revision"] = digest(visit["shared_activity"])
         return cursor
 
     async def _resume_saved_decision(self, visit_id, cursor, scope, phase="receive"):
@@ -441,10 +513,11 @@ class VisitFlow(VisitRhythm):
             if self._decision_cursor(visit, phase) != cursor:
                 await self._save()
                 return None  # Another confirmed step has already advanced this phase.
-            visit["private"] = {key: result[key] for key in ("thought", "reflection", "promise")}
+            self._retain_private(visit, result, self._now())
             visit.pop("model_retry", None)
             # Durable output lets a request retry reuse this decision.
             visit["decision"] = result
+            visit["decision_experience_seq"] = snapshot.get("local_experience_seq", 0)
             if resumable:
                 visit["decision_cursor"] = cursor
             else:
@@ -646,6 +719,13 @@ class VisitFlow(VisitRhythm):
         if (not outing_enabled(visit) or visit["status"] != "active" or not outing.get("return_agreed")
                 or outing["until"] > self._now()):
             return False
+        shared = visit.get("shared_activity") or {}
+        if visit["role"] == "guest" and (outing.get("travel_seconds") or shared.get("action_steps") or shared.get("milestones")):
+            # Return on the agreed clock, then obtain the host's final log.
+            # Adding local farewells to a stale log would break its prefix.
+            await self._finish(visit, "completed", "", ended_at=outing["until"])
+            return True
+        self._advance_shared_clock(visit)
         for actor in (visit["host_id"], visit["guest_id"]):
             previous = len(visit["log"])
             self._append(visit, actor, "say", outing.get("farewells", {}).get(actor, ""))
@@ -656,6 +736,19 @@ class VisitFlow(VisitRhythm):
         # as the permanent end, overstating how long home life was paused.
         await self._finish(visit, "completed", "", ended_at=outing["until"])
         return True
+
+    def _advance_shared_clock(self, visit):
+        if visit["role"] != "host" or visit.get("status") != "active":
+            return False
+        outing = visit.get("outing") or {}
+        changed = False
+        if (outing.get("travel_seconds") and outing.get("started_at", math.inf) <= self._now()
+                and visit.get("outing_logged_stage") != outing.get("stage")):
+            self._append(visit, visit["host_id"], "activity", outing["activity"])
+            visit["log"][-1]["at"] = outing["started_at"]
+            visit["outing_logged_stage"] = outing["stage"]
+            changed = True
+        return advance_activity(visit, self._now()) or changed
 
     async def _drain_manual_invites(self):
         for scope, request in list(self._state.get("manual_invites", {}).items()):
@@ -833,7 +926,7 @@ class VisitFlow(VisitRhythm):
         own_calls = visit["calls"][self._local_id(visit)]
         for key in ("status", "arrived_at", "scene", "log", "next_actor", "next_at", "turns", "event_stage", "ended_at", "end_reason",
                     "outing", "outing_offer", "outing_version", "action_plans", "budget_holds",
-                    "outing_requests", "outing_requests_handled", "outing_request_turn"):
+                    "outing_requests", "outing_requests_handled", "outing_request_turn", "shared_activity"):
             if key in remote:
                 visit[key] = copy.deepcopy(remote[key])
         if "expires_at" in remote:
@@ -899,6 +992,11 @@ class VisitFlow(VisitRhythm):
             raise ValueError("访客发言已到上限")
         result = clean_decision(payload.get("decision"))
         self._record_turn(visit, sender, result)
+        experience_seq = payload.get("experience_seq", 0)
+        if type(experience_seq) is not int or experience_seq < 0:
+            raise ValueError("外界互动回应编号无效")
+        if experience_seq >= visit.get("remote_experience_seq", 0):
+            visit.pop("remote_experience_pending", None)
         if result["leave"]:
             visit["status"], visit["ended_at"] = "completed", self._now()
             visit["end_reason"] = result["say"] if outing_enabled(visit) else "访客已告别归家"
@@ -959,9 +1057,19 @@ class VisitFlow(VisitRhythm):
 
     def _record_turn(self, visit, sender, result):
         self._append(visit, sender, "say", result["say"])
-        self._append(visit, sender, "action_plan", result["action"])
+        self._append(visit, sender, "action_plan", result["action"] or (result.get("action_step") or {}).get("description", ""))
         visit["turns"][sender] += 1
+        if (sender == self._local_id(visit)
+                and visit.get("decision_experience_seq", 0) >= visit.get("local_experience_seq", 0)):
+            visit.pop("local_experience_pending", None)
         if outing_enabled(visit):
+            advance_activity(visit, self._now())
+            if result.get("scene_update") and apply_scene_update(visit, sender, result["scene_update"], self._now()):
+                self._append(visit, sender, "milestone", result["scene_update"]["summary"])
+            new_plan = bool(result.get("outing") and not result.get("continue_activity")
+                            or sender == visit["guest_id"] and visit.get("outing_offer"))
+            if not new_plan and visit.get("outing"):
+                record_action(visit, sender, result.get("action_step"), self._now())
             self._record_outing_choice(visit, sender, result)
             return
         if visit["event_stage"] == "offered":
@@ -980,6 +1088,7 @@ class VisitFlow(VisitRhythm):
             return False
         visit["outing_offer"] = offer
         visit["outing_host_action"] = decision.get("action", "")
+        visit["outing_host_step"] = copy.deepcopy(decision.get("action_step") or {})
         visit["outing_host_farewell"] = decision.get("farewell", "")
         return True
 
@@ -994,7 +1103,7 @@ class VisitFlow(VisitRhythm):
         if result.get("leave"):
             # A farewell is an independent decision to end this visit. It
             # cannot also accept a new plan or promise another shared pause.
-            for key in ("outing_offer", "outing_host_action", "outing_host_farewell", "outing_host_pause"):
+            for key in ("outing_offer", "outing_host_action", "outing_host_step", "outing_host_farewell", "outing_host_pause"):
                 visit.pop(key, None)
             return
         if sender == visit["host_id"]:
@@ -1013,7 +1122,13 @@ class VisitFlow(VisitRhythm):
         offer = visit.get("outing_offer")
         if offer and result.get("outing_accept") and not result.get("leave"):
             begin_activity(visit, offer, self._now(), result, floor_seconds=self.config.poll_seconds)
-            self._append(visit, visit["host_id"], "activity", offer["activity"])
+            if offer.get("travel_seconds"):
+                self._append(visit, visit["host_id"], "travel_plan", "前往" + offer["place"] + "，抵达后计划" + offer["activity"])
+            else:
+                self._append(visit, visit["host_id"], "activity", offer["activity"])
+                visit["outing_logged_stage"] = visit["outing"]["stage"]
+            record_action(visit, visit["host_id"], visit.pop("outing_host_step", {}), self._now())
+            record_action(visit, visit["guest_id"], result.get("action_step"), self._now())
             visit["action_plans"] = {visit["host_id"]: visit.pop("outing_host_action", ""),
                                      visit["guest_id"]: result.get("action", "")}
             if offer.get("event"):
@@ -1030,6 +1145,7 @@ class VisitFlow(VisitRhythm):
             return
         visit.pop("outing_offer", None)
         visit.pop("outing_host_action", None)
+        visit.pop("outing_host_step", None)
         visit.pop("outing_host_farewell", None)
         visit["next_actor"] = visit["host_id"]
         # A declined plan gets breathing room; it is not an every-tick retry.
@@ -1053,6 +1169,8 @@ class VisitFlow(VisitRhythm):
                     await self._observe_record_card(visit_id)
                     continue
                 async with self._lock:
+                    if self._advance_shared_clock(visit):
+                        await self._save()
                     completed = await self._complete_outing_if_due(visit)
                 if completed:
                     await self._notify_end(visit_id)
@@ -1218,7 +1336,8 @@ class VisitFlow(VisitRhythm):
                     return  # A confirmed scene or request advanced after inference.
                 visit["unsent_turn"] = True
                 await self._save()
-                step = {"op": "step", "seq": len(visit["log"]), "decision":
+                step = {"op": "step", "seq": len(visit["log"]),
+                        "experience_seq": visit.get("decision_experience_seq", 0), "decision":
                         {k: result[k] for k in ("say", "action", "leave")}}
             reply = await self._send(visit_id, step)
             async with self._lock:
@@ -1264,12 +1383,16 @@ class VisitFlow(VisitRhythm):
 
     async def _advance_outing(self, visit_id):
         visit = self._state["visits"][visit_id]
+        if (visit["role"] == "host" and visit.get("outbox", {}).get("payload", {}).get("op") == "sync"):
+            await self._send(visit_id, {"op": "sync", "visit": self._wire(visit)})
         if visit.get("budget_notice_pending"):
             await self._publish_outing_hold(visit_id)
             return
-        if activity_waiting(visit, self._now()):
+        if self._activity_waiting(visit):
             return  # The same confirmed shared clock runs on both servers.
         async with self._lock:
+            if self._advance_shared_clock(visit):
+                await self._save()
             if await self._complete_outing_if_due(visit):
                 return
             holds = visit.get("budget_holds", {})
@@ -1282,15 +1405,20 @@ class VisitFlow(VisitRhythm):
                 visit.pop("budget_holds", None)
                 visit.pop("outing_budget_hold", None)
         if visit["role"] == "guest":
-            reply = await self._send(visit_id, {"op": "sync", "visit": {**self._wire(visit), "intro": visit.get("intro", "")}})
+            sync = {"op": "sync", "visit": {**self._wire(visit), "intro": visit.get("intro", "")}}
+            if visit.get("local_experience_pending"):
+                sync["experience_wake"] = {"seq": visit.get("local_experience_seq", 1), "at": self._now()}
+            reply = await self._send(visit_id, sync)
             async with self._lock:
                 if self._closed or visit["status"] in TERMINAL:
                     return
                 self._synchronize(visit, reply["visit"], visit["host_id"])
                 if reply.get("delivered_op") == "step":
                     visit.pop("unsent_turn", None)
+                    if visit.get("decision_experience_seq", 0) >= visit.get("local_experience_seq", 0):
+                        visit.pop("local_experience_pending", None)
                 await self._save()
-            if (visit["status"] != "active" or activity_waiting(visit, self._now())
+            if (visit["status"] != "active" or self._activity_waiting(visit)
                     or visit["next_actor"] != visit["guest_id"] or visit["next_at"] > self._now()):
                 return
             result = await self._decide(visit_id, "turn")
@@ -1304,14 +1432,17 @@ class VisitFlow(VisitRhythm):
                     return  # A new signed request arrived after this decision finished.
                 visit["unsent_turn"] = True
                 await self._save()
-                step = {"op": "step", "seq": len(visit["log"]), "decision":
-                        {key: result[key] for key in ("say", "action", "leave", "outing", "outing_accept", "outcome", "return_after", "farewell", "pause_minutes", "continue_activity")}}
+                step = {"op": "step", "seq": len(visit["log"]),
+                        "experience_seq": visit.get("decision_experience_seq", 0), "decision":
+                        {key: result[key] for key in ("say", "action", "leave", "outing", "outing_accept", "outcome", "return_after", "farewell", "pause_minutes", "continue_activity", "action_step", "scene_update")}}
             reply = await self._send(visit_id, step)
             async with self._lock:
                 if self._closed or visit["status"] in TERMINAL:
                     return
                 self._synchronize(visit, reply["visit"], visit["host_id"])
                 visit.pop("unsent_turn", None)
+                if visit.get("decision_experience_seq", 0) >= visit.get("local_experience_seq", 0):
+                    visit.pop("local_experience_pending", None)
                 await self._save()
             return
         if visit["next_actor"] != visit["host_id"]:
@@ -1325,11 +1456,16 @@ class VisitFlow(VisitRhythm):
                 return
             if visit.get("decision_cursor") != self._decision_cursor(visit, "turn"):
                 return
+            had_experience = visit.get("local_experience_pending") or visit.get("remote_experience_pending")
             self._record_turn(visit, visit["host_id"], result)
+            shared = visit.get("shared_activity") or {}
+            publish = bool(had_experience or shared.get("action_steps") or shared.get("milestones"))
             if result["leave"]:
                 await self._finish(visit, "completed", result["say"])
             else:
                 await self._save()
+        if publish and visit["status"] == "active":
+            await self._send(visit_id, {"op": "sync", "visit": self._wire(visit)})
 
     async def _scene(self, visit_id, stage):
         async with self._lock:

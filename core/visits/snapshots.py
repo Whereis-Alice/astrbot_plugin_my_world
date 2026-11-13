@@ -6,6 +6,7 @@ import copy
 from .protocol import RESERVED, TERMINAL, clean_outing_offer, validate_outing_request_maps
 from .outings import CHECKPOINT_LEASE_SECONDS, outing_enabled, valid_activity
 from .history_pages import extended_history, expand_snapshot
+from .activities import validate_shared_activity
 
 
 def validate_snapshot(visit: dict, remote: dict, *, now: float | None = None) -> dict:
@@ -103,7 +104,7 @@ def validate_snapshot(visit: dict, remote: dict, *, now: float | None = None) ->
                            for value in pauses.values())
                     or type(first) not in {int, float} or not math.isfinite(first)
                     or not outing["started_at"] <= first < outing["until"]
-                    or now is not None and first > now + 300
+                    or now is not None and first > now + outing.get("travel_seconds", 0) + 300
                     or type(cadence) not in {int, float} or not 1 <= cadence <= 180
                     or outing.get("quiet_until") != min(outing["until"], first + max(cadence, *(value * 60 for value in pauses.values())))):
                 raise ValueError("共同休息节奏无效")
@@ -129,6 +130,8 @@ def validate_snapshot(visit: dict, remote: dict, *, now: float | None = None) ->
                     or any(stop.get(key) != offer.get(key) for key in ("place", "activity"))
                     or stop["until"] != stop["started_at"] + offer["minutes"] * 60):
                 raise ValueError("共同活动缺少访客独立接受证明")
+            if stop.get("travel_seconds", 0) != offer.get("travel_seconds", 0):
+                raise ValueError("共同路程缺少访客独立接受证明")
             agreed = offer.get("return_after") is True and choice.get("return_after") is True
             if outing.get("return_agreed", False) != agreed or (agreed
                     and outing.get("farewells", {}).get(visit["guest_id"]) != choice.get("farewell", "")):
@@ -142,6 +145,14 @@ def validate_snapshot(visit: dict, remote: dict, *, now: float | None = None) ->
                 or clean_outing_offer(offer) != {**offer, "return_after": offer.get("return_after", False),
                                                 "pause_minutes": offer.get("pause_minutes", 5)}):
             raise ValueError("共同活动提议无效")
+    if "shared_activity" in remote:
+        if not outing_enabled(visit) or not remote.get("outing"):
+            raise ValueError("共同事项缺少已接受的活动")
+        shared = validate_shared_activity(remote["shared_activity"], actors, outing=remote["outing"], now=now)
+        _validate_shared_progress(visit, remote, shared)
+        remote["shared_activity"] = shared
+    elif visit.get("shared_activity") and visit["role"] == "guest":
+        raise ValueError("已经确认的共同事项不能删除")
     remote = _merge_outing_requests(visit, remote, actors, now=now)
     holds = remote.get("budget_holds", {})
     if not isinstance(holds, dict) or not set(holds) <= actors:
@@ -167,6 +178,54 @@ def validate_snapshot(visit: dict, remote: dict, *, now: float | None = None) ->
         if len(logs) < len(prior) or logs[:len(prior)] != prior:
             raise ValueError("已确认的经过不能被改写")
     return remote
+
+
+def _validate_shared_progress(visit: dict, remote: dict, shared: dict) -> None:
+    """Bind new guest choices and preserve every retained confirmed milestone."""
+    prior = visit.get("shared_activity") or {}
+    if visit["role"] == "host":
+        # The visitor echoes a snapshot; only its separately signed step can
+        # introduce an action. Never adopt scene state from this echo.
+        return
+    if prior and (shared["revision"] < prior["revision"] or shared["next_action"] < prior["next_action"]):
+        raise ValueError("共同事项进度不能回退")
+    old_milestones = {row["id"]: row for row in prior.get("milestones", [])}
+    retained_ids = {row["id"] for row in shared["milestones"]}
+    first_id = shared["milestones"][0]["id"] if shared["milestones"] else 0
+    if any(number >= first_id and number not in retained_ids for number in old_milestones):
+        raise ValueError("不能删除仍在保留窗口内的共同经历")
+    for row in shared["milestones"]:
+        if row["id"] in old_milestones and row != old_milestones[row["id"]]:
+            raise ValueError("已确认的共同经历不能改写")
+    if prior.get("stage") != shared["stage"]:
+        # New stops already require the independent outing acceptance proof.
+        old_actions = {}
+    else:
+        old_actions = {row["id"]: row for row in prior.get("action_steps", {}).get(visit["guest_id"], [])}
+    new_actions = shared.get("action_steps", {}).get(visit["guest_id"], [])
+    if sum(row["id"] not in old_actions for row in new_actions) > 1:
+        raise ValueError("一次访客选择不能生成多个新动作")
+    choice = (visit.get("decision") or {}).get("action_step") or {}
+    allowed = (visit.get("unsent_turn") is True
+               and (visit.get("decision_cursor") or {}).get("phase") == "turn"
+               and remote.get("turns", {}).get(visit["guest_id"], 0) == visit["turns"][visit["guest_id"]] + 1)
+    for row in new_actions:
+        old = old_actions.get(row["id"])
+        if old:
+            if any(row.get(key) != old.get(key) for key in
+                   ("stage", "description", "seconds", "waiting", "requires_peer", "accepted_at")):
+                raise ValueError("不能改写访客已经提交的动作")
+            for key in ("started_at", "until", "joint_id", "elapsed_at", "settled_revision"):
+                if key in old and row.get(key) != old[key]:
+                    raise ValueError("已确认的访客动作计时不能改写")
+        elif not allowed or any(row.get(key) != choice.get(key) for key in
+                                ("description", "seconds", "waiting", "requires_peer")):
+            raise ValueError("共同事项缺少访客本人的行动选择")
+    known_ids = set(old_actions) | {row["id"] for row in new_actions}
+    for milestone in shared["milestones"]:
+        if milestone["id"] not in old_milestones and any(
+                action not in known_ids for action in milestone["actions"].get(visit["guest_id"], [])):
+            raise ValueError("共同结果缺少访客已经提交的行动依据")
 
 
 def _submitted_pause_choice(visit: dict, remote: dict) -> bool:

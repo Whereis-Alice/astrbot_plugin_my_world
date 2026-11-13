@@ -21,7 +21,7 @@ RECORD_CARD_RENDER_TIMEOUT = 180
 RECORD_CARD_SEND_TIMEOUT = 45
 PUBLIC_LOG_KINDS = frozenset({
     "invitation", "arrival", "activity", "say", "action", "action_plan", "experience",
-    "result", "outcome", "scene", "event", "contact_reply", "contact_status", "phone", "message", "", None,
+    "result", "outcome", "milestone", "travel_plan", "scene", "event", "contact_reply", "contact_status", "phone", "message", "", None,
 })
 
 

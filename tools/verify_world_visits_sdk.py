@@ -48,7 +48,7 @@ async def check():
     assert tool.parameters["type"] == "object"
     result = await tool.call(context, peer_id="peer", direction="outgoing", evidence=event.get_message_str())
     assert "inviting" in result
-    service.invite.assert_awaited_once_with("one-life", "peer", reason="", direction="outgoing")
+    service.invite.assert_awaited_once_with("one-life", "peer", reason="", direction="outgoing", manual=True)
     plugin.in_self_initiated_call = lambda: True
     denied = await tool.call(context, peer_id="peer", direction="outgoing", evidence=event.get_message_str())
     assert "后台" in denied and service.invite.await_count == 1

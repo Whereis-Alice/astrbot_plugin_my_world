@@ -73,21 +73,26 @@ class VisitDecisionResumeTests(unittest.IsolatedAsyncioTestCase):
         current = resumed._state["visits"][visit_id]
         self.assertEqual(len(self.b_actor.calls), 1)
         self.assertEqual(current["status"], status)
-        self.assertEqual(current["end_reason"], reason)
-        self.assertNotIn("arrived_at", current)
+        self.assertEqual(current.get("end_reason", ""), reason)
+        if status == "active":
+            self.assertTrue(current.get("arrived_at"))
+        else:
+            self.assertNotIn("arrived_at", current)
         self.assertNotIn("我的私有内心", str(resumed._visible(current)))
         if status == "declined":
             self.assertEqual(current["log"][-1]["kind"], "contact_status")
             self.assertEqual(current["log"][-1]["text"], reason)
 
-    async def test_cached_receive_rechecks_closed_reception_without_a_model(self):
-        await self.assert_receive_gate_after_reload({"reception_open": False}, "现在不在接待时间，稍后再约")
+    async def test_cached_receive_uses_actual_readiness_beyond_old_reception_hours(self):
+        # The actor's current readiness and independent acceptance supersede
+        # the legacy advisory reception window.
+        await self.assert_receive_gate_after_reload({"reception_open": False}, "", "active")
 
     async def test_cached_receive_rechecks_busy_life_without_a_model(self):
         await self.assert_receive_gate_after_reload({"ready": False, "ready_reason": "正在休息"}, "正在休息")
 
-    async def test_cached_receive_rechecks_human_chat_without_a_model(self):
-        await self.assert_receive_gate_after_reload({"chat_busy": True}, "正在接眼前的交谈，稍后再约")
+    async def test_cached_receive_waits_for_human_chat_without_rejecting_the_friend(self):
+        await self.assert_receive_gate_after_reload({"chat_busy": True}, "", "offered")
 
     async def test_cached_receive_rechecks_identity_without_a_model(self):
         await self.assert_receive_gate_after_reload({"persona_key": "another-persona"},

@@ -4,6 +4,54 @@ from __future__ import annotations
 import hashlib
 import json
 
+ADDITIONS_MARKER = "。本地经历与阶段回顾："
+
+
+def render_visit_additions(meta: dict) -> str:
+    """Local experience stays labelled; a group's idea never becomes a result."""
+    additions = meta.get("visit_additions") or {}
+    parts = []
+    labels = {"read": "我读到群友的说法或建议（未证明完成）", "sent": "我实际回复群里", "sent_image": "我实际向群里发图"}
+    for row in additions.get("local_experiences", []):
+        if row.get("kind") in labels:
+            parts.append(f"[{labels[row['kind']]}，{row['at']:g}] {row['text']}")
+    for row in additions.get("milestones", []):
+        parts.append(f"[共同确认片刻，{row['at']:g}] {row['summary']}")
+    for row in additions.get("personal_moments", []):
+        feelings = "；".join(str(row.get(name) or "") for name in ("thought", "reflection") if row.get(name))
+        if feelings:
+            parts.append(f"[我当时的主观感受，{row['at']:g}] {feelings}")
+        if row.get("promise"):
+            parts.append(f"[我当时记下的约定，成立与否以双方原话为准，{row['at']:g}] {row['promise']}")
+    return ADDITIONS_MARKER + "；".join(parts) if parts else ""
+
+
+def _merge_additions(old: dict, new: dict) -> dict | None:
+    """Append by stable local identity; reject rewritten receipts, preserve evicted old rows."""
+    previous, incoming = old.get("visit_additions") or {}, new.get("visit_additions") or {}
+    if not isinstance(previous, dict) or not isinstance(incoming, dict):
+        return None
+    merged = {}
+    for field, identity in (("local_experiences", "id"), ("milestones", "id"), ("personal_moments", "seq")):
+        before, after = previous.get(field, []), incoming.get(field, [])
+        if not isinstance(before, list) or not isinstance(after, list):
+            return None
+        rows = {}
+        latest = max((row.get("seq", row.get("id", 0)) for row in before if isinstance(row, dict)
+                      and type(row.get("seq", row.get("id"))) is int), default=0)
+        previous_ids = {str(row[identity]) for row in before if isinstance(row, dict) and identity in row}
+        for row in [*before, *after]:
+            if not isinstance(row, dict) or identity not in row:
+                return None
+            key = str(row[identity])
+            if key in rows and rows[key] != row:
+                return None
+            if key not in previous_ids and latest and type(row.get("seq", row.get("id"))) is int and row.get("seq", row.get("id")) <= latest:
+                return None
+            rows[key] = row
+        merged[field] = sorted(rows.values(), key=lambda row: (row.get("seq", row.get("id", 0)), row.get("at", 0)))
+    return merged
+
 
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
@@ -86,9 +134,21 @@ def remember_visit(memory, *, confirmed_log: list[dict], idempotency_key: str, *
                     or not isinstance(previous, list) or not previous
                     or len(previous) > len(hashes) or hashes[:len(previous)] != previous):
                 return memory_id
+            incoming_suffix = render_visit_additions(meta)
+            additions = _merge_additions(old_meta, meta)
+            if additions is None:
+                return memory_id
+            if additions:
+                if incoming_suffix and not content.endswith(incoming_suffix):
+                    return memory_id
+                base = content[:-len(incoming_suffix)] if incoming_suffix else content
+                meta["visit_additions"] = additions
+                content = base + render_visit_additions(meta)
+                meta["visit_confirmation"]["content"] = _digest(content)
+                kwargs.update(content=content, context=json.dumps(meta, ensure_ascii=False))
             if (len(previous) == len(hashes) and old_meta.get("status") == meta["status"]
                     and old_meta.get("end_reason", "") == meta.get("end_reason", "")
-                    and old_meta.get("visit_location", {}) == location):
+                    and old_meta.get("visit_location", {}) == location and old["content"] == content):
                 return memory_id
         else:
             # A pre-upgrade receipt has no fingerprints. Upgrade only when its

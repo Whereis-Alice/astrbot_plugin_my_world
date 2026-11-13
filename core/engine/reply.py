@@ -864,6 +864,9 @@ class ReplyMixin:
                     stage="engine_prepared" if inject_only else "legacy_before_model",
                     image_urls=ctx.image_urls,
                 )
+                from ..visit_chat_bridge import capture_visit_chat_owner
+                visit_chat_owner = capture_visit_chat_owner(self, ctx.session_id,
+                    persona_key=request.life_persona, expected_state_key=state.session_id)
                 if inject_only:
                     # 注入模式到此为止：剩下的交给宿主的原生工具循环与发送管线。
                     return DialoguePlan(
@@ -873,7 +876,8 @@ class ReplyMixin:
                         user_prompt=user_prompt,
                         runtime_part=runtime_part,
                         scene_snapshot={"text": runtime_notes.get("world_visit") or (node.name if node else "未知"),
-                                        "persona_key": request.life_persona, "state_key": state.session_id},
+                                        "persona_key": request.life_persona, "state_key": state.session_id,
+                                        "visit_chat_owner": visit_chat_owner.snapshot() if visit_chat_owner else None},
                         prompt_snapshot=prompt_snapshot,
                         batch=list(batch),
                         texts=list(texts),
@@ -891,6 +895,8 @@ class ReplyMixin:
             )
             if raw is None:
                 return ReplyOutcome(ok=False, error="大模型调用失败")
+            from ..visit_chat_bridge import record_visit_reads
+            await record_visit_reads(self, visit_chat_owner, batch)
             # 扩展可以判"这一轮是废的"（模型丢了一句"我不能生成这类内容"）：
             # 不解析、不执行、不发送，直接重问一次；问满次数就这一轮不出声。
             if self.extensions.reply_is_bad(state, raw):

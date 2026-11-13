@@ -107,6 +107,61 @@ def _exports(plugin: Any):
     return service
 
 
+def _card_status_settings(plugin: Any) -> dict[str, Any]:
+    config = getattr(plugin, "config", {})
+    choices = []
+    getter = getattr(plugin.context, "get_all_providers", None)
+    try:
+        providers = getter() if callable(getter) else []
+    except Exception:
+        providers = []
+    for provider in providers:
+        try:
+            meta = provider.meta()
+            choices.append({"id": str(meta.id), "label": str(meta.model or meta.id)})
+        except Exception:
+            continue
+    length = config.get("visits_card_max_length", 12)
+    return {"enabled": config.get("visits_card_enabled", True) is True,
+            "model_enabled": config.get("visits_card_model_enabled", True) is True,
+            "provider_id": str(config.get("visits_card_provider_id") or "").strip(),
+            "max_length": max(6, min(20, length)) if type(length) is int else 12,
+            "providers": choices}
+
+
+def _save_card_status_settings(plugin: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    enabled, model_enabled = payload.get("enabled"), payload.get("model_enabled")
+    if type(enabled) is not bool or type(model_enabled) is not bool:
+        raise ValueError("串门名片开关必须是布尔值")
+    length = payload.get("max_length")
+    if type(length) is not int or not 6 <= length <= 20:
+        raise ValueError("串门名片状态长度须为6～20字")
+    provider = _text(payload, "provider_id", limit=200)
+    current = _card_status_settings(plugin)
+    if provider and provider != current["provider_id"] and provider not in {row["id"] for row in current["providers"]}:
+        raise ValueError("请选择已配置的文本模型")
+    config = getattr(plugin, "config", None)
+    if config is None or not callable(getattr(config, "save_config", None)):
+        raise ValueError("暂时无法保存插件配置，请重新加载后再试")
+    missing = object()
+    updates = {"visits_card_enabled": enabled, "visits_card_model_enabled": model_enabled,
+               "visits_card_provider_id": provider, "visits_card_max_length": length}
+    previous = {key: config.get(key, missing) for key in updates}
+    try:
+        config.update(updates)
+        config.save_config()
+    except Exception as exc:
+        for key, value in previous.items():
+            if value is missing:
+                config.pop(key, None)
+            else:
+                config[key] = value
+        raise ValueError("串门名片设置保存失败，请保留当前选择并重试") from exc
+    plugin.visits_card_provider_id = provider
+    plugin.engine._visit_card_cache = {}
+    return _card_status_settings(plugin)
+
+
 def _page_index(payload: Any, *, optional: bool = False) -> int | None:
     value = payload.get("page")
     if value is None and optional:
@@ -127,6 +182,7 @@ def register_visit_apis(plugin: Any, plugin_id: str) -> None:
         "visits/remove": ("POST", "解除友邻世界配对"),
         "visits/scopes": ("POST", "选择参与串门的生活"),
         "visits/record-card-settings": ("POST", "设置相见长卡片与接收会话"),
+        "visits/card-status-settings": ("POST", "设置串门群名片状态"),
         "visits/refresh": ("POST", "刷新友邻可见的角色"),
         "visits/invite": ("POST", "提出串门邀请"),
         "visits/record": ("POST", "读取本生活相见记录的更早经过"),
@@ -156,7 +212,8 @@ def register_visit_apis(plugin: Any, plugin_id: str) -> None:
         try:
             if endpoint == "visits":
                 result = await service.global_overview(_scope(plugin, payload, optional=True))
-                result = {**result, "record_card": _record_card_settings(plugin)}
+                result = {**result, "record_card": _record_card_settings(plugin),
+                          "card_status": _card_status_settings(plugin)}
             elif endpoint == "visits/pair-code":
                 # This is the only route permitted to return a pairing credential.
                 result = await service.create_pair_code()
@@ -171,6 +228,8 @@ def register_visit_apis(plugin: Any, plugin_id: str) -> None:
                 result = await service.set_enabled_scopes(_enabled_scopes(plugin, payload))
             elif endpoint == "visits/record-card-settings":
                 result = _save_record_card_settings(plugin, payload)
+            elif endpoint == "visits/card-status-settings":
+                result = _save_card_status_settings(plugin, payload)
             elif endpoint.startswith("visits/card-export"):
                 scope = _scope(plugin, payload)
                 visit_id = _text(payload, "visit_id", limit=200, required=True)

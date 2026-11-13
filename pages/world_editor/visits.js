@@ -33,6 +33,7 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
   let revision = 0, globalRevision = 0, renderedGlobalRead = 0, secretRevision = 0, busy = false;
   let data = null, lifeData = null, lifeSession = null, refreshTimer, secretTimer, scopeDraft = null, phoneConnection = null;
   let cardDraft = null, cardFeedback = "", cardSaving = false;
+  let statusDraft = null, statusFeedback = "", statusSaving = false;
   const friendDrafts = new Map();
   const recordDrafts = new Map();
   const cardExports = new Map();
@@ -65,6 +66,28 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
   saveCards.type = "button";
   const cardStatus = el("p", "visits-card-status muted"); cardStatus.setAttribute("role", "status");
   cardFooter.append(saveCards, cardStatus); recordCards.append(cardHeading, cardToggleRow, cardChoices, cardNote, cardFooter);
+  const statusCards = el("section", "visits-status-settings visits-card-settings");
+  statusCards.setAttribute("aria-label", "串门群名片状态设置");
+  statusCards.append(el("h3", "", "串门时，名片跟着行动"),
+    el("p", "muted", "赶路、泡茶、下棋或等待同伴时，显示当前行动的短状态。结束后恢复正常名片。"));
+  const statusToggle = el("input"); statusToggle.type = "checkbox";
+  const statusToggleRow = el("label", "visits-card-toggle");
+  statusToggle.setAttribute("aria-label", "串门名片随行动更新");
+  statusToggleRow.append(statusToggle, el("span", "", "随当前行动更新"));
+  const statusModel = el("input"); statusModel.type = "checkbox";
+  const statusModelRow = el("label", "visits-card-toggle");
+  statusModel.setAttribute("aria-label", "用模型生成串门短状态");
+  statusModelRow.append(statusModel, el("span", "", "用模型生成自然的短状态"));
+  const statusProviderRow = el("label", "field"), statusProvider = el("select");
+  statusProvider.setAttribute("aria-label", "串门名片状态模型");
+  statusProviderRow.append(el("span", "", "状态模型"), statusProvider);
+  const statusLength = field("状态最多字数", "12", "number");
+  statusLength.input.min = "6"; statusLength.input.max = "20"; statusLength.input.step = "1";
+  const saveStatus = el("button", "primary", "保存名片状态设置"); saveStatus.type = "button";
+  const statusFeedbackLine = el("p", "visits-card-status muted"); statusFeedbackLine.setAttribute("role", "status");
+  const statusFooter = el("div", "visits-card-settings-footer"); statusFooter.append(saveStatus, statusFeedbackLine);
+  statusCards.append(statusToggleRow, statusModelRow, statusProviderRow, statusLength.wrap,
+    el("p", "muted", "留空跟随会话默认模型。只在行动或阶段变化时生成；等待或失败时先显示行动短词。"), statusFooter);
   const lives = el("section", "visits-lives"); lives.setAttribute("aria-label", "参与串门的生活");
   const lifeChoices = el("div", "visits-life-choices");
   const saveScopes = el("button", "primary", "保存参与生活"); saveScopes.type = "button";
@@ -95,7 +118,7 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
   form.append(el("h3", "", "或者，使用对方给你的配对码"), address.wrap, foreign.wrap, alias.wrap, pair);
   pairBody.append(form, el("p", "muted", "串门默认关闭。请在 AstrBot 的小世界插件配置中开启串门并保存、重载。默认监听端口 38471；使用域名时，将域名反向代理到本机该端口。配对码与 AstrBot 管理密钥相互独立。"));
   pairing.append(pairBody);
-  settingsBody.append(recordCards, lives, connections, pairing, listenerInfo); settings.append(settingsBody);
+  settingsBody.append(recordCards, statusCards, lives, connections, pairing, listenerInfo); settings.append(settingsBody);
   const history = el("section", "visits-history"); history.setAttribute("aria-label", "通话与相见记录");
   const diagnostics = el("details", "visits-diagnostics");
   diagnostics.append(el("summary", "", "联系诊断"));
@@ -244,6 +267,11 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     cardStatus.textContent = cardSaving ? "正在保存…" : cardDraft !== null
       ? cardFeedback || "有未保存的更改" : cardFeedback || (data?.record_card?.enabled
         ? `已开启 · ${data.record_card.sessions?.length || 0} 个接收会话` : "默认关闭 · 由你选择是否寄出");
+    saveStatus.disabled = busy || statusDraft === null || !data?.card_status;
+    for (const input of statusCards.querySelectorAll("input, select")) input.disabled = busy || !data?.card_status;
+    statusProvider.disabled ||= !statusModel.checked;
+    statusFeedbackLine.textContent = statusSaving ? "正在保存…" : statusFeedback || (statusDraft !== null
+      ? "有未保存的更改" : data?.card_status?.enabled ? "已开启 · 跟随当前行动" : "只显示接待或拜访");
     for (const checkbox of lifeChoices.querySelectorAll("input")) checkbox.disabled = busy || !enabled;
     for (const button of [...peers.querySelectorAll("button"), ...phone.querySelectorAll("button"), ...connections.querySelectorAll("button")]) {
       const invite = button.dataset.visitInvite === "true";
@@ -263,6 +291,7 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     if (busy || (!global && !getSession())) return null;
     const session = getSession(); busy = true;
     cardSaving = endpoint === "visits/record-card-settings";
+    statusSaving = endpoint === "visits/card-status-settings";
     if (global) globalRevision += 1;
     controls();
     try {
@@ -272,14 +301,40 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
         cardDraft = null; cardFeedback = "已保存，立即生效";
         data.record_card = result; renderRecordCards();
       }
+      if (endpoint === "visits/card-status-settings") {
+        statusDraft = null; statusFeedback = "已保存，立即生效";
+        data.card_status = result; renderCardStatus();
+      }
       if (global || session === getSession()) await reload();
       return result;
     } catch (error) {
       if (endpoint === "visits/record-card-settings") cardFeedback = "保存失败，当前选择已保留";
+      if (endpoint === "visits/card-status-settings") statusFeedback = "保存失败，当前选择已保留";
       if (global || session === getSession()) toast(error.message || "这次操作未完成");
       return null;
-    } finally {busy = false; cardSaving = false; controls();}
+    } finally {busy = false; cardSaving = false; statusSaving = false; controls();}
   }
+  function editCardStatus() {
+    statusDraft = {enabled: statusToggle.checked, model_enabled: statusModel.checked,
+      provider_id: statusProvider.value, max_length: Number(statusLength.input.value)};
+    statusFeedback = ""; controls();
+  }
+  function renderCardStatus() {
+    const config = data?.card_status || {enabled: true, model_enabled: true, provider_id: "", max_length: 12};
+    const value = statusDraft || config;
+    statusToggle.checked = value.enabled === true; statusModel.checked = value.model_enabled === true;
+    statusLength.input.value = String(value.max_length);
+    statusProvider.replaceChildren();
+    const choices = [{id: "", label: "跟随 AstrBot 会话默认模型"}, ...(config.providers || [])];
+    if (value.provider_id && !choices.some(row => row.id === value.provider_id))
+      choices.push({id: value.provider_id, label: `${value.provider_id}（当前未加载）`});
+    for (const choice of choices) {
+      const option = el("option", "", choice.id ? `${choice.label} · ${choice.id}` : choice.label);
+      option.value = choice.id; statusProvider.append(option);
+    }
+    statusProvider.value = value.provider_id || "";
+  }
+  for (const input of [statusToggle, statusModel, statusProvider, statusLength.input]) input.onchange = editCardStatus;
   function editRecordCards() {
     if (cardDraft === null) cardDraft = {enabled: data?.record_card?.enabled === true,
       sessions: new Set(data?.record_card?.sessions || [])};
@@ -483,18 +538,21 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     const {outing, steps, index, stage, scene} = outingScene(visit);
     const panel = el("div", "visits-shared-scene"), copy = el("div", "visits-scene-copy");
     copy.append(el("span", "visits-scene-kicker", live ? "此刻 · 一起" : "那天 · 一起"));
-    const place = scene.place || scene.location || outing.place || visit.remote?.world || "约好的地方";
-    const activity = scene.activity || scene.title || outing.activity || "一起待一会儿";
+    const observed = Number(outing.observed_at || visit.observed_at || Date.now() / 1000);
+    const traveling = live && Number(outing.travel_seconds) > 0 && Number(outing.started_at) > observed;
+    const destination = scene.place || scene.location || outing.place || visit.remote?.world || "约好的地方";
+    const place = traveling ? `${outing.origin_place || "路上"} → ${destination}` : destination;
+    const activity = traveling ? "正在一起赶路" : scene.activity || scene.title || outing.activity || "一起待一会儿";
     copy.append(el("h4", "", place), el("p", "visits-scene-activity", activity));
     const names = [visit.local?.name, visit.remote?.name || visit.peer_name].filter(Boolean);
     if (names.length) copy.append(el("p", "visits-companions", names.join("  ×  ")));
-    const start = Number(stage.started_at || outing.started_at || visit.arrived_at || 0);
-    const end = Number(stage.until || stage.ends_at || outing.stage_until || outing.until || 0);
-    const observed = Number(outing.observed_at || visit.observed_at || Date.now() / 1000);
+    const start = traveling ? Number(outing.started_at) - Number(outing.travel_seconds)
+      : Number(stage.started_at || outing.started_at || visit.arrived_at || 0);
+    const end = traveling ? Number(outing.started_at) : Number(stage.until || stage.ends_at || outing.stage_until || outing.until || 0);
     if (live && end > start && start > 0) {
       const progress = el("div", "visits-time-progress"); progress.setAttribute("role", "progressbar");
       const percent = Math.max(0, Math.min(100, Math.round((observed - start) / (end - start) * 100)));
-      progress.setAttribute("aria-label", "当前共同活动的时间"); progress.setAttribute("aria-valuenow", percent);
+      progress.setAttribute("aria-label", traveling ? "当前共同路途的时间" : "当前共同活动的时间"); progress.setAttribute("aria-valuenow", percent);
       progress.setAttribute("aria-valuemin", "0"); progress.setAttribute("aria-valuemax", "100");
       progress.style.setProperty("--visit-progress", `${percent}%`); progress.append(el("span"));
       copy.append(progress, el("p", "visits-scene-clock", `${stamp(start)} — ${stamp(end)}`));
@@ -514,6 +572,31 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
     }
     return panel;
   }
+  function sharedBrief(visit, live) {
+    const shared = visit.shared_activity || {}, brief = el("section", "visits-brief");
+    brief.setAttribute("aria-label", live ? "这次相处的简短进展" : "这次相处的短纪要");
+    const text = value => typeof value === "string" ? value.trim() : "";
+    const summary = text(shared.summary), moments = Array.isArray(shared.milestones) ? shared.milestones : [];
+    const seen = new Set();
+    brief.append(el("h4", "", live ? "一起做到了这里" : "这次记住的事"));
+    if (summary) {brief.append(el("p", "visits-brief-summary", summary)); seen.add(summary);}
+    const recent = moments.filter(row => row && text(row.summary) && !seen.has(text(row.summary))).slice(-3);
+    if (recent.length) {
+      const list = el("ol", "visits-brief-milestones");
+      for (const row of recent) {
+        const item = el("li"); item.append(momentTime(row.at), el("span", "", text(row.summary))); list.append(item);
+      }
+      brief.append(list);
+    }
+    const pending = Array.isArray(shared.pending) ? shared.pending.filter(value => text(value)) : [];
+    if (pending.length) brief.append(el("p", "visits-brief-pending", `${live ? "还没做完" : "当时未完成"}：${pending.slice(-4).join("；")}`));
+    if (!summary && !recent.length && !pending.length) {
+      const result = recordLogs(visit).filter(row => row.kind === "result" || row.kind === "outcome").at(-1);
+      if (text(result?.text)) brief.append(el("p", "visits-brief-summary", text(result.text)));
+      else return null;
+    }
+    return brief;
+  }
   function visitCard(visit, live = false, diagnostic = false, expanded = false) {
     const card = el(live ? "div" : "details", "visits-visit");
     const place = visit.arrived_at && (visit.outing?.place || visit.outing_version !== 1 && visit.scene?.place);
@@ -531,7 +614,8 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
         const copy = el("span", "visits-entry-copy"); copy.append(el("strong", "visits-entry-title", label));
         const firstSpeech = recordLogs(visit).filter(item => item.kind !== "invitation")
           .flatMap(recordParts).find(part => part.type === "speech");
-        const preview = firstSpeech?.text || (visit.arrived_at && visit.outing?.activity) || "";
+        const preview = visit.shared_activity?.summary || visit.shared_activity?.milestones?.at(-1)?.summary
+          || firstSpeech?.text || (visit.arrived_at && visit.outing?.activity) || "";
         if (preview) copy.append(el("span", "visits-entry-preview", preview));
         const interval = stamp(start) + (recordDate(visit.ended_at) && Number(visit.ended_at) >= Number(start)
           ? ` — ${date?.toDateString() === recordDate(visit.ended_at).toDateString() ? clockStamp(visit.ended_at) : stamp(visit.ended_at)}` : "");
@@ -569,7 +653,17 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
         description.append(document.createTextNode(sceneText)); body.append(description);
       }
       if (visit.reason && diagnostic) body.append(el("p", "muted", visit.reason));
-      transcript(visit, body, diagnostic || live && !visit.arrived_at, live);
+      if (visit.arrived_at && !diagnostic) {
+        const brief = sharedBrief(visit, live);
+        if (brief) body.append(brief);
+        const raw = el("details", "visits-full-transcript");
+        raw.append(el("summary", "", "完整原话与经过"));
+        transcript(visit, raw, false, live);
+        const recordKey = `${getSession()}\n${visit.id || "preview"}`;
+        raw.open = recordDrafts.get(recordKey)?.fullOpen === true;
+        raw.ontoggle = () => {const draft = recordDrafts.get(recordKey); if (draft) draft.fullOpen = raw.open;};
+        body.append(raw);
+      } else transcript(visit, body, diagnostic || live && !visit.arrived_at, live);
       const progress = visit.progress;
       if (live && progress && typeof progress.reason === "string" && progress.reason.trim()) {
         const continuation = el("footer", "visits-record-progress");
@@ -620,6 +714,7 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
   function renderGlobal(result) {
     data = result; peers.replaceChildren(); lifeChoices.replaceChildren(); connections.replaceChildren();
     renderRecordCards();
+    renderCardStatus();
     const listener = result.listener || {port: result.listen_port, public_url: result.public_url, error: result.error};
     notice.hidden = result.enabled === true && !listener.error;
     notice.textContent = listener.error || (!result.enabled ? "串门尚未开启 · 在插件配置中开启后即可联系友邻" : "");
@@ -810,6 +905,13 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
   saveCards.onclick = async () => {
     if (cardDraft === null) return;
     await mutation("visits/record-card-settings", {enabled: cardDraft.enabled, sessions: [...cardDraft.sessions]}, true);
+  };
+  saveStatus.onclick = async () => {
+    if (statusDraft === null) return;
+    if (!Number.isInteger(statusDraft.max_length) || statusDraft.max_length < 6 || statusDraft.max_length > 20) {
+      statusFeedback = "状态长度请填写6～20字"; controls(); return;
+    }
+    await mutation("visits/card-status-settings", statusDraft, true);
   };
   home.onclick = async () => {
     const waiting = waitingForVisit();

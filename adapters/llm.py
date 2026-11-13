@@ -67,8 +67,11 @@ class AstrBotLLM:
             "helper": "helper_provider_id", "judge": "judge_provider_id",
             "creator": "creator_provider_id", "event": "event_provider_id",
             "consolidate": "consolidate_provider_id",
+            "visits_card": "visits_card_provider_id",
         }.get(slot, "")
         configured = getattr(self.plugin, attribute, "") if attribute else ""
+        if slot == "visits_card":
+            configured = getattr(self.plugin, "config", {}).get("visits_card_provider_id", configured)
         provider_id = str(self.provider_id or "").strip() or str(configured or "").strip()
         if not provider_id:
             provider_id = await self.plugin.context.get_current_chat_provider_id(session_id)

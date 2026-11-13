@@ -9,7 +9,7 @@ from typing import Any
 from astrbot.api import logger
 
 from .connections import WorldConnections
-from .protocol import RESERVED, TERMINAL, new_id, public_actor
+from .protocol import RESERVED, TERMINAL, new_id, public_actor, clean_decision
 from .model_retry import valid_retry, visible_wait
 from .history_pages import LOG_PAGE_SIZE, ROUTE_PAGE_SIZE, extended_history, write_page
 from .record_cards import VisitRecordCards
@@ -194,7 +194,7 @@ class VisitJournal(VisitRecordCards, WorldConnections):
                 "host_id", "guest_id", "next_actor", "next_at", "turns", "calls", "max_calls",
                 "turn_limit", "event_stage", "event_after", "end_reason", "ended_at", "intro",
                 "manual", "outing_version", "outing", "outing_offer", "action_plans", "budget_holds",
-                "outing_requests", "outing_requests_handled", "outing_request_turn")
+                "outing_requests", "outing_requests_handled", "outing_request_turn", "shared_activity")
         result = {key: copy.deepcopy(visit[key]) for key in keys if key in visit}
         if extended_history(visit):
             write_page(result, "log", visit["log"], LOG_PAGE_SIZE)
@@ -215,7 +215,8 @@ class VisitJournal(VisitRecordCards, WorldConnections):
         result["connection_id"] = visit.get("connection_id") or visit["remote"].get("instance_id", "")
         result["observed_at"] = self._now()
         if isinstance(result.get("outing"), dict):
-            result["outing"]["phase"] = "playing" if self._now() < result["outing"]["until"] else "checkpoint"
+            result["outing"]["phase"] = ("traveling" if self._now() < result["outing"]["started_at"] else
+                                         "playing" if self._now() < result["outing"]["until"] else "checkpoint")
         result["budget_side"] = visit.get("budget_side", "")
         result["model_wait"] = visible_wait(visit) if visit["status"] in RESERVED else {}
         result["progress"] = self._visible_progress(visit, result["model_wait"])
@@ -372,6 +373,34 @@ class VisitJournal(VisitRecordCards, WorldConnections):
             self._remembering.add(visit_id)
         try:
             try:
+                shared = snapshot.get("shared_activity") or {}
+                if (not snapshot.get("finish_review_attempted")
+                        and (shared.get("action_steps") or shared.get("milestones")
+                             or snapshot.get("local_experience_seq"))):
+                    # Claim this one optional retrospective before a paid call.
+                    # Failed review still archives confirmed facts; reload never
+                    # repeats an ambiguously completed inference.
+                    async with self._lock:
+                        current = self._state["visits"].get(visit_id)
+                        if current and self._same_memory(current, snapshot):
+                            current["finish_review_attempted"] = True
+                            await self._save_memory_progress()
+                    snapshot["finish_review_attempted"] = True
+                    try:
+                        review_base = copy.deepcopy(snapshot)
+                        async with asyncio.timeout(self.config.timeout_seconds):
+                            review = clean_decision(await self.actor_port.decide(snapshot["scope"], "finish", snapshot))
+                        self._retain_private(snapshot, review, self._now())
+                        async with self._lock:
+                            current = self._state["visits"].get(visit_id)
+                            if current and self._same_memory(current, review_base):
+                                current["private"] = copy.deepcopy(snapshot.get("private", {}))
+                                current["private_moments"] = copy.deepcopy(snapshot.get("private_moments", []))
+                                await self._save_memory_progress()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        pass  # The independent feelings already saved remain valid.
                 await self.actor_port.remember(snapshot["scope"], snapshot)
             except asyncio.CancelledError:
                 raise
@@ -396,7 +425,8 @@ class VisitJournal(VisitRecordCards, WorldConnections):
     @staticmethod
     def _same_memory(visit: dict | None, snapshot: dict) -> bool:
         return visit is not None and all(visit.get(key) == snapshot.get(key)
-                                        for key in ("log", "status", "end_reason"))
+                                        for key in ("log", "status", "end_reason", "private", "private_moments",
+                                                    "shared_activity", "local_experience_seq"))
 
     async def _save_memory_progress(self):
         # A failed settlement acknowledgement may be retried after restart.

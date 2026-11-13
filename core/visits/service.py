@@ -380,6 +380,8 @@ class VisitService(VisitFlow, VisitJournal):
         if not visit or not self._visit_belongs(visit, peer):
             raise ValueError("找不到本友邻的旅程")
         if op == "end":
+            if visit["role"] == "host":
+                await self._complete_outing_if_due(visit)
             previous = (copy.deepcopy(visit["log"]), visit["status"], visit.get("end_reason"))
             candidate = copy.deepcopy(visit)
             manual_continuation = payload.get("manual_continuation", False)
@@ -438,6 +440,7 @@ class VisitService(VisitFlow, VisitJournal):
             if local_request_pending:
                 candidate["manual_continuation"] = True
         self._accept_outing_request(candidate, peer["id"], payload)
+        self._accept_experience_wake(candidate, peer["id"], payload.get("experience_wake"))
         superseded = False
         if op == "step":
             superseded = self._scene_superseded_step(candidate, peer["id"], payload)

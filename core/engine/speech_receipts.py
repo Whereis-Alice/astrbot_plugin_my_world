@@ -9,6 +9,8 @@ from typing import Any
 from uuid import uuid4
 
 from ..speech_policy import PLAN_SPEECH
+from ..visit_chat_bridge import (capture_visit_chat_owner, important_visit_chat,
+                                record_visit_chat, restore_visit_chat_owner)
 from .life_inference import STATE_LEASE
 
 
@@ -138,8 +140,11 @@ def update_thought(state, trace):
 
 def accept_receipt(engine, outcome, target, key, **payload):
     first = key not in outcome.accepted_receipts
+    owner = bind_receipt_owner(engine, outcome)
+    visit_owner = capture_visit_chat_owner(engine, target, persona_key=owner.persona_id,
+                                          expected_state_key=owner.state_key) if first else None
     record = outcome.accepted_receipts.setdefault(key, {"at": engine._now(), "target": target,
-        "owner": bind_receipt_owner(engine, outcome), **payload})
+        "owner": owner, "visit_chat_owner": visit_owner.snapshot() if visit_owner else None, **payload})
     outcome.accepted_speech_at.setdefault(record["target"], record["at"])
     return first, record
 
@@ -179,6 +184,10 @@ async def remember_accepted(engine, outcome, target, text, key, identity="", *, 
                 update_thought(state, trace)
 
     await persist_accepted(persist)
+    visit_owner = restore_visit_chat_owner(record.get("visit_chat_owner"))
+    await record_visit_chat(engine, visit_owner,
+        kind="sent", text=text, source_id=f"speech:{outcome.speech_receipt_batch}:{key}", at=stamp,
+        significant=important_visit_chat(engine, visit_owner, text))
     outcome.remembered_speech.add(key)
 
 
@@ -227,6 +236,11 @@ async def remember_accepted_images(engine, outcome, target, images, key, identit
                 update_thought(state, trace)
 
     await persist_accepted(persist)
+    notes = list(dict.fromkeys(outcome.image_notes.get(target, {}).get(ref, "") for ref in images))
+    caption = "、".join(value for value in notes if value)[:120]
+    await record_visit_chat(engine, restore_visit_chat_owner(record.get("visit_chat_owner")),
+        kind="sent_image", text=f"已发送{len(images)}张图片" + ("：" + caption if caption else ""),
+        source_id=f"speech:{outcome.speech_receipt_batch}:{key}", at=stamp)
     outcome.remembered_speech.add(key)
 
 

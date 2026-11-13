@@ -450,6 +450,9 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
         self.engine.media = self.proactive_media
         self.visits = VisitService(self.db, VisitConfig.from_mapping(config), VisitActorPort(self))
         self.engine.visits = self.visits
+        self.engine.visits_card = AstrBotLLM(
+            self, role="utility", sampling=self.sampling_params(), provider_slot="visits_card")
+        self.engine.visits_card_options = lambda: self.config
         self.db.on_close(self.visits.close)
         # 别的插件的数据目录在同一个 plugin_data 下（心迹画像的同步要用）
         self.engine.external_data_root = str(self.store.data_dir.parent)
@@ -1739,6 +1742,13 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
                 self.logger.debug(f"[my_world] 自动画像提取失败：{exc}")
         if not isinstance(turn, dict):
             return
+        from .core.visit_chat_bridge import record_visit_reads, restore_visit_chat_owner
+        visit_owner = restore_visit_chat_owner((turn.get("scene_snapshot") or {}).get("visit_chat_owner"))
+        if visit_owner is not None:
+            try:
+                await record_visit_reads(self.engine, visit_owner, turn.get("interaction_entries") or [])
+            except Exception as exc:
+                self.logger.debug("[my_world] 串门群聊阅读暂未记入（%s）", type(exc).__name__)
         if response is not None:
             turn["reply"] = str(getattr(response, "completion_text", "") or "")
             turn["provider_reasoning"] = str(

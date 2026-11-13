@@ -89,7 +89,10 @@ class SendMixin:
             state.last_nickname_update_at = now
             state.nickname_fail_count = 0
             self.note_local_card(primary, desired)
-            await self._log_event(state, "nickname", {"to": desired, "ok": True})
+            detail = {"to": desired, "ok": True}
+            if presence:
+                detail["visit_card"] = dict(presence)
+            await self._log_event(state, "nickname", detail)
             # 同一个她在别的群里的名片跟着一起改：不再各算一次冷却
             for session_id in targets[1:]:
                 try:

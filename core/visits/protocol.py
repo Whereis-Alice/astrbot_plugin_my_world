@@ -177,11 +177,51 @@ def clean_outing_offer(value: Any) -> dict[str, Any]:
         return {}
     place, activity = text(value.get("place"), 80), text(value.get("activity"), 120)
     minutes = value.get("minutes", 45)
-    if not place or not activity or type(minutes) not in {int, float} or not math.isfinite(minutes):
+    if (not place or not activity or type(minutes) not in {int, float}
+            or not math.isfinite(minutes) or minutes <= 0):
         return {}
-    return {"place": place, "activity": activity, "minutes": max(5, min(240, int(minutes))),
+    travel = value.get("travel_seconds", 0)
+    if type(travel) not in {int, float} or not math.isfinite(travel) or not 0 <= travel <= 86400:
+        return {}
+    return {"place": place, "activity": activity, "minutes": max(0.05 / 60, min(240, float(minutes))),
             "event": text(value.get("event"), 240), "return_after": value.get("return_after") is True,
-            "pause_minutes": clean_pause(value)}
+            "pause_minutes": clean_pause(value), "travel_seconds": float(travel)}
+
+
+def clean_action_step(value: Any) -> dict[str, Any]:
+    """An open-ended personal action; its clock never asserts a successful result."""
+    if not isinstance(value, dict):
+        return {}
+    description, seconds = value.get("description"), value.get("seconds")
+    if (not isinstance(description, str) or not description.strip() or len(description) > 400
+            or type(seconds) not in {int, float} or not math.isfinite(seconds)
+            or not 0.05 <= seconds <= 14400
+            or any(type(value.get(key, False)) is not bool for key in ("waiting", "requires_peer"))):
+        return {}
+    return {"description": text(description, 400), "seconds": float(seconds),
+            "waiting": value.get("waiting", False), "requires_peer": value.get("requires_peer", False)}
+
+
+def clean_scene_update(value: Any) -> dict[str, Any]:
+    """A bounded public result, separate from either character's private thoughts."""
+    if not isinstance(value, dict):
+        return {}
+    summary = value.get("summary")
+    if (not isinstance(summary, str) or not summary.strip() or len(summary) > 500
+            or "done" in value and type(value["done"]) is not bool):
+        return {}
+    result = {"summary": text(summary, 500)}
+    for name in ("objects", "pending"):
+        if name not in value:
+            continue
+        items = value[name]
+        if (not isinstance(items, list) or len(items) > 8
+                or any(not isinstance(item, str) or not item.strip() or len(item) > 160 for item in items)):
+            return {}
+        result[name] = list(dict.fromkeys(text(item, 160) for item in items))
+    if "done" in value:
+        result["done"] = value["done"]
+    return result
 
 
 def clean_pause(value: dict) -> float:
@@ -199,4 +239,6 @@ def clean_decision(value: Any) -> dict[str, Any]:
             "promise": text(value.get("promise"), 180), "outcome": text(value.get("outcome"), 500),
             "outing": clean_outing_offer(value.get("outing")), "outing_accept": value.get("outing_accept") is True,
             "return_after": value.get("return_after") is True, "farewell": text(value.get("farewell"), 100),
-            "pause_minutes": clean_pause(value), "continue_activity": value.get("continue_activity") is True}
+            "pause_minutes": clean_pause(value), "continue_activity": value.get("continue_activity") is True,
+            "action_step": clean_action_step(value.get("action_step")),
+            "scene_update": clean_scene_update(value.get("scene_update"))}

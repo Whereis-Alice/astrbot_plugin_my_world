@@ -12,6 +12,7 @@ export const CALL_PURPOSES = {
   schedule: "日程执行", search: "搜索与阅读", weather: "天气整理", action: "动作文字", extension: "扩展调用",
   main: "主模型调用", creator: "内容生成", sleep: "睡眠决策", other: "其他调用",
   world_visit: "友邻串门",
+  visit_card: "串门名片状态",
 };
 const STATUS = {success: "成功", error: "失败", cancelled: "已取消"};
 const number = value => value == null ? "—" : Number(value).toLocaleString("zh-CN");

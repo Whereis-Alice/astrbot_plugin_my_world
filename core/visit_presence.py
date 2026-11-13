@@ -92,6 +92,26 @@ def visit_activity_text(visit: dict, *, now: float | None = None) -> str:
         return f"刚与{name}见面，正在商量接下来一起做什么"
     place = str(outing.get("place") or scene.get("place") or "约好的地方")[:80]
     activity = str(outing.get("activity") or scene.get("activity") or "一起待一会儿")[:120]
+    if now is not None and outing.get("travel_seconds") and now < float(outing.get("started_at") or 0):
+        return f"与{name}从{str(outing.get('origin_place') or '原来的地方')[:80]}前往{place}途中，尚未抵达"
+    shared = visit.get("shared_activity") or {}
+    if shared.get("stage") == outing.get("stage") and now is not None:
+        own = visit.get("host_id" if visit.get("role") == "host" else "guest_id")
+        steps = shared.get("action_steps", {}).get(own, [])
+        for step in reversed(steps):
+            if step.get("settled_revision"):
+                continue
+            description = " ".join(str(step.get("description") or "").split())[:160]
+            if not description:
+                continue
+            if step.get("status") == "awaiting_peer":
+                return f"与{name}在{place}，提出了{description}，还在等对方独立决定是否配合"
+            if step.get("status") == "scheduled":
+                return f"与{name}在{place}，准备{description}，尚未开始"
+            if step.get("status") == "running" and now < float(step.get("until") or 0):
+                return f"与{name}在{place}，正在{description}"
+            if step.get("status") == "elapsed" or step.get("until") and now >= float(step["until"]):
+                return f"与{name}在{place}，{description}这一步的时间已到，结果尚未确认"
     if (outing.get("version") == 1 and now is not None
             and now >= float(outing.get("until") or 0)):
         return f"与{name}在{place}，刚一起{activity}，下一步还在商量"
@@ -104,6 +124,9 @@ def presence_text(visit: dict, *, now: float | None = None) -> str:
     name = str(remote.get("name") or "另一位朋友")[:60]
     world = str(remote.get("world") or "友邻世界")[:80]
     outing = visit.get("outing") or {}
+    if now is not None and outing.get("travel_seconds") and now < float(outing.get("started_at") or 0):
+        return (f"与{name}在{world}从{str(outing.get('origin_place') or '原来的地方')[:80]}"
+                f"前往{str(outing.get('place') or '约好的地方')[:80]}途中；尚未抵达目的地，不能说已在那里开始活动。")
     if visit.get("outing_version") == 1 and not outing:
         location = (f"正在自己的世界接待来自{world}的{name}"
                     if visit.get("role") == "host" else f"已经来到{world}，与{name}见面")
@@ -134,7 +157,7 @@ def visit_context_text(visit: dict, *, now: float | None = None) -> str:
     rows = []
     log = visit.get("log") or []
     for row in reversed(log if isinstance(log, list) else []):
-        if not isinstance(row, dict) or row.get("kind") not in {"say", "experience", "result"}:
+        if not isinstance(row, dict) or row.get("kind") not in {"say", "experience", "result", "milestone"}:
             continue
         actor = str(row.get("actor_id") or "")
         if actor in own_ids and actor not in other_ids:
@@ -146,7 +169,8 @@ def visit_context_text(visit: dict, *, now: float | None = None) -> str:
         value = row.get("text")
         if not isinstance(value, str) or not value.strip():
             continue
-        label = {"say": "说过", "experience": "记下的经历", "result": "确认的事件结果"}[row["kind"]]
+        label = {"say": "说过", "experience": "记下的经历", "result": "确认的事件结果",
+                 "milestone": "记录的共同确认片刻"}[row["kind"]]
         # Quote source text so a companion's words remain evidence, never instructions.
         rows.append(f"- {speaker}{label}：" + json.dumps(" ".join(value.split())[:180], ensure_ascii=False))
         if len(rows) == 6:
