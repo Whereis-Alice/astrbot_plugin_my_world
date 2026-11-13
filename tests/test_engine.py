@@ -9596,7 +9596,7 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         )
         await self.engine.tick()
         cards = [card for _session, card in self.messenger.cards]
-        self.assertIn("小鲸鱼 | 睡觉中", cards)
+        self.assertIn("小鲸鱼 睡觉中", cards)
 
     async def test_nickname_sync_skipped_when_locked(self):
         await self.set_state(

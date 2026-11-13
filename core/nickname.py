@@ -94,7 +94,7 @@ def compute_nickname(
         status = status_override.strip()
     if not status:
         return original
-    template = config.template or "{base} | {status}"
+    template = config.template or "{base} {status}"
     if "{base}" not in template and "{status}" not in template:
         return _truncate(status, config.max_length)
     text = template.replace("{base}", original).replace("{status}", status)

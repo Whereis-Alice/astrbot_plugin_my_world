@@ -63,7 +63,8 @@ class SendMixin:
             presence = await engine_group_card_override(self, primary)
         except RuntimeError:
             return  # Keep the current name while confirmed visit state recovers.
-        desired = compute_nickname(self.world, state, node, base=state.bot_base_nickname,
+        display_base = presence.get("name") if presence else None
+        desired = compute_nickname(self.world, state, node, base=display_base or state.bot_base_nickname,
                                    status_override=presence["status"] if presence else None)
         now = self._now()
         # 连续失败时按倍数退避（1× → 2× → 4× …，最多 1 小时一次），

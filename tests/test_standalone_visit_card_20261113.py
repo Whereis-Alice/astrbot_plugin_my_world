@@ -16,7 +16,7 @@ class StandaloneVisitCardTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         await fixture.EngineTestCase.asyncSetUp(self)
         raw = self.store.raw_world()
-        raw["nickname_sync"].update(enabled=True, template="{base} | {status}", cooldown_seconds=10)
+        raw["nickname_sync"].update(enabled=True, template="{base} {status}", cooldown_seconds=10)
         self.store.save_world(raw)
         self.engine.reload_config()
         await self.set_state(state="idle", cold_start_done=True, bot_base_nickname="爱丽丝",
@@ -30,7 +30,7 @@ class StandaloneVisitCardTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_visiting_tick_updates_card_and_home_return_restores_normal_rule(self):
         await self.engine.tick()
-        self.assertEqual(self.messenger.cards, [(fixture.SESSION, "爱丽丝 | 拜访艾拉")])
+        self.assertEqual(self.messenger.cards, [(fixture.SESSION, "爱丽丝 拜访艾拉")])
         self.assertEqual(self.llm.calls, [])
         self.assertEqual(self.messenger.sent, [])
         self.clock.advance(60)
@@ -49,6 +49,14 @@ class StandaloneVisitCardTests(unittest.IsolatedAsyncioTestCase):
         await self.engine.tick()
         self.assertEqual(self.messenger.cards, [])
         self.assertEqual(self.llm.calls, [])
+
+    async def test_confirmed_name_replaces_previous_daily_status_during_visit(self):
+        await self.set_state(bot_base_nickname="爱丽丝 摸鱼中 | 事件中")
+        self.visit["local"]["name"] = "爱丽丝"
+        await self.engine.tick()
+        self.assertEqual(self.messenger.cards, [(fixture.SESSION, "爱丽丝 拜访艾拉")])
+        state = await self.get_state()
+        self.assertEqual(state.bot_base_nickname, "爱丽丝 摸鱼中 | 事件中")
 
     async def test_administrator_lock_and_temporary_unavailable_state_keep_card(self):
         await self.set_state(bot_nickname_locked=True)

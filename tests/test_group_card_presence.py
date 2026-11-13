@@ -34,6 +34,20 @@ def test_current_arrived_character_publishes_presence(status):
         "source": "astrbot_plugin_my_world", "token": "visit-a", "status": "拜访艾拉"}
 
 
+def test_presence_publishes_only_the_confirmed_local_public_name():
+    plugin, holder = fixture()
+    holder["visit"]["local"]["name"] = "  爱丽丝  "
+    assert asyncio.run(group_card_override(plugin, SESSION))["name"] == "爱丽丝"
+    holder["visit"]["local"]["persona_key"] = "previous-persona"
+    assert asyncio.run(group_card_override(plugin, SESSION)) is None
+
+
+def test_missing_public_name_does_not_leak_an_actor_identifier():
+    plugin, holder = fixture()
+    holder["visit"]["local"]["actor_id"] = "internal-actor-id"
+    assert "name" not in asyncio.run(group_card_override(plugin, SESSION))
+
+
 @pytest.mark.parametrize("change", ["invitation", "unarrived", "wrong_scope", "wrong_persona", "disabled", "retired"])
 def test_incomplete_or_other_character_presence_is_not_published(change):
     plugin, holder = fixture()

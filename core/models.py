@@ -951,7 +951,7 @@ class Engagement(Permissive):
 
 class NicknameSync(Permissive):
     enabled: bool = True
-    template: str = "{base} | {status}"
+    template: str = "{base} {status}"
     max_length: int = 30
     cooldown_seconds: int = 60
     restore_on_idle: bool = True

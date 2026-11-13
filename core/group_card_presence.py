@@ -37,8 +37,14 @@ async def engine_group_card_override(engine: Any, session_id: str, *,
             return None
         remote = visit.get("remote") or {}
         companion = " ".join(str(remote.get("name") or "朋友").split())[:12]
-        return {"source": "astrbot_plugin_my_world", "token": str(visit.get("id") or ""),
-                "status": f"接待{companion}" if visit.get("role") == "host" else f"拜访{companion}"}
+        result = {"source": "astrbot_plugin_my_world", "token": str(visit.get("id") or ""),
+                  "status": f"接待{companion}" if visit.get("role") == "host" else f"拜访{companion}"}
+        # A temporary situation replaces the ordinary status. Its prefix is
+        # this confirmed character's public name, never a previous full card.
+        name = (visit.get("local") or {}).get("name")
+        if isinstance(name, str) and name.strip():
+            result["name"] = " ".join(name.split())
+        return result
 
 
 async def group_card_override(plugin: Any, session_id: str) -> dict[str, str] | None:

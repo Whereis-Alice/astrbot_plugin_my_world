@@ -20260,7 +20260,7 @@ function renderSettings() {
     ),
   );
   nickname._fields.appendChild(
-    inputField("名片模板", world.nickname_sync.template || "{base} | {status}", (value) => {
+    inputField("名片模板", world.nickname_sync.template || "{base} {status}", (value) => {
       world.nickname_sync.template = value;
     }, { hint: "{base} 是原名，{status} 是状态文案，例如「{base}（{status}）」。" }),
   );

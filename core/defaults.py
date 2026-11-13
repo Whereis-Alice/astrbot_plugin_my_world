@@ -164,7 +164,7 @@ DEFAULT_WORLD: dict[str, Any] = {
     },
     "nickname_sync": {
         "enabled": True,
-        "template": "{base} | {status}",
+        "template": "{base} {status}",
         "max_length": 30,
         "cooldown_seconds": 60,
         "restore_on_idle": True,
