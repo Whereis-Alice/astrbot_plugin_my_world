@@ -104,10 +104,11 @@ async def group_card_baseline(plugin: Any, session_id: str, card: str) -> str | 
                    and not any(event["detail"].get(key) for key in ("manual", "live", "base"))
                    for event in events):
             return None
-        latest = await engine.db.call("get_state", state_key)
         _, latest_persona = await engine._journal_persona(session_id)
+        latest = await engine.db.call("get_state", state_key)
         if (not getattr(plugin, "enabled", False) or getattr(plugin, "retired", False)
                 or not engine.is_enabled(session_id) or not engine.world.nickname_sync.enabled
+                or engine.state_key(session_id) != state_key
                 or latest_persona != persona_key
                 or not isinstance(latest, dict) or latest.get("bot_nickname_locked")
                 or latest.get("bot_base_nickname") != base or latest.get("bot_current_nickname") != card

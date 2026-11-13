@@ -164,3 +164,20 @@ def test_legacy_source_is_rechecked_after_async_reads():
         return result
     plugin.engine.db.call = changed
     assert asyncio.run(group_card_baseline(plugin, SESSION, state["bot_current_nickname"])) is None
+
+
+@pytest.mark.parametrize("change", ["locked", "scope"])
+def test_final_persona_read_cannot_leave_a_stale_state_proof(change):
+    plugin, state, _ = baseline_fixture()
+    calls = 0
+    async def persona(_session):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            if change == "locked":
+                state["bot_nickname_locked"] = True
+            else:
+                plugin.engine.state_key = lambda _session: "another-life"
+        return "current text", "current-persona"
+    plugin.engine._journal_persona = persona
+    assert asyncio.run(group_card_baseline(plugin, SESSION, state["bot_current_nickname"])) is None
