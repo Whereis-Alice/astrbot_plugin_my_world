@@ -107,7 +107,7 @@ from .core.messages import (
 from .core.models import pronoun_for
 from .core.nickname import compute_nickname
 from .core.plugin_compat import profile_weaver_active
-from .core.group_card_presence import group_card_override
+from .core.group_card_presence import group_card_baseline, group_card_override
 from .core.profile_weaver_service import ProfileWeaverService
 from .core.prompt import clip_line, prompt_section_index, readable_caption
 from .core.request_context import (
@@ -326,6 +326,10 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
     async def get_group_card_override(self, session_id: str) -> dict[str, str] | None:
         """Expose confirmed temporary presence to cooperating card plugins."""
         return await group_card_override(self, session_id)
+
+    async def get_group_card_baseline(self, session_id: str, card: str) -> str | None:
+        """Recover a proven old World suffix during another card plugin's takeover."""
+        return await group_card_baseline(self, session_id, card)
 
     def __init__(self, context: Context, config: AstrBotConfig) -> None:
         super().__init__(context, config)

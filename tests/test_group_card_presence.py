@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.group_card_presence import engine_group_card_override, group_card_override
+from core.group_card_presence import engine_group_card_override, group_card_baseline, group_card_override
 from core.plugin_compat import FREE_CARD_PLUGIN, group_card_owner
 
 
@@ -101,3 +101,66 @@ def test_free_card_ownership_obeys_current_session_activation():
     context.get_config = lambda _session: {"plugin_set": ["*"]}
     star.star_cls._closed = True
     assert group_card_owner(context, SESSION) == ""
+
+
+def baseline_fixture():
+    plugin, _ = fixture()
+    config = plugin.engine.world.nickname_sync
+    config.template = "{base} {status}"
+    config.event_text = "事件中"
+    config.status_map, config.node_status = {}, {}
+    config.max_length = 30
+    plugin.engine.world.actions, plugin.engine.world.nodes = [], []
+    state = {"bot_base_nickname": "艾拉 拒绝贴贴中",
+             "bot_current_nickname": "艾拉 拒绝贴贴中 | 事件中"}
+    events = [{"session_id": SESSION, "persona_id": "current-persona",
+               "detail": {"to": state["bot_current_nickname"], "ok": True}}]
+    async def database(method, *args, **kwargs):
+        if method == "get_state":
+            return dict(state)
+        assert method == "query_events" and kwargs["session_id"] == SESSION
+        return events
+    plugin.engine.db = NS(call=database)
+    return plugin, state, events
+
+
+def test_recover_proven_legacy_suffix_keeps_the_original_complete_name():
+    plugin, state, _ = baseline_fixture()
+    assert asyncio.run(group_card_baseline(plugin, SESSION, state["bot_current_nickname"])) == state["bot_base_nickname"]
+
+
+@pytest.mark.parametrize("change", ["manual", "read", "failed", "persona", "session", "locked", "custom", "external"])
+def test_legacy_suffix_requires_complete_automatic_write_provenance(change):
+    plugin, state, events = baseline_fixture()
+    card = state["bot_current_nickname"]
+    if change == "manual":
+        events[0]["detail"]["manual"] = True
+    elif change == "read":
+        events[0]["detail"] = {"live": card, "ok": True}
+    elif change == "failed":
+        events[0]["detail"]["ok"] = False
+    elif change == "persona":
+        events[0]["persona_id"] = "previous-persona"
+    elif change == "session":
+        events[0]["session_id"] = "qq:GroupMessage:other"
+    elif change == "locked":
+        state["bot_nickname_locked"] = True
+    elif change == "custom":
+        card = "艾拉 | Wonderland"
+        state["bot_current_nickname"] = card
+        events[0]["detail"]["to"] = card
+    elif change == "external":
+        state["bot_current_nickname"] = "其他新名字"
+    assert asyncio.run(group_card_baseline(plugin, SESSION, card)) is None
+
+
+def test_legacy_source_is_rechecked_after_async_reads():
+    plugin, state, _ = baseline_fixture()
+    call = plugin.engine.db.call
+    async def changed(method, *args, **kwargs):
+        result = await call(method, *args, **kwargs)
+        if method == "query_events":
+            state["bot_base_nickname"] = "用户的新名字"
+        return result
+    plugin.engine.db.call = changed
+    assert asyncio.run(group_card_baseline(plugin, SESSION, state["bot_current_nickname"])) is None

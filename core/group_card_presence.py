@@ -54,3 +54,63 @@ async def group_card_override(plugin: Any, session_id: str) -> dict[str, str] | 
             or getattr(plugin, "retired", False)):
         return None
     return await engine_group_card_override(engine, session_id)
+
+
+async def group_card_baseline(plugin: Any, session_id: str, card: str) -> str | None:
+    """Recover only a same-character card proven to have an automatic World suffix."""
+    engine = getattr(plugin, "engine", None)
+    parts = str(session_id).split(":", 2)
+    if (engine is None or not getattr(plugin, "enabled", False)
+            or getattr(plugin, "retired", False) or len(parts) != 3
+            or parts[1] != "GroupMessage" or not isinstance(card, str) or not engine.is_enabled(session_id)):
+        return None
+    scope = getattr(engine, "config_scope", None)
+    with scope(session_id) if callable(scope) else nullcontext():
+        config = engine.world.nickname_sync
+        if not config.enabled:
+            return None
+        signature_getter = getattr(engine, "_journal_config_signature", None)
+        signature = signature_getter() if callable(signature_getter) else None
+        _, persona_key = await engine._journal_persona(session_id)
+        if not persona_key:
+            return None
+        state_key = engine.state_key(session_id)
+        state = await engine.db.call("get_state", state_key)
+        if not isinstance(state, dict) or state.get("bot_nickname_locked"):
+            return None
+        base = state.get("bot_base_nickname")
+        if (not isinstance(base, str) or not base or base == card
+                or state.get("bot_current_nickname") != card):
+            return None
+        labels = {"刚醒", "睡觉中", "小睡中", "犯困了", str(getattr(config, "event_text", "") or "")}
+        for field in ("status_map", "node_status"):
+            labels.update(str(value) for value in (getattr(config, field, {}) or {}).values())
+        for field in ("actions", "nodes"):
+            labels.update(str(getattr(item, "nickname_text", "") or "")
+                          for item in (getattr(engine.world, field, []) or []))
+        # Recognize precise generated templates, including the earlier default;
+        # never split an arbitrary user-selected name at a separator.
+        templates = {str(config.template), "{base} | {status}", "{base}｜{status}", "{base} ｜ {status}"}
+        limit = max(1, int(config.max_length or 30))
+        if not any(label and template.replace("{base}", base).replace("{status}", label)[:limit] == card
+                   for label in labels for template in templates):
+            return None
+        events = await engine.db.call("query_events", session_id=session_id,
+                                      event_type="nickname", limit=200)
+        if not any(isinstance(event, dict) and event.get("session_id") == session_id
+                   and event.get("persona_id") == persona_key
+                   and isinstance(event.get("detail"), dict)
+                   and event["detail"].get("ok") is True and event["detail"].get("to") == card
+                   and not any(event["detail"].get(key) for key in ("manual", "live", "base"))
+                   for event in events):
+            return None
+        latest = await engine.db.call("get_state", state_key)
+        _, latest_persona = await engine._journal_persona(session_id)
+        if (not getattr(plugin, "enabled", False) or getattr(plugin, "retired", False)
+                or not engine.is_enabled(session_id) or not engine.world.nickname_sync.enabled
+                or latest_persona != persona_key
+                or not isinstance(latest, dict) or latest.get("bot_nickname_locked")
+                or latest.get("bot_base_nickname") != base or latest.get("bot_current_nickname") != card
+                or (callable(signature_getter) and signature_getter() != signature)):
+            return None
+        return base
