@@ -88,6 +88,17 @@ async def group_card_baseline(plugin: Any, session_id: str, card: str) -> str | 
         for field in ("actions", "nodes"):
             labels.update(str(getattr(item, "nickname_text", "") or "")
                           for item in (getattr(engine.world, field, []) or []))
+        history = await engine.db.call("kv_get", "world_visits.v1", {})
+        visits = history.get("visits", {}) if isinstance(history, dict) else {}
+        for visit in visits.values() if isinstance(visits, dict) else []:
+            if (not isinstance(visit, dict) or not visit.get("arrived_at")
+                    or visit.get("scope") != state_key
+                    or (visit.get("local") or {}).get("persona_key") != persona_key
+                    or visit.get("role") not in {"host", "guest"}):
+                continue
+            remote = visit.get("remote") or {}
+            companion = " ".join(str(remote.get("name") or "朋友").split())[:12]
+            labels.add(f"接待{companion}" if visit["role"] == "host" else f"拜访{companion}")
         # Recognize precise generated templates, including the earlier default;
         # never split an arbitrary user-selected name at a separator.
         templates = {str(config.template), "{base} | {status}", "{base}｜{status}", "{base} ｜ {status}"}

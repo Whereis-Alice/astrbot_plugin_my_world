@@ -115,9 +115,12 @@ def baseline_fixture():
              "bot_current_nickname": "艾拉 拒绝贴贴中 | 事件中"}
     events = [{"session_id": SESSION, "persona_id": "current-persona",
                "detail": {"to": state["bot_current_nickname"], "ok": True}}]
+    plugin.engine.card_visit_history = {}
     async def database(method, *args, **kwargs):
         if method == "get_state":
             return dict(state)
+        if method == "kv_get":
+            return {"visits": plugin.engine.card_visit_history}
         assert method == "query_events" and kwargs["session_id"] == SESSION
         return events
     plugin.engine.db = NS(call=database)
@@ -180,4 +183,32 @@ def test_final_persona_read_cannot_leave_a_stale_state_proof(change):
                 plugin.engine.state_key = lambda _session: "another-life"
         return "current text", "current-persona"
     plugin.engine._journal_persona = persona
+    assert asyncio.run(group_card_baseline(plugin, SESSION, state["bot_current_nickname"])) is None
+
+
+@pytest.mark.parametrize("role, status", [("guest", "拜访艾拉"), ("host", "接待艾拉")])
+def test_proven_old_visit_suffix_uses_confirmed_same_character_history(role, status):
+    plugin, state, events = baseline_fixture()
+    state["bot_current_nickname"] = state["bot_base_nickname"] + " | " + status
+    events[0]["detail"]["to"] = state["bot_current_nickname"]
+    plugin.engine.card_visit_history = {"old-visit": {
+        "scope": "life", "role": role, "status": "finished", "arrived_at": 100,
+        "local": {"persona_key": "current-persona"}, "remote": {"name": "艾拉"}}}
+    assert asyncio.run(group_card_baseline(plugin, SESSION, state["bot_current_nickname"])) == state["bot_base_nickname"]
+
+
+@pytest.mark.parametrize("change", ["unarrived", "scope", "persona"])
+def test_invited_or_other_character_visits_do_not_prove_a_name_suffix(change):
+    plugin, state, events = baseline_fixture()
+    state["bot_current_nickname"] = state["bot_base_nickname"] + " | 拜访艾拉"
+    events[0]["detail"]["to"] = state["bot_current_nickname"]
+    visit = {"scope": "life", "role": "guest", "arrived_at": 100,
+             "local": {"persona_key": "current-persona"}, "remote": {"name": "艾拉"}}
+    if change == "unarrived":
+        visit["arrived_at"] = 0
+    elif change == "scope":
+        visit["scope"] = "other-life"
+    else:
+        visit["local"]["persona_key"] = "previous-persona"
+    plugin.engine.card_visit_history = {"unproven-visit": visit}
     assert asyncio.run(group_card_baseline(plugin, SESSION, state["bot_current_nickname"])) is None
