@@ -382,9 +382,18 @@ class VisitJournal(VisitRecordCards, WorldConnections):
                     # repeats an ambiguously completed inference.
                     async with self._lock:
                         current = self._state["visits"].get(visit_id)
-                        if current and self._same_memory(current, snapshot):
-                            current["finish_review_attempted"] = True
-                            await self._save_memory_progress()
+                        if self._closed or not self._same_memory(current, snapshot):
+                            return  # Revisit the changed facts before admitting a paid review.
+                        current["finish_review_attempted"] = True
+                        try:
+                            await self._save()
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            # No model call has begun. A later durable claim may
+                            # retry safely, under the normal settlement backoff.
+                            current.pop("finish_review_attempted", None)
+                            raise
                     snapshot["finish_review_attempted"] = True
                     try:
                         review_base = copy.deepcopy(snapshot)
@@ -393,10 +402,13 @@ class VisitJournal(VisitRecordCards, WorldConnections):
                         self._retain_private(snapshot, review, self._now())
                         async with self._lock:
                             current = self._state["visits"].get(visit_id)
-                            if current and self._same_memory(current, review_base):
-                                current["private"] = copy.deepcopy(snapshot.get("private", {}))
-                                current["private_moments"] = copy.deepcopy(snapshot.get("private_moments", []))
-                                await self._save_memory_progress()
+                            if not self._retain_finish_review(current, review_base, snapshot):
+                                return
+                            await self._save_memory_progress()
+                            # The paid review belongs to its old confirmed prefix;
+                            # archive the current facts together with that retained
+                            # subjective moment, even if the first write fails.
+                            snapshot = copy.deepcopy(current)
                     except asyncio.CancelledError:
                         raise
                     except Exception:
@@ -425,8 +437,36 @@ class VisitJournal(VisitRecordCards, WorldConnections):
     @staticmethod
     def _same_memory(visit: dict | None, snapshot: dict) -> bool:
         return visit is not None and all(visit.get(key) == snapshot.get(key)
-                                        for key in ("log", "status", "end_reason", "private", "private_moments",
-                                                    "shared_activity", "local_experience_seq"))
+                                        for key in ("id", "scope", "role", "host_id", "guest_id", "local", "remote",
+                                                    "created_at", "arrived_at", "ended_at", "expires_at", "scene",
+                                                    "outing_version", "outing", "log", "status", "end_reason",
+                                                    "private", "private_moments", "shared_activity", "local_experience_seq"))
+
+    @staticmethod
+    def _retain_finish_review(visit: dict | None, base: dict, reviewed: dict) -> bool:
+        """Keep an already paid feeling on its original prefix without rewriting newer feelings."""
+        if (visit is None or visit.get("status") not in TERMINAL
+                or any(visit.get(key) != base.get(key) for key in ("id", "scope", "role", "host_id", "guest_id"))
+                or any((visit.get("local") or {}).get(key) != (base.get("local") or {}).get(key)
+                       for key in ("actor_id", "persona_key"))
+                or (visit.get("remote") or {}).get("id") != (base.get("remote") or {}).get("id")):
+            return False
+        logs, old_logs = visit.get("log", []), base.get("log", [])
+        if len(logs) < len(old_logs) or logs[:len(old_logs)] != old_logs:
+            return False
+        old_private = base.get("private") or {}
+        private = visit.setdefault("private", {})
+        for key, value in (reviewed.get("private") or {}).items():
+            if private.get(key) == old_private.get(key):
+                private[key] = copy.deepcopy(value)
+        previous = {row.get("seq") for row in base.get("private_moments", [])}
+        additions = [row for row in reviewed.get("private_moments", []) if row.get("seq") not in previous]
+        moments = visit.setdefault("private_moments", [])
+        for row in additions:
+            number = max((item.get("seq", 0) for item in moments), default=0) + 1
+            moments.append({**copy.deepcopy(row), "seq": number})
+        del moments[:-12]
+        return True
 
     async def _save_memory_progress(self):
         # A failed settlement acknowledgement may be retried after restart.

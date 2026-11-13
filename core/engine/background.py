@@ -4,6 +4,7 @@ from __future__ import annotations
 from ..recovery import sleep_action_kind
 
 import asyncio
+import math
 import time
 from hashlib import sha256
 from collections import deque
@@ -394,7 +395,7 @@ class BackgroundMixin:
         visit = active_visit(self, state.session_id)
         pauses = pause_intervals(self, state.session_id, previous, now,
                                 persona_key=self._matter_persona_key(state) or "")
-        if pauses:
+        if pauses or self._home_partial_seconds(state.current_action):
             return self._reconcile_visit_time(state, previous, now, pauses, visiting=bool(visit),
                                               stay_up_costs=stay_up_costs)
         if elapsed <= self.tick_seconds * 2.5:
@@ -467,6 +468,24 @@ class BackgroundMixin:
         return any((action or {}).get(flag) for flag in
                    ("offline_wake", "offline_recovery_complete", "offline_home_complete"))
 
+    def _home_partial_seconds(self, action) -> float:
+        """Already settled home time below one action tick; old saves start at zero."""
+        value = (action or {}).get("home_elapsed_remainder", 0)
+        if type(value) not in {int, float}:
+            return 0.0
+        try:
+            seconds = float(value)
+        except (ValueError, OverflowError):
+            return 0.0
+        return seconds if math.isfinite(seconds) and 0 < seconds < self.tick_seconds else 0.0
+
+    @staticmethod
+    def _keep_home_partial(action, seconds: float) -> None:
+        if seconds > 0:
+            action["home_elapsed_remainder"] = seconds
+        else:
+            action.pop("home_elapsed_remainder", None)
+
     def _reconcile_visit_time(self, state, previous: float, now: float,
                               pauses: list[tuple[float, float]], *, visiting: bool,
                               stay_up_costs: bool = True) -> float:
@@ -480,6 +499,7 @@ class BackgroundMixin:
         if elapsed > self.tick_seconds * 2.5:
             state.world_time += max(0, int(gap / self.tick_seconds) - 1)
         current = state.current_action or {}
+        partial = self._home_partial_seconds(current)
         segments = self._visit_segments(previous, now, pauses)
         definition = self.world.action_map().get(str(current.get("type") or ""))
         from ..recovery import passive_recovery
@@ -494,11 +514,15 @@ class BackgroundMixin:
             current["offline_tick_settled"] = True
         elif recover:
             left = max(0, int(current.get("duration_ticks", 0)) - int(current.get("elapsed_ticks", 0)))
-            advanced = min(left, int(home / self.tick_seconds))
+            advanced = min(left, int((home + partial) / self.tick_seconds))
             state._visit_rest_progress = {"action": current, "initial_ticks": int(current.get("elapsed_ticks", 0)),
-                                          "ticks": advanced, "seconds": 0.0}
+                                          "ticks": advanced, "seconds": partial}
             if advanced >= left:
-                before, after, wake_at = self._split_visit_rest(segments, advanced * self.tick_seconds, previous)
+                # The remainder has already recovered needs on an earlier tick.
+                # It shortens this rest without being evolved a second time.
+                rest_left = max(0, advanced * self.tick_seconds - partial)
+                before, after, wake_at = self._split_visit_rest(segments, rest_left, previous)
+                self._keep_home_partial(current, 0)
                 # Rest keeps its established recovery clock. Awake needs before
                 # and after waking share one six-hour settlement allowance.
                 before = self._bound_visit_segments(before, float("inf"), away_limit=6 * 3600)
@@ -514,22 +538,34 @@ class BackgroundMixin:
                     current["offline_recovery_complete"] = True
             else:
                 pending = self._bound_visit_segments(segments, float("inf"), away_limit=6 * 3600)
+                self._keep_home_partial(current, home + partial - advanced * self.tick_seconds)
             current["offline_tick_settled"] = True
         elif current and home <= self.tick_seconds * 2.5:
             # A just-returned life still owns its quiet work. The last fixed
             # tick must not claim home activity when no home minute elapsed.
-            pending = self._bound_visit_segments(segments, 6 * 3600, home_limit=min(home, self.tick_seconds))
-            if visiting and home >= self.tick_seconds and definition and definition.category == "continuous":
-                self.settle_life_practice(state, current, at=previous)
-                self.settle_matter_work(state, current, at=previous)
+            home_step = min(home, self.tick_seconds)
+            pending = self._bound_visit_segments(segments, 6 * 3600, home_limit=home_step)
+            left = max(0, int(current.get("duration_ticks") or 0) - int(current.get("elapsed_ticks") or 0))
+            advanced = min(left, int((home_step + partial) / self.tick_seconds))
+            if advanced and definition and definition.category == "continuous":
+                if visiting:
+                    self.settle_life_practice(state, current, at=previous)
+                    self.settle_matter_work(state, current, at=previous)
                 current["elapsed_ticks"] = min(int(current.get("duration_ticks") or 0),
-                                                int(current.get("elapsed_ticks") or 0) + 1)
-                _, _, progressed_at = self._split_visit_rest(segments, self.tick_seconds, previous)
-                self.settle_life_practice(state, current, at=progressed_at)
-                self.settle_matter_work(state, current, at=progressed_at)
+                                                int(current.get("elapsed_ticks") or 0) + advanced)
+                _, _, progressed_at = self._split_visit_rest(segments,
+                    max(0, advanced * self.tick_seconds - partial), previous)
+                current.update(progress_at=progressed_at, progress_ticks=current["elapsed_ticks"])
+                if visiting:
+                    self.settle_life_practice(state, current, at=progressed_at)
+                    self.settle_matter_work(state, current, at=progressed_at)
                 if int(current.get("elapsed_ticks") or 0) >= int(current.get("duration_ticks") or 0):
                     current["offline_home_complete"] = True
-            if home < self.tick_seconds:
+            if definition and definition.category == "continuous":
+                self._keep_home_partial(current, 0 if self._home_completion_pending(current)
+                                        else home_step + partial - advanced * self.tick_seconds)
+                current["offline_tick_settled"] = True
+            elif home < self.tick_seconds:
                 current["offline_tick_settled"] = True
             else:
                 current.pop("offline_tick_settled", None)
@@ -540,7 +576,8 @@ class BackgroundMixin:
             pending = self._bound_visit_segments(segments, 6 * 3600)
         if state.current_plan and state.current_plan.get("expires_at", now + 1) <= now:
             state.current_plan = None
-        state.awaiting_reply = False
+        if paused or elapsed > self.tick_seconds * 2.5:
+            state.awaiting_reply = False
         if elapsed > self.tick_seconds * 2.5:
             state.life_recovery = {"at": now, "elapsed_seconds": elapsed, "settled_seconds": gap,
                                    "paused_visit_seconds": paused, "home_seconds": home,

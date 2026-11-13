@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 import copy
 from .protocol import RESERVED, TERMINAL, clean_action_control, clean_outing_offer, text, validate_outing_request_maps
-from .outings import CHECKPOINT_LEASE_SECONDS, outing_enabled, valid_activity
+from .outings import CHECKPOINT_LEASE_SECONDS, outing_enabled, valid_activity, valid_quiet_action_ids
 from .history_pages import extended_history, expand_snapshot
 from .activities import apply_action_control, validate_shared_activity
 
@@ -111,6 +111,16 @@ def validate_snapshot(visit: dict, remote: dict, *, now: float | None = None) ->
                 if same_checkpoint and any(prior.get(key) != outing.get(key) for key in
                                            ("pause_choices", "cadence_seconds", "quiet_until")):
                     raise ValueError("已经共同确认的休息意愿不能被改写")
+                acknowledged = outing.get("quiet_action_ids", [])
+                if not valid_quiet_action_ids(acknowledged):
+                    raise ValueError("共同安静的已观察动作计时确认无效")
+                if len(route) > len(prior_route) and acknowledged:
+                    raise ValueError("新活动不能预先确认尚未发生的动作计时")
+                if same_checkpoint:
+                    if prior.get("quiet_action_ids", []) != acknowledged:
+                        raise ValueError("已共同确认的动作计时注意不能被改写")
+                elif not set(acknowledged) <= set(visit.get("decision_ready_action_ids", [])):
+                    raise ValueError("共同安静缺少访客本次已观察的动作计时证明")
                 if (not same_checkpoint and len(route) == len(prior_route)
                         and not _submitted_pause_choice(visit, remote)):
                     raise ValueError("共同休息缺少本次访客独立回应证明")

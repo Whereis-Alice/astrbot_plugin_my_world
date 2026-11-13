@@ -161,6 +161,16 @@ def remember_visit(memory, *, confirmed_log: list[dict], idempotency_key: str, *
         if location:
             meta["visit_location"] = location
             kwargs["context"] = json.dumps(meta, ensure_ascii=False)
+        from .visit_recall import visit_occurrence_interval
+        if visit_occurrence_interval(old_meta) is not None:
+            # An incomplete legacy snapshot cannot erase a previously recorded
+            # occurrence. Complete newer confirmations may correct both times.
+            previous_times = {key: old_meta[key] for key in ("occurred_start", "occurred_end") if key in old_meta}
+            for key, value in previous_times.items():
+                meta.setdefault(key, value)
+            if visit_occurrence_interval(meta) is None:
+                meta.update(previous_times)
+            kwargs["context"] = json.dumps(meta, ensure_ascii=False)
         proof = old_meta.get("visit_confirmation")
         if isinstance(proof, dict):
             previous = proof.get("log")
@@ -182,6 +192,7 @@ def remember_visit(memory, *, confirmed_log: list[dict], idempotency_key: str, *
                 kwargs.update(content=content, context=json.dumps(meta, ensure_ascii=False))
             if (len(previous) == len(hashes) and old_meta.get("status") == meta["status"]
                     and old_meta.get("end_reason", "") == meta.get("end_reason", "")
+                    and all(old_meta.get(key) == meta.get(key) for key in ("occurred_start", "occurred_end"))
                     and old_meta.get("visit_location", {}) == location and old["content"] == content):
                 return memory_id
         else:

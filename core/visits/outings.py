@@ -4,7 +4,7 @@ from __future__ import annotations
 import copy
 import math
 
-from .protocol import clean_outing_offer
+from .protocol import ID, clean_outing_offer
 from .activities import begin_shared_activity
 
 OUTING_VERSION = 1
@@ -39,6 +39,20 @@ def proposed_activity(decision: dict) -> dict:
     return clean_outing_offer({**scene, "minutes": 45, "pause_minutes": decision.get("pause_minutes", 5)})
 
 
+def activity_offer(visit: dict, decision: dict, now: float) -> dict:
+    """Use the same supported proposal shapes for planning and execution checks."""
+    if decision.get("continue_activity") and (visit.get("outing") or {}).get("until", 0) > now:
+        return {}
+    return proposed_activity(decision)
+
+
+def valid_quiet_action_ids(value: object) -> bool:
+    """A bounded acknowledgement of seen clocks, never a result settlement."""
+    return bool(isinstance(value, list) and len(value) <= 12
+                and all(isinstance(item, str) and len(item) <= 80 and ID.fullmatch(item) for item in value)
+                and len(set(value)) == len(value))
+
+
 def begin_activity(visit: dict, offer: dict, now: float, guest_choice: dict | None = None,
                    *, floor_seconds: float = 60) -> None:
     """Only the host calls this after receiving the visitor's independent acceptance."""
@@ -69,7 +83,7 @@ def begin_activity(visit: dict, offer: dict, now: float, guest_choice: dict | No
 
 
 def pause_activity(visit: dict, host_minutes: float, guest_minutes: float, now: float,
-                   *, floor_seconds: float = 60) -> None:
+                   *, floor_seconds: float = 60, quiet_action_ids: list[str] | None = None) -> None:
     """Both characters have independently expressed how long they want quiet company."""
     activity = visit["outing"]
     cadence = max(1, min(180, floor_seconds))
@@ -78,6 +92,10 @@ def pause_activity(visit: dict, host_minutes: float, guest_minutes: float, now: 
     activity["quiet_until"] = quiet_until
     activity["pause_choices"] = {visit["host_id"]: host_minutes, visit["guest_id"]: guest_minutes}
     activity["pause_at"], activity["cadence_seconds"] = base, cadence
+    if quiet_action_ids:
+        activity["quiet_action_ids"] = list(quiet_action_ids)
+    else:
+        activity.pop("quiet_action_ids", None)
     visit["next_actor"] = visit["host_id"]
     visit["next_at"] = quiet_until
 
@@ -130,6 +148,9 @@ def valid_activity(activity: object, *, expires_at: float, now: float | None = N
     if (type(quiet) not in {int, float} or not math.isfinite(quiet)
             or not activity["started_at"] <= quiet <= activity["until"]):
         return False
+    if "quiet_action_ids" in activity:
+        if not valid_quiet_action_ids(activity["quiet_action_ids"]) or "pause_choices" not in activity:
+            return False
     farewells = activity.get("farewells", {})
     if not isinstance(farewells, dict) or any(not isinstance(value, str) or len(value) > 100
                                            for value in farewells.values()):

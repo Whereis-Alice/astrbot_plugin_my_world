@@ -75,7 +75,7 @@ def decision_state(payload: dict) -> dict:
     return result
 
 
-ACTION_TIME_FIELDS = ("elapsed_ticks", "effects_settled_minutes", "progress_at", "progress_ticks")
+ACTION_TIME_FIELDS = ("elapsed_ticks", "effects_settled_minutes", "progress_at", "progress_ticks", "home_elapsed_remainder")
 IDLE_TIME_FIELDS = ("progress_at", "progress_ticks")
 
 

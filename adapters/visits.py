@@ -263,9 +263,8 @@ class VisitActorPort(VisitCardActorMixin):
         partner = str(remote.get("id") or remote.get("actor_id") or "")
         if not partner:
             return []
-        rows = await self.engine.db.call("query_memories", session_ids=self.engine.group_sessions(scope),
-                                         life_persona_key=persona_key, memory_type=EVENT,
-                                         text_terms=[partner], limit=80)
+        rows = await self.engine.db.call("query_visit_memories", session_ids=self.engine.group_sessions(scope),
+                                         persona_key=persona_key, peer_id=partner, limit=3)
         result = []
         for row in rows:
             try:

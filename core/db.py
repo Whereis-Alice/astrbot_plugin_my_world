@@ -644,6 +644,33 @@ class Database(
         rows = [self._memory_row(row) for row in self._query(sql, params)]
         return rows
 
+    def query_visit_memories(self, *, session_ids: list[str], persona_key: str, peer_id: str,
+                             limit: int = 3) -> list[dict[str, Any]]:
+        """Filter owned encounters before LIMIT, ordered by actual occurrence when known.
+
+        A delayed write cannot replace a newer encounter. Legacy records retain
+        storage order as a retrieval fallback without inventing an event date.
+        """
+        sessions = list(dict.fromkeys(str(item) for item in session_ids if item))
+        if not sessions or not persona_key or not peer_id or limit <= 0:
+            return []
+        marks = ",".join("?" for _ in sessions)
+        meta = "CASE WHEN json_valid(context) THEN context ELSE '{}' END"
+        start = f"json_extract({meta}, '$.occurred_start')"
+        end = f"json_extract({meta}, '$.occurred_end')"
+        valid_start = (f"json_type({meta}, '$.occurred_start') IN ('integer','real') "
+                       f"AND {start}>0 AND {start}<=253402300799")
+        valid_end = (f"json_type({meta}, '$.occurred_end') IN ('integer','real') "
+                     f"AND {end}>={start} AND {end}<=253402300799")
+        happened = (f"CASE WHEN json_type({meta}, '$.confirmed')='true' AND {valid_start} "
+                    f"THEN CASE WHEN {valid_end} THEN {end} ELSE {start} END ELSE created_at END")
+        sql = ("SELECT * FROM node_memory WHERE " + LIFE_SQL +
+               " AND source='life_event' AND type='event' AND session_id IN (" + marks + ")" +
+               f" AND json_extract({meta}, '$.kind')='world_visit'"
+               f" AND json_extract({meta}, '$.persona_key')=? AND json_extract({meta}, '$.peer_id')=?"
+               f" ORDER BY {happened} DESC, created_at DESC, id DESC LIMIT ?")
+        return [self._memory_row(row) for row in self._query(sql, [*sessions, persona_key, peer_id, min(80, int(limit))])]
+
     @staticmethod
     def _memory_row(row: sqlite3.Row) -> dict[str, Any]:
         item = dict(row)
