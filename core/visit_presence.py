@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from hashlib import sha256
+import math
 from typing import Any
 
 
@@ -82,68 +83,116 @@ def pause_intervals(engine: Any, session_id: str, start: float, end: float,
     return getter(engine.state_key(session_id), start, end, persona_key=persona_key) if callable(getter) else []
 
 
-def visit_activity_text(visit: dict, *, now: float | None = None) -> str:
-    """Only a jointly confirmed stage describes what she is doing now."""
-    remote = visit.get("remote") or {}
-    name = str(remote.get("name") or "朋友")[:60]
+def _timestamp(value: Any) -> float:
+    return float(value) if type(value) in {int, float} and math.isfinite(value) else 0.
+
+
+def _current_action(visit: dict, now: float | None) -> tuple[str, dict] | None:
+    """Project only this actor's current evidence; a stopped deadline never elapses again."""
+    if now is None:
+        return None
+    outing, shared = visit.get("outing") or {}, visit.get("shared_activity") or {}
+    if shared.get("stage") != outing.get("stage"):
+        return None
+    local = visit.get("local") or {}
+    own_ids = {str(value) for value in (local.get("actor_id"),
+               visit.get("host_id" if visit.get("role") == "host" else "guest_id")) if value}
+    choices = []
+    priority = {"running": 0, "awaiting_peer": 1, "scheduled": 2, "elapsed": 3}
+    for owner, records in (shared.get("action_steps") or {}).items():
+        if str(owner) not in own_ids or not isinstance(records, list):
+            continue
+        for row in reversed(records):
+            if (not isinstance(row, dict) or row.get("settled_revision")
+                    or row.get("stage", outing.get("stage")) != outing.get("stage")
+                    or not str(row.get("description") or "").strip()):
+                continue
+            status = row.get("status")
+            if status not in priority:
+                continue
+            if status == "running":
+                if _timestamp(row.get("started_at") or row.get("accepted_at")) > now:
+                    status = "scheduled"
+                elif _timestamp(row.get("until")) > now:
+                    status = "running"
+                elif _timestamp(row.get("until")):
+                    status = "elapsed"
+                else:
+                    continue
+            choices.append((priority[status], bool(row.get("waiting")), status, row))
+    if not choices:
+        return None
+    _, _, status, row = min(choices, key=lambda item: item[:2])
+    return status, row
+
+
+def _activity_detail(visit: dict, now: float | None) -> tuple[str, str, str]:
+    """Return a place, a factual present description and its display phase."""
     scene = visit.get("scene") or {}
     outing = visit.get("outing") or {}
     if visit.get("outing_version") == 1 and not outing:
-        return f"刚与{name}见面，正在商量接下来一起做什么"
+        return "", "刚见面，正在商量接下来一起做什么", "meeting"
     place = str(outing.get("place") or scene.get("place") or "约好的地方")[:80]
     activity = str(outing.get("activity") or scene.get("activity") or "一起待一会儿")[:120]
-    if now is not None and outing.get("travel_seconds") and now < float(outing.get("started_at") or 0):
-        return f"与{name}从{str(outing.get('origin_place') or '原来的地方')[:80]}前往{place}途中，尚未抵达"
+    if now is not None and _timestamp(outing.get("started_at")) > now:
+        origin = str(outing.get("origin_place") or "")[:80]
+        if outing.get("travel_seconds"):
+            return origin or "原来的地方", f"前往{place}途中，尚未抵达", "travel"
+        return origin, f"约好的{activity}尚未开始，先一起等一会儿", "scheduled"
+    current = _current_action(visit, now)
+    if current:
+        status, row = current
+        description = " ".join(str(row.get("description") or "").split())[:160]
+        if status == "awaiting_peer":
+            return place, f"提出了{description}，还在等对方独立决定是否配合", "agreement"
+        if status == "scheduled":
+            return place, f"准备{description}，尚未开始", "scheduled"
+        if status == "running":
+            return place, f"正在{description}", "waiting" if row.get("waiting") else "doing"
+        return place, f"先一起等一会儿；{description}的结果尚未确认", "confirmation"
     shared = visit.get("shared_activity") or {}
-    if shared.get("stage") == outing.get("stage") and now is not None:
-        own = visit.get("host_id" if visit.get("role") == "host" else "guest_id")
-        steps = shared.get("action_steps", {}).get(own, [])
-        for step in reversed(steps):
-            if step.get("settled_revision"):
-                continue
-            description = " ".join(str(step.get("description") or "").split())[:160]
-            if not description:
-                continue
-            if step.get("status") == "awaiting_peer":
-                return f"与{name}在{place}，提出了{description}，还在等对方独立决定是否配合"
-            if step.get("status") == "scheduled":
-                return f"与{name}在{place}，准备{description}，尚未开始"
-            if step.get("status") == "running" and now < float(step.get("until") or 0):
-                return f"与{name}在{place}，正在{description}"
-            if step.get("status") == "elapsed" or step.get("until") and now >= float(step["until"]):
-                return f"与{name}在{place}，{description}这一步的时间已到，结果尚未确认"
-    if (outing.get("version") == 1 and now is not None
-            and now >= float(outing.get("until") or 0)):
-        return f"与{name}在{place}，刚一起{activity}，下一步还在商量"
-    return f"与{name}在{place}，{activity}"
+    if shared.get("stage") == outing.get("stage") and shared.get("done") is True:
+        return place, "前一段已经告一段落，接下来还在商量", "checkpoint"
+    until = _timestamp(outing.get("until"))
+    if outing.get("version") == 1 and now is not None and until and now >= until:
+        return place, "约好的这段活动时间已过，接下来还在商量", "checkpoint"
+    return place, activity, "playing"
+
+
+def visit_activity_text(visit: dict, *, now: float | None = None) -> str:
+    """Only a jointly confirmed stage and current personal action describe her activity."""
+    name = str((visit.get("remote") or {}).get("name") or "朋友")[:60]
+    place, detail, phase = _activity_detail(visit, now)
+    if phase == "travel":
+        return f"与{name}从{place}{detail}"
+    return f"与{name}" + (f"在{place}" if place else "") + f"，{detail}"
 
 
 def presence_text(visit: dict, *, now: float | None = None) -> str:
     remote = visit.get("remote") or {}
-    scene = visit.get("scene") or {}
     name = str(remote.get("name") or "另一位朋友")[:60]
     world = str(remote.get("world") or "友邻世界")[:80]
     outing = visit.get("outing") or {}
-    if now is not None and outing.get("travel_seconds") and now < float(outing.get("started_at") or 0):
+    place, detail, phase = _activity_detail(visit, now)
+    if phase == "travel":
         return (f"与{name}在{world}从{str(outing.get('origin_place') or '原来的地方')[:80]}"
-                f"前往{str(outing.get('place') or '约好的地方')[:80]}途中；尚未抵达目的地，不能说已在那里开始活动。")
+                f"{detail}；不能说已在那里开始活动。")
     if visit.get("outing_version") == 1 and not outing:
         location = (f"正在自己的世界接待来自{world}的{name}"
                     if visit.get("role") == "host" else f"已经来到{world}，与{name}见面")
         return location + "；接下来一起去哪里、做什么尚未共同确认，不能把邀请中的计划当作正在进行。"
-    place = str(outing.get("place") or scene.get("place") or "约好的地方")[:80]
-    activity = str(outing.get("activity") or scene.get("activity") or "一起待一会儿")[:120]
     stage_note = ""
-    if outing.get("version") == 1 and now is not None:
-        started, until = float(outing.get("started_at") or 0), float(outing.get("until") or 0)
-        if now >= until:
-            stage_note = "约好的这段活动时间已过，双方下一步尚未确认；没有额外的游玩结果可以补述。"
-        elif started <= now < until:
+    if phase == "checkpoint":
+        stage_note = "没有额外的游玩结果可以补述。"
+    elif phase == "playing" and outing.get("version") == 1 and now is not None:
+        started, until = _timestamp(outing.get("started_at")), _timestamp(outing.get("until"))
+        if started <= now < until:
             elapsed = max(0, int((now - started) / 60))
             stage_note = f"这段共同活动仍在进行，已经一起待了约{elapsed}分钟；不把计划中的结果说成已经发生。"
+    situation = (f"在{place}，" if place else "") + detail
     if visit.get("role") == "host":
-        return f"正在自己的世界接待来自{world}的{name}；在{place}，{activity}。{stage_note}"
-    return f"正在{world}拜访{name}；在{place}，{activity}。{stage_note}自己的住处与原安排保留，归家后再接续。"
+        return f"正在自己的世界接待来自{world}的{name}；{situation}。{stage_note}"
+    return f"正在{world}拜访{name}；{situation}。{stage_note}自己的住处与原安排保留，归家后再接续。"
 
 
 def visit_context_text(visit: dict, *, now: float | None = None) -> str:
@@ -188,7 +237,10 @@ def visit_context_text(visit: dict, *, now: float | None = None) -> str:
 
 def visit_context_identity(visit: dict) -> str:
     """Bind relevance to confirmed evidence, not the changing elapsed-minute label."""
+    shared = visit.get("shared_activity") or {}
+    public = {key: shared[key] for key in ("version", "stage", "revision", "goal", "summary", "objects",
+                                          "pending", "done", "action_steps", "milestones") if key in shared}
     identity = [visit.get("id"), visit.get("scope"), visit.get("arrived_at"),
                 (visit.get("local") or {}).get("persona_key"), visit.get("outing"),
-                visit_context_text(visit)]
+                public, visit_context_text(visit)]
     return sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()

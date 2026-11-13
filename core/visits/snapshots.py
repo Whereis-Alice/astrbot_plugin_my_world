@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import math
 import copy
-from .protocol import RESERVED, TERMINAL, clean_outing_offer, validate_outing_request_maps
+from .protocol import RESERVED, TERMINAL, clean_action_control, clean_outing_offer, text, validate_outing_request_maps
 from .outings import CHECKPOINT_LEASE_SECONDS, outing_enabled, valid_activity
 from .history_pages import extended_history, expand_snapshot
-from .activities import validate_shared_activity
+from .activities import apply_action_control, validate_shared_activity
 
 
 def validate_snapshot(visit: dict, remote: dict, *, now: float | None = None) -> dict:
@@ -174,7 +174,73 @@ def validate_snapshot(visit: dict, remote: dict, *, now: float | None = None) ->
         prior = visit["log"]
         if len(logs) < len(prior) or logs[:len(prior)] != prior:
             raise ValueError("已确认的经过不能被改写")
+    _validate_control_logs(visit, remote, now=now)
     return remote
+
+
+def _validate_control_logs(visit: dict, remote: dict, *, now: float | None) -> None:
+    """Only a submitted visitor turn can add the visitor's durable control facts."""
+    if visit["role"] != "guest":
+        return
+    guest = visit["guest_id"]
+    prior_count = len(visit["log"])
+    suffix = remote.get("log", [])[prior_count:]
+    controls = [(index, row) for index, row in enumerate(suffix)
+                if row.get("actor_id") == guest and row.get("kind") == "action_control"]
+    if not controls:
+        return  # Confirmed prefixes survive clearing the submitted decision or reloading.
+    cursor = visit.get("decision_cursor") or {}
+    outing = visit.get("outing") or {}
+    decision = visit.get("decision")
+    if (len(controls) != 1 or visit.get("unsent_turn") is not True or not isinstance(decision, dict)
+            or cursor.get("phase") != "turn" or cursor.get("status") != visit["status"]
+            or visit["status"] != "active" or cursor.get("log_seq") != prior_count
+            or cursor.get("turns") != visit["turns"]
+            or cursor.get("next_actor") != visit["next_actor"] or visit["next_actor"] != guest
+            or cursor.get("event_stage") != visit.get("event_stage", "none")
+            or cursor.get("scene_stage") != visit.get("scene_stage", "")
+            or cursor.get("manual") != bool(visit.get("manual"))
+            or cursor.get("manual_continuation") != bool(visit.get("manual_continuation"))
+            or cursor.get("outing_stage") != outing.get("stage", -1)
+            or cursor.get("quiet_until") != outing.get("quiet_until", 0)
+            or cursor.get("outing_offer") != visit.get("outing_offer")
+            or remote.get("turns", {}).get(guest) != visit["turns"][guest] + 1):
+        raise ValueError("访客公开终止记录缺少本次已提交的回合证明")
+    control = clean_action_control(decision.get("action_control"))
+    index, row = controls[0]
+    proof = {key: row[key] for key in ("action_id", "operation", "reason") if key in row}
+    expected = {key: value for key, value in control.items() if key != "reason" or value}
+    if not control or clean_action_control(proof) != proof or proof != expected:
+        raise ValueError("访客公开终止记录与本人选择不一致")
+    preceding = [(kind, value) for kind, value in (
+        ("say", decision.get("say", "")),
+        ("action_plan", decision.get("action") or (decision.get("action_step") or {}).get("description", ""))) if value]
+    if (index != len(preceding) or any(item.get("actor_id") != guest or item.get("kind") != kind
+            or item.get("text") != value for item, (kind, value) in zip(suffix, preceding))):
+        raise ValueError("访客公开终止记录不属于本次本人原话与行动回合")
+    target = next((item for rows in (visit.get("shared_activity") or {}).get("action_steps", {}).values()
+                   for item in rows if item["id"] == control["action_id"]), {})
+    at = row.get("at")
+    if (not target or type(at) not in {int, float} or not math.isfinite(at)
+            or now is not None and at > now + 300
+            or not apply_action_control(copy.deepcopy(visit), guest, control, at)):
+        raise ValueError("访客公开终止记录缺少本人可终止的原动作")
+    wording = "取消了自己的动作：" if control["operation"] == "cancel" else "婉拒了对方的协作提议："
+    wording += target["description"]
+    if control.get("reason"):
+        wording += "；理由：" + control["reason"]
+    if row["text"] != text(wording, 500):
+        raise ValueError("访客公开终止原话不能被东道主改写")
+    current = next((item for rows in (remote.get("shared_activity") or {}).get("action_steps", {}).values()
+                    for item in rows if item["id"] == control["action_id"]), None)
+    # A replacement action or accepted new stop may already have pruned the target.
+    # If it remains, the host cannot report a control while leaving it in progress.
+    if current is not None and (current.get("status") != {"cancel": "cancelled", "decline": "declined"}[control["operation"]]
+            or current.get("controlled_by") != guest or current.get("control_action_id") != control["action_id"]
+            or current.get("control_operation") != control["operation"]
+            or current.get("control_reason", "") != control.get("reason", "")
+            or current.get("ended_at", at + 1) > at):
+        raise ValueError("访客公开终止记录与已执行的动作状态不一致")
 
 
 def _route_expansion_base(visit: dict, remote: dict) -> dict:

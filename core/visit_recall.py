@@ -75,15 +75,31 @@ def visit_memory_excerpt(content: str, meta: dict, limit: int = 450) -> str:
                        if facts[index].startswith(("[outcome] ", "[result] ", "[milestone] ", "[共同确认片刻] "))), max(0, len(facts) - 2))
     selected = sorted({0, resolution, len(facts) - 1})
     note = "已经确认的经过（节选，中段省略）："
+    previews = []
+    from .visit_memory import ADDITIONS_MARKER, render_visit_additions, visit_recall_additions
+    try:
+        additions = render_visit_additions(meta)
+        if additions and reflection.endswith(additions):
+            previews = visit_recall_additions(meta)
+            if previews:
+                reflection = reflection[:-len(additions)]
+    except (KeyError, TypeError, ValueError, AttributeError):
+        # The current stored text remains the only evidence if metadata was
+        # changed independently or an older receipt has an unknown shape.
+        previews = []
 
     def render(indices):
-        parts = [header] + [facts[index] for index in indices] + [ending, reflection]
+        chosen = [facts[index] for index in indices]
+        parts = [header, *chosen, ending, reflection, *previews]
         floors = [min(len(header), 20)]
-        floors += [min(len(fact), fact.index("] ") + 2 + 16) for fact in parts[1:-2]]
+        floors += [min(len(fact), fact.index("] ") + 2 + 16) for fact in chosen]
         floors += [min(len(ending), 30), min(len(reflection), len(feeling_label) + 16)]
-        lengths = [max(floor, min(len(part), 140 if 0 < index < len(parts) - 2 else 90))
+        floors += [min(len(part), part.index("] ") + 2 + 16) for part in previews]
+        lengths = [max(floor, min(len(part), 140 if 0 < index <= len(chosen) else 90))
                    for index, (part, floor) in enumerate(zip(parts, floors))]
         budget = limit - len(note) - max(0, len(indices) - 1)
+        if previews:
+            budget -= len(ADDITIONS_MARKER) + len(previews) - 1
         if sum(floors) > budget:
             return None
         while sum(lengths) > budget:
@@ -91,7 +107,11 @@ def visit_memory_excerpt(content: str, meta: dict, limit: int = 450) -> str:
             lengths[index] -= min(sum(lengths) - budget, lengths[index] - floors[index])
         excerpts = [part if len(part) <= size else part[:size - 1] + "…"
                     for part, size in zip(parts, lengths)]
-        return excerpts[0] + note + "；".join(excerpts[1:-2]) + "".join(excerpts[-2:])
+        result = excerpts[0] + note + "；".join(excerpts[1:len(chosen) + 1])
+        result += "".join(excerpts[len(chosen) + 1:len(chosen) + 3])
+        if previews:
+            result += ADDITIONS_MARKER + "；".join(excerpts[len(chosen) + 3:])
+        return result
 
     # Exceptionally long display names can consume most of three source labels.
     return render(selected) or render(sorted({0, len(facts) - 1})) or prefix()

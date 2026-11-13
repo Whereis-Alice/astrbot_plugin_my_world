@@ -58,7 +58,7 @@ FORMAT_ISSUES = {
     "choice_boolean": "活动选择没有使用布尔值",
     "pause_number": "停留时间没有使用有限数字",
     "empty_choice": "没有留下本阶段可执行的选择",
-    "action_references": "这次选择缺少明确的动作引用，或引用了现在不能接受、取消或结算的动作",
+    "action_references": "这次动作引用或执行条件不成立。普通动作须等自己的同类动作结束，或先用action_control取消；新动作时长须能在双方已约定的归家时间前完成。协作加入、取消和结算须引用当前可用的准确动作ID",
 }
 
 

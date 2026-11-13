@@ -5,6 +5,8 @@ import hashlib
 import json
 
 ADDITIONS_MARKER = "。本地经历与阶段回顾："
+UNFINISHED_LABEL = "当时未完事项，再见时可重选"
+PROMISE_LABEL = "我当时记下的约定，成立与否以双方原话为准"
 
 
 def render_visit_additions(meta: dict) -> str:
@@ -23,7 +25,34 @@ def render_visit_additions(meta: dict) -> str:
             parts.append(f"[我当时的主观感受，{row['at']:g}] {feelings}")
         if row.get("promise"):
             parts.append(f"[我当时记下的约定，成立与否以双方原话为准，{row['at']:g}] {row['promise']}")
+    snapshots = additions.get("unfinished", [])
+    if snapshots:
+        # Earlier snapshots remain in the receipt for monotonic reconciliation;
+        # only the latest state is rendered, including an explicit empty state.
+        latest = max(snapshots, key=lambda row: row["id"])
+        for item in latest["pending"]:
+            parts.append(f"[{UNFINISHED_LABEL}] {item}")
     return ADDITIONS_MARKER + "；".join(parts) if parts else ""
+
+
+def visit_recall_additions(meta: dict) -> list[str]:
+    """Choose a few later opportunities; callers verify the full rendered suffix."""
+    additions = meta.get("visit_additions") or {}
+    parts = []
+    snapshots = additions.get("unfinished", [])
+    if snapshots:
+        pending = max(snapshots, key=lambda row: row["id"])["pending"]
+        if pending:
+            parts.append(f"[{UNFINISHED_LABEL}] " + "；".join(pending[:2]))
+    moments = additions.get("personal_moments", [])
+    promise = next((row["promise"] for row in reversed(moments) if row.get("promise")), "")
+    if promise:
+        parts.append(f"[{PROMISE_LABEL}] {promise}")
+    if not parts and moments:
+        latest = next((row for row in reversed(moments) if row.get("reflection") or row.get("thought")), {})
+        if latest:
+            parts.append("[我当时的主观感受] " + str(latest.get("reflection") or latest["thought"]))
+    return parts
 
 
 def _merge_additions(old: dict, new: dict) -> dict | None:
@@ -32,7 +61,8 @@ def _merge_additions(old: dict, new: dict) -> dict | None:
     if not isinstance(previous, dict) or not isinstance(incoming, dict):
         return None
     merged = {}
-    for field, identity in (("local_experiences", "id"), ("milestones", "id"), ("personal_moments", "seq")):
+    for field, identity in (("local_experiences", "id"), ("milestones", "id"), ("personal_moments", "seq"),
+                            ("unfinished", "id")):
         before, after = previous.get(field, []), incoming.get(field, [])
         if not isinstance(before, list) or not isinstance(after, list):
             return None
@@ -42,6 +72,10 @@ def _merge_additions(old: dict, new: dict) -> dict | None:
         previous_ids = {str(row[identity]) for row in before if isinstance(row, dict) and identity in row}
         for row in [*before, *after]:
             if not isinstance(row, dict) or identity not in row:
+                return None
+            if field == "unfinished" and (type(row[identity]) is not int or row[identity] < 0
+                    or not isinstance(row.get("pending"), list) or len(row["pending"]) > 8
+                    or any(not isinstance(item, str) or len(item) > 160 for item in row["pending"])):
                 return None
             key = str(row[identity])
             if key in rows and rows[key] != row:

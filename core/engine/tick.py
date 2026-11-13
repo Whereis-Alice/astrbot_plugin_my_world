@@ -176,7 +176,7 @@ class TickMixin:
             visit = active_visit(self, session_id)
             if visit:
                 await self._tick_visit_presence(state, elapsed, visit, stay_up_costs=False)
-                return TickOutcome(session_id=session_id, notes=[presence_text(visit)],
+                return TickOutcome(session_id=session_id, notes=[presence_text(visit, now=self._now())],
                                    summary={"world_time": state.world_time, "visiting": True})
             self._capture_idle_progress(state, previous_tick)
             if self._home_completion_pending(state.current_action):
@@ -211,9 +211,10 @@ class TickMixin:
             if visit:
                 await self._tick_visit_presence(state, elapsed_life, visit)
                 await self._sync_nickname(state, node)
-                outcome.notes.append(presence_text(visit))
+                situation = presence_text(visit, now=self._now())
+                outcome.notes.append(situation)
                 outcome.summary = {"world_time": state.world_time, "visiting": True,
-                                   "node_id": state.node_id, "node_name": presence_text(visit)}
+                                   "node_id": state.node_id, "node_name": situation}
                 return outcome
             self._capture_idle_progress(state, previous_tick)
             if not self.world.is_home_zone(state.node_id):

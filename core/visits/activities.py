@@ -26,6 +26,14 @@ def begin_shared_activity(visit: dict) -> None:
     """Start the accepted stop; retain public milestones and explicit unfinished work."""
     outing = visit.get("outing") or {}
     previous = visit.get("shared_activity") or {}
+    # Changing what we do is not proof that objects at the same place vanished.
+    # A different destination needs its own confirmed carrying/arrival facts.
+    route = outing.get("route", [])
+    old_stage = previous.get("stage")
+    same_place = (type(old_stage) is int and isinstance(route, list)
+                  and 0 <= old_stage < len(route) and isinstance(route[old_stage], dict)
+                  and bool(outing.get("place")) and route[old_stage].get("place") == outing["place"])
+    objects = copy.deepcopy(previous.get("objects", [])) if same_place else []
     pending = list(previous.get("pending", []))
     for records in previous.get("action_steps", {}).values():
         for record in records:
@@ -37,8 +45,10 @@ def begin_shared_activity(visit: dict) -> None:
     visit["shared_activity"] = {
         "version": SHARED_ACTIVITY_VERSION, "stage": outing.get("stage", 0),
         "revision": int(previous.get("revision", -1)) + 1,
-        "goal": text(outing.get("activity"), 120), "summary": "", "objects": [],
-        "pending": list(dict.fromkeys(text(item, 160) for item in pending))[-8:], "done": False,
+        "goal": text(outing.get("activity"), 120), "summary": "", "objects": objects,
+        # Established unfinished matters take priority over automatically derived
+        # reminders. The full journal still holds the original actions/events.
+        "pending": list(dict.fromkeys(text(item, 160) for item in pending))[:8], "done": False,
         "action_steps": {}, "milestones": copy.deepcopy(previous.get("milestones", []))[-MAX_MILESTONES:],
         "next_action": int(previous.get("next_action", 1)),
     }

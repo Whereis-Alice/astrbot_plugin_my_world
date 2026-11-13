@@ -339,8 +339,15 @@ class VisitActorPort(VisitCardActorMixin):
                     scene = confirmed_scene
                     current_place = (_text(outing.get("place"), 80) or
                         ("已到朋友的世界，见面地点尚未共同确认" if visit.get("role") == "guest" else local["place"]))
-                    if shared.get("traveling"):
-                        current_place = "从" + _text(shared.get("origin_place"), 80) + "前往" + _text(shared.get("destination"), 80) + "途中（尚未抵达）"
+                    start = outing.get("started_at")
+                    if type(start) in {int, float} and math.isfinite(start) and reviewed_at < start:
+                        origin = _text(outing.get("origin_place"), 80)
+                        travel = outing.get("travel_seconds", 0)
+                        if type(travel) in {int, float} and math.isfinite(travel) and travel > 0:
+                            current_place = ("从" + (origin or "先前所在处") + "前往" +
+                                             (_text(outing.get("place"), 80) or "约好的地点") + "途中（尚未抵达）")
+                        else:
+                            current_place = origin or "已见面，约好的活动尚未开始"
                 else:
                     current_place = _text(scene.get("place"), 80) or local["place"]
             activity = engine.activity_view(state)
@@ -587,7 +594,8 @@ class VisitActorPort(VisitCardActorMixin):
             return {}
         now = self.engine._now() if now is None else now
         return {"elapsed_minutes": round(max(0, min(now, until) - start) / 60, 1),
-                "remaining_minutes": round(max(0, until - now) / 60, 1), "ongoing": now < until}
+                "remaining_minutes": round(max(0, until - max(now, start)) / 60, 1),
+                "starts_in_seconds": round(max(0, start - now), 3), "ongoing": start <= now < until}
 
     def _outing_places(self, home_node: str, place: str) -> list[dict[str, Any]]:
         """Offer a small public map without prompts, memories or host tools."""
@@ -736,10 +744,12 @@ class VisitActorPort(VisitCardActorMixin):
                 return "共同确认片刻"
             if kind == "travel_plan":
                 return "抵达后提出的计划（尚未证明完成）"
-            if kind not in {"say", "action_plan"}:
+            if kind not in {"say", "action_plan", "action_control"}:
                 return _text(kind, 25)
             speaker = _speaker(visit, local, row.get("actor_id"))
             owner = "我" if speaker == "self" else "对方（" + who + "）"
+            if kind == "action_control":
+                return "来源未确认的动作控制" if speaker == "unknown" else owner + "取消或拒绝"
             if kind == "say":
                 return "说话人未确认" if speaker == "unknown" else owner + "说"
             return ("提出者未确认的方案" if speaker == "unknown" else owner + "当时提出的方案") + "（尚未证明完成）"
@@ -770,15 +780,26 @@ class VisitActorPort(VisitCardActorMixin):
         milestones = [dict(row) for row in shared.get("milestones", [])[-8:] if isinstance(row, dict)
                       and type(row.get("id")) is int and type(row.get("at")) in {int, float}
                       and isinstance(row.get("summary"), str)]
-        if local_experiences["notes"] or moments or milestones:
+        unfinished = []
+        if (shared.get("version") == 1 and type(shared.get("revision")) is int
+                and shared["revision"] >= 0 and isinstance(shared.get("pending"), list)):
+            pending = [_text(item, 160) for item in shared["pending"] if isinstance(item, str) and _text(item, 160)]
+            for records in (shared.get("action_steps") or {}).values():
+                for row in records:
+                    if (isinstance(row, dict) and row.get("status") in {"awaiting_peer", "running", "elapsed"}
+                            and not row.get("settled_revision") and _text(row.get("description"), 130)):
+                        pending.append("尚未确认结果：" + _text(row["description"], 130))
+            unfinished = [{"id": shared["revision"], "pending": list(dict.fromkeys(pending))[:8]}]
+        if local_experiences["notes"] or moments or milestones or unfinished:
             meta["visit_additions"] = {"local_experiences": local_experiences["notes"],
-                                      "personal_moments": moments, "milestones": milestones}
+                                      "personal_moments": moments, "milestones": milestones,
+                                      "unfinished": unfinished}
             content += render_visit_additions(meta)
         # Enter the existing quiet recall queue; this schedules a future private
         # recollection candidate, never an automatic announcement to the group.
         from ..core.consolidate import next_review_at
         meaningful = bool(milestones or reflection or local_experiences["notes"])
-        review_step = 0 if shared.get("pending") or private.get("promise") else 1 if meaningful else 2
+        review_step = 0 if (unfinished and unfinished[-1]["pending"] or private.get("promise")) else 1 if meaningful else 2
         review_at = next_review_at(now=float(visit.get("ended_at") or engine._now()), step=review_step)
         with engine.config_scope(scope):
             await engine.db.run(engine.memory.remember_visit, confirmed_log=rows,
@@ -791,4 +812,4 @@ class VisitActorPort(VisitCardActorMixin):
 
     def presence(self, scope: str) -> str:
         visit = active_visit(self.engine, scope)
-        return presence_text(visit) if visit else ""
+        return presence_text(visit, now=self.engine._now()) if visit else ""
