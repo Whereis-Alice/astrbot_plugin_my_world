@@ -51,6 +51,16 @@ def visit_card_facts(visit: dict, now: float) -> dict[str, str]:
     scene = {} if visit.get("outing_version") == 1 and not outing else visit.get("scene") or {}
     facts["place"] = _plain(outing.get("place") or scene.get("place"), 60)
     facts["activity"] = _plain(outing.get("activity") or scene.get("activity"), 100)
+    # The shared action extension can be absent or belong to the prior stage.
+    # A confirmed journey's own clock still decides whether its activity began.
+    starts_at = _timestamp(outing.get("started_at"))
+    if starts_at > now:
+        if _timestamp(outing.get("travel_seconds")):
+            return {**facts, "phase": "travel", "activity": "", "action": "",
+                    "place": _plain(outing.get("origin_place"), 60),
+                    "destination": facts["place"]}
+        return {**facts, "phase": "scheduled", "activity": "", "action": "",
+                "place": _plain(outing.get("origin_place"), 60)}
     try:
         from .visits.activities import activity_context
     except ImportError:
@@ -94,8 +104,8 @@ def visit_card_candidates(facts: dict[str, str], limit: int) -> list[str]:
         values = [f"去{destination}路上", f"和{companion}赶路", "一起赶路中"]
     elif phase == "farewell":
         values = [f"和{companion}告别", "告别归家中"]
-    elif phase == "confirmation":
-        values = ["等结果确认", f"等{companion}确认", "等同伴确认"]
+    elif phase in {"confirmation", "scheduled"}:
+        values = [f"和{companion}等一会儿", "稍等一会儿", "和同伴等一会儿"]
     elif phase == "agreement":
         values = [f"和{companion}商量", "商量下一步"]
     elif phase == "checkpoint":
@@ -155,7 +165,7 @@ def _model_status(payload: Any, facts: dict[str, str], name: str, limit: int) ->
         return ""
     if phase == "travel" and not re.search(r"路上|途中|赶路|前往|走向|出发", value):
         return ""
-    if phase in {"confirmation", "agreement", "checkpoint"} and not re.search(r"等|待|确认|商量|讨论", value):
+    if phase in {"confirmation", "scheduled", "agreement", "checkpoint"} and not re.search(r"等|待|确认|商量|讨论", value):
         return ""
     if phase == "farewell" and not re.search(r"告别|道别|归家|回家|回去", value):
         return ""
@@ -165,8 +175,25 @@ def _model_status(payload: Any, facts: dict[str, str], name: str, limit: int) ->
 
 
 def _card_identity(visit: dict, facts: dict, options: dict) -> str:
+    # Equal wording does not imply equal execution. A retry, cancellation or
+    # new stage must invalidate a late reply, without refreshing every tick.
+    outing, shared = visit.get("outing") or {}, visit.get("shared_activity") or {}
+    local = visit.get("local") or {}
+    own_ids = {str(value) for value in (local.get("actor_id"),
+               visit.get("host_id" if visit.get("role") == "host" else "guest_id")) if value}
+    action_fields = ("id", "stage", "status", "accepted_at", "started_at", "until", "ended_at",
+                     "joint_id", "peer_action_id", "settled_revision", "controlled_by",
+                     "control_operation", "control_action_id")
+    actions = {str(owner): [{key: row.get(key) for key in action_fields} for row in records
+                           if isinstance(row, dict)]
+               for owner, records in (shared.get("action_steps") or {}).items()
+               if str(owner) in own_ids and isinstance(records, list)}
+    evidence = {"outing": {key: outing.get(key) for key in
+                           ("version", "stage", "started_at", "until", "travel_seconds", "origin_place")},
+                "shared": {key: shared.get(key) for key in ("stage", "revision", "done")},
+                "actions": actions}
     fields = [visit.get("id"), visit.get("scope"), visit.get("arrived_at"), visit.get("role"),
-              visit.get("local"), (visit.get("remote") or {}).get("id"), facts, options]
+              visit.get("local"), (visit.get("remote") or {}).get("id"), facts, evidence, options]
     return hashlib.sha256(json.dumps(fields, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
@@ -234,6 +261,7 @@ def _visit_status(engine: Any, session: str, visit: dict, persona: str) -> str:
                     "\"basis\":\"action或activity或travel或phase\"}，basis必须引用facts中实际存在的当前依据。"
                     f"status最多{options['max_length']}字、单行，不写本人姓名或分隔符，不增加事实、台词、心理或下一步计划。"
                     "travel只表示赶路，不能在目的地做事；confirmation表示计时到点但尚未确认结果，"
+                    "用日常口语表示稍等，不写确认、计时等技术词；scheduled表示约好的活动尚未开始。"
                     "不能写动作成功、做完、胜负、已经到达或归家。示例仅供短文案风格参考。",
                     prompt=json.dumps({"facts": facts, "examples": candidates}, ensure_ascii=False),
                     max_tokens=100, temperature=.4, _request_guard=guard)

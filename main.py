@@ -631,6 +631,11 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
 
         return bool(getattr(self, "_retired", False))
 
+    async def _tick_visits(self) -> None:
+        from .core.visit_chat_bridge import reconcile_visit_chat
+        await reconcile_visit_chat(self.engine)
+        await self.visits.tick()
+
     async def _tick_loop(self) -> None:
         # 固定节拍：按「上一次唤醒 + 间隔」推算下一次唤醒，而不是跑完再睡 60 秒。
         # 后者会被每轮 tick 自身的耗时（调模型可能要好几秒）一直往后推，
@@ -645,7 +650,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
                     next_at = time.time() + self.tick_interval
                 await self.engine.tick()
                 if self.visits.config.enabled:
-                    self.engine.queue_background("world_visits", self.visits.tick)
+                    self.engine.queue_background("world_visits", self._tick_visits)
                 # tick 的逐拍明细不再写后台日志（翻起来全是「t=1902 node=…」），
                 # 只留在引擎的内存环里，编辑器「运行记录」页读它。
                 # 一个会话组只催一次决策：按"会话"逐个催的话，同一个她会被催好几遍，

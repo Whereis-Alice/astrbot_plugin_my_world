@@ -8,7 +8,8 @@ from typing import Any
 
 from .protocol import RESERVED, TERMINAL, clean_decision, clean_scene, new_id, public_actor, digest
 from .activities import (record_action, advance_activity, apply_scene_update,
-                         next_activity_due, activity_context)
+                         apply_action_control, next_activity_due, activity_context)
+from .history_pages import LOG_PAGE_SIZE, read_page
 from .outings import CHECKPOINT_LEASE_SECONDS, activity_waiting, begin_activity, outing_enabled, pause_activity, pending_outing_requests, proposed_activity
 from .rhythm import VisitRhythm
 from .snapshots import validate_snapshot
@@ -297,6 +298,15 @@ class VisitFlow(VisitRhythm):
                     else:
                         await self._finish(visit, "interrupted", str(VisitDecisionError("life_busy")))
                     return None
+                if (phase == "turn" and not visit.get("unsent_turn")
+                        and not self._shared_choice_executable(visit, visit["decision"], self._now())):
+                    visit.pop("decision", None)
+                    visit.pop("decision_cursor", None)
+                    if defer_decision(visit, cursor, category="format", now=self._now(), format_issue="action_references"):
+                        await self._save()
+                    else:
+                        await self._finish(visit, "interrupted", str(VisitDecisionError("format")))
+                    return None
                 if visit.pop("model_retry", None) is not None:
                     await self._save()
                 if not await self._decision_still_current(visit, phase, cursor):
@@ -439,6 +449,8 @@ class VisitFlow(VisitRhythm):
                         else:
                             raw = candidate
                     result = clean_decision(raw)
+                    if phase == "turn" and not self._shared_choice_executable(snapshot, result, self._now()):
+                        raise VisitDecisionError("format", format_issue="action_references")
                     # Only trusted local prechecks can explicitly refund a successful status result.
                     request_started = not isinstance(raw, dict) or raw.get("_request_started") is not False
                     result["contact_kind"] = ("contact_status" if isinstance(raw, dict)
@@ -480,6 +492,8 @@ class VisitFlow(VisitRhythm):
                     category = (error.category if isinstance(error, VisitDecisionError) else
                                 "state" if saved_candidate is not None else
                                 "timeout" if isinstance(error, TimeoutError) else "provider")
+                    if category == "format":
+                        saved_candidate = None  # An invalid choice needs a fresh bounded correction.
                     if defer_decision(visit, cursor, category=category, now=self._now(),
                                       candidate=saved_candidate,
                                       format_issue=getattr(error, "format_issue", ""),
@@ -1055,6 +1069,80 @@ class VisitFlow(VisitRhythm):
         elif reply.get("delivered_op") == "step":
             visit.pop("unsent_turn", None)
 
+    @staticmethod
+    def _shared_choice_executable(visit, result, now):
+        """Check explicit references against public state before committing a model turn."""
+        if not outing_enabled(visit):
+            return True
+        if not visit.get("outing"):
+            return not result.get("action_control") and not result.get("scene_update")
+        trial = copy.deepcopy(visit)
+        actor = visit["host_id"] if visit["role"] == "host" else visit["guest_id"]
+        advance_activity(trial, now)
+        if result.get("action_control") and not apply_action_control(trial, actor, result["action_control"], now):
+            return False
+        if result.get("scene_update") and not apply_scene_update(trial, actor, result["scene_update"], now):
+            return False
+        new_plan = bool(result.get("outing") and not result.get("continue_activity")
+                        or actor == visit["guest_id"] and visit.get("outing_offer"))
+        step = result.get("action_step") or {}
+        return not step.get("peer_action_id") or not new_plan and record_action(trial, actor, step, now)
+
+    @staticmethod
+    def _confirmed_step_receipt(visit, remote, outgoing):
+        """A late exact step receipt may acknowledge work already confirmed by a push."""
+        sent = outgoing.get("payload") or {}
+        cursor = visit.get("decision_cursor") or {}
+        seq = sent.get("seq")
+        guest = visit["guest_id"]
+        if (visit["role"] != "guest" or not outing_enabled(visit) or not visit.get("unsent_turn")
+                or sent.get("op") != "step" or outgoing.get("sender") != guest
+                or outgoing.get("target") != visit["host_id"] or type(seq) is not int or seq < 0
+                or cursor.get("phase") != "turn" or cursor.get("log_seq") != seq
+                or not isinstance(sent.get("decision"), dict) or not isinstance(visit.get("decision"), dict)
+                or any(visit["decision"].get(key) != value for key, value in sent["decision"].items())
+                or any(remote.get(key) != visit.get(key) for key in ("id", "host_id", "guest_id", "manual", "outing_version"))
+                or remote.get("status") != "active" or visit.get("status") != "active"):
+            return False
+        turns = remote.get("turns") or {}
+        prior_turns = cursor.get("turns") or {}
+        if (turns.get(guest) != prior_turns.get(guest, -2) + 1
+                or turns.get(guest) != visit["turns"][guest]
+                or type(turns.get(visit["host_id"])) is not int
+                or turns[visit["host_id"]] > visit["turns"][visit["host_id"]]):
+            return False
+        try:
+            logs = read_page(visit["log"], remote, "log", LOG_PAGE_SIZE, advancing=False)
+        except ValueError:
+            return False
+        if not seq <= len(logs) < len(visit["log"]) or logs != visit["log"][:len(logs)]:
+            return False
+        choice = sent["decision"]
+        expected = [("say", choice.get("say", "")),
+                    ("action_plan", choice.get("action") or (choice.get("action_step") or {}).get("description", ""))]
+        expected = [(kind, value) for kind, value in expected if value]
+        if not expected:
+            control = choice.get("action_control") or {}
+            operation = control.get("operation")
+            owner = guest if operation == "cancel" else visit["host_id"]
+            status = "cancelled" if operation == "cancel" else "declined"
+            rows = (remote.get("shared_activity") or {}).get("action_steps", {}).get(owner, [])
+            return operation in {"cancel", "decline"} and any(
+                row.get("id") == control.get("action_id") and row.get("status") == status
+                and row.get("controlled_by") == guest and row.get("control_operation") == operation
+                and row.get("control_action_id") == control.get("action_id")
+                and row.get("control_reason") == control.get("reason")
+                and row.get("stage") == cursor.get("outing_stage")
+                and type(row.get("ended_at")) in {int, float} and math.isfinite(row["ended_at"])
+                and type(row.get("accepted_at")) in {int, float} and math.isfinite(row["accepted_at"])
+                and row["accepted_at"] <= row["ended_at"]
+                and outgoing["created_at"] <= row["ended_at"] <= max((item.get("at", 0) for item in visit["log"]), default=0)
+                for row in rows)
+        if len(logs) < seq + len(expected):
+            return False
+        return all(row.get("actor_id") == guest and row.get("kind") == kind and row.get("text") == value
+                   for row, (kind, value) in zip(logs[seq:], expected))
+
     def _record_turn(self, visit, sender, result):
         self._append(visit, sender, "say", result["say"])
         self._append(visit, sender, "action_plan", result["action"] or (result.get("action_step") or {}).get("description", ""))
@@ -1064,6 +1152,8 @@ class VisitFlow(VisitRhythm):
             visit.pop("local_experience_pending", None)
         if outing_enabled(visit):
             advance_activity(visit, self._now())
+            if result.get("action_control"):
+                apply_action_control(visit, sender, result["action_control"], self._now())
             if result.get("scene_update") and apply_scene_update(visit, sender, result["scene_update"], self._now()):
                 self._append(visit, sender, "milestone", result["scene_update"]["summary"])
             new_plan = bool(result.get("outing") and not result.get("continue_activity")
@@ -1121,6 +1211,10 @@ class VisitFlow(VisitRhythm):
                 visit.setdefault("outing_requests_handled", {})[actor] = request_id
         offer = visit.get("outing_offer")
         if offer and result.get("outing_accept") and not result.get("leave"):
+            prior_route = (visit.get("outing") or {}).get("route", [])
+            if prior_route:
+                # Keep the original planned deadline and record the actual switch.
+                prior_route[-1].setdefault("ended_at", self._now())
             begin_activity(visit, offer, self._now(), result, floor_seconds=self.config.poll_seconds)
             if offer.get("travel_seconds"):
                 self._append(visit, visit["host_id"], "travel_plan", "前往" + offer["place"] + "，抵达后计划" + offer["activity"])
@@ -1387,7 +1481,8 @@ class VisitFlow(VisitRhythm):
             await self._send(visit_id, {"op": "sync", "visit": self._wire(visit)})
         if visit.get("budget_notice_pending"):
             await self._publish_outing_hold(visit_id)
-            return
+            if visit.get("budget_notice_pending") or visit["status"] != "active":
+                return
         if self._activity_waiting(visit):
             return  # The same confirmed shared clock runs on both servers.
         async with self._lock:
@@ -1434,7 +1529,7 @@ class VisitFlow(VisitRhythm):
                 await self._save()
                 step = {"op": "step", "seq": len(visit["log"]),
                         "experience_seq": visit.get("decision_experience_seq", 0), "decision":
-                        {key: result[key] for key in ("say", "action", "leave", "outing", "outing_accept", "outcome", "return_after", "farewell", "pause_minutes", "continue_activity", "action_step", "scene_update")}}
+                        {key: result[key] for key in ("say", "action", "leave", "outing", "outing_accept", "outcome", "return_after", "farewell", "pause_minutes", "continue_activity", "action_step", "action_control", "scene_update")}}
             reply = await self._send(visit_id, step)
             async with self._lock:
                 if self._closed or visit["status"] in TERMINAL:

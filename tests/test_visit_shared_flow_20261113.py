@@ -10,8 +10,11 @@ from core.visits.snapshots import validate_snapshot
 from tests import test_visits_outings_q as fixture
 
 
-def action(description, seconds, *, waiting=False, requires_peer=False):
-    return {"description": description, "seconds": seconds, "waiting": waiting, "requires_peer": requires_peer}
+def action(description, seconds, *, waiting=False, requires_peer=False, peer_action_id=None):
+    result = {"description": description, "seconds": seconds, "waiting": waiting, "requires_peer": requires_peer}
+    if peer_action_id:
+        result["peer_action_id"] = peer_action_id
+    return result
 
 
 class SharedVisitFlowTests(unittest.IsolatedAsyncioTestCase):
@@ -64,7 +67,8 @@ class SharedVisitFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(steps[host["guest_id"]][0]["description"], "我摆自己的杯子")
         self.assertGreaterEqual(len(self.a.llm.calls), 2)
         self.assertGreaterEqual(len(self.b.llm.calls), 1)
-        self.host_reply(update={"summary": "东道主的杯子里已有茶，对方仍在摆自己的杯子"})
+        self.host_reply(update={"summary": "东道主的杯子里已有茶，对方仍在摆自己的杯子",
+                                "action_ids": [steps[host["host_id"]][0]["id"]]})
         self.advance(1.01)
         await self.b.service.tick()
         self.assertEqual(host["outing"]["until"], until)
@@ -76,7 +80,9 @@ class SharedVisitFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_following_turns_keep_each_models_new_personal_action(self):
         visit_id, host, guest = await self.start_shared(
             host_action=action("倒自己的茶", 1), guest_action=action("摆杯子", 2))
-        self.host_reply(update={"summary": "东道主倒好了自己的茶"}, next_action=action("端起自己的杯子", 1))
+        self.host_reply(update={"summary": "东道主倒好了自己的茶",
+            "action_ids": [host["shared_activity"]["action_steps"][host["host_id"]][0]["id"]]},
+            next_action=action("端起自己的杯子", 1))
         self.advance(1.01)
         await self.b.service.tick()
         self.a.llm.default_reply = json.dumps({"say": "我先尝一小口。", "continue_activity": True,
@@ -108,13 +114,15 @@ class SharedVisitFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_cooperative_result_waits_for_the_other_models_independent_choice(self):
         visit_id, host, _ = await self.start_shared(host_action=action("共同抬桌子，我抬左边", 1, requires_peer=True))
         self.assertEqual(host["shared_activity"]["action_steps"][host["host_id"]][0]["status"], "awaiting_peer")
-        self.host_reply(update={"summary": "桌子已经被两人搬完"})
+        offered_id = host["shared_activity"]["action_steps"][host["host_id"]][0]["id"]
+        self.host_reply()
         await self.b.service.wake_local_experience(visit_id, self.scope, host["local"]["actor_id"],
             host["local"]["persona_key"], self.b.clock.now(), seq=1)
         await self.b.service._advance(visit_id)
         self.assertFalse(host["shared_activity"]["milestones"])
         self.a.llm.default_reply = json.dumps({"say": "我来抬右边。", "continue_activity": True,
-            "pause_minutes": 20, "action_step": action("我愿意抬右边", 2, requires_peer=True)}, ensure_ascii=False)
+            "pause_minutes": 20, "action_step": action("我愿意抬右边", 2, requires_peer=True,
+                                                       peer_action_id=offered_id)}, ensure_ascii=False)
         self.advance(self.cfg.poll_seconds + 1)
         await self.a.service._advance(visit_id)
         steps = host["shared_activity"]["action_steps"]

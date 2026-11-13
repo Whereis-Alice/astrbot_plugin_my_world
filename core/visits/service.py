@@ -636,6 +636,10 @@ class VisitService(VisitFlow, VisitJournal):
                     count > self._allocation(candidate, actor) for actor, count in candidate["calls"].items()):
                 raise ValueError("对方的旅程预算不足以容纳已发出的调用")
             if remote is not None:
+                if self._confirmed_step_receipt(candidate, remote, outgoing):
+                    # A newer signed host push already proved this exact step.
+                    # Acknowledge its durable receipt without adopting older facts.
+                    result["visit"] = remote = self._wire(candidate)
                 validate_snapshot(candidate, remote, now=self._now())
                 self._validate_superseded_step_reply(candidate, result, outgoing)
                 self._record_remote_budget_hold(peer, remote)

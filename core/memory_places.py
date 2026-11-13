@@ -12,7 +12,7 @@ def _text(value: Any, limit: int) -> str:
 
 
 def visit_location_metadata(visit: dict) -> dict:
-    """Only a jointly accepted outing route proves its concrete locations.
+    """Retain accepted locations only after their recorded arrival time.
 
     A scene or an offer may still be a proposal. The local home node remains
     the durable map index, but does not describe where this encounter happened.
@@ -32,9 +32,16 @@ def visit_location_metadata(visit: dict) -> dict:
     except (KeyError, TypeError, ValueError):
         valid = False
     if valid:
+        def reached(stop: dict) -> bool:
+            end = stop.get("ended_at", visit.get("ended_at"))
+            # Older receipts may lack an ending. Preserve their existing
+            # geography, but never treat a known future arrival as visited.
+            return (type(end) not in {int, float} or not math.isfinite(end) or end <= 0
+                    or stop["started_at"] <= end)
+
         result["route"] = [{"place": _text(stop.get("place"), 80),
                             "activity": _text(stop.get("activity"), 120),
-                            "started_at": stop["started_at"]} for stop in outing["route"]]
+                            "started_at": stop["started_at"]} for stop in outing["route"] if reached(stop)]
     return result
 
 

@@ -12,7 +12,7 @@ from .activities import validate_shared_activity
 def validate_snapshot(visit: dict, remote: dict, *, now: float | None = None) -> dict:
     if not isinstance(remote, dict) or remote.get("id") != visit["id"]:
         raise ValueError("无效旅程快照")
-    remote = expand_snapshot(visit, remote)
+    remote = expand_snapshot(_route_expansion_base(visit, remote), remote)
     actors = {visit["host_id"], visit["guest_id"]}
     if any(remote.get(key) != visit[key] for key in ("host_id", "guest_id")):
         raise ValueError("旅程参与者不一致")
@@ -85,10 +85,7 @@ def validate_snapshot(visit: dict, remote: dict, *, now: float | None = None) ->
             raise ValueError("共同活动时间或路线无效")
         prior_route = (visit.get("outing") or {}).get("route", [])
         route = remote["outing"]["route"]
-        if visit["role"] == "guest" and (len(route) < len(prior_route) or route[:len(prior_route)] != prior_route):
-            raise ValueError("已确认路线不能被改写")
-        if visit["role"] == "host" and (len(route) > len(prior_route) or route != prior_route[:len(route)]):
-            raise ValueError("访客不能替东道主推进共同路线")
+        _validate_route_progress(visit, route, prior_route, now=now)
         outing = remote["outing"]
         if outing.get("return_agreed") and set(outing.get("farewells", {})) != actors:
             raise ValueError("共同归家必须保留双方独立原话")
@@ -180,6 +177,68 @@ def validate_snapshot(visit: dict, remote: dict, *, now: float | None = None) ->
     return remote
 
 
+def _route_expansion_base(visit: dict, remote: dict) -> dict:
+    """Let the page reader reconstruct a last stop closure for later proof checks."""
+    outing = remote.get("outing")
+    prior = (visit.get("outing") or {}).get("route", [])
+    if not isinstance(outing, dict) or not prior or not isinstance(outing.get("route"), list):
+        return visit
+    rows = outing["route"]
+    offset = outing.get("route_offset", 0)
+    count = outing.get("route_count", len(rows))
+    if type(offset) is not int or type(count) is not int or offset < 0:
+        return visit
+    updated = copy.deepcopy(prior)
+    changed = False
+    for index, row in enumerate(rows, offset):
+        if index >= len(prior) or not isinstance(row, dict):
+            continue
+        old = prior[index]
+        if {key: value for key, value in row.items() if key != "ended_at"} != {
+                key: value for key, value in old.items() if key != "ended_at"}:
+            continue
+        if (visit["role"] == "guest" and index == len(prior) - 1 and count == len(prior) + 1
+                and "ended_at" not in old and "ended_at" in row):
+            updated[index]["ended_at"] = row["ended_at"]
+            changed = True
+        elif visit["role"] == "host" and "ended_at" in old and "ended_at" not in row:
+            updated[index].pop("ended_at")
+            changed = True
+    if not changed:
+        return visit
+    return {**visit, "outing": {**visit["outing"], "route": updated}}
+
+
+def _validate_route_progress(visit: dict, route: list, prior: list, *, now: float | None) -> None:
+    for index, stop in enumerate(route):
+        if "ended_at" not in stop:
+            continue
+        ended = stop["ended_at"]
+        if (type(ended) not in {int, float} or not math.isfinite(ended) or ended < 0
+                or ended < stop.get("departed_at", stop["started_at"])
+                or now is not None and ended > now + 300
+                or index == len(route) - 1
+                or ended != route[index + 1].get("departed_at", route[index + 1]["started_at"])):
+            raise ValueError("共同活动实际离开时间无效")
+    if visit["role"] == "host":
+        if len(route) > len(prior):
+            raise ValueError("访客不能替东道主推进共同路线")
+        for current, old in zip(route, prior):
+            expected = {key: value for key, value in old.items() if key != "ended_at" or "ended_at" in current}
+            if current != expected:
+                raise ValueError("访客不能替东道主推进共同路线")
+        return
+    if len(route) < len(prior):
+        raise ValueError("已确认路线不能被改写")
+    for index, old in enumerate(prior):
+        current = route[index]
+        if current == old:
+            continue
+        if (index != len(prior) - 1 or len(route) != len(prior) + 1 or "ended_at" in old
+                or {key: value for key, value in current.items() if key != "ended_at"} != old):
+            raise ValueError("已确认路线不能被改写")
+
+
 def _validate_shared_progress(visit: dict, remote: dict, shared: dict) -> None:
     """Bind new guest choices and preserve every retained confirmed milestone."""
     prior = visit.get("shared_activity") or {}
@@ -206,22 +265,68 @@ def _validate_shared_progress(visit: dict, remote: dict, shared: dict) -> None:
     if sum(row["id"] not in old_actions for row in new_actions) > 1:
         raise ValueError("一次访客选择不能生成多个新动作")
     choice = (visit.get("decision") or {}).get("action_step") or {}
+    control = (visit.get("decision") or {}).get("action_control") or {}
     allowed = (visit.get("unsent_turn") is True
                and (visit.get("decision_cursor") or {}).get("phase") == "turn"
                and remote.get("turns", {}).get(visit["guest_id"], 0) == visit["turns"][visit["guest_id"]] + 1)
+    old_host = {row["id"]: row for row in prior.get("action_steps", {}).get(visit["host_id"], [])}
+    for owner, rows in shared.get("action_steps", {}).items():
+        for row in rows:
+            old = (old_actions if owner == visit["guest_id"] else old_host).get(row["id"], {})
+            if old.get("controlled_by") == visit["guest_id"] and any(row.get(key) != old.get(key) for key in
+                    ("status", "ended_at", "controlled_by", "control_operation", "control_action_id", "control_reason")):
+                raise ValueError("已确认的访客终止选择不能改写")
+            if row.get("status") not in {"cancelled", "declined", "interrupted"} or old.get("status") == row["status"]:
+                continue
+            if row.get("controlled_by") == visit["guest_id"]:
+                if (not allowed or control.get("operation") != row.get("control_operation")
+                        or control.get("action_id") != row.get("control_action_id")
+                        or control.get("reason") != row.get("control_reason")):
+                    raise ValueError("共同动作终止缺少访客本人的选择证明")
+                if owner == visit["host_id"]:
+                    if row["status"] == "declined" and (not old or old.get("status") != "awaiting_peer"
+                            or control.get("operation") != "decline" or control.get("action_id") != row["id"]):
+                        raise ValueError("访客拒绝必须引用尚未开始的协作请求")
+                    if row["status"] == "interrupted":
+                        target = old_actions.get(control.get("action_id"), {})
+                        if (control.get("operation") != "cancel" or not old.get("joint_id")
+                                or old["joint_id"] != row.get("joint_id") or target.get("joint_id") != old["joint_id"]):
+                            raise ValueError("协作中断缺少访客本人取消的对应动作")
+            elif owner == visit["guest_id"] and row["status"] == "interrupted":
+                target = old_host.get(row.get("control_action_id"), {})
+                joint = old.get("joint_id") or (":".join(sorted((row["id"], target.get("id", ""))))
+                    if row.get("peer_action_id") == target.get("id") else "")
+                if (row.get("control_operation") != "cancel" or not target or not joint
+                        or joint != row.get("joint_id")):
+                    raise ValueError("协作中断缺少东道主本人取消的对应动作")
     for row in new_actions:
         old = old_actions.get(row["id"])
         if old:
             if any(row.get(key) != old.get(key) for key in
-                   ("stage", "description", "seconds", "waiting", "requires_peer", "accepted_at")):
+                   ("stage", "description", "seconds", "waiting", "requires_peer", "peer_action_id", "accepted_at")):
                 raise ValueError("不能改写访客已经提交的动作")
-            for key in ("started_at", "until", "joint_id", "elapsed_at", "settled_revision"):
+            for key in ("started_at", "until", "joint_id", "elapsed_at", "settled_revision", "ended_at",
+                        "controlled_by", "control_operation", "control_action_id", "control_reason"):
                 if key in old and row.get(key) != old[key]:
                     raise ValueError("已确认的访客动作计时不能改写")
         elif not allowed or any(row.get(key) != choice.get(key) for key in
-                                ("description", "seconds", "waiting", "requires_peer")):
+                                ("description", "seconds", "waiting", "requires_peer", "peer_action_id")):
             raise ValueError("共同事项缺少访客本人的行动选择")
+        if row.get("status") == "cancelled" and (not old or old.get("status") != "cancelled"):
+            if (not allowed or control.get("operation") != "cancel" or control.get("action_id") != row["id"]
+                    or row.get("control_reason") != control.get("reason")):
+                raise ValueError("取消动作缺少访客本人的选择证明")
+        if old and old.get("status") in {"cancelled", "declined", "interrupted"} and row.get("status") != old["status"]:
+            raise ValueError("已结束的访客动作不能重新启动")
     known_ids = set(old_actions) | {row["id"] for row in new_actions}
+    current_ids = {row["id"] for row in new_actions}
+    consumed_ids = {action for milestone in shared["milestones"]
+                    for action in milestone["actions"].get(visit["guest_id"], [])}
+    for number, old in old_actions.items():
+        cancelled = (allowed and control.get("operation") == "cancel" and control.get("action_id") == number)
+        if (number not in current_ids and not old.get("settled_revision") and number not in consumed_ids
+                and old.get("status") not in {"cancelled", "declined", "interrupted"} and not cancelled):
+            raise ValueError("未结算的访客动作不能无依据删除")
     for milestone in shared["milestones"]:
         if milestone["id"] not in old_milestones and any(
                 action not in known_ids for action in milestone["actions"].get(visit["guest_id"], [])):

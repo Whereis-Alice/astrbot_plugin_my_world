@@ -9,12 +9,13 @@ import copy
 import math
 from typing import Any
 
-from .protocol import clean_action_step, clean_scene_update, text
+from .protocol import clean_action_control, clean_action_step, clean_scene_update, text
 
 SHARED_ACTIVITY_VERSION = 1
 MAX_ACTIONS_PER_ACTOR = 6
 MAX_MILESTONES = 8
-_STATUSES = {"awaiting_peer", "running", "elapsed"}
+_CLOSED = {"cancelled", "declined", "interrupted"}
+_STATUSES = {"awaiting_peer", "running", "elapsed"} | _CLOSED
 
 
 def _number(value: Any) -> bool:
@@ -28,7 +29,7 @@ def begin_shared_activity(visit: dict) -> None:
     pending = list(previous.get("pending", []))
     for records in previous.get("action_steps", {}).values():
         for record in records:
-            if not record.get("settled_revision"):
+            if not record.get("settled_revision") and record["status"] not in _CLOSED:
                 pending.append("尚未确认结果：" + record["description"])
     event = (visit.get("scene") or {}).get("event")
     if event:
@@ -68,22 +69,24 @@ def record_action(visit: dict, actor: str, step: Any, now: float) -> bool:
     if not shared:
         return False
     advance_activity(visit, now)
-    records = shared["action_steps"].setdefault(actor, [])
+    records = shared["action_steps"].get(actor, [])
     if any(row["status"] in {"running", "awaiting_peer"} and row["waiting"] == choice["waiting"]
            for row in records):
         return False
-    records[:] = [row for row in records if not row.get("settled_revision")]
-    if len(records) >= MAX_ACTIONS_PER_ACTOR:
+    retained = [row for row in records if not row.get("settled_revision") and row["status"] not in _CLOSED]
+    if len(retained) >= MAX_ACTIONS_PER_ACTOR:
         return False  # Unresolved choices cannot be silently dropped to make room.
     partner = None
-    if choice["requires_peer"]:
+    if choice.get("peer_action_id"):
         peer = next((other for other in actors if other != actor), None)
         partner = next((item for item in shared["action_steps"].get(peer, [])
-                        if item["status"] == "awaiting_peer" and item["stage"] == shared["stage"]), None)
-        if partner and outing.get("return_agreed") and start + partner["seconds"] > outing["until"]:
+                        if item["id"] == choice["peer_action_id"] and item["status"] == "awaiting_peer"
+                        and item["stage"] == shared["stage"] and item["requires_peer"]), None)
+        if not partner or outing.get("return_agreed") and start + partner["seconds"] > outing["until"]:
             return False
     number = shared["next_action"]
     shared["next_action"] += 1
+    shared["action_steps"][actor] = records = retained
     row = {"id": f"s{shared['stage']}-a{number}", "stage": shared["stage"], **choice,
            "accepted_at": now, "status": "awaiting_peer" if choice["requires_peer"] else "running"}
     if not choice["requires_peer"]:
@@ -94,6 +97,44 @@ def record_action(visit: dict, actor: str, step: Any, now: float) -> bool:
             joint_id = ":".join(sorted((row["id"], partner["id"])))
             for item in (row, partner):
                 item.update(status="running", started_at=start, until=start + item["seconds"], joint_id=joint_id)
+    shared["revision"] += 1
+    return True
+
+
+def apply_action_control(visit: dict, actor: str, control: Any, now: float) -> bool:
+    """Free a specific choice without inventing its result or the peer's next choice."""
+    choice = clean_action_control(control)
+    if (not choice or actor not in {visit.get("host_id"), visit.get("guest_id")}
+            or visit.get("status") != "active" or not _number(now)):
+        return False
+    shared = _current(visit)
+    if not shared:
+        return False
+    selected = next(((owner, row) for owner, rows in shared["action_steps"].items() for row in rows
+                     if row["id"] == choice["action_id"] and row["stage"] == shared["stage"]), None)
+    if not selected:
+        return False
+    owner, row = selected
+    if row["status"] in _CLOSED or row.get("settled_revision") or now < row["accepted_at"]:
+        return False
+    if choice["operation"] == "cancel":
+        if owner != actor:
+            return False
+        affected = [(row, "cancelled")]
+        if row.get("joint_id"):
+            affected.extend((other, "interrupted") for other_owner, rows in shared["action_steps"].items()
+                            for other in rows if other_owner != actor and other.get("joint_id") == row["joint_id"]
+                            and other["status"] not in _CLOSED and not other.get("settled_revision"))
+    else:
+        if owner == actor or row["status"] != "awaiting_peer" or not row["requires_peer"]:
+            return False
+        affected = [(row, "declined")]
+    advance_activity(visit, now)
+    for target, status in affected:
+        target.update(status=status, ended_at=now, controlled_by=actor,
+                      control_operation=choice["operation"], control_action_id=row["id"])
+        if "reason" in choice:
+            target["control_reason"] = choice["reason"]
     shared["revision"] += 1
     return True
 
@@ -142,8 +183,22 @@ independent choices and both clocks elapsed. The caller guards the model revisio
     if not shared or now < (visit.get("outing") or {}).get("started_at", math.inf):
         return False
     advance_activity(visit, now)
-    ready = _ready_actions(shared, {visit["host_id"], visit["guest_id"]})
-    if not ready:
+    available = _ready_actions(shared, {visit["host_id"], visit["guest_id"]})
+    by_id = {row["id"]: (owner, row) for owner, row in available}
+    references = result.get("action_ids")
+    if references is None:
+        # A saved legacy choice can be applied only when its scope is unambiguous.
+        references = list(by_id) if len(by_id) == 1 else []
+    if not references or any(reference not in by_id for reference in references):
+        return False
+    ready = [by_id[reference] for reference in references]
+    for _, row in ready:
+        if row["requires_peer"] and any(other["id"] not in references for _, other in available
+                                        if other.get("joint_id") == row["joint_id"]):
+            return False
+    if result.get("done") and any(row["id"] not in references and not row.get("settled_revision")
+                                  and row["status"] not in _CLOSED
+                                  for rows in shared["action_steps"].values() for row in rows):
         return False
     shared["revision"] += 1
     revision = shared["revision"]
@@ -239,7 +294,8 @@ def validate_shared_activity(value: Any, actors: set[str], *, outing: dict | Non
         running = set()
         for row in records:
             allowed = {"id", "stage", "description", "seconds", "waiting", "requires_peer", "accepted_at",
-                       "started_at", "until", "status", "joint_id", "elapsed_at", "settled_revision"}
+                       "started_at", "until", "status", "joint_id", "elapsed_at", "settled_revision",
+                       "peer_action_id", "ended_at", "controlled_by", "control_operation", "control_action_id", "control_reason"}
             required = {"id", "stage", "description", "seconds", "waiting", "requires_peer", "accepted_at", "status"}
             if (not isinstance(row, dict) or not required <= set(row) <= allowed or not clean_action_step(row)
                     or not isinstance(row.get("id"), str) or not row["id"] or len(row["id"]) > 80
@@ -250,9 +306,29 @@ def validate_shared_activity(value: Any, actors: set[str], *, outing: dict | Non
                 raise ValueError("共同活动动作身份或计时无效")
             seen.add(row["id"])
             status = row["status"]
+            if "joint_id" in row and (not row["requires_peer"] or not isinstance(row["joint_id"], str)
+                                       or not row["joint_id"] or len(row["joint_id"]) > 161):
+                raise ValueError("协作动作关联无效")
+            controls = {key: row[key] for key in ("ended_at", "controlled_by", "control_operation", "control_action_id", "control_reason")
+                        if key in row}
+            if status in _CLOSED:
+                if (not _number(row.get("ended_at")) or row["ended_at"] < row["accepted_at"]
+                        or now is not None and row["ended_at"] > now + 300
+                        or not isinstance(row.get("controlled_by"), str) or row["controlled_by"] not in actors
+                        or not clean_action_control({"action_id": row.get("control_action_id"),
+                                                     "operation": row.get("control_operation"),
+                                                     **({"reason": row["control_reason"]} if "control_reason" in row else {})})
+                        or "settled_revision" in row):
+                    raise ValueError("动作取消或拒绝证明无效")
+            elif controls:
+                raise ValueError("未终止动作不能附带取消证明")
             if status == "awaiting_peer":
-                if not row["requires_peer"] or any(key in row for key in ("started_at", "until", "joint_id", "elapsed_at", "settled_revision")):
+                if not row["requires_peer"] or any(key in row for key in ("started_at", "until", "joint_id", "elapsed_at", "settled_revision", "peer_action_id")):
                     raise ValueError("协作动作尚未获双方确认")
+            elif status in _CLOSED and "started_at" not in row:
+                if (not row["requires_peer"] or any(key in row for key in ("until", "joint_id", "elapsed_at", "peer_action_id"))
+                        or status == "interrupted"):
+                    raise ValueError("未启动动作的终止状态无效")
             else:
                 if (not _number(row.get("started_at")) or not _number(row.get("until"))
                         or row["started_at"] < row["accepted_at"]
@@ -266,8 +342,11 @@ def validate_shared_activity(value: Any, actors: set[str], *, outing: dict | Non
                 if status == "elapsed":
                     if row.get("elapsed_at") != row["until"] or now is not None and row["until"] > now + 1:
                         raise ValueError("共同活动不能提前计时完成")
-                elif "elapsed_at" in row or "settled_revision" in row:
+                elif status not in _CLOSED and ("elapsed_at" in row or "settled_revision" in row):
                     raise ValueError("进行中动作不能宣称已结算")
+                if status in _CLOSED and "elapsed_at" in row and (
+                        row["elapsed_at"] != row["until"] or row["elapsed_at"] > row["ended_at"]):
+                    raise ValueError("终止动作的计时证明无效")
             if "settled_revision" in row and (type(row["settled_revision"]) is not int
                                                or not 0 < row["settled_revision"] <= value["revision"]):
                 raise ValueError("共同活动结算编号无效")
@@ -275,7 +354,18 @@ def validate_shared_activity(value: Any, actors: set[str], *, outing: dict | Non
                 if row["waiting"] in running:
                     raise ValueError("同一角色存在冲突的并行动作")
                 running.add(row["waiting"])
-    last = -1
+    for actor, records in value["action_steps"].items():
+        for row in records:
+            if row["status"] == "cancelled" and (row["controlled_by"] != actor or row["control_operation"] != "cancel"
+                                                  or row["control_action_id"] != row["id"]):
+                raise ValueError("不能替对方取消动作")
+            if row["status"] == "declined" and (row["controlled_by"] == actor or row["control_operation"] != "decline"
+                                                 or row["control_action_id"] != row["id"] or "started_at" in row):
+                raise ValueError("不能替对方拒绝已开始的协作")
+            if row["status"] == "interrupted" and (row["controlled_by"] == actor or row["control_operation"] != "cancel"
+                                                     or row["control_action_id"] == row["id"] or not row.get("joint_id")):
+                raise ValueError("协作中断缺少另一方取消证明")
+    last, evidence_ids = -1, set()
     for milestone in value["milestones"]:
         if (not isinstance(milestone, dict) or set(milestone) != {
                 "id", "stage", "at", "goal", "summary", "actions", "objects", "pending", "done"}
@@ -291,16 +381,24 @@ def validate_shared_activity(value: Any, actors: set[str], *, outing: dict | Non
                        for ids in milestone["actions"].values())):
             raise ValueError("共同活动里程碑无效")
         last = milestone["id"]
+        for ids in milestone["actions"].values():
+            if len(ids) != len(set(ids)) or evidence_ids.intersection(ids):
+                raise ValueError("同一动作不能重复结算")
+            evidence_ids.update(ids)
     # A paired operation cannot be asserted using just one actor's signed choice.
     pairs: dict[str, list[tuple[str, dict]]] = {}
     for actor, records in value["action_steps"].items():
         for row in records:
-            if row.get("joint_id") and not row.get("settled_revision"):
+            if row.get("joint_id") and not row.get("settled_revision") and row["status"] not in _CLOSED:
                 pairs.setdefault(row["joint_id"], []).append((actor, row))
     for records in pairs.values():
         if ({actor for actor, _ in records} != actors or len(records) != len(actors)
                 or len({row["started_at"] for _, row in records}) != 1):
             raise ValueError("协作动作缺少双方启动证明")
+        for actor, row in records:
+            if "peer_action_id" in row and not any(owner != actor and other["id"] == row["peer_action_id"]
+                                                   for owner, other in records):
+                raise ValueError("协作动作引用了另一件事")
     return copy.deepcopy(value)
 
 

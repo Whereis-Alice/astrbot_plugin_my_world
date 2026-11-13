@@ -70,6 +70,7 @@
 .visits-scene-kicker {font-size:10px;color:var(--accent-ink);letter-spacing:.18em;}
 .visits-scene-copy h4 {font-family:Georgia,"Noto Serif SC","Songti SC","SimSun",serif;font-size:clamp(23px,2.6vw,32px);font-weight:500;line-height:1.5;letter-spacing:.055em;margin:8px 0 4px;overflow-wrap:anywhere;}
 .visits-scene-activity {font-size:13px;line-height:1.8;margin:0;color:var(--text-2);overflow-wrap:anywhere;}
+.visits-scene-plan-label {font-size:11px;line-height:1.8;margin:5px 0 0;color:var(--muted);overflow-wrap:anywhere;}
 .visits-companions {font-size:11px;color:var(--accent-ink);line-height:1.8;letter-spacing:.07em;margin:10px 0 0;overflow-wrap:anywhere;}
 .visits-time-progress {position:relative;height:2px;max-width:240px;background:var(--line-strong);margin-top:16px;overflow:hidden;}
 .visits-time-progress>span {display:block;width:var(--visit-progress);height:100%;background:var(--accent);}

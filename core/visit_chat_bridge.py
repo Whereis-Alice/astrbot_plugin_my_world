@@ -16,6 +16,7 @@ from .evidence import direct_text
 
 MAX_NOTES = 64
 MAX_VISITS = 96
+RECONCILE_SECONDS = 30
 
 
 def _text(value: Any, limit: int = 180) -> str:
@@ -137,6 +138,11 @@ async def record_visit_chat(engine: Any, owner: VisitChatOwner | None, *, kind: 
         if visit is None or _stamp(visit.get("ended_at")) and stamp > _stamp(visit["ended_at"]):
             return False
         payload = await engine.db.call("kv_get", key)
+        # The visit may finish while SQLite is busy. Re-check the exact old
+        # owner and its final time before committing a delayed send receipt.
+        visit = _visit_for_owner(engine, owner)
+        if visit is None or _stamp(visit.get("ended_at")) and stamp > _stamp(visit["ended_at"]):
+            return False
         payload = copy.deepcopy(payload) if isinstance(payload, dict) else {}
         journals = payload.setdefault("visits", {})
         if not isinstance(journals, dict):
@@ -158,6 +164,8 @@ async def record_visit_chat(engine: Any, owner: VisitChatOwner | None, *, kind: 
         notes.append({"id": note_id, "seq": seq, "at": stamp, "kind": kind, "text": body,
                       "origin": owner.origin})
         journal.update(seq=seq, notes=notes[-MAX_NOTES:], seen=[*seen, note_id][-2048:], updated_at=stamp)
+        if significant:
+            journal.update(significant_seq=seq, significant_at=stamp)
         journals[journal_key] = journal
         if len(journals) > MAX_VISITS:
             inactive = [entry for entry in journals if entry != journal_key]
@@ -202,25 +210,84 @@ async def record_visit_reads(engine: Any, owner: VisitChatOwner | None, rows: li
                                 significant=important_visit_chat(engine, owner, text))
 
 
-async def local_chat_experiences(engine: Any, visit: dict, *, limit: int = 8) -> dict:
-    """Read only this actor's own journey journal, including historical finish."""
+def _owned_journal(payload: Any, visit: dict) -> dict:
     local = visit.get("local") or {}
     owner = VisitChatOwner(str(visit.get("id") or ""), str(visit.get("scope") or ""), _actor(visit),
                           str(local.get("persona_key") or ""), "", _stamp(visit.get("arrived_at")), 0.)
     if not all((owner.visit_id, owner.scope, owner.actor_id, owner.persona_key, owner.arrived_at)):
-        return {"seq": 0, "notes": []}
-    payload = await engine.db.call("kv_get", _bucket_key(owner.scope))
+        return {}
     journals = payload.get("visits", {}) if isinstance(payload, dict) else {}
     journal = journals.get(_journal_key(owner), {}) if isinstance(journals, dict) else {}
     if (not isinstance(journal, dict) or any(journal.get(name) != getattr(owner, name)
             for name in ("visit_id", "scope", "actor_id", "persona_key", "arrived_at"))):
-        return {"seq": 0, "notes": []}
+        return {}
+    return journal
+
+
+def _journal_experiences(journal: dict, visit: dict, limit: int) -> dict:
     notes = [dict(row) for row in journal.get("notes", []) if isinstance(row, dict)
-             and row.get("kind") in {"read", "sent", "sent_image"} and _stamp(row.get("at")) >= owner.arrived_at]
+             and row.get("kind") in {"read", "sent", "sent_image"}
+             and _stamp(row.get("at")) >= _stamp(visit.get("arrived_at"))]
     end = _stamp(visit.get("ended_at"))
     if end:
         notes = [row for row in notes if row["at"] <= end]
-    return {"seq": int(journal.get("seq") or 0), "notes": notes[-max(0, min(MAX_NOTES, int(limit))):] if limit else []}
+    seq = max((row.get("seq", 0) for row in notes if type(row.get("seq")) is int), default=0)
+    return {"seq": seq, "notes": notes[-max(0, min(MAX_NOTES, int(limit))):] if limit else []}
+
+
+async def local_chat_experiences(engine: Any, visit: dict, *, limit: int = 8) -> dict:
+    """Read only this actor's own journey journal, including historical finish."""
+    payload = await engine.db.call("kv_get", _bucket_key(str(visit.get("scope") or "")))
+    return _journal_experiences(_owned_journal(payload, visit), visit, limit)
+
+
+async def reconcile_visit_chat(engine: Any) -> None:
+    """Recover durable receipts whose separate visit notification was interrupted.
+
+    One read per scope runs at most every thirty seconds. Identity proofs and
+    the visit's own sequence make retries safe across reloads and late finish.
+    """
+    service = getattr(engine, "visits", None)
+    wake = getattr(service, "wake_local_experience", None)
+    if not callable(wake) or getattr(service, "_closed", False) or getattr(service, "_loaded", True) is False:
+        return
+    now = _stamp(engine._now())
+    previous_check = getattr(engine, "_visit_chat_reconciled_at", 0.)
+    if previous_check and 0 <= now - previous_check < RECONCILE_SECONDS:
+        return
+    # Claim before any await; concurrent ticks share this bounded recovery pass.
+    engine._visit_chat_reconciled_at = now
+    visits = list(getattr(service, "_state", {}).get("visits", {}).values())
+    buckets = {}
+    for visit in visits:
+        if not visit.get("arrived_at") or visit.get("status") not in {"active", "completed", "interrupted", "expired"}:
+            continue
+        scope = str(visit.get("scope") or "")
+        try:
+            if scope not in buckets:
+                # A failed scope read is attempted only once in this pass.
+                buckets[scope] = None
+                buckets[scope] = await engine.db.call("kv_get", _bucket_key(scope))
+            journal = _owned_journal(buckets[scope], visit)
+            experiences = _journal_experiences(journal, visit, MAX_NOTES)
+            previous = visit.get("local_experience_seq", 0)
+            if experiences["seq"] <= previous:
+                continue
+            at = _stamp(experiences["notes"][-1]["at"])
+            important_seq = journal.get("significant_seq", 0)
+            significant = (type(important_seq) is int and previous < important_seq <= experiences["seq"]
+                           and any(row.get("seq") == important_seq for row in experiences["notes"]))
+            await wake(visit_id=visit["id"], scope=scope, actor_id=_actor(visit),
+                       persona_key=visit["local"]["persona_key"], at=at,
+                       seq=experiences["seq"], significant=significant)
+        except asyncio.CancelledError:
+            if engine._visit_chat_reconciled_at == now:
+                engine._visit_chat_reconciled_at = 0.
+            raise
+        except Exception:
+            # Keep the retry gate while allowing other lives to recover.
+            # Durable rows remain the source; no model or send repeats.
+            continue
 
 
 def local_experience_lines(experiences: dict, *, limit: int = 900) -> str:

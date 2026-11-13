@@ -4,20 +4,26 @@ from __future__ import annotations
 import copy
 import unittest
 
-from core.visits.activities import (
+from tests import fake_astrbot
+fake_astrbot.install()
+
+from core.visits.activities import (  # noqa: E402
     activity_context, advance_activity, apply_scene_update, next_activity_due,
     record_action, validate_shared_activity,
 )
-from core.visits.outings import begin_activity, valid_activity
-from core.visits.protocol import clean_action_step, clean_decision, clean_outing_offer, clean_scene_update
+from core.visits.outings import begin_activity, valid_activity  # noqa: E402
+from core.visits.protocol import clean_action_step, clean_decision, clean_outing_offer, clean_scene_update  # noqa: E402
 
 
 HOST, GUEST = "host:alice", "guest:isla"
 NOW = 1800000000.0
 
 
-def step(description="冲泡茶叶", seconds=180, *, waiting=False, requires_peer=False):
-    return {"description": description, "seconds": seconds, "waiting": waiting, "requires_peer": requires_peer}
+def step(description="冲泡茶叶", seconds=180, *, waiting=False, requires_peer=False, peer_action_id=None):
+    result = {"description": description, "seconds": seconds, "waiting": waiting, "requires_peer": requires_peer}
+    if peer_action_id is not None:
+        result["peer_action_id"] = peer_action_id
+    return result
 
 
 def visit(*, minutes=30, travel=0, return_after=False):
@@ -88,14 +94,16 @@ class SharedActivityTests(unittest.TestCase):
         self.assertIsNone(next_activity_due(value, NOW))
         self.assertFalse(advance_activity(value, NOW + 100))
         self.assertFalse(apply_scene_update(value, HOST, {"summary": "桌子已经搬好"}, NOW + 100))
-        record_action(value, GUEST, step("我愿意抬右边", 20, requires_peer=True), NOW + 100)
+        reference = value["shared_activity"]["action_steps"][HOST][0]["id"]
+        record_action(value, GUEST, step("我愿意抬右边", 20, requires_peer=True, peer_action_id=reference), NOW + 100)
         first = value["shared_activity"]["action_steps"][HOST][0]
         second = value["shared_activity"]["action_steps"][GUEST][0]
         self.assertEqual(first["started_at"], NOW + 100)
         self.assertEqual(second["started_at"], first["started_at"])
         self.assertEqual(first["joint_id"], second["joint_id"])
         self.assertFalse(apply_scene_update(value, HOST, {"summary": "桌子已经搬好"}, NOW + 110))
-        self.assertTrue(apply_scene_update(value, HOST, {"summary": "两人把桌子移到了窗边"}, NOW + 120))
+        self.assertTrue(apply_scene_update(value, HOST, {"summary": "两人把桌子移到了窗边",
+            "action_ids": [first["id"], second["id"]]}, NOW + 120))
         validate_shared_activity(value["shared_activity"], {HOST, GUEST}, outing=value["outing"], now=NOW + 120)
 
     def test_one_person_can_arrange_cups_while_waiting_for_water(self):
@@ -181,19 +189,22 @@ class SharedActivityTests(unittest.TestCase):
     def test_cooperation_selected_on_the_road_is_scheduled_for_arrival(self):
         value = visit(travel=125.25)
         record_action(value, HOST, step("到公园一起展开野餐布", 3, requires_peer=True), NOW)
-        record_action(value, GUEST, step("我愿意拉另一边", 5, requires_peer=True), NOW + 1)
+        reference = value["shared_activity"]["action_steps"][HOST][0]["id"]
+        record_action(value, GUEST, step("我愿意拉另一边", 5, requires_peer=True, peer_action_id=reference), NOW + 1)
         actions = activity_context(value, NOW + 1)["actions"]
         self.assertEqual([row["status"] for row in actions], ["scheduled", "scheduled"])
         self.assertEqual({row["started_at"] for row in actions}, {NOW + 125.25})
         self.assertFalse(apply_scene_update(value, HOST, {"summary": "野餐布已展开"}, NOW + 129))
-        self.assertTrue(apply_scene_update(value, HOST, {"summary": "双方展开了野餐布"}, NOW + 130.25))
+        self.assertTrue(apply_scene_update(value, HOST, {"summary": "双方展开了野餐布",
+            "action_ids": [row["id"] for row in actions]}, NOW + 130.25))
         validate_shared_activity(value["shared_activity"], {HOST, GUEST}, outing=value["outing"], now=NOW + 130.25)
 
     def test_agreed_return_cannot_be_silently_overrun_or_action_truncated(self):
         value = visit(minutes=0.5, return_after=True)
         self.assertFalse(record_action(value, HOST, step("做一件至少要一分钟的事", 60), NOW))
         self.assertTrue(record_action(value, HOST, step("准备共同动作", 20, requires_peer=True), NOW))
-        self.assertFalse(record_action(value, GUEST, step("我准备好了", 2, requires_peer=True), NOW + 15))
+        reference = value["shared_activity"]["action_steps"][HOST][0]["id"]
+        self.assertFalse(record_action(value, GUEST, step("我准备好了", 2, requires_peer=True, peer_action_id=reference), NOW + 15))
         self.assertEqual(value["shared_activity"]["action_steps"][HOST][0]["status"], "awaiting_peer")
         self.assertTrue(value["outing"]["return_agreed"])
 

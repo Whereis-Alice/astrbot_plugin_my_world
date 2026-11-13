@@ -198,8 +198,30 @@ def clean_action_step(value: Any) -> dict[str, Any]:
             or not 0.05 <= seconds <= 14400
             or any(type(value.get(key, False)) is not bool for key in ("waiting", "requires_peer"))):
         return {}
-    return {"description": text(description, 400), "seconds": float(seconds),
-            "waiting": value.get("waiting", False), "requires_peer": value.get("requires_peer", False)}
+    result = {"description": text(description, 400), "seconds": float(seconds),
+              "waiting": value.get("waiting", False), "requires_peer": value.get("requires_peer", False)}
+    if "peer_action_id" in value:
+        reference = value["peer_action_id"]
+        if (not result["requires_peer"] or not isinstance(reference, str)
+                or len(reference) > 80 or not ID.fullmatch(reference)):
+            return {}
+        result["peer_action_id"] = reference
+    return result
+
+
+def clean_action_control(value: Any) -> dict[str, Any]:
+    """Cancel one's own action or explicitly decline a particular cooperation request."""
+    if not isinstance(value, dict):
+        return {}
+    reference, operation = value.get("action_id"), value.get("operation")
+    if (not isinstance(reference, str) or len(reference) > 80 or not ID.fullmatch(reference)
+            or not isinstance(operation, str) or operation not in {"cancel", "decline"}
+            or "reason" in value and (not isinstance(value["reason"], str) or len(value["reason"]) > 160)):
+        return {}
+    result = {"action_id": reference, "operation": operation}
+    if "reason" in value:
+        result["reason"] = text(value["reason"], 160)
+    return result
 
 
 def clean_scene_update(value: Any) -> dict[str, Any]:
@@ -211,6 +233,13 @@ def clean_scene_update(value: Any) -> dict[str, Any]:
             or "done" in value and type(value["done"]) is not bool):
         return {}
     result = {"summary": text(summary, 500)}
+    if "action_ids" in value:
+        references = value["action_ids"]
+        if (not isinstance(references, list) or not references or len(references) > 12
+                or any(not isinstance(item, str) or len(item) > 80 or not ID.fullmatch(item) for item in references)
+                or len(set(references)) != len(references)):
+            return {}
+        result["action_ids"] = list(references)
     for name in ("objects", "pending"):
         if name not in value:
             continue
@@ -241,4 +270,5 @@ def clean_decision(value: Any) -> dict[str, Any]:
             "return_after": value.get("return_after") is True, "farewell": text(value.get("farewell"), 100),
             "pause_minutes": clean_pause(value), "continue_activity": value.get("continue_activity") is True,
             "action_step": clean_action_step(value.get("action_step")),
-            "scene_update": clean_scene_update(value.get("scene_update"))}
+            "scene_update": clean_scene_update(value.get("scene_update")),
+            "action_control": clean_action_control(value.get("action_control"))}

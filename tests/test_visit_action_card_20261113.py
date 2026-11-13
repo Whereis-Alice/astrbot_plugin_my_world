@@ -85,7 +85,7 @@ def test_elapsed_clock_shows_confirmation_and_settled_action_is_not_still_runnin
     async def scenario():
         plugin, holder, _, _ = fixture(model=False)
         holder["now"] = 200
-        assert (await group_card_override(plugin, SESSION))["status"] == "等结果确认"
+        assert (await group_card_override(plugin, SESSION))["status"] == "和艾拉等一会儿"
         row = holder["visit"]["shared_activity"]["action_steps"]["guest"][0]
         row.update(status="elapsed", settled_revision=1)
         assert (await group_card_override(plugin, SESSION))["status"] == "喝茶中"
@@ -156,7 +156,7 @@ def test_unproven_display_model_output_is_rejected_with_bounded_retry(text):
             assert (await group_card_override(plugin, SESSION))["status"] == "泡红茶中"
         assert generate.await_count == 1
         holder["now"] = 201
-        assert (await group_card_override(plugin, SESSION))["status"] == "等结果确认"
+        assert (await group_card_override(plugin, SESSION))["status"] == "和艾拉等一会儿"
         await settle(jobs)
         assert generate.await_count == 2
     asyncio.run(scenario())

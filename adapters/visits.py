@@ -26,7 +26,7 @@ from ..core.state import STATE_DROWSY, STATE_NAPPING, STATE_SLEEPING
 from ..core.recovery import sleep_action_kind
 from ..core.visit_presence import active_visit, presence_text
 from ..core.visits.decisions import FORMAT_ISSUES, VisitDecisionError, record_decision_candidate
-from ..core.visits.protocol import clean_action_step, clean_outing_offer, clean_pause, clean_scene_update
+from ..core.visits.protocol import clean_action_control, clean_action_step, clean_outing_offer, clean_pause, clean_scene_update
 from ..core.visits.activities import activity_context
 from ..core.background_budget import capture_background_admission
 from ..core.planner import same_plan
@@ -445,14 +445,22 @@ class VisitActorPort(VisitCardActorMixin):
                 "你提出新outing时也可在outing内给pause_minutes；双方各自决定节奏后才共同执行，"
                 "不必每次换地点、重提活动，也不要为了凑回合强行告别。"
                 "shared_activity保存共同活动的实际局面：goal、summary、公开objects、未决pending、双方actions和确认milestones。"
-                "action_step={description,seconds,waiting,requires_peer}是你此刻自主选的一步具体行动，描述只包含自己选择；"
+                "action_step={description,seconds,waiting,requires_peer,peer_action_id?}是你此刻自主选的一步具体行动，描述只包含自己选择；"
                 "seconds是它自然花的秒数，支持小数。伸手、递物、尝一口可以很短，制作、阅读、路程或等待需要多久就写多久。"
                 "结合眼前条件和已确认阶段估时：烧水、冲泡、晾凉、喝一口是不同步骤，不因同属喝茶就重复耗同样的停留时间。"
                 "改变地点时参考host_places邻接和环境给travel_seconds，不瞬移；同一地点里的小动作只需action_step.seconds。"
                 "waiting=true表示有明确缘由的等待，可与自己的动手行为分开；需要朋友配合才开始时requires_peer=true，不替她同意或选择。"
+                "发起新的协作请求时不写peer_action_id；愿意加入朋友某项awaiting_peer请求时，peer_action_id必须准确引用那条动作id。"
+                "另提一件不同的协作事项不代表同意朋友那件事；不要靠猜名字、等候顺序或同一地点把两件事拼在一起。"
                 "已有scheduled/running/awaiting_peer动作时不要重复提交同一动作；可以回应朋友、做不同的等待或暂不出声。"
+                "想放弃自己的未结算动作时给action_control={action_id,operation:cancel,reason?}，引用自己的具体id；"
+                "不愿加入朋友某条尚未开始的协作请求时用operation:decline引用对方请求id。operation是JSON字符串。"
+                "取消本人已开始的协作会让这段协作中断，对方仍自主决定下一步；不能替对方取消独立活动或拒绝已经开始的协作。"
+                "cancelled/declined/interrupted是已终止状态，不代表成功，不能继续当作正在做；需要重新尝试时自主提出新动作。"
                 "actions的elapsed只表示约定时长已到，不代表成功；settled_revision与milestones才是已确认的公开变化。"
-                "只有东道主可用scene_update={summary,objects?,pending?,done?}明确结算ready_action_ids支持的公开变化。"
+                "只有东道主可用scene_update={summary,action_ids,objects?,pending?,done?}明确结算公开变化。"
+                "action_ids必须从ready_action_ids中准确选择本次变化依赖的动作id；只结算这些动作，不能顺手消费其他已到点的独立行动。"
+                "结算协作结果必须一并引用同一joint_id双方的动作id。还有其他未结算动作时，不能把整段目标标为done:true。"
                 "仅依据双方已经自主选择、到点的具体动作与已确认场景；共同动作还需要双方独立配合。不编造朋友新动作、台词、内心、胜负或发现。"
                 "pending保持尚未确认的事，done仅在这段目标有明确完成依据时为true；未完成可留待继续，普通小动作也能带出具体回应。"
                 "若愿意这段活动结束后归家，给return_after:true及你自己届时要说的farewell；"
@@ -638,12 +646,13 @@ class VisitActorPort(VisitCardActorMixin):
                      '{"scene":{"event":"一件尚未解决的公开小事"}}')
             return ('本阶段只推进场景，不替双方说话。event_offer用scene:{place,activity,event}，'
                     'event_resolve用outcome；可选自己的thought，其余字段省略。结构示例：' + shape + '。')
-        return ('本阶段自主决定自己的言行，say可省略；有具体动作可给action_step:{description,seconds,waiting,requires_peer}。'
+        return ('本阶段自主决定自己的言行，say可省略；有具体动作可给action_step:{description,seconds,waiting,requires_peer,peer_action_id?}。'
                 '动作秒数支持小数，表示你真的选择花这些时间去做，不表示已经成功。'
                 '继续共玩可用continue_activity:true,pause_minutes:number；'
                 '收到outing_offer须用outing_accept布尔值表明自己的选择；'
                 '活动结束时才可选outcome或新outing:{place,activity,minutes}；'
-                '东道主有ready_action_ids时，可用scene_update:{summary,objects?,pending?,done?}结算有依据的中途变化。'
+                '加入已有协作须以peer_action_id引用朋友awaiting_peer请求；取消自己动作或拒绝待协作请求用action_control:{action_id,operation,reason?}。'
+                '东道主有ready_action_ids时，可用scene_update:{summary,action_ids,objects?,pending?,done?}结算所引用动作支持的中途变化。'
                 '想告别时用leave:true，想约定活动后归家用return_after:true,farewell:string。'
                 'thought/reflection可记录你自己的独立感受；无关字段省略。'
                 '结构示例：{"action_step":{"description":"你自己选的具体一步","seconds":2.5,"waiting":false,"requires_peer":false}}。'
@@ -671,6 +680,7 @@ class VisitActorPort(VisitCardActorMixin):
         result = {"accept": value.get("accept") is True, "leave": value.get("leave") is True,
                   "outing": clean_outing_offer(value.get("outing")),
                   "action_step": clean_action_step(value.get("action_step")),
+                  "action_control": clean_action_control(value.get("action_control")),
                   "scene_update": clean_scene_update(value.get("scene_update")),
                   "outing_accept": value.get("outing_accept") is True,
                   "return_after": value.get("return_after") is True,
@@ -683,12 +693,14 @@ class VisitActorPort(VisitCardActorMixin):
                             for name, limit in (("place", 80), ("activity", 120), ("event", 240))}}
         if any(key in value and type(value[key]) is not bool for key in ("outing_accept", "return_after", "continue_activity")):
             raise VisitDecisionError("format", format_issue="choice_boolean")
-        if any(value.get(key) is not None and not result[key] for key in ("action_step", "scene_update")):
+        if any(value.get(key) is not None and not result[key] for key in ("action_step", "action_control", "scene_update")):
             raise VisitDecisionError("format", format_issue="empty_choice")
+        if result["scene_update"] and not result["scene_update"].get("action_ids"):
+            raise VisitDecisionError("format", format_issue="action_references")
         for key in ("pause_minutes", "next_contact_minutes"):
             if key in value and (type(value[key]) not in {int, float} or not math.isfinite(value[key])):
                 raise VisitDecisionError("format", format_issue="pause_number")
-        if phase not in {"propose", "receive"} and not (result["leave"] or result["outing"] or result["action_step"] or result["scene_update"]
+        if phase not in {"propose", "receive"} and not (result["leave"] or result["outing"] or result["action_step"] or result["action_control"] or result["scene_update"]
                 or any(key in value for key in ("outing_accept", "return_after", "continue_activity",
                                                "pause_minutes", "next_contact_minutes")) or any(
                 result[name] for name in ("say", "action", "thought", "reflection", "promise", "outcome"))

@@ -58,6 +58,7 @@ FORMAT_ISSUES = {
     "choice_boolean": "活动选择没有使用布尔值",
     "pause_number": "停留时间没有使用有限数字",
     "empty_choice": "没有留下本阶段可执行的选择",
+    "action_references": "这次选择缺少明确的动作引用，或引用了现在不能接受、取消或结算的动作",
 }
 
 

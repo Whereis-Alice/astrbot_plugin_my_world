@@ -21,7 +21,7 @@ RECORD_CARD_RENDER_TIMEOUT = 180
 RECORD_CARD_SEND_TIMEOUT = 45
 PUBLIC_LOG_KINDS = frozenset({
     "invitation", "arrival", "activity", "say", "action", "action_plan", "experience",
-    "result", "outcome", "milestone", "travel_plan", "scene", "event", "contact_reply", "contact_status", "phone", "message", "", None,
+    "result", "outcome", "milestone", "travel_plan", "action_control", "scene", "event", "contact_reply", "contact_status", "phone", "message", "", None,
 })
 
 
@@ -129,10 +129,12 @@ class VisitRecordCards:
         outing = visit.get("outing")
         if isinstance(outing, dict):
             snapshot["outing"] = {key: copy.deepcopy(outing[key]) for key in
-                                  ("place", "activity", "started_at", "until") if key in outing}
+                                  ("place", "activity", "stage", "started_at", "until", "ended_at",
+                                   "departed_at", "travel_seconds", "origin_place") if key in outing}
             snapshot["outing"]["route"] = [
                 {key: copy.deepcopy(stop[key]) for key in
-                 ("place", "activity", "started_at", "until") if key in stop}
+                 ("place", "activity", "location", "title", "started_at", "until", "ended_at",
+                  "departed_at", "travel_seconds", "origin_place") if key in stop}
                 for stop in outing.get("route", []) if isinstance(stop, dict)]
         return snapshot
 

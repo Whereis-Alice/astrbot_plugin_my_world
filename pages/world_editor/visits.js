@@ -537,33 +537,53 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
   function scenePanel(visit, live = true) {
     const {outing, steps, index, stage, scene} = outingScene(visit);
     const panel = el("div", "visits-shared-scene"), copy = el("div", "visits-scene-copy");
-    copy.append(el("span", "visits-scene-kicker", live ? "此刻 · 一起" : "那天 · 一起"));
-    const observed = Number(outing.observed_at || visit.observed_at || Date.now() / 1000);
-    const traveling = live && Number(outing.travel_seconds) > 0 && Number(outing.started_at) > observed;
+    const time = value => Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : 0;
+    const actualEnd = time(stage.ended_at || outing.ended_at || (!live && visit.ended_at));
+    const observed = live ? time(outing.observed_at || visit.observed_at) || Date.now() / 1000
+      : actualEnd || time(outing.observed_at || visit.observed_at);
+    const activityStart = time(stage.started_at || outing.started_at || visit.arrived_at);
+    const activityUntil = time(stage.until || stage.ends_at || outing.stage_until || outing.until);
+    const travelSeconds = time(outing.travel_seconds), travelStart = activityStart - travelSeconds;
+    const beforeStart = observed > 0 && activityStart > observed;
+    const traveling = beforeStart && travelSeconds > 0 && observed >= travelStart;
+    const checkpoint = live && !beforeStart && (activityUntil && observed >= activityUntil
+      || visit.shared_activity?.stage === outing.stage && visit.shared_activity?.done === true);
+    copy.append(el("span", "visits-scene-kicker", live
+      ? traveling ? "此刻 · 途中" : beforeStart ? "此刻 · 等一会儿" : checkpoint ? "此刻 · 商量下一步" : "此刻 · 一起"
+      : beforeStart ? "那天 · 还没开始" : "那天 · 一起"));
     const destination = scene.place || scene.location || outing.place || visit.remote?.world || "约好的地方";
-    const place = traveling ? `${outing.origin_place || "路上"} → ${destination}` : destination;
-    const activity = traveling ? "正在一起赶路" : scene.activity || scene.title || outing.activity || "一起待一会儿";
+    const place = traveling ? `${outing.origin_place || "路上"} → ${destination}`
+      : beforeStart ? outing.origin_place || "约好的地方" : destination;
+    const plannedActivity = scene.activity || scene.title || outing.activity || "一起待一会儿";
+    const activity = traveling ? live ? "正在一起赶路" : "当时还在一起赶路，共同活动尚未开始。"
+      : beforeStart ? live ? "共同活动还没开始，先一起等一会儿。" : "这次相处结束时，共同活动尚未开始。"
+      : checkpoint ? activityUntil && observed >= activityUntil
+        ? "约好的时间已过，接下来还在商量。" : "这一段已经告一段落，接下来还在商量。"
+      : plannedActivity;
     copy.append(el("h4", "", place), el("p", "visits-scene-activity", activity));
+    if (beforeStart || checkpoint) copy.append(el("p", "visits-scene-plan-label", `原先的安排：${plannedActivity}`));
     const names = [visit.local?.name, visit.remote?.name || visit.peer_name].filter(Boolean);
     if (names.length) copy.append(el("p", "visits-companions", names.join("  ×  ")));
-    const start = traveling ? Number(outing.started_at) - Number(outing.travel_seconds)
-      : Number(stage.started_at || outing.started_at || visit.arrived_at || 0);
-    const end = traveling ? Number(outing.started_at) : Number(stage.until || stage.ends_at || outing.stage_until || outing.until || 0);
-    if (live && end > start && start > 0) {
+    const start = traveling ? travelStart : activityStart, end = traveling ? activityStart : activityUntil;
+    if (live && !checkpoint && (traveling || !beforeStart) && end > start && start > 0) {
       const progress = el("div", "visits-time-progress"); progress.setAttribute("role", "progressbar");
       const percent = Math.max(0, Math.min(100, Math.round((observed - start) / (end - start) * 100)));
-      progress.setAttribute("aria-label", traveling ? "当前共同路途的时间" : "当前共同活动的时间"); progress.setAttribute("aria-valuenow", percent);
+      progress.setAttribute("aria-label", traveling ? "约定路途时段已过去的比例" : "约定活动时段已过去的比例"); progress.setAttribute("aria-valuenow", percent);
       progress.setAttribute("aria-valuemin", "0"); progress.setAttribute("aria-valuemax", "100");
       progress.style.setProperty("--visit-progress", `${percent}%`); progress.append(el("span"));
-      copy.append(progress, el("p", "visits-scene-clock", `${stamp(start)} — ${stamp(end)}`));
+      copy.append(progress);
     }
+    if (live && end > start && start > 0) copy.append(el("p", "visits-scene-clock", `约定 ${stamp(start)} — ${stamp(end)}`));
+    else if (!live && actualEnd > start && start > 0) copy.append(el("p", "visits-scene-clock",
+      `${traveling ? "实际同行" : "实际相处"} ${stamp(start)} — ${stamp(actualEnd)}`));
     panel.append(copy, sceneArt(scene));
     if (steps.length > 1) {
       const route = el("ol", "visits-route"); route.setAttribute("aria-label", "共同活动路线");
       const first = Math.max(0, index - 7);
       for (const [offset, item] of steps.slice(first, first + 8).entries()) {
         const position = first + offset;
-        const point = el("li", !live || position < index ? "is-past" : position === index ? "is-current" : "");
+        const experienced = time(item.started_at) && time(item.started_at) <= observed;
+        const point = el("li", (!live || position < index) && experienced ? "is-past" : live && position === index ? "is-current" : "");
         if (live && position === index) point.setAttribute("aria-current", "step");
         point.append(el("span", "visits-route-dot"), el("span", "", item.place || item.location || item.activity || item.title || "约好的活动"));
         route.append(point);
@@ -599,7 +619,10 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
   }
   function visitCard(visit, live = false, diagnostic = false, expanded = false) {
     const card = el(live ? "div" : "details", "visits-visit");
-    const place = visit.arrived_at && (visit.outing?.place || visit.outing_version !== 1 && visit.scene?.place);
+    const unstarted = !live && Number(visit.ended_at) > 0 && Number(visit.outing?.started_at) > Number(visit.ended_at);
+    const onRoad = unstarted && Number(visit.outing?.travel_seconds) > 0;
+    const place = visit.arrived_at && (unstarted ? onRoad ? `去${visit.outing.place || "约好的地方"}的途中`
+      : visit.outing?.origin_place || "活动尚未开始" : visit.outing?.place || visit.outing_version !== 1 && visit.scene?.place);
     const friend = visit.remote?.name || visit.peer_name || visit.peer?.name || "友邻世界";
     const keepsake = !live && !diagnostic;
     const label = keepsake ? [friend, place].filter(Boolean).join(" · ") : `${friend} · ${STATUS[visit.status] || visit.status || "等待答复"}`;
@@ -615,7 +638,8 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
         const firstSpeech = recordLogs(visit).filter(item => item.kind !== "invitation")
           .flatMap(recordParts).find(part => part.type === "speech");
         const preview = visit.shared_activity?.summary || visit.shared_activity?.milestones?.at(-1)?.summary
-          || firstSpeech?.text || (visit.arrived_at && visit.outing?.activity) || "";
+          || firstSpeech?.text || (unstarted ? onRoad ? "那时还在路上，约好的活动尚未开始。" : "约好的共同活动尚未开始。"
+            : visit.arrived_at && visit.outing?.activity) || "";
         if (preview) copy.append(el("span", "visits-entry-preview", preview));
         const interval = stamp(start) + (recordDate(visit.ended_at) && Number(visit.ended_at) >= Number(start)
           ? ` — ${date?.toDateString() === recordDate(visit.ended_at).toDateString() ? clockStamp(visit.ended_at) : stamp(visit.ended_at)}` : "");

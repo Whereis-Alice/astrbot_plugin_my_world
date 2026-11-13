@@ -2,17 +2,21 @@
 from __future__ import annotations
 
 import copy
+import asyncio
 import json
 from types import SimpleNamespace
 import unittest
 
 from core.visit_chat_bridge import (MAX_NOTES, capture_visit_chat_owner, local_chat_experiences,
-                                   local_experience_lines, record_visit_chat, record_visit_reads)
+                                   local_experience_lines, record_visit_chat, record_visit_reads,
+                                   reconcile_visit_chat)
 from core.visit_presence import presence_text, visit_activity_text, visit_context_text
 from tests import test_engine as engine_fixture
 from tests import test_visits_actor as actor_fixture
 from core.engine.models import TickOutcome
 from core.engine.speech_receipts import ReceiptOwner, remember_accepted
+from core.visits import VisitConfig, VisitService
+from core.visits.protocol import public_actor
 
 GROUP = "test:GroupMessage:1"
 
@@ -126,6 +130,67 @@ class VisitChatBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.wakes[0]["visit_id"], "old-trip")
         self.assertEqual(self.wakes[0]["seq"], 1)
 
+    async def test_durable_receipt_recovers_failed_notification_after_reload(self):
+        async def unavailable(**payload):
+            raise OSError("reload interrupted notification")
+        self.service.wake_local_experience = unavailable
+        owner = self.owner()
+        self.visit.update(status="completed", ended_at=1110., remembered=True)
+        await record_visit_chat(self.engine, owner, kind="read", text="这句确实读到过", source_id="lost-wake")
+        self.assertNotIn("local_experience_seq", self.visit)
+
+        async def recovered(**payload):
+            self.wakes.append(payload)
+            self.visit["local_experience_seq"] = payload["seq"]
+            self.visit.pop("remembered", None)
+            return True
+        self.service.wake_local_experience = recovered
+        await reconcile_visit_chat(self.engine)
+        self.assertEqual(self.visit["local_experience_seq"], 1)
+        self.assertNotIn("remembered", self.visit)
+        self.assertFalse(self.wakes[-1]["significant"])
+        self.clock += 31
+        await reconcile_visit_chat(self.engine)
+        self.assertEqual(len(self.wakes), 1)
+
+    async def test_recovery_wakes_only_new_important_experiences(self):
+        async def unavailable(**payload):
+            raise OSError("temporarily unavailable")
+        self.service.wake_local_experience = unavailable
+        await record_visit_chat(self.engine, self.owner(), kind="read", text="要不要带她去湖边", source_id="idea", significant=True)
+        await record_visit_chat(self.engine, self.owner(), kind="read", text="普通聊天", source_id="ordinary")
+
+        async def recovered(**payload):
+            self.wakes.append(payload)
+            self.visit["local_experience_seq"] = payload["seq"]
+            return True
+        self.service.wake_local_experience = recovered
+        await reconcile_visit_chat(self.engine)
+        self.assertTrue(self.wakes[-1]["significant"])
+        self.assertEqual(self.wakes[-1]["seq"], 2)
+        await record_visit_chat(self.engine, self.owner(), kind="read", text="另一句普通聊天", source_id="ordinary-2")
+        self.visit["local_experience_seq"] = 2
+        self.clock += 31
+        await reconcile_visit_chat(self.engine)
+        self.assertFalse(self.wakes[-1]["significant"])
+
+    async def test_end_while_waiting_for_journal_read_cannot_record_later_speech(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+        original = self.engine.db.call
+        async def blocked(op, key, value=None):
+            if op == "kv_get":
+                entered.set()
+                await release.wait()
+            return await original(op, key, value)
+        self.engine.db.call = blocked
+        task = asyncio.create_task(record_visit_chat(self.engine, self.owner(), kind="sent",
+            text="接受发送回执时已经过了实际归家时间", source_id="late-speech", at=1100.))
+        await entered.wait()
+        self.visit.update(status="completed", ended_at=1090.)
+        release.set()
+        self.assertFalse(await task)
+        self.assertEqual(self.wakes, [])
+
 
 class VisitMemoryLocalAdditionTests(unittest.IsolatedAsyncioTestCase):
     node_id = "study"
@@ -206,6 +271,50 @@ class VisitMemoryLocalAdditionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(notices[0]["seq"], 2)
         self.assertEqual(len(json.loads(updated["context"])["visit_confirmation"]["log"]), len(self.visit["log"]))
 
+    async def test_reload_recovers_unnotified_chat_into_the_existing_sqlite_memory(self):
+        config = VisitConfig(enabled=True, auto_enabled=False, history_keep=128)
+        service = VisitService(self.db, config, self.port, clock=self.clock.now)
+        self.addAsyncCleanup(service.close)
+        await service._load()
+        remote = {"actor_id": "peer", "persona_key": "peer-persona", "name": "朋友",
+                  "world": "朋友的世界", "ready": True, "home_node": "home"}
+        peer = service._add_peer(engine_fixture.SESSION, self.local, public_actor(remote, "other-instance"),
+                                 "http://not-contacted.example", "test-key")
+        visit = service._new_visit(engine_fixture.SESSION, peer, self.local, "chat-recovery-trip",
+                                    "guest", "玩一会", False)
+        visit.update(status="active", arrived_at=self.clock.now(), outing_version=1)
+        service._append(visit, peer["id"], "say", "这一局先到这里")
+        service._state["visits"][visit["id"]] = visit
+        self.engine.visits = service
+        owner = capture_visit_chat_owner(self.engine, engine_fixture.SESSION, persona_key=self.local["persona_key"])
+        self.assertIsNotNone(owner)
+        await service._finish(visit, "completed", "已经告别", notify=False)
+        visit["finish_review_attempted"] = True
+        await service._remember(visit["id"])
+        rows = await self.db.call("query_memories", session_id=engine_fixture.SESSION)
+        old = next(row for row in rows if json.loads(row.get("context") or "{}").get("visit_id") == visit["id"])
+
+        async def unavailable(**payload):
+            raise OSError("notification interrupted")
+        service.wake_local_experience = unavailable
+        await record_visit_chat(self.engine, owner, kind="read", text="群友约我们下次试试折纸", source_id="before-end")
+        self.assertTrue(visit["remembered"])
+        await service.close()
+        resumed = VisitService(self.db, config, self.port, clock=self.clock.now)
+        self.addAsyncCleanup(resumed.close)
+        self.engine.visits = resumed
+        await resumed._load()
+        restored = resumed._state["visits"][visit["id"]]
+        self.assertTrue(restored["remembered"])
+        await reconcile_visit_chat(self.engine)
+        self.assertNotIn("remembered", restored)
+        await resumed._remember(visit["id"])
+        rows = await self.db.call("query_memories", session_id=engine_fixture.SESSION)
+        updated = next(row for row in rows if row["id"] == old["id"])
+        self.assertIn("下次试试折纸", updated["content"])
+        self.assertTrue(restored["remembered"])
+        self.assertEqual(len([row for row in rows if json.loads(row.get("context") or "{}").get("visit_id") == visit["id"]]), 1)
+
 
 class SharedActivityPresenceTests(unittest.TestCase):
     def test_open_actions_and_public_updates_parse_without_forcing_a_utterance(self):
@@ -214,7 +323,7 @@ class SharedActivityPresenceTests(unittest.TestCase):
         self.assertEqual(parsed["say"], "")
         self.assertEqual(parsed["action_step"]["seconds"], .8)
         settled = actor_fixture.VisitActorPort._parse_decision("turn",
-            '{"scene_update":{"summary":"选定了两根一样长的木条","objects":["两根木条"],"pending":["还没组装"],"done":false}}')
+            '{"scene_update":{"summary":"选定了两根一样长的木条","action_ids":["s0-a1"],"objects":["两根木条"],"pending":["还没组装"],"done":false}}')
         self.assertFalse(settled["scene_update"]["done"])
 
     def test_milestone_enters_context_but_running_action_is_not_a_result(self):

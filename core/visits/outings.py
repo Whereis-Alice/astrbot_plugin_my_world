@@ -91,6 +91,7 @@ def valid_activity(activity: object, *, expires_at: float, now: float | None = N
             or type(stage) is not int or stage != len(route) - 1):
         return False
     previous = 0.
+    previous_ended = False
     for stop in route:
         if not isinstance(stop, dict) or not clean_outing_offer({**stop, "minutes": 45}):
             return False
@@ -104,7 +105,7 @@ def valid_activity(activity: object, *, expires_at: float, now: float | None = N
         if travel:
             departed = stop.get("departed_at")
             if (type(departed) not in {int, float} or not math.isfinite(departed)
-                    or departed <= 0 or departed > first
+                    or departed <= 0 or departed > first or previous_ended and departed < previous
                     or not math.isclose(first - departed, travel, abs_tol=0.000001)
                     or stop.get("travel_until") != first
                     or not isinstance(stop.get("origin_place"), str) or len(stop["origin_place"]) > 80
@@ -112,7 +113,17 @@ def valid_activity(activity: object, *, expires_at: float, now: float | None = N
                 return False
         elif now is not None and first > now + 300:
             return False
-        previous = first
+        if "ended_at" in stop:
+            ended = stop["ended_at"]
+            if (type(ended) not in {int, float} or not math.isfinite(ended)
+                    or ended < stop.get("departed_at", first)
+                    or now is not None and ended > now + 300):
+                return False
+            previous = ended  # A changed destination may end travel before its planned arrival.
+            previous_ended = True
+        else:
+            previous = first
+            previous_ended = False
     if type(activity.get("return_agreed", False)) is not bool:
         return False
     quiet = activity.get("quiet_until", activity["until"])

@@ -18,7 +18,8 @@ CARD_SCALE = 1.5
 _TERMINAL = {"completed", "declined", "expired", "interrupted", "closed", "ended", "cancelled", "failed"}
 _TEXT_TYPES = {"say": "speech", "invitation": "speech", "contact_reply": "speech",
                "contact_status": "status", "action": "intent", "action_plan": "intent",
-               "experience": "experience", "result": "result"}
+               "travel_plan": "intent", "experience": "experience", "result": "result", "outcome": "result",
+               "milestone": "result", "action_control": "chronicle"}
 _LABELS = {"speech": "", "intent": "当时的打算", "experience": "当时的感受",
            "result": "发生的结果", "status": "通话前状态", "chronicle": "共同经历"}
 _STATUS = {"completed": "已告别归家", "interrupted": "这次暂时中断", "expired": "这次相处已结束",
@@ -138,6 +139,28 @@ def _continues(previous: dict, row: dict) -> bool:
     return sequenced or all(times)
 
 
+def _experienced_stop(stop: dict, visit_end: datetime | None, zone: tzinfo) -> bool:
+    """A timed destination needs actual time there; untimed legacy records stay intact."""
+    start = _date(stop.get("started_at"), zone)
+    if start is None:
+        return True
+    ends = [value for value in (_date(stop.get("ended_at"), zone), visit_end) if value is not None]
+    return not ends or start < min(ends)
+
+
+def _current_stop(outing: dict, zone: tzinfo) -> dict:
+    """Recover the current stop's actual departure without taking a future planned stop."""
+    started = _date(outing.get("started_at"), zone)
+    if started is None:
+        return outing
+    route = outing.get("route") if isinstance(outing.get("route"), list) else []
+    for row in reversed(route):
+        if (isinstance(row, dict) and _date(row.get("started_at"), zone) == started
+                and (_text(row.get("place")) or _text(row.get("location"))) == _text(outing.get("place"))):
+            return {**outing, **row}
+    return outing
+
+
 def _entries(visit: dict, zone: tzinfo) -> list[dict]:
     entries: list[dict] = []
     outing = visit.get("outing") if isinstance(visit.get("outing"), dict) else {}
@@ -145,6 +168,7 @@ def _entries(visit: dict, zone: tzinfo) -> list[dict]:
     stops = [{"place": _text(row.get("place")) or _text(row.get("location")),
               "activity": _text(row.get("activity")) or _text(row.get("title")), "index": index + 1}
              for index, row in enumerate(route) if isinstance(row, dict)
+             and _experienced_stop(row, _date(visit.get("ended_at"), zone), zone)
              and (_text(row.get("place")) or _text(row.get("location"))
                   or _text(row.get("activity")) or _text(row.get("title")))]
     if stops:
@@ -175,7 +199,9 @@ def _entries(visit: dict, zone: tzinfo) -> list[dict]:
                  "time": date.strftime("%H:%M") if date else "", "day": date.strftime("%m.%d") if date else "",
                  "seq": row.get("seq"), "parts": parts, "continued": False,
                  "tag": {"arrival": "相见", "invitation": "约见电话", "contact_reply": "电话答复",
-                         "activity": "一起做的事", "event": "途中小事", "result": "发生的结果"}.get(kind, "共同经历")}
+                         "activity": "一起做的事", "event": "途中小事", "result": "发生的结果",
+                         "outcome": "发生的结果", "milestone": "发生的结果",
+                         "action_control": "行动调整"}.get(kind, "共同经历")}
         if kind == "arrival":
             # The system's stock arrival sentence is represented by the neutral
             # milestone, just as in the journal reader. Keep any actual detail.
@@ -221,9 +247,18 @@ def build_visit_card_pages(visit: dict, *, timezone: str | tzinfo | None = None,
     remote = visit.get("remote") if isinstance(visit.get("remote"), dict) else {}
     outing = visit.get("outing") if isinstance(visit.get("outing"), dict) else {}
     scene = visit.get("scene") if isinstance(visit.get("scene"), dict) else {}
+    if visit.get("outing_version") == 1 and not outing.get("place"):
+        scene = {}  # This extension's scene is still a proposal until its outing is confirmed.
     met = _date(visit.get("arrived_at"), zone) is not None or visit.get("contact_success") is True
     place = (_text(outing.get("place")) or _text(scene.get("place"))) if met else ""
     activity = (_text(outing.get("activity")) or _text(scene.get("activity"))) if met else ""
+    current = _current_stop(outing, zone)
+    if met and outing and not _experienced_stop(current, end, zone):
+        departure = _date(current.get("departed_at"), zone)
+        traveling = bool(current.get("travel_seconds")) and (not departure or not end or departure <= end)
+        origin = _text(current.get("origin_place"))
+        place = f"{origin or '途中'} → {place or '约好的地方'}" if traveling else origin
+        activity = "当时还在途中，约好的共同活动尚未开始。" if traveling else "约好的共同活动尚未开始。"
     interval = start.strftime("%H:%M") if start else "时刻未记"
     if end and start and end >= start:
         interval += " — " + (end.strftime("%H:%M") if end.date() == start.date() else end.strftime("%m.%d %H:%M"))
