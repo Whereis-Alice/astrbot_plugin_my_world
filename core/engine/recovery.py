@@ -118,14 +118,17 @@ class RecoveryMixin:
     def queued_recovery_speech_allowed(self, outcome, kind, decision_id="") -> bool:
         """Retire a legacy completion draft if automatic rest resumed before send.
 
-        The exact receipt identifies completion speech. Ordinary life shares
-        and direct replies are not inferred from an activity's energy effects.
+        Only a receipt with captured system recovery provenance qualifies.
+        Normal completions and old receipts with unknown provenance keep their
+        own expression rules even when recovery begins before their delivery.
         """
         if kind == "reply" or not decision_id:
             return True
         decision = next((item for item in outcome.speech_decisions
                          if item.get("id") == decision_id and item.get("trigger") == "completion"), None)
         if decision is None:
+            return True
+        if (decision.get("completion_source") or {}).get("source") != "recovery":
             return True
         reason = decision.get("recovery_cancelled", "")
         if not reason:

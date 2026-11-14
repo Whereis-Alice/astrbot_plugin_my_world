@@ -12,6 +12,28 @@ from .context_selection import relevance, search_terms
 from .state import chat_core_text
 
 _ACKNOWLEDGEMENTS = {"嗯", "嗯嗯", "好", "好的", "哈哈", "哈哈哈", "收到", "+1", "ok"}
+_GENERIC_TOPIC_PHRASES = re.compile(
+    "[这那][台张只件本种次]|这个|那个|这些|那些|这样|那样|这么|那么|"
+    "东西|事情|不错|好看|好玩|很好|挺好|"
+    "漂亮|可爱|有趣|厉害|喜欢|觉得|感觉|好像|真的|确实|非常|特别|有点|有些|"
+    "一样|还有|可以|需要")
+_GENERIC_TOPIC_WORDS = frozenset({
+    "this", "that", "these", "those", "it", "its", "thing", "things",
+    "like", "likes", "look", "looks", "seem", "seems", "good", "nice", "great",
+    "cool", "pretty", "really", "very", "also", "the", "and", "for", "with",
+    "are", "was", "were", "is", "to", "of", "in", "on", "as", "at", "an", "be", "do",
+    "does", "have", "has", "had", "need", "needs", "want", "think", "feel",
+    "can", "could", "would", "should", "will", "but", "not", "you", "your",
+    "me", "my", "we", "our", "they", "their", "he", "she", "his", "her",
+})
+
+
+def _continuation_topics(text: str) -> set[str]:
+    """Keep open-ended topic words, excluding generic praise and pointing words."""
+    # Remove complete phrases before bigram extraction: "这个不错" must not
+    # leave the artificial boundary term "个不" as a supposed concrete topic.
+    text = _GENERIC_TOPIC_PHRASES.sub(" ", str(text).casefold())
+    return set(search_terms(text)) - _GENERIC_TOPIC_WORDS
 
 
 def attention_text(row: dict) -> str:
@@ -122,14 +144,12 @@ def assess_opportunity(*, now: float, rows: list[dict], new: list[dict],
     explicit = any(row.get("addressing") == "me" or
                    str((row.get("reply_to") or {}).get("message_id") or "") in own_ids
                    for row in continuing_rows)
-    # A single bigram can saturate retrieval relevance for a short remark
-    # ("这个不错" -> "这台打印机不错"). Keep that weak overlap useful for
-    # ordinary attention, but require more shared topic evidence before giving
-    # an unaddressed message the fast continuation interval. Each new message
-    # must match one real turn; separate messages/turns cannot pool their words.
+    # Generic overlap ("不错", "this") still accelerates ordinary attention.
+    # One concrete topic word is enough for a timely continuation, including
+    # unfamiliar subjects; no character/world entity vocabulary is required.
+    # Compare each message with one real turn, never pooled fragments.
     specific_continuation = any(
-        len(set(search_terms(attention_text(row))) & set(search_terms(turn["text"]))) >= 2
-        and min(1., 3 * relevance(attention_text(row), turn["text"])) >= .5
+        _continuation_topics(attention_text(row)) & _continuation_topics(turn["text"])
         for row in continuing_rows for turn in live_turns)
     continuing = explicit or specific_continuation
     related = max(related, continuity)

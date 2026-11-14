@@ -27,15 +27,41 @@ class ParticipationPriorityTests(unittest.TestCase):
         self.assertGreater(weak.due_at, 990 + 20)
         self.assertLess(weak.due_at, unrelated.due_at)
 
-    def test_one_repeated_word_or_bigram_cannot_supply_extra_topic_evidence(self):
+    def test_repeated_generic_words_do_not_supply_topic_evidence(self):
         for own, incoming in (("这个好看", "这张照片好看"),
+                              ("这台不错", "这台打印机不错"),
                               ("不错", "不错，不错，真的不错"),
-                              ("风车", "风车旁边有打印机"),
+                              ("这个不错", "这个不错，真的不错"),
+                              ("非常好看", "这张照片非常好看"),
+                              ("this looks nice", "this printer looks nice"),
                               ("this", "this printer looks nice")):
             with self.subTest(own=own, incoming=incoming):
                 result = self.choice(own, incoming)
                 self.assertFalse(result.continuation_priority)
                 self.assertGreater(result.relevance, 0)
+
+    def test_single_specific_topic_keeps_fast_continuation_without_quote(self):
+        for own, incoming in (("风车", "风车坏了吗"),
+                              ("珐琅", "珐琅容易磕坏吗"),
+                              ("windmill", "Does the windmill need repair?"),
+                              ("Zymora", "Does Zymora need water?")):
+            with self.subTest(own=own, incoming=incoming):
+                result = self.choice(own, incoming)
+                self.assertTrue(result.continuation)
+                self.assertTrue(result.continuation_priority)
+                self.assertEqual(result.due_at, 1010.)
+
+    def test_one_concrete_word_in_a_longer_turn_is_still_a_topic(self):
+        result = self.choice("The unfamiliar Zymora sculpture has several delicate edges and unusual curves",
+                             "Does Zymora need water?")
+        self.assertTrue(result.continuation_priority)
+        self.assertEqual(result.due_at, 1010.)
+
+    def test_multiple_generic_matches_do_not_become_a_specific_topic(self):
+        result = self.choice("这个不错，也非常好看", "那些陶罐不错，也非常好看")
+        self.assertFalse(result.continuation)
+        self.assertFalse(result.continuation_priority)
+        self.assertGreater(result.relevance, 0)
 
     def test_specific_windmill_topic_still_has_the_fast_interval(self):
         result = self.choice("风车叶片需要修理", "风车的叶片换了吗")
@@ -49,17 +75,16 @@ class ParticipationPriorityTests(unittest.TestCase):
         self.assertTrue(result.continuation_priority)
         self.assertEqual(result.due_at, 1010.)
 
-    def test_separate_new_messages_cannot_pool_their_weak_overlaps(self):
-        result = self.choice("风车叶片", new=[{"text": "风车"}, {"text": "叶片"}])
+    def test_separate_new_messages_cannot_construct_a_topic_from_fragments(self):
+        result = self.choice("风车", new=[{"text": "风"}, {"text": "车"}])
         self.assertFalse(result.continuation)
         self.assertFalse(result.continuation_priority)
-        self.assertGreater(result.relevance, 0)
 
-    def test_separate_real_turns_cannot_pool_their_weak_overlaps(self):
+    def test_separate_real_turns_cannot_construct_a_topic_from_fragments(self):
         result = self.choice(rows=[
-            {"is_self": True, "at": 980., "text": "风车", "speech_turn": "turn-a"},
-            {"is_self": True, "at": 990., "text": "叶片", "speech_turn": "turn-b"},
-        ], incoming="风车叶片", continuation_turns=3)
+            {"is_self": True, "at": 980., "text": "风", "speech_turn": "turn-a"},
+            {"is_self": True, "at": 990., "text": "车", "speech_turn": "turn-b"},
+        ], incoming="风车坏了吗", continuation_turns=3)
         self.assertFalse(result.continuation_priority)
 
     def test_real_quote_or_addressing_keeps_priority_without_topic_overlap(self):

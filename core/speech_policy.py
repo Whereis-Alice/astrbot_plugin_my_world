@@ -12,6 +12,7 @@ ASYNC_SEND_CHECK = ContextVar("world_async_send_check", default=None)
 REPLY_TARGET = ContextVar("world_reply_target", default=None)
 SPEECH_OUTCOME = ContextVar("world_speech_outcome", default=None)
 PLAN_SPEECH = ContextVar("world_plan_speech", default=None)
+COMPLETION_SOURCE = ContextVar("world_completion_source", default=None)
 SEND_RECEIPT = ContextVar("world_send_receipt", default=None)
 CONTACT_TARGET = ContextVar("world_contact_target", default=None)
 
@@ -211,9 +212,16 @@ def speech_origin(source):
             token = SPEECH_OUTCOME.set(outcome)
             plan_token = PLAN_SPEECH.set((outcome, plan) if source == "plan"
                 else PLAN_SPEECH.get() if source in {"actions", "action"} else None)
+            completion_token = COMPLETION_SOURCE.set((outcome, {
+                "source": str(action.get("plan_source") or "activity"),
+                "action_id": str(action.get("type") or ""),
+                "plan_id": str(action.get("plan_id") or ""),
+            }) if source == "completion" else
+                COMPLETION_SOURCE.get() if source in {"actions", "action"} else None)
             try:
                 return await function(self, *args, **kwargs)
             finally:
+                COMPLETION_SOURCE.reset(completion_token)
                 PLAN_SPEECH.reset(plan_token)
                 SPEECH_OUTCOME.reset(token)
                 outcome.speech_kind = previous

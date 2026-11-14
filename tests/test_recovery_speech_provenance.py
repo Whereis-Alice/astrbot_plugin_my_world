@@ -7,7 +7,7 @@ from core.models import ActionDef
 from core.planner import create_plan
 from core.recovery import system_recovery_action
 from core.speech_decision import SpeechDecision
-from core.speech_policy import segment_allowed
+from core.speech_policy import COMPLETION_SOURCE, segment_allowed
 from tests import test_recovery as fixture
 from tests.test_engine import SESSION
 
@@ -21,12 +21,17 @@ class RecoverySpeechProvenanceTests(unittest.IsolatedAsyncioTestCase):
     def outcome(self, kind=""):
         return TickOutcome(SESSION, speech_kind=kind)
 
-    async def pending_completion(self, text="靠背凉凉的。", *, kind="life_share"):
+    async def pending_completion(self, text="靠背凉凉的。", *, kind="life_share", source="recovery"):
         outcome = self.outcome(kind)
-        async with self.engine.session_state(SESSION) as state:
-            await self.engine.remember_speech_decision(state, SESSION,
-                SpeechDecision(inner="先记下刚才的感觉。", say=text, intent="life_share"),
-                trigger="completion", outcome=outcome, drafts=[text])
+        token = COMPLETION_SOURCE.set((outcome, {"source": source, "action_id": "charge",
+            "plan_id": "completed-recovery"}) if source is not None else None)
+        try:
+            async with self.engine.session_state(SESSION) as state:
+                await self.engine.remember_speech_decision(state, SESSION,
+                    SpeechDecision(inner="先记下刚才的感觉。", say=text, intent="life_share"),
+                    trigger="completion", outcome=outcome, drafts=[text])
+        finally:
+            COMPLETION_SOURCE.reset(token)
         outcome.add_speech(text)
         return outcome
 
@@ -162,6 +167,53 @@ class RecoverySpeechProvenanceTests(unittest.IsolatedAsyncioTestCase):
         await self.begin_recovery()
         await self.engine._deliver(outcome)
         self.assertEqual(self.messenger.flat_messages, ["上午的颜色已经调好了。"])
+
+    async def test_normal_completion_can_share_after_automatic_recovery_begins(self):
+        hobby = ActionDef(id="drawing", name="画画", category="continuous", recovery_kind="none",
+            llm_level="template", scope="node", allowed_nodes=["study"], duration_mode="fixed", duration=60,
+            on_complete={"trigger": "llm_followup"})
+        self.engine.world.actions.append(hobby)
+        self.llm.replies = ['{"inner":"总算把颜色调好了。","intent":"life_share",'
+            '"actions":[{"type":"say","messages":["那片蓝色终于调出来了。"]}]}']
+        outcome = self.outcome("life_share")
+        async with self.engine.session_state(SESSION) as state:
+            await self.engine._start_action(state, self.engine.node("study"), outcome, hobby,
+                PlannedAction(type="drawing", duration=60), 0, True)
+            await self.engine._tick_continuous(state, self.engine.node("study"), outcome)
+        self.assertEqual(outcome.speech_decisions[0]["completion_source"]["action_id"], "drawing")
+        await self.begin_recovery()
+        await self.engine._deliver(outcome)
+        self.assertEqual(self.messenger.flat_messages, ["那片蓝色终于调出来了。"])
+        self.assertNotIn("recovery_cancelled", outcome.speech_decisions[0])
+        self.assertEqual(outcome.speech_decisions[0]["status"], "sent")
+
+    async def test_unknown_legacy_completion_is_not_guessed_to_be_recovery(self):
+        outcome = await self.pending_completion("刚发现了新的颜色。", source=None)
+        await self.begin_recovery()
+        await self.engine._deliver(outcome)
+        self.assertEqual(self.messenger.flat_messages, ["刚发现了新的颜色。"])
+        self.assertNotIn("completion_source", outcome.speech_decisions[0])
+
+    async def test_autonomously_chosen_charge_keeps_normal_completion_expression(self):
+        self.action.duration_mode = "fixed"
+        self.action.duration = 60
+        self.action.on_complete.trigger = "llm_followup"
+        self.llm.replies = ['{"inner":"刚才的安静让人松了口气。","intent":"life_share",'
+            '"actions":[{"type":"say","messages":["刚才听见窗外有鸟叫。"]}]}']
+        await self.set_state(energy=.5)
+        outcome = self.outcome("life_share")
+        async with self.engine.session_state(SESSION) as state:
+            await self.engine._start_action(state, self.engine.node("study"), outcome, self.action,
+                PlannedAction(type="charge", duration=60), 0, True)
+            await self.engine.tick_activity_recovery(state, outcome)
+            self.assertEqual(state.current_action["speech_kind"], "life_share")
+            await self.engine._tick_continuous(state, self.engine.node("study"), outcome)
+            self.assertAlmostEqual(state.energy, .51)
+        await self.engine._deliver(outcome)
+        self.assertEqual(self.messenger.flat_messages, ["刚才听见窗外有鸟叫。"])
+        self.assertEqual(outcome.speech_decisions[0]["completion_source"]["source"], "activity")
+        self.assertEqual(outcome.speech_decisions[0]["completion_source"]["action_id"], "charge")
+        self.assertIsNone(COMPLETION_SOURCE.get())
 
     async def test_stale_recovery_state_cannot_cancel_an_ordinary_completion(self):
         for case in ("expired", "finished_steps", "finished_action"):

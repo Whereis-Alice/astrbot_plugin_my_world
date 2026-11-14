@@ -321,6 +321,11 @@ class SpeechDecisionsMixin:
                  "draft": decision.say, "drafts": list(drafts) if drafts is not None else ([decision.say] if decision.say else []), "sent": []}
         if blocked_reason:
             trace["note"] = blocked_reason
+        if trigger == "completion" and outcome is not None:
+            from ..speech_policy import COMPLETION_SOURCE
+            completion = COMPLETION_SOURCE.get()
+            if completion and completion[0] is outcome:
+                trace["completion_source"] = dict(completion[1])
         if (outcome is not None and (state.participation.get(target) or {}).get("request_id")
                 == outcome.speech_receipt_batch):
             trace["participation_request"] = outcome.speech_receipt_batch

@@ -3,6 +3,7 @@ import unittest
 
 from core.engine import TickOutcome
 from core.speech_decision import SpeechDecision
+from core.speech_policy import PLAN_SPEECH
 from tests import test_participation as fixture
 
 GROUP = fixture.GROUP
@@ -52,6 +53,22 @@ class BlockedSpeechIdentityTests(unittest.IsolatedAsyncioTestCase):
         trace["status"] = "partial"
         outcome.add_speech("嗯。")
         self.assertEqual(outcome.speech_ids[""], ["active", "active"])
+
+    def test_later_plan_step_creates_a_new_receipt_after_an_earlier_rejection(self):
+        outcome = TickOutcome(GROUP, speech_kind="continuation")
+        blocked = {"id": "blocked", "thought_id": "same-thought", "target": GROUP,
+                   "status": "not_sent", "drafts": ["我也想去看看。"], "sent": []}
+        outcome.speech_decisions.append(blocked)
+        plan = {"id": "same-plan", "thought_id": "same-thought"}
+        token = PLAN_SPEECH.set((outcome, plan))
+        try:
+            outcome.add_speech("我也想去看看。")
+        finally:
+            PLAN_SPEECH.reset(token)
+        self.assertNotEqual(outcome.speech_ids[""][0], blocked["id"])
+        self.assertEqual(blocked["drafts"], ["我也想去看看。"])
+        self.assertEqual(blocked["status"], "not_sent")
+        self.assertEqual(len(outcome.speech_decisions), 2)
 
 
 if __name__ == "__main__":

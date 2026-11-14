@@ -71,7 +71,8 @@ def bind_plan_speech(outcome, body, target, *, image=False):
     if not plan.get("thought_id"):
         return ""
     trace = next((row for row in outcome.speech_decisions
-        if row.get("thought_id") == plan["thought_id"] and row["target"] == target), None)
+        if row.get("thought_id") == plan["thought_id"] and row["target"] == target
+        and row.get("status") not in {"not_sent", "failed", "listening"}), None)
     if trace is None:
         trace = {"id": uuid4().hex, "thought_id": plan["thought_id"],
             "plan_id": plan["id"], "target": target, "trigger": "plan",
