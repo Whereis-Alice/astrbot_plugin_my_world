@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from ..planner import active_plan
-from ..recovery import is_sleep_action, restores_energy, recovery_gain, recovery_needed, recovery_target
+from ..recovery import (is_sleep_action, restores_energy, recovery_gain, recovery_needed,
+                        recovery_target, system_recovery_action, system_recovery_active)
 
 
 class RecoveryMixin:
@@ -70,6 +71,13 @@ class RecoveryMixin:
             state.grumpy_note = ""
 
     async def tick_activity_recovery(self, state, outcome) -> None:
+        # Upgrade the provenance of a saved automatic recovery before it ends.
+        # This does not restart its clock or change any physiological effects.
+        current = state.current_action
+        if system_recovery_action(current, state.current_plan):
+            current["plan_source"] = "recovery"
+            if current.get("speech_kind") != "reply":
+                current["speech_kind"] = "quiet"
         config = self.world.sleep
         if state.energy >= recovery_target(config):
             state.sleep_rhythm.pop("recovering", None)
@@ -106,3 +114,25 @@ class RecoveryMixin:
                 "note": "精力严重不足，保留当前进度后去恢复"}, outcome=outcome)
         await self._apply_plan(state, self.node(state.node_id), outcome, plan)
         await self._tick_plan(state, self.node(state.node_id), outcome, depth=0)
+
+    def queued_recovery_speech_allowed(self, outcome, kind, decision_id="") -> bool:
+        """Retire a legacy completion draft if automatic rest resumed before send.
+
+        The exact receipt identifies completion speech. Ordinary life shares
+        and direct replies are not inferred from an activity's energy effects.
+        """
+        if kind == "reply" or not decision_id:
+            return True
+        decision = next((item for item in outcome.speech_decisions
+                         if item.get("id") == decision_id and item.get("trigger") == "completion"), None)
+        if decision is None:
+            return True
+        reason = decision.get("recovery_cancelled", "")
+        if not reason:
+            payload = self.db.raw.get_state(self.state_key(outcome.generation_origin))
+            if payload and system_recovery_active(payload, now=self._now()):
+                reason = "正在继续自动恢复，取消尚未发送的旧动作完成旁白"
+                decision["recovery_cancelled"] = reason
+        if reason and reason not in outcome.notes:
+            outcome.notes.append(reason)
+        return not reason

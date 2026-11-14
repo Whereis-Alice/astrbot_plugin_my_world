@@ -205,6 +205,8 @@ class TickOutcome:
         ids.extend([""] * max(0, len(bucket) - len(ids)))
         decision_id = ""
         for decision in reversed(self.speech_decisions):
+            if decision.get("status") in {"not_sent", "failed", "listening"}:
+                continue  # A later equal line cannot turn a retired thought into speech.
             if decision.get("thought_id"):
                 continue  # Plan receipts grow from each actual queued occurrence.
             if decision["target"] == (target or self.home()) and body in decision["drafts"]:

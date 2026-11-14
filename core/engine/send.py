@@ -322,6 +322,9 @@ class SendMixin:
                 def contact_allowed(sid):
                     view = replace(outcome, contact_people=outcome.speech_recipients(key, i, images=images))
                     allowed = home_speech_allowed(self, view, kind, outcome.speech_proof(key, i, images=images))
+                    identities = (outcome.image_ids if images else outcome.speech_ids).get(key, [])
+                    identity = identities[i] if i < len(identities) else ""
+                    allowed = allowed and self.queued_recovery_speech_allowed(view, kind, identity)
                     outcome.notes.extend(note for note in view.notes if note not in outcome.notes)
                     return allowed and self.contact_speech_allowed(view, sid, kind, reserved=contact_reserved)
                 return (images or kind == "reply" or speakable(lines[i])) and any(
@@ -503,6 +506,8 @@ class SendMixin:
                     ordered_kinds = [values[i] if i is not None and i < len(values)
                         else view.speech_kind if i is not None else "reply" for _, i in entries]
                     ordered_proofs = [view.speech_proof("", i) if i is not None else None for _, i in entries]
+                    identities = view.speech_ids.get("", [])
+                    ordered_ids = [identities[i] if i is not None and i < len(identities) else "" for _, i in entries]
                     recorded_indices = set()
                     receipt_pending = set()
                     rejected_indices = set()
@@ -532,6 +537,7 @@ class SendMixin:
                     def check_segment(sid, position):
                         allowed = (self.speech_allowed(sid, ordered_kinds[position])
                             and home_speech_allowed(self, view, ordered_kinds[position], ordered_proofs[position])
+                            and self.queued_recovery_speech_allowed(view, ordered_kinds[position], ordered_ids[position])
                             and self.contact_speech_allowed(view, sid, ordered_kinds[position], reserved=receipt is not None))
                         if not allowed:
                             rejected_indices.add(position)
@@ -621,7 +627,8 @@ class SendMixin:
                                 self.note_visible_speech(target, state_key=owner.state_key)
                     if not accepted and not actual_messages:
                         if (target in view.chat_speech_cancelled
-                                or any(proof is not None and proof.cancelled for proof in ordered_proofs)):
+                                or any(proof is not None and proof.cancelled for proof in ordered_proofs)
+                                or any(item.get("recovery_cancelled") for item in view.speech_decisions)):
                             suppressed = True  # Cancelled privately, without a platform failure.
                         else:
                             outcome.notes.append(f"发到 {target} 失败：平台没有接收")
@@ -636,6 +643,8 @@ class SendMixin:
                     from ..speech_policy import guard_send
                     with guard_send(lambda sid, i: all(self.speech_allowed(sid, kind)
                         and home_speech_allowed(self, view, kind, view.speech_proof("", index, images=True))
+                        and self.queued_recovery_speech_allowed(view, kind,
+                            view.image_ids.get("", [])[index] if index < len(view.image_ids.get("", [])) else "")
                         and self.contact_speech_allowed(view, sid, kind, reserved=receipt is not None)
                         for index, kind in enumerate(image_kinds)),
                         async_check=lambda sid, i: self._home_images_ready(view, image_kinds)):

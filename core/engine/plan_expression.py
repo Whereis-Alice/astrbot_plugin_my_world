@@ -62,6 +62,11 @@ async def choose_autonomous_plan(
     if decision.error:
         outcome.notes.append("自主计划的开口选择无效，保留安静生活：" + decision.error)
     chat = decision.intent in {"join_chat", "continue_chat"} and not decision.error
+    attention, blocked = {}, ""
+    if chat and lines:
+        from .expression_attention import admit_generated_chat
+        chat, attention, blocked = await admit_generated_chat(
+            engine, state, target, outcome, rows, raw=raw)
     outreach = decision.intent == "outreach" and not decision.error
     life_share = decision.intent == "life_share" and not decision.error
     accepted = []
@@ -102,17 +107,20 @@ async def choose_autonomous_plan(
     plan["steps"] = accepted
     plan["contact_people"] = sorted(defaults) if outreach else []
     plan["speech_choice"] = {"intent": decision.intent if not decision.error else "listen",
-        "reply_to": decision.reply_to if chat else "", "target": target}
+        "reply_to": decision.reply_to if chat or blocked else "", "target": target}
+    if blocked:
+        plan["speech_choice"]["blocked"] = blocked
+        plan["speech_choice"]["drafts"] = lines
     if chat:
         plan["send_to"] = target
         plan["speech_scene"] = {"target": target, "rows": deepcopy(rows), "window": 900,
-            "reply_to": decision.reply_to}
+            "reply_to": decision.reply_to, "attention": attention}
         for step in accepted:
             if step.get("kind") == "continuation":
                 step["speech_scene"] = deepcopy(plan["speech_scene"])
     if not accepted:
         if decision.inner:
             await engine.remember_speech_decision(state, target, decision,
-                trigger="plan", outcome=outcome, drafts=[])
+                trigger="plan", outcome=outcome, drafts=lines if blocked else [], blocked_reason=blocked)
         return None
     return plan

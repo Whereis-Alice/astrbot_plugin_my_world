@@ -22,6 +22,44 @@ def recovery_needed(energy: float, config: SleepConfig, *, recovering: bool = Fa
     return energy < config.recovery_threshold or (recovering and energy < recovery_target(config))
 
 
+def system_recovery_action(action, plan=None) -> bool:
+    """Recognize an executor-owned rest, including saved actions from older versions.
+
+    Positive energy effects and an activity's name are not provenance. A reply
+    or hobby sharing the room with an unrelated recovery plan keeps its source.
+    """
+    if not isinstance(action, dict):
+        return False
+    if action.get("plan_source"):
+        return action["plan_source"] == "recovery"
+    if not action.get("from_plan") or not isinstance(plan, dict) or plan.get("source") != "recovery":
+        return False
+    from .planner import same_plan
+    return same_plan(action, plan)
+
+
+def system_recovery_active(state, *, now: float = 0) -> bool:
+    """A current system recovery owns quiet time; user-requested rest does not."""
+    def value(name, default=None):
+        return state.get(name, default) if isinstance(state, dict) else getattr(state, name, default)
+
+    plan, action = value("current_plan"), value("current_action")
+    if system_recovery_action(action, plan):
+        if int(action.get("duration_ticks") or 0) > int(action.get("elapsed_ticks") or 0):
+            return True
+    if not isinstance(plan, dict) or plan.get("source") != "recovery":
+        return False
+    deadline = float(plan.get("expires_at") or 0)
+    valid_until = int(plan.get("valid_until") or 0)
+    if deadline and (now or float(value("plan_now", 0) or 0)) >= deadline:
+        return False
+    if not deadline and valid_until and int(value("world_time", 0) or 0) >= valid_until:
+        return False
+    steps = plan.get("steps") or []
+    index = max(0, int(plan.get("current_step") or 0))
+    return any(step.get("status") not in {"done", "skipped", "deferred"} for step in steps[index:])
+
+
 def sleep_action_kind(action) -> str:
     if action is None:
         return ""

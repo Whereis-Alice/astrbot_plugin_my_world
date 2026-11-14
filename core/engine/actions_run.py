@@ -529,6 +529,7 @@ class ActionsRunMixin:
                 # 只凭下标认不出自己，做完时就可能把别人的步骤当成自己的推掉
                 payload["plan_created_at"] = int(state.current_plan.get("created_at") or 0)
                 payload["plan_id"] = state.current_plan.get("id", "")
+                payload["plan_source"] = str(state.current_plan.get("source") or "")
                 payload["plan_index"] = int(state.current_plan.get("current_step") or 0)
                 payload["matter_id"] = state.current_plan.get("matter_id", "")
                 payload["matter_step_id"] = state.current_plan.get("matter_step_id", "")
@@ -882,6 +883,9 @@ class ActionsRunMixin:
                 message, _ = await self.participation_text(state, session_id or state.session_id)
                 return [message] if message else []
             if action.messages:
+                from .expression_attention import planned_chat_step_ready
+                if not await planned_chat_step_ready(self, state, session_id or state.session_id, from_plan=from_plan):
+                    return []
                 return list(action.messages)[: self.world.limits.max_messages_per_say]
         if definition.id == "say":
             return await self._generate_text_actions(

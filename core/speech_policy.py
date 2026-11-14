@@ -130,6 +130,12 @@ def speech_origin(source):
             previous_home = outcome.speech_home
             if source == "completion":
                 kind = bound["action"].get("speech_kind") or previous or "life_share"
+                from .recovery import system_recovery_action
+                action = bound["action"]
+                if system_recovery_action(action, bound["state"].current_plan):
+                    action["plan_source"] = "recovery"
+                    if kind != "reply":
+                        kind = action["speech_kind"] = "quiet"
             elif source == "sleep":
                 kind = (bound["state"].drowsy_sleep_step or {}).get("speech_kind") or "life_share"
             elif source == "plan":
@@ -146,6 +152,10 @@ def speech_origin(source):
                     outcome.contact_people = {str(step["target"])}
                 kind = step.get("kind") or ("schedule" if plan.get("source") == "schedule"
                     else "outreach" if outcome.contact_people else "life_share")
+                if plan.get("source") == "recovery":
+                    # Old saved steps may still carry an inherited life_share.
+                    # The system's recovery intent never grants narration.
+                    kind = step["kind"] = "quiet"
                 scene = step.get("speech_scene") or plan.get("speech_scene") or {}
                 if kind in {"participation", "browse_reply", "continuation", "interject"} and scene.get("rows"):
                     target = str(scene.get("target") or "")

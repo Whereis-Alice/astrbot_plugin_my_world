@@ -277,6 +277,12 @@ class AutonomyMixin:
         )
         if plan.get("id") and any(t.get("decision_id") == plan["id"] for t in state.thoughts):
             plan["thought_id"] = plan["id"]
+        choice = plan.get("speech_choice") or {}
+        if choice.get("blocked"):
+            from .expression_attention import remember_blocked_plan_chat
+            await remember_blocked_plan_chat(self, state, outcome, plan,
+                str(choice.get("target") or outcome.home()), reason=choice["blocked"],
+                drafts=choice.get("drafts") or [], reply_to=choice.get("reply_to", ""))
         self._note_event(state,
             "plan", {"reason": plan.get("reason"), "source": plan.get("source")}
         )

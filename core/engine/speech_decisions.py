@@ -106,6 +106,11 @@ class SpeechDecisionsMixin:
         if decision.error:
             outcome.notes.append("主动联系选择无效，保留安静活动：" + decision.error)
         chat = decision.intent in {"join_chat", "continue_chat"} and not decision.error
+        attention, blocked = {}, ""
+        if chat and lines:
+            from .expression_attention import admit_generated_chat
+            chat, attention, blocked = await admit_generated_chat(
+                self, state, target, outcome, rows, raw=raw)
         outreach = decision.intent == "outreach" and not decision.error
         quiet_steps = []
         for step in steps:
@@ -144,19 +149,23 @@ class SpeechDecisionsMixin:
         plan["steps"] = quiet_steps
         plan["contact_people"] = [user_id] if outreach else []
         plan["speech_choice"] = {"intent": decision.intent if not decision.error else "listen",
-                                 "reply_to": decision.reply_to if chat else "", "target": target,
+                                 "reply_to": decision.reply_to if chat or blocked else "", "target": target,
                                  "user_id": user_id if outreach else ""}
+        if blocked:
+            plan["speech_choice"]["blocked"] = blocked
+            plan["speech_choice"]["drafts"] = lines
         if chat:
             plan["send_to"] = target
             # Persist exact capabilities so a later tick cannot borrow newer chat.
             plan["speech_scene"] = {"target": target, "rows": deepcopy(rows), "window": 900,
-                                    "reply_to": decision.reply_to}
+                                    "reply_to": decision.reply_to, "attention": attention}
             for step in quiet_steps:
                 if step.get("kind") == "continuation":
                     step["speech_scene"] = deepcopy(plan["speech_scene"])
         if not quiet_steps:
             if decision.inner:
-                await self.remember_speech_decision(state, target, decision, trigger="plan", outcome=outcome, drafts=[])
+                await self.remember_speech_decision(state, target, decision, trigger="plan", outcome=outcome,
+                    drafts=lines if blocked else [], blocked_reason=blocked)
             return None
         return plan
 
@@ -195,6 +204,15 @@ class SpeechDecisionsMixin:
             # Old action payloads remain usable for life actions, but cannot
             # acquire chat privileges without a validated thought and reference.
             return "quiet" if payload.get("intent") or outcome.speech_kind in CHAT_KINDS else None
+        blocked = ""
+        if decision.say and decision.intent in {"join_chat", "continue_chat"}:
+            from .expression_attention import admit_generated_chat
+            admitted, _, blocked = await admit_generated_chat(
+                self, state, target, outcome, rows, raw=raw, source="completion_choice")
+            if not admitted:
+                await self.remember_speech_decision(state, target, decision, trigger=trigger,
+                    outcome=outcome, drafts=lines, raw=raw, blocked_reason=blocked)
+                return "quiet"
         await self.remember_speech_decision(state, target, decision, trigger=trigger, outcome=outcome,
                                            drafts=lines if decision.say else [], raw=raw)
         if decision.intent == "continue_chat":
@@ -212,7 +230,7 @@ class SpeechDecisionsMixin:
                          live_window=900, channel="main", reply_seqs=None):
         from ..speech_runtime import SPEECH_REQUEST, GROUNDING_RULES
         from ..speech_policy import SPEECH_OUTCOME
-        from .expression_attention import chat_expression_attention
+        from .expression_attention import chat_expression_attention, _attention_proof
         outcome = SPEECH_OUTCOME.get()
         needs_attention = bool(outcome is not None and (outcome.speech_kind in CHAT_KINDS
             or outcome.speech_kind in {"", "life_share"} and not self.speech_allowed(target, outcome.speech_kind)))
@@ -224,8 +242,21 @@ class SpeechDecisionsMixin:
                 if not allowed:
                     return None
                 if channel == "helper":
-                    return await self._ask_helper(target, system + GROUNDING_RULES, prompt)
-                return await self._ask_speech_media(state, target, system + GROUNDING_RULES, prompt, rows=rows, images=images)
+                    reply = await self._ask_helper(target, system + GROUNDING_RULES, prompt)
+                else:
+                    reply = await self._ask_speech_media(state, target, system + GROUNDING_RULES, prompt, rows=rows, images=images)
+            if outcome is not None and reply is not None:
+                from uuid import uuid4
+                identity = (state.session_id, target)
+                admitted = getattr(outcome, "_expression_attention", {})
+                generation = {"id": uuid4().hex, "raw": reply, "state_key": state.session_id,
+                              "charged": needs_attention and identity in admitted}
+                if generation["charged"]:
+                    generation["proof"] = await _attention_proof(self, state, target, outcome,
+                        generation=generation["id"])
+                    generation["proof"]["at"] = admitted[identity]
+                outcome._speech_generations = {**getattr(outcome, "_speech_generations", {}), target: generation}
+            return reply
         finally:
             SPEECH_REQUEST.reset(token)
 
@@ -273,7 +304,7 @@ class SpeechDecisionsMixin:
         return any(intent != "listen" for intent in allowed)
 
     async def remember_speech_decision(self, state, target, decision, *, trigger,
-                                       outcome=None, browse_id="", drafts=None, raw=None):
+                                       outcome=None, browse_id="", drafts=None, raw=None, blocked_reason=""):
         if outcome is not None:
             from .speech_receipts import bind_receipt_owner
             bind_receipt_owner(self, outcome, state=state)
@@ -286,8 +317,10 @@ class SpeechDecisionsMixin:
                  "motivation": decision.motivation,
                  "origin": outcome.speech_kind if outcome is not None else "",
                  "reply_to": decision.reply_to, "browse_id": browse_id,
-                 "status": "prepared" if decision.say else "listening", "at": self._now(),
+                 "status": "not_sent" if blocked_reason else "prepared" if decision.say else "listening", "at": self._now(),
                  "draft": decision.say, "drafts": list(drafts) if drafts is not None else ([decision.say] if decision.say else []), "sent": []}
+        if blocked_reason:
+            trace["note"] = blocked_reason
         if (outcome is not None and (state.participation.get(target) or {}).get("request_id")
                 == outcome.speech_receipt_batch):
             trace["participation_request"] = outcome.speech_receipt_batch
@@ -299,7 +332,7 @@ class SpeechDecisionsMixin:
         trace["tools"] = list(getattr(raw, "tools", []))
         from .speech_receipts import image_receipt_ref
         images = list(dict.fromkeys(str(ref).strip() for ref in getattr(raw, "images", [])
-                                   if str(ref).strip())) if decision.say else []
+                                   if str(ref).strip())) if decision.say and not blocked_reason else []
         trace["draft_images"] = [image_receipt_ref(ref) for ref in images]
         # Browsing already has a grounded thought. Keep the speech decision on
         # that same record rather than generating another reading impression.
@@ -318,7 +351,7 @@ class SpeechDecisionsMixin:
                 outcome.native_events[target] = raw.native_event
         await self._log_event(state, "speech_decision", {k: v for k, v in trace.items() if k != "draft"},
                               outcome=outcome, silent=True)
-        if outcome is not None and decision.say:
+        if outcome is not None and decision.say and not blocked_reason:
             kind = "continuation" if (decision.intent in {"join_chat", "continue_chat"}
                 and outcome.speech_kind not in CHAT_KINDS) else outcome.speech_kind
             outcome.add_images(images, target, decision_id=identity, kind=kind)

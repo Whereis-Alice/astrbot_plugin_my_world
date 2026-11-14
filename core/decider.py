@@ -201,7 +201,8 @@ class Decider:
             if recovery_gain(action, arrival_energy, self.world, seconds, state) <= 0:
                 continue
             total = recovery_total_seconds(action, arrival_energy, self.world, state, tick_seconds=self.tick_seconds)
-            steps = [*self._travel_then(state.node_id, target, graph), {"action": action.id, "duration": seconds}]
+            steps = [{**step, "kind": "quiet"} for step in [
+                *self._travel_then(state.node_id, target, graph), {"action": action.id, "duration": seconds}]]
             plan = create_plan(steps=steps, world_time=state.world_time, now=self._now(),
                 tick_seconds=self.tick_seconds, valid_for=max(3600, travel_seconds + seconds + 1800),
                 reason=f"精力不足，去{action.name or action.id}恢复", source="recovery")

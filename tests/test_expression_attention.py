@@ -85,7 +85,12 @@ class ExpressionAttentionTests(unittest.IsolatedAsyncioTestCase):
     async def test_native_reply_and_authorized_life_sharing_do_not_spend_chat_attention(self):
         self.cadence()
         await self.recent_scene()
-        self.engine._ask_llm = AsyncMock(side_effect=self.generate)
+        async def share(*args, **kwargs):
+            record_background_admission(started=True)
+            return json.dumps({"inner": "书签已经整理好。", "intent": "life_share",
+                "actions": [{"type": "say", "messages": ["书签已经夹好了。"]}]}, ensure_ascii=False)
+
+        self.engine._ask_llm = AsyncMock(side_effect=share)
         for kind in ("reply", "life_share"):
             with self.subTest(kind=kind):
                 await self.completion(kind)

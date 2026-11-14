@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import re
 
-from .context_selection import relevance
+from .context_selection import relevance, search_terms
 from .state import chat_core_text
 
 _ACKNOWLEDGEMENTS = {"嗯", "嗯嗯", "好", "好的", "哈哈", "哈哈哈", "收到", "+1", "ok"}
@@ -122,7 +122,16 @@ def assess_opportunity(*, now: float, rows: list[dict], new: list[dict],
     explicit = any(row.get("addressing") == "me" or
                    str((row.get("reply_to") or {}).get("message_id") or "") in own_ids
                    for row in continuing_rows)
-    continuing = explicit or continuity >= .5
+    # A single bigram can saturate retrieval relevance for a short remark
+    # ("这个不错" -> "这台打印机不错"). Keep that weak overlap useful for
+    # ordinary attention, but require more shared topic evidence before giving
+    # an unaddressed message the fast continuation interval. Each new message
+    # must match one real turn; separate messages/turns cannot pool their words.
+    specific_continuation = any(
+        len(set(search_terms(attention_text(row))) & set(search_terms(turn["text"]))) >= 2
+        and min(1., 3 * relevance(attention_text(row), turn["text"])) >= .5
+        for row in continuing_rows for turn in live_turns)
+    continuing = explicit or specific_continuation
     related = max(related, continuity)
     # A person's own relevant contribution supplies their weight. A close
     # author somewhere else in this burst cannot boost another person's topic.
