@@ -8,6 +8,13 @@ from .decisions import FORMAT_ISSUES, RETRYABLE, WAITING
 
 DELAYS = (30, 60)
 WAIT_DELAYS = (30, 60, 120, 300)
+ACTIVE_DELAYS = DELAYS + (300, 600, 900)
+
+
+def _active_recovery(visit: dict, cursor: dict) -> bool:
+    """Only an existing shared encounter can wait through a provider outage."""
+    return (visit.get("outing_version") == 1 and bool(visit.get("arrived_at"))
+            and visit.get("status") == "active" and cursor.get("phase") in {"turn", "scene"})
 
 
 def _state_checkpoints(visit: dict) -> dict:
@@ -60,11 +67,13 @@ def valid_retry(visit: dict, cursor: dict) -> bool:
     attempts, next_at = retry.get("attempts"), retry.get("next_at")
     waiting = retry.get("waiting", False)
     failures = retry.get("failures", 0 if waiting else attempts)
+    active = _active_recovery(visit, cursor)
+    delays = ACTIVE_DELAYS if active and retry.get("category") in {"timeout", "provider"} else DELAYS
     return (retry.get("phase") == cursor.get("phase")
             and retry.get("category") in RETRYABLE
             and type(waiting) is bool
-            and type(attempts) is int and 1 <= attempts <= len(WAIT_DELAYS if waiting else DELAYS)
-            and type(failures) is int and 0 <= failures <= len(DELAYS)
+            and type(attempts) is int and 1 <= attempts <= len(WAIT_DELAYS if waiting else delays)
+            and type(failures) is int and 0 <= failures <= len(ACTIVE_DELAYS if active else DELAYS)
             and type(next_at) in {int, float} and math.isfinite(next_at) and next_at >= 0)
 
 
@@ -76,17 +85,19 @@ def defer_decision(visit: dict, cursor: dict, *, category: str, now: float, cand
     failures = previous.get("failures", 0 if previous.get("waiting") else previous.get("attempts", 0))
     if category not in RETRYABLE:
         return False
+    active = _active_recovery(visit, cursor) and category in {"timeout", "provider"}
+    delays = ACTIVE_DELAYS if active else DELAYS
     if waiting:
         attempts = min(len(WAIT_DELAYS), (previous.get("attempts", 0) if previous.get("waiting") else 0) + 1)
         delay = WAIT_DELAYS[attempts - 1]
     else:
         failures += 1
-        if failures > len(DELAYS):
+        if failures > len(delays):
             return False
-        attempts, delay = failures, DELAYS[failures - 1]
+        attempts, delay = failures, delays[failures - 1]
     next_at = now + delay
     if next_at >= visit["expires_at"]:
-        if not waiting or visit["expires_at"] <= now:
+        if not (waiting or active) or visit["expires_at"] <= now:
             return False
         next_at = visit["expires_at"]  # The existing lease ends the wait at its own clock.
     retry = {"phase": cursor["phase"], "cursor": copy.deepcopy(cursor), "attempts": attempts,

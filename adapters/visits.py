@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import json
 import math
+import re
 from datetime import timedelta
 from typing import Any
 from uuid import uuid4
@@ -27,10 +28,14 @@ from ..core.recovery import sleep_action_kind
 from ..core.visit_presence import active_visit, presence_text
 from ..core.visits.decisions import FORMAT_ISSUES, VisitDecisionError, record_decision_candidate
 from ..core.visits.protocol import clean_action_control, clean_action_step, clean_outing_offer, clean_pause, clean_scene_update
-from ..core.visits.activities import activity_context
+from ..core.visits.activities import action_capacity, activity_context
+from ..core.visits.routing import MAX_CONTEXTS
 from ..core.background_budget import capture_background_admission
 from ..core.planner import same_plan
 from .visit_cards import VisitCardActorMixin
+
+_CONVERSATION_TAG = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}\Z")
+_MAX_CONVERSATION_ALIASES = 128
 
 
 def _text(value: Any, limit: int) -> str:
@@ -110,7 +115,61 @@ class VisitActorPort(VisitCardActorMixin):
             if isinstance(family, str) and family and len(family) <= 80:
                 kind = "GroupMessage" if parts[1] == "GroupMessage" else "FriendMessage"
                 result.add(f"{family}:{kind}:{parts[2]}")
+        aliases = self._explicit_conversation_contexts(owner, getter)
+        result.update(sorted(aliases)[:max(0, MAX_CONTEXTS - len(result))])
         return sorted(result)
+
+    def _routing_session_identity(self, session: str, getter) -> tuple[str, str] | None:
+        """Require an enabled real member and an available platform for an explicit alias."""
+        if not isinstance(session, str) or len(session) > 400:
+            return None
+        parts = session.split(":", 2)
+        if (len(parts) != 3 or parts[1] not in {"GroupMessage", "FriendMessage", "PrivateMessage"}
+                or not parts[0] or not parts[2] or any(char.isspace() or ord(char) < 32 for char in session)):
+            return None
+        owner = self.canonical_scope(session)
+        if not owner:
+            return None
+        engine = self.engine
+        with engine.config_scope(session):
+            if not engine.is_enabled(session) or engine.state_key(session) != owner:
+                return None
+        if session not in engine.group_sessions(owner):
+            return None
+        try:
+            platform = getter(parts[0])
+            metadata = platform.meta() if platform is not None else None
+            family = getattr(metadata, "name", "")
+        except Exception:
+            return None
+        if not isinstance(family, str) or not family or len(family) > 80:
+            return None
+        kind = "GroupMessage" if parts[1] == "GroupMessage" else "FriendMessage"
+        return owner, kind
+
+    def _explicit_conversation_contexts(self, owner: str, getter) -> set[str]:
+        """Administrator mappings remain local; conflicting aliases never choose a life."""
+        config_get = getattr(getattr(self.plugin, "config", None), "get", None)
+        values = config_get("visits_conversation_aliases", []) if callable(config_get) else []
+        if not isinstance(values, list) or len(values) > _MAX_CONVERSATION_ALIASES:
+            return set()
+        configured: dict[str, set[str]] = {}
+        for value in values:
+            if not isinstance(value, str) or len(value) > 500 or "=" not in value:
+                continue
+            session, tag = (part.strip() for part in value.rsplit("=", 1))
+            if not session or len(session) > 400 or not _CONVERSATION_TAG.fullmatch(tag):
+                continue
+            configured.setdefault(session, set()).add(tag)
+        assignments: dict[tuple[str, str], set[str]] = {}
+        for session, tags in configured.items():
+            if len(tags) != 1:
+                continue
+            identity = self._routing_session_identity(session, getter)
+            if identity:
+                assignments.setdefault((identity[1], next(iter(tags))), set()).add(identity[0])
+        return {"mw-explicit-conversation-v1:" + kind + ":" + tag for (kind, tag), owners in assignments.items()
+                if owners == {owner}}
 
     async def _identity(self, scope: str) -> str:
         key = "visits.actor." + hashlib.sha256(scope.encode()).hexdigest()
@@ -464,6 +523,8 @@ class VisitActorPort(VisitCardActorMixin):
                 "取消本人已开始的协作会让这段协作中断，对方仍自主决定下一步；不能替对方取消独立活动或拒绝已经开始的协作。"
                 "cancelled/declined/interrupted是已终止状态，不代表成功，不能继续当作正在做；需要重新尝试时自主提出新动作。"
                 "actions的elapsed只表示约定时长已到，不代表成功；settled_revision与milestones才是已确认的公开变化。"
+                "shared_activity.action_capacity按角色id给出未决动作数量unresolved与可开始新动作的位置remaining；每人在本段最多保留6个未决动作，elapsed也占位置。"
+                "remaining为0时先自主处理有依据的旧动作，或只回应朋友、安静继续；不要反复提交第七个动作。"
                 "只有东道主可用scene_update={summary,action_ids,objects?,pending?,done?}明确结算公开变化。"
                 "action_ids必须从ready_action_ids中准确选择本次变化依赖的动作id；只结算这些动作，不能顺手消费其他已到点的独立行动。"
                 "结算协作结果必须一并引用同一joint_id双方的动作id。还有其他未结算动作时，不能把整段目标标为done:true。"
@@ -533,15 +594,8 @@ class VisitActorPort(VisitCardActorMixin):
             try:
                 result = self._parse_decision(phase, reply.text)
             except VisitDecisionError as exc:
-                trace = getattr(engine, "decision_trace", None)
-                if callable(trace):
-                    try:
-                        trace(scope, "world_visit", "invalid_format", "串门模型选择未通过格式校验",
-                              visit_id=str(visit.get("id") or "")[:80], phase=phase,
-                              format_issue=exc.format_issue, output_chars=len(reply.text or ""),
-                              max_output_tokens=output_limit)
-                    except Exception:
-                        pass  # Diagnostics must not replace the original failure.
+                self.record_decision_issue(scope, phase, visit, exc.format_issue,
+                                           output_chars=len(reply.text or ""), max_output_tokens=output_limit)
                 raise
             record_decision_candidate(result)
             try:
@@ -570,6 +624,26 @@ class VisitActorPort(VisitCardActorMixin):
             if not manual and phase == "receive" and latest["chat_busy"]:
                 raise VisitDecisionError("life_busy", candidate=result)
             return result
+
+    def record_decision_issue(self, scope: str, phase: str, visit: dict, format_issue: str,
+                              *, output_chars: int | None = None,
+                              max_output_tokens: int | None = None) -> None:
+        """Retain a structural rejection, never the model's text or private thoughts."""
+        trace = getattr(self.engine, "decision_trace", None)
+        if not callable(trace) or format_issue not in FORMAT_ISSUES:
+            return
+        details = {"visit_id": str(visit.get("id") or "")[:80], "phase": phase,
+                   "format_issue": format_issue}
+        for key, value in (("output_chars", output_chars), ("max_output_tokens", max_output_tokens)):
+            if type(value) is int and value >= 0:
+                details[key] = value
+        if format_issue == "action_capacity":
+            actor = visit.get("host_id" if visit.get("role") == "host" else "guest_id")
+            details["action_capacity"] = action_capacity(visit, actor)
+        try:
+            trace(scope, "world_visit", "invalid_format", "串门模型选择未通过格式或行动校验", **details)
+        except Exception:
+            pass  # Diagnostics must not replace the original failure.
 
     @staticmethod
     def _outing_materials(outing: Any) -> dict[str, Any]:

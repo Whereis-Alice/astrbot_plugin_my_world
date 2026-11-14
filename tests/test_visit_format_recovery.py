@@ -124,4 +124,5 @@ class VisitFormatLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(visit["log"], logs)
         self.assertNotIn("model_retry", visit)
         self.assertEqual(set(FORMAT_ISSUES), {"json_object", "invitation_accept", "text_fields", "leave_boolean",
-                                              "scene_fields", "choice_boolean", "pause_number", "empty_choice"})
+                                              "scene_fields", "choice_boolean", "pause_number", "empty_choice",
+                                              "action_references", "action_capacity"})

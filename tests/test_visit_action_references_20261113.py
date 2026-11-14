@@ -208,7 +208,9 @@ class ActionReferenceTests(unittest.TestCase):
         self.assertEqual(failure.exception.format_issue, "action_references")
         rules = actor_fixture.VisitActorPort._decision_output_rules("turn", {"model_retry": {
             "category": "format", "phase": "turn", "failures": 1, "format_issue": "action_references"}})
-        self.assertIn("引用了现在不能接受、取消或结算的动作", rules)
+        self.assertIn("动作引用或执行条件不成立", rules)
+        self.assertIn("同类动作结束", rules)
+        self.assertIn("准确动作ID", rules)
 
 
 if __name__ == "__main__":

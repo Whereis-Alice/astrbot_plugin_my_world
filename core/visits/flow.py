@@ -8,7 +8,7 @@ from typing import Any
 
 from .protocol import RESERVED, TERMINAL, clean_decision, clean_scene, new_id, public_actor, digest
 from .activities import (record_action, advance_activity, apply_scene_update,
-                         apply_action_control, next_activity_due, activity_context)
+                         apply_action_control, next_activity_due, activity_context, action_capacity)
 from .history_pages import LOG_PAGE_SIZE, read_page
 from .outings import CHECKPOINT_LEASE_SECONDS, activity_waiting, begin_activity, outing_enabled, pause_activity, pending_outing_requests, activity_offer, valid_quiet_action_ids
 from .rhythm import VisitRhythm
@@ -17,6 +17,7 @@ from .transport import VisitTransportError
 from .decisions import VisitDecisionError, capture_decision_candidate
 from .model_retry import clear_state_read, defer_decision, defer_state_read, valid_retry
 from .ports import VisitStateError, describe_local
+from .cancellation import candidate_commit_lock, preserve_cancelled_candidate
 
 
 class VisitFlow(VisitRhythm):
@@ -305,11 +306,13 @@ class VisitFlow(VisitRhythm):
                     else:
                         await self._finish(visit, "interrupted", str(VisitDecisionError("life_busy")))
                     return None
-                if (phase == "turn" and not visit.get("unsent_turn")
-                        and not self._shared_choice_executable(visit, visit["decision"], self._now())):
+                issue = (self._shared_choice_issue(visit, visit["decision"], self._now())
+                         if phase == "turn" and not visit.get("unsent_turn") else "")
+                if issue:
+                    self._record_decision_issue(visit, phase, issue)
                     visit.pop("decision", None)
                     visit.pop("decision_cursor", None)
-                    if defer_decision(visit, cursor, category="format", now=self._now(), format_issue="action_references"):
+                    if defer_decision(visit, cursor, category="format", now=self._now(), format_issue=issue):
                         await self._save()
                     else:
                         await self._finish(visit, "interrupted", str(VisitDecisionError("format")))
@@ -461,13 +464,17 @@ class VisitFlow(VisitRhythm):
                     return_due = ((snapshot.get("outing") or {}).get("return_agreed")
                                   and snapshot["outing"]["until"] <= self._now())
                     check_choice = phase == "turn" or phase == "receive" and snapshot["role"] == "host" and result.get("accept")
-                    if check_choice and not return_due and not self._shared_choice_executable(snapshot, result, self._now()):
-                        raise VisitDecisionError("format", format_issue="action_references")
+                    issue = self._shared_choice_issue(snapshot, result, self._now()) if check_choice and not return_due else ""
+                    if issue:
+                        self._record_decision_issue(snapshot, phase, issue)
+                        raise VisitDecisionError("format", format_issue=issue)
                     # Only trusted local prechecks can explicitly refund a successful status result.
                     request_started = not isinstance(raw, dict) or raw.get("_request_started") is not False
                     result["contact_kind"] = ("contact_status" if isinstance(raw, dict)
                                               and raw.get("contact_kind") == "contact_status" else "contact_reply")
         except asyncio.CancelledError:
+            await preserve_cancelled_candidate(self, snapshot, cursor, token,
+                candidate if candidate is not None else generated.get("candidate"))
             raise
         except Exception as error:
             budget = None
@@ -524,7 +531,8 @@ class VisitFlow(VisitRhythm):
                         "这次思考未完成，只保留已确认经过")
                     await self._finish(visit, "interrupted", reason)
             return None
-        async with self._lock:
+        async with candidate_commit_lock(self, snapshot, cursor, token,
+                candidate if candidate is not None else generated.get("candidate")):
             visit = self._state["visits"].get(visit_id)
             if not visit or self._closed:
                 return None
@@ -1095,38 +1103,53 @@ class VisitFlow(VisitRhythm):
 
     @staticmethod
     def _shared_choice_executable(visit, result, now):
+        return not VisitFlow._shared_choice_issue(visit, result, now)
+
+    def _record_decision_issue(self, visit, phase, issue):
+        """Structural diagnostics must never prevent a bounded correction."""
+        recorder = getattr(self.actor_port, "record_decision_issue", None)
+        if callable(recorder):
+            try:
+                recorder(visit["scope"], phase, visit, issue)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _shared_choice_issue(visit, result, now):
         """Check explicit references against public state before committing a model turn."""
         if not outing_enabled(visit):
-            return True
+            return ""
         trial = copy.deepcopy(visit)
         actor = visit["host_id"] if visit["role"] == "host" else visit["guest_id"]
         offer = activity_offer(visit, result, now) if actor == visit["host_id"] else {}
         new_plan = bool(actor == visit["host_id"] and offer
                         or actor == visit["guest_id"] and visit.get("outing_offer") and result.get("outing_accept"))
         if not visit.get("outing") and not new_plan:
-            return not result.get("action_control") and not result.get("scene_update") and not result.get("action_step")
+            return "action_references" if any(result.get(key) for key in ("action_control", "scene_update", "action_step")) else ""
         advance_activity(trial, now)
         if result.get("action_control") and not apply_action_control(trial, actor, result["action_control"], now):
-            return False
+            return "action_references"
         if result.get("scene_update") and not apply_scene_update(trial, actor, result["scene_update"], now):
-            return False
+            return "action_references"
         step = result.get("action_step") or {}
         if new_plan:
             if step.get("peer_action_id"):
-                return False
+                return "action_references"
             if actor == visit["host_id"]:
                 if not step:
-                    return True
+                    return ""
                 trial["status"] = "active"  # Only a prospective copy, not an acceptance.
                 begin_activity(trial, offer, now, {"return_after": offer.get("return_after") is True})
-                return record_action(trial, actor, step, now)
+                return "" if record_action(trial, actor, step, now) else "action_references"
             begin_activity(trial, visit["outing_offer"], now, result)
             host_step = visit.get("outing_host_step") or {}
             if host_step and not record_action(trial, visit["host_id"], host_step, now):
-                return False
+                return "action_references"
         if not step:
-            return True
-        return record_action(trial, actor, step, now)
+            return ""
+        if record_action(trial, actor, step, now):
+            return ""
+        return "action_capacity" if action_capacity(trial, actor)["remaining"] == 0 else "action_references"
 
     @staticmethod
     def _confirmed_step_receipt(visit, remote, outgoing):

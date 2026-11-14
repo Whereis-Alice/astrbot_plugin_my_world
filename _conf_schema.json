@@ -63,6 +63,11 @@
     "hint": "填写对方可访问的 http://服务器IP:38471 或 https://你的域名，支持反向代理路径前缀。它是自己的接待地址；对方地址在友邻配对页填写。",
     "type": "string", "default": "", "obvious_hint": true
   },
+  "visits_conversation_aliases": {
+    "description": "串门同群标识",
+    "hint": "用于QQ官方OpenID与OneBot数字群等不同会话身份，也支持私聊。每行填写 本机完整会话ID=共同标识，例如 default:GroupMessage:123456789=tea-group；对端对应会话填写相同标识。标识为1～80位ASCII字母、数字、点、下划线或短横线，须以字母或数字开头，最多128行。只对已启用且平台可用的真实会话生效，保留原身份；同会话不同标识或同类会话的同标识指向多份生活时不采用该映射。群聊与私聊分开匹配。不会按群名猜测，也不向对端公开原始会话ID。修改后刷新友邻角色目录。",
+    "type": "list", "default": [], "obvious_hint": true
+  },
   "visits_auto_enabled": {
     "description": "允许她自主提出串门邀请",
     "hint": "总开关开启且存在已配对友邻时生效。默认各自每天可主动邀请每位友邻一次；对方来访不占自己的次数。睡觉或忙碌时不强行出门，提出邀请后仍由对方决定是否接受。",

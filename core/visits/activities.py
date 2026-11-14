@@ -64,6 +64,18 @@ def _current(visit: dict) -> dict:
     return visit["shared_activity"]
 
 
+def action_capacity(visit: dict, actor: str) -> dict[str, int]:
+    """Count unresolved choices at this stop without settling or pruning any fact."""
+    shared = visit.get("shared_activity") or {}
+    outing = visit.get("outing") or {}
+    records = (shared.get("action_steps", {}).get(actor, [])
+               if shared.get("stage") == outing.get("stage") else [])
+    unresolved = sum(not row.get("settled_revision") and row["status"] not in _CLOSED
+                     for row in records)
+    return {"limit": MAX_ACTIONS_PER_ACTOR, "unresolved": unresolved,
+            "remaining": max(0, MAX_ACTIONS_PER_ACTOR - unresolved)}
+
+
 def record_action(visit: dict, actor: str, step: Any, now: float) -> bool:
     """Commit only this actor's choice. One foreground action and one wait may coexist."""
     choice = clean_action_step(step)
@@ -251,6 +263,8 @@ def activity_context(visit: dict, now: float) -> dict:
                     row["status"], row["elapsed_at"] = "elapsed", row["until"]
             actions.append(row)
     result["actions"] = actions
+    result["action_capacity"] = {actor: action_capacity(visit, actor)
+                                 for actor in (visit.get("host_id"), visit.get("guest_id"))}
     result["ready_action_ids"] = [row["id"] for _, row in _ready_actions(
         {"action_steps": {actor: [row for row in actions if row["actor_id"] == actor]
                           for actor in (visit.get("host_id"), visit.get("guest_id"))}},

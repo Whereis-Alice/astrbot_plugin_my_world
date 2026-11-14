@@ -59,6 +59,7 @@ FORMAT_ISSUES = {
     "pause_number": "停留时间没有使用有限数字",
     "empty_choice": "没有留下本阶段可执行的选择",
     "action_references": "这次动作引用或执行条件不成立。普通动作须等自己的同类动作结束，或先用action_control取消；新动作时长须能在双方已约定的归家时间前完成。协作加入、取消和结算须引用当前可用的准确动作ID",
+    "action_capacity": "你在当前活动已有6个尚未确认结果或放弃的动作，没有位置再开始新动作。elapsed只表示时间已到，仍占未决位置。东道主可依据ready_action_ids自主用scene_update确认有依据的结果；本人也可明确用action_control取消不再继续的具体动作。可以先回应朋友或安静继续，不能自动宣称旧动作成功或丢弃旧选择",
 }
 
 
