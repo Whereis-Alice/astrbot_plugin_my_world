@@ -21,7 +21,7 @@ class TurnMixin:
     # ---------------- 注入模式：回合收尾与复盘 ----------------
 
     async def record_self_reply(
-        self, session_id: str, text: str, *, persona_id: str = ""
+        self, session_id: str, text: str, *, persona_id: str = "", speech_turn: str = ""
     ) -> None:
         """宿主替她说完之后，把她这句话写回世界：短期聊天窗口 + 反重复。
 
@@ -32,6 +32,8 @@ class TurnMixin:
         clean = " ".join(str(text or "").split()).strip()
         if not clean:
             return
+        from uuid import uuid4
+        speech_turn = speech_turn or uuid4().hex
         async with self.session_state(session_id) as state:
             recorded = state.note_chat(
                 user_id="__self__",
@@ -44,11 +46,10 @@ class TurnMixin:
             )
             state.note_reply(clean, session_id=session_id)
             if recorded is not None:
-                from uuid import uuid4
-                recorded["speech_turn"] = uuid4().hex
+                recorded["speech_turn"] = speech_turn
             self._tag_chat_origin(state, session_id, recorded, original_text=clean)
             self._count_passive_reply(state)
-            self.note_visible_speech(session_id)
+            self.note_visible_speech(session_id, speech_turn=speech_turn, state_key=state.session_id)
 
     @session_scoped
     @model_operation("reflection", "本轮结束，复盘对话与状态")

@@ -10,7 +10,8 @@ from typing import TYPE_CHECKING
 from .proactive_context import isolated_event, source_event
 from .event_snapshot import snapshot_request
 from .proactive_hooks import fire_hook as _fire_hook
-from .group_mentions import has_body
+from .proactive_hook_sends import capture_sends
+from .group_mentions import has_body, _kind, _field
 
 if TYPE_CHECKING:
     from astrbot.core.provider.entities import LLMResponse
@@ -52,6 +53,13 @@ def prepared_chain(target, text, index):
     wire = WIRE.get() or {}
     row = wire.get((target, index))
     return list(row["chain"]) if row and row["text"] == text else None
+
+
+def prepared_media(target, text, index):
+    chain = prepared_chain(target, text, index) or []
+    images = [str(_field(part, "url") or _field(part, "file") or "")
+              for part in chain if _kind(part) == "image"]
+    return {"images": [ref for ref in images if ref], "has_images": bool(images)}
 
 
 def rebase_prepared(view, retained):
@@ -138,7 +146,9 @@ async def delivery(plugin, target, view, *, echo_count=0, instant=False):
                 sender.nickname = person or "群里"
         raw = plugin.take_llm_response(target)
         response = public_response(text, raw)
-        if await fire_hook(plugin, event, "OnLLMResponseEvent", response):
+        with capture_sends(plugin, event, target) as response_sends:
+            stopped = await fire_hook(plugin, event, "OnLLMResponseEvent", response)
+        if stopped or response_sends.failed:
             positions[index + 1] = len(messages)
             continue
         edited = str(response.completion_text or "").strip()
@@ -149,31 +159,54 @@ async def delivery(plugin, target, view, *, echo_count=0, instant=False):
         result = MessageEventResult(chain=chain)
         result.set_result_content_type(ResultContentType.LLM_RESULT)
         event.set_result(result)
-        if await fire_hook(plugin, event, "OnDecoratingResultEvent"):
+        with capture_sends(plugin, event, target) as decorating_sends:
+            stopped = await fire_hook(plugin, event, "OnDecoratingResultEvent")
+        if stopped or decorating_sends.failed:
             positions[index + 1] = len(messages)
             continue
         current = event.get_result()
         chain = list(getattr(current, "chain", []) or [])
-        body = "\n".join(part.text for part in chain if isinstance(part, Plain) and part.text).strip()
-        if not has_body(chain):
+        staged = [*response_sends.chains, *decorating_sends.chains, chain]
+        bodies = []
+        for part_chain in staged:
+            if not has_body(part_chain):
+                continue
+            body = "\n".join(part.text for part in part_chain if isinstance(part, Plain) and part.text).strip()
+            if not body:
+                part_kinds = {_kind(part) for part in part_chain}
+                if "record" in part_kinds:
+                    body = edited or str(text)  # A voice replacement still speaks these words.
+                elif "image" in part_kinds:
+                    image_count = sum(_kind(part) == "image" for part in part_chain)
+                    body = f"［我发了{'一' if image_count == 1 else image_count}张图片］"
+                elif "video" in part_kinds:
+                    body = "［发送了视频］"
+                elif "file" in part_kinds:
+                    body = "［发送了文件］"
+                else:
+                    body = "［发送了媒体］"
+            part_event = copy.copy(event)
+            part_result = copy.copy(current) if current is not None else MessageEventResult(chain=[])
+            part_result.chain = list(part_chain)
+            part_event.set_result(part_result)
+            position = len(messages)
+            messages.append(body)
+            bodies.append(body)
+            kinds.append(kind)
+            identities.append(identity)
+            retained.append(index)
+            wire[(target, position)] = {"text": body, "chain": part_chain, "event": part_event,
+                                       "accepted": False, "history_target": history_target,
+                                       "message_index": position, "instant": instant, "echo_count": echo_count}
+        if not bodies:
             positions[index + 1] = len(messages)
             continue
-        # A voice-only replacement still speaks the text; retain it for the
-        # character's memory, while the transport sends only the actual chain.
-        body = body or edited or str(text)
-        position = len(messages)
-        messages.append(body)
-        kinds.append(kind)
-        identities.append(identity)
-        retained.append(index)
-        wire[(target, position)] = {"text": body, "chain": chain, "event": event,
-                                   "accepted": False, "history_target": history_target,
-                                   "message_index": position, "instant": instant, "echo_count": echo_count}
         trace = next((r for r in view.speech_decisions if r["id"] == identity), None)
-        if trace and body != text:
+        if trace and bodies != [text]:
             drafts = trace.get("drafts", [])
             if text in drafts:
-                drafts[drafts.index(text)] = body
+                draft_index = drafts.index(text)
+                drafts[draft_index:draft_index + 1] = bodies
         positions[index + 1] = len(messages)
     view.messages = messages
     view.speech_kinds[""] = kinds

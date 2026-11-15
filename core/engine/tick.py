@@ -1289,8 +1289,8 @@ class TickMixin:
             depth=depth,
             autonomous=True,
             from_plan=True,
-            # 日程排下来的步骤同样不算"她自己想找他"
-            from_schedule=str((active_plan(state) or {}).get("source") or "") == "schedule",
+            # 插队步骤保留自己的来路；日程权限只属于实际的日程步骤。
+            from_schedule=outcome.speech_kind == "schedule",
         )
         outcome.speech_home = previous_home
         if not executed:

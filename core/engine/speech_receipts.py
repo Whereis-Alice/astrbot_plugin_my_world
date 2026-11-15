@@ -153,8 +153,14 @@ def accept_receipt(engine, outcome, target, key, **payload):
 async def remember_accepted(engine, outcome, target, text, key, identity="", *, kind=None):
     if key in outcome.remembered_speech:
         return
+    metadata = {}
+    describe = getattr(getattr(engine, "messenger", None), "proactive_segment_metadata", None)
+    if callable(describe) and isinstance(key, tuple) and isinstance(key[-1], int):
+        metadata = describe(target, text, key[-1]) or {}
+    images = [image_receipt_ref(ref) for ref in metadata.get("images", [])]
     first, record = accept_receipt(engine, outcome, target, key, type="text", text=text,
-                                  identity=identity, kind=kind or outcome.speech_kind)
+                                  identity=identity, kind=kind or outcome.speech_kind,
+                                  images=images, has_images=bool(metadata.get("has_images")))
     target, text, identity, kind = (record[name] for name in ("target", "text", "identity", "kind"))
     stamp = record["at"]
     trace = next((r for r in outcome.speech_decisions if r["id"] == identity
@@ -171,15 +177,20 @@ async def remember_accepted(engine, outcome, target, text, key, identity="", *, 
 
     async def persist():
         async with receipt_state(engine, outcome.session_id, owner=record["owner"]) as state:
+            engine.note_chat_speech_receipt(target, outcome.speech_receipt_batch,
+                                           at=stamp, state_key=record["owner"].state_key)
             recorded = state.note_chat(user_id="__self__",
                 name=state.bot_current_nickname or state.bot_base_nickname or "你",
-                text=text, now=stamp, keep=engine.chat_history_limit(),
+                text=text, images=record.get("images", []), has_images=record.get("has_images", False),
+                now=stamp, keep=engine.chat_history_limit(),
                 is_self=True, origin=target,
                 event_id=f"speech:{outcome.speech_receipt_batch}:{key}")
             state.note_reply(text, session_id=target)
             if recorded is not None:
                 recorded["speech_turn"] = outcome.speech_receipt_batch
                 recorded["speech_kind"] = kind or outcome.speech_kind
+                if record.get("has_images"):
+                    recorded["image_count"] = len(record.get("images", []))
             engine._tag_chat_origin(state, target, recorded)
             if trace is not None:
                 update_thought(state, trace)
@@ -221,6 +232,8 @@ async def remember_accepted_images(engine, outcome, target, images, key, identit
 
     async def persist():
         async with receipt_state(engine, outcome.session_id, owner=record["owner"]) as state:
+            engine.note_chat_speech_receipt(target, outcome.speech_receipt_batch,
+                                           at=stamp, state_key=record["owner"].state_key)
             notes = list(dict.fromkeys(outcome.image_notes.get(target, {}).get(ref, "") for ref in images))
             note = "、".join(value for value in notes if value)[:120]
             caption = f"［我发了{'一' if len(images) == 1 else len(images)}张图片：{note}］" if note else ""

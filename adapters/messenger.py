@@ -68,6 +68,10 @@ class AstrBotMessenger(GroupNamesMixin):
         from .proactive_delivery import accepted
         await accepted(self.plugin, session_id, text, index)
 
+    def proactive_segment_metadata(self, session_id, text, index):
+        from .proactive_delivery import prepared_media
+        return prepared_media(session_id, text, index)
+
     def cleanup_proactive(self, outcome):
         for event in outcome.native_events.values():
             cleanup = getattr(event, "cleanup_temporary_local_files", None)

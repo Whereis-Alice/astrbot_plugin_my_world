@@ -624,7 +624,8 @@ class SendMixin:
                             autonomous_targets.add(target)
                         else:
                             if receipt is None:
-                                self.note_visible_speech(target, state_key=owner.state_key)
+                                self.note_visible_speech(target, state_key=owner.state_key,
+                                                         speech_turn=outcome.speech_receipt_batch)
                     if not accepted and not actual_messages:
                         if (target in view.chat_speech_cancelled
                                 or any(proof is not None and proof.cancelled for proof in ordered_proofs)
@@ -684,7 +685,8 @@ class SendMixin:
                             autonomous_targets.add(target)
                         else:
                             if receipt is None:
-                                self.note_visible_speech(target, state_key=owner.state_key)
+                                self.note_visible_speech(target, state_key=owner.state_key,
+                                                         speech_turn=outcome.speech_receipt_batch)
             except Exception as exc:
                 outcome.notes.append(f"发到 {target} 失败：{exc}")
                 self._log("warning", f"发到 {target} 失败：{exc}")

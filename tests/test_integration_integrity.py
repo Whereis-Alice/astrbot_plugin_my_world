@@ -200,6 +200,33 @@ class IntegrationIntegrityTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(event.get_extra(self.module.MW_TURN_EXTRA), turn)
         self.plugin.engine.mark_reply_batch_replied.assert_not_awaited()
 
+    async def test_native_text_receipt_counts_one_persistent_turn(self):
+        event = Event("你好", session=self.session)
+        turn = {"session_id": self.session, "reply": "我刚看到了。", "started_at": time.time()}
+        event.set_extra(self.module.MW_TURN_EXTRA, turn)
+        self.plugin._spawn_reflection = lambda _turn: None
+        await self.plugin.after_message_sent(event)
+        state = await self.plugin.engine.load_state(self.session, cold_start=False)
+        last_at, receipts = self.plugin.engine.chat_speech_cadence(state, self.session)
+        self.assertGreater(last_at, 0)
+        self.assertEqual(len(receipts), 1)
+        own = [row for row in state.recent_chat if row.get("is_self")]
+        self.assertEqual(own[-1]["speech_turn"], turn["speech_turn"])
+        await self.plugin.after_message_sent(event)
+        self.assertEqual(len(self.plugin.engine.chat_speech_cadence(state, self.session)[1]), 1)
+
+    async def test_native_media_receipt_counts_turn_without_text(self):
+        event = Event("发张图", session=self.session)
+        turn = {"session_id": self.session, "reply": "", "started_at": time.time()}
+        event.set_extra(self.module.MW_TURN_EXTRA, turn)
+        self.plugin._spawn_reflection = lambda _turn: None
+        await self.plugin.after_message_sent(event)
+        state = await self.plugin.engine.load_state(self.session, cold_start=False)
+        last_at, receipts = self.plugin.engine.chat_speech_cadence(state, self.session)
+        self.assertGreater(last_at, 0)
+        self.assertEqual(len(receipts), 1)
+        self.assertFalse(any(row.get("is_self") for row in state.recent_chat))
+
     async def test_retired_api_cannot_write_and_unload_only_removes_its_own_routes(self):
         request = SimpleNamespace(method="POST", query={}, json=AsyncMock(return_value={"scope": "all"}))
         api_module = self.module.web.api

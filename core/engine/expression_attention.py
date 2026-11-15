@@ -92,11 +92,13 @@ async def chat_expression_attention(engine: MyWorldEngine, state: WorldState, ta
 
 async def _attention_proof(engine, state, target, outcome, *, generation="") -> dict:
     from hashlib import sha256
+    _, receipts = engine.chat_speech_cadence(state, target)
     return {"target": target, "state_key": state.session_id, "at": engine._now(),
             "request_id": outcome.speech_receipt_batch, "generation": generation,
             "model_generation": (getattr(outcome, "_speech_generations", {}).get(target) or {}).get("id", ""),
             "self_seq": max([int(row.get("seq") or 0) for row in state.recent_chat
                 if row.get("is_self") and engine._chat_origin(row, state) == target] or [0]),
+            "speech_seq": max([int(turn.get("seq") or 0) for turn in receipts] or [0]),
             "persona": sha256((await engine._persona_text(target)).encode("utf-8")).hexdigest()}
 
 
@@ -108,6 +110,7 @@ async def _proof_current(engine, state, target, proof, *, allow_turn="", max_age
     try:
         at = float(proof.get("at") or 0)
         self_seq = int(proof.get("self_seq") or 0)
+        receipt_seq = int(proof.get("speech_seq") or 0)
     except (TypeError, ValueError, OverflowError):
         return False
     if (proof.get("target") != target
@@ -119,12 +122,19 @@ async def _proof_current(engine, state, target, proof, *, allow_turn="", max_age
     if proof.get("persona") != persona:
         return False
     spoken = [row for row in state.recent_chat if row.get("is_self") and engine._chat_origin(row, state) == target]
-    sent = max([float(observation.get("sent_at") or 0)] + [float(row.get("at") or 0) for row in spoken])
+    last_speech_at, receipts = engine.chat_speech_cadence(state, target)
+    sent = max([float(observation.get("sent_at") or 0), last_speech_at]
+               + [float(row.get("at") or 0) for row in spoken])
     newer = [row for row in spoken if float(row.get("at") or 0) > at or int(row.get("seq") or 0) > self_seq]
-    if sent <= at and not newer:
+    newer_receipts = [turn for turn in receipts if float(turn.get("at") or 0) > at
+        or "speech_seq" in proof and int(turn.get("seq") or 0) > receipt_seq]
+    if sent <= at and not newer and not newer_receipts:
         return True
-    return bool(allow_turn and newer and max(float(row.get("at") or 0) for row in newer) >= sent
-                and all(row.get("speech_turn") == allow_turn for row in newer))
+    return bool(allow_turn and (newer or newer_receipts)
+                and max([float(row.get("at") or 0) for row in newer]
+                        + [float(turn.get("at") or 0) for turn in newer_receipts]) >= sent
+                and all(row.get("speech_turn") == allow_turn for row in newer)
+                and all(turn.get("token") == allow_turn for turn in newer_receipts))
 
 
 async def admit_generated_chat(engine, state, target, outcome, rows, *, raw=None,

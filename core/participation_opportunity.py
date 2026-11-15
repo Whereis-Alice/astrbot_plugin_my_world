@@ -63,8 +63,9 @@ def media_scene_allowed(*, rows: list[dict], new: list[dict], now: float,
     return False
 
 
-def visible_turns(rows: list[dict], now: float, *, window: float = 120) -> list[dict]:
-    """Collapse real receipt batches; adjacent legacy segments get a bounded fallback."""
+def visible_turns(rows: list[dict], now: float, *, window: float = 120,
+                  receipts: list[dict] | tuple[dict, ...] = ()) -> list[dict]:
+    """Merge retained chat with actual receipts; legacy segments use a bounded fallback."""
     turns: list[dict] = []
     identities: dict[str, dict] = {}
     previous = None
@@ -91,6 +92,18 @@ def visible_turns(rows: list[dict], now: float, *, window: float = 120) -> list[
         if row.get("message_id"):
             turn["message_ids"].append(str(row["message_id"]))
         previous = turn
+    for receipt in receipts:
+        token = str(receipt.get("token") or "")
+        at = float(receipt.get("at") or 0)
+        if not token or not 0 <= now - at <= window:
+            continue
+        turn = identities.get(token)
+        if turn is None:
+            turn = {"token": token, "at": at, "text": "", "message_ids": []}
+            turns.append(turn)
+            identities[token] = turn
+        else:
+            turn["at"] = max(turn["at"], at)
     return turns
 
 
@@ -114,9 +127,10 @@ def assess_opportunity(*, now: float, rows: list[dict], new: list[dict],
                        affinities: dict[str, float], level: str = "natural",
                        hourly_max: int = 12, relation_weight: float = 1,
                        continuation_interval: float = 20, continuation_turns: int = 2,
-                       continuation_window: float = 600, media_mode: str = "contextual") -> Opportunity:
+                       continuation_window: float = 600, media_mode: str = "contextual",
+                       speech_receipts: list[dict] | tuple[dict, ...] = (), last_speech_at: float = 0) -> Opportunity:
     """Bound judgement calls while related scenes and close authors get earlier reads."""
-    turns = visible_turns(rows, now, window=continuation_window)
+    turns = visible_turns(rows, now, window=continuation_window, receipts=speech_receipts)
     live_turns = visible_turns(rows, now)
     if not media_scene_allowed(rows=rows, new=new, now=now, mode=media_mode):
         return Opportunity(False, "只有图片或表情，尚无与她相接的当前对话；先看不接话", now + 30,
@@ -178,7 +192,7 @@ def assess_opportunity(*, now: float, rows: list[dict], new: list[dict],
     # Every actual expression leaves room in the conversation, including a
     # native reply or a plan that did not pass through this observer. Reading
     # another source must not reopen attention immediately after such a send.
-    last_sent = max([float(observation.get("sent_at") or 0)] + [float(row.get("at") or 0)
+    last_sent = max([float(observation.get("sent_at") or 0), last_speech_at] + [float(row.get("at") or 0)
         for row in rows if row.get("is_self") and 0 < float(row.get("at") or 0) <= now])
     if last_sent:
         due = max(due, last_sent + interval)

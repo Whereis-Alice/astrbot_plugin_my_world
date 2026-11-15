@@ -1875,7 +1875,9 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
         session_id = str(turn.get("session_id") or "")
         if not session_id or turn.get("response_error"):
             return
-        self.engine.note_visible_speech(session_id)
+        from uuid import uuid4
+        speech_turn = turn.setdefault("speech_turn", uuid4().hex)
+        self.engine.note_visible_speech(session_id, speech_turn=speech_turn)
         try:
             if "interaction_entries" in turn:
                 await self.engine.mark_reply_batch_replied(session_id, batch=turn["interaction_entries"])
@@ -1899,6 +1901,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
                     session_id,
                     reply,
                     persona_id=str(turn.get("persona_id") or ""),
+                    speech_turn=speech_turn,
                 )
             except Exception as exc:
                 self.logger.warning(f"[my_world] 写回她说的话失败：{exc}")

@@ -153,9 +153,10 @@ def speech_origin(source):
                     outcome.contact_people = {str(step["target"])}
                 kind = step.get("kind") or ("schedule" if plan.get("source") == "schedule"
                     else "outreach" if outcome.contact_people else "life_share")
-                if plan.get("source") == "recovery":
+                if plan.get("source") == "recovery" and kind != "reply":
                     # Old saved steps may still carry an inherited life_share.
                     # The system's recovery intent never grants narration.
+                    # A user's queued reply retains its independent provenance.
                     kind = step["kind"] = "quiet"
                 scene = step.get("speech_scene") or plan.get("speech_scene") or {}
                 if kind in {"participation", "browse_reply", "continuation", "interject"} and scene.get("rows"):

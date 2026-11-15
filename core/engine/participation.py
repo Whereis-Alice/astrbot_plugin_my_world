@@ -350,9 +350,10 @@ class ParticipationMixin:
         # The host's direct-reply path is unaffected.
         natural_silence = True
         from ..participation_opportunity import visible_turns
+        _, speech_receipts = self.chat_speech_cadence(state, target)
         turn_count = len(visible_turns([row for row in state.recent_chat
             if self._chat_origin(row, state) == target], self._now(),
-            window=self.world.decider.continuation_window_seconds))
+            window=self.world.decider.continuation_window_seconds, receipts=speech_receipts))
         background += (f"\n# 这段对话的节奏\n统计窗口内你已发言 {turn_count} 个完整回合。"
                        "被引用或收到另一句回应不等于必须再说一句；先看是否有新的问题、信息、情绪变化或想交流的细节。"
                        "重复争辩同一个点、只剩附和或互相逗一句时，可以自然收尾，安静回到自己的生活。"
@@ -382,6 +383,7 @@ class ParticipationMixin:
                         high = max(1., float(self.world.profile.affinity_max))
                         affinities[uid] = float(person.get("affinity") or 0) / high
         rows = [row for row in state.recent_chat if self._chat_origin(row, state) == target]
+        last_speech_at, speech_receipts = self.chat_speech_cadence(state, target)
         choice = assess_opportunity(now=self._now(), rows=rows, new=new, observation=observation,
             attempts=attempts, persona=persona, affinities=affinities,
             level=self.world.decider.participation_level,
@@ -390,7 +392,8 @@ class ParticipationMixin:
             continuation_interval=self.world.decider.continuation_interval_seconds,
             continuation_turns=self.world.decider.continuation_priority_turns,
             continuation_window=self.world.decider.continuation_window_seconds,
-            media_mode=self.world.decider.media_only_participation)
+            media_mode=self.world.decider.media_only_participation,
+            speech_receipts=speech_receipts, last_speech_at=last_speech_at)
         observation["opportunity"] = choice.payload()
         return choice.ready
 
@@ -721,6 +724,34 @@ class ParticipationMixin:
         ledger["people"] = people
         return ledger
 
+    def chat_speech_cadence(self, state, target: str) -> tuple[float, list[dict]]:
+        """Actual room speech survives trimming; each life keeps its own receipt ledger."""
+        ledger = self._outreach_ledger(target, state_key=state.session_id)
+        turns = [dict(turn) for turn in (ledger.get("speech_turns") or {}).get(target) or []]
+        session = (ledger.get("sessions") or {}).get(target) or {}
+        last = float(session.get("at") or 0)
+        token = session.get("speech_turn")
+        if token:
+            latest = next((turn for turn in turns if turn.get("token") == token), None)
+            if latest is not None:
+                latest["at"] = max(float(latest["at"]), last)
+        return max([last] + [float(turn.get("at") or 0) for turn in turns]), turns
+
+    def note_chat_speech_receipt(self, target: str, speech_turn: str, *,
+                                 at: float | None = None, state_key: str = "") -> None:
+        """Persist only accepted identities; segments and images consume one turn."""
+        if not speech_turn:
+            return
+        from ..speech_cadence import note_speech_turn
+        key = "outreach:" + (state_key or self.state_key(target))
+        ledger = self._outreach_ledger(target, state_key=state_key)
+        sessions = dict(ledger.get("speech_turns") or {})
+        sessions[target] = note_speech_turn(sessions.get(target) or [], speech_turn,
+                                           self._now() if at is None else at)
+        ledger["speech_turns"] = dict(sorted(sessions.items(), key=lambda pair:
+            max([float(turn.get("at") or 0) for turn in pair[1]] or [0]))[-128:])
+        self.db.raw.kv_set(key, ledger)
+
     def outreach_gate(self, target: str, *, token: str = "", user_id: str = "") -> str:
         """All autonomous entrances share actual-send cadence and unanswered-person backoff."""
         with self.config_scope(target):
@@ -738,15 +769,17 @@ class ParticipationMixin:
                 return "上次找他还没有回应，先给他一点时间"
         return ""
 
-    def note_visible_speech(self, target: str, *, token: str = "", people=(), state_key="") -> None:
-        self.note_chat_speech_accepted(target, state_key=state_key)
+    def note_visible_speech(self, target: str, *, token: str = "", people=(), state_key="",
+                            speech_turn: str = "") -> None:
+        self.note_chat_speech_accepted(target, batch=speech_turn, state_key=state_key)
+        self.note_chat_speech_receipt(target, speech_turn, state_key=state_key)
         key = "outreach:" + (state_key or self.state_key(target))
         ledger = self._outreach_ledger(target, state_key=state_key)
         now = self._now()
         sessions = ledger.setdefault("sessions", {})
         previous = sessions.get(target) or {}
         first = previous.get("first_at", previous.get("at", now)) if token and previous.get("token") == token else now
-        sessions[target] = {"at": now, "first_at": first, "token": token}
+        sessions[target] = {"at": now, "first_at": first, "token": token, "speech_turn": speech_turn}
         waiting = ledger.setdefault("people", {})
         for uid in people:
             waiting[self._contact_person_key(target, uid)] = {

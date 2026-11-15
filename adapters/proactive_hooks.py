@@ -6,6 +6,8 @@ import copy
 import inspect
 from traceback import extract_tb
 
+from .proactive_hook_sends import fail_hook_sends, scoped_handler
+
 
 class ReadOnlyArchive:
     """Read through a memory manager without archiving a replayed user turn."""
@@ -115,6 +117,7 @@ async def fire_hook(plugin, event, name, *args, accepted=False):
             handler = replay_handler(handler, name)
         if handler is None:
             continue
+        handler = scoped_handler(handler)
         if name in {"OnAgentBeginEvent", "OnAgentDoneEvent"}:
             # These phases carry the private JSON task, not accepted speech.
             phase = 0 if name == "OnAgentBeginEvent" else 1
@@ -141,6 +144,8 @@ async def fire_hook(plugin, event, name, *args, accepted=False):
             frames = extract_tb(exc.__traceback__, limit=-1)
             location = f"（{frames[0].name}:{frames[0].lineno}）" if frames else ""
             plugin.logger.warning(f"[my_world] 主动发言钩子 {name}/{metadata.handler_name} 失败：{type(exc).__name__}{location}")
+            if fail_hook_sends():
+                return True  # Public drafts cannot retain sends from a failed hook.
         if event.is_stopped():
             return True
     return event.is_stopped()
