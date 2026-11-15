@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 from dataclasses import replace
 import json
+from types import SimpleNamespace
 import unittest
 
 from core.json_actions import PlannedAction
@@ -22,10 +23,14 @@ class VisitReadinessReviewTests(unittest.IsolatedAsyncioTestCase):
     asyncSetUp = actor_fixture.VisitActorTests.asyncSetUp
 
     async def connect(self):
+        platform = SimpleNamespace(meta=lambda: SimpleNamespace(name="aiocqhttp"))
+        self.plugin.context = SimpleNamespace(
+            get_platform_inst=lambda platform_id: platform if platform_id == "aiocqhttp" else None)
         cfg = VisitConfig(enabled=True, auto_enabled=True, auto_probability=1,
                           auto_interval_minutes=0, reception_start=0, reception_end=0)
         self.a = VisitService(self.db, cfg, self.port, clock=self.clock.now, rng=lambda: 0)
         self.b_actor = protocol_fixture.Actor("friend")
+        self.b_actor.routing_contexts = lambda scope: [engine_fixture.SESSION] if scope == "friend-life" else []
         self.b = VisitService(lifecycle_fixture.MemoryDb(), replace(cfg, auto_enabled=False),
                               self.b_actor, clock=self.clock.now)
         self.addAsyncCleanup(self.a.close)
@@ -37,8 +42,23 @@ class VisitReadinessReviewTests(unittest.IsolatedAsyncioTestCase):
         self.remote = await self.b_actor.describe("friend-life")
         self.peer = self.a._add_peer(engine_fixture.SESSION, self.local,
             public_actor(self.remote, self.b._state["instance_id"]), "http://not-contacted.example", "isolated-key")
-        self.b._add_peer("friend-life", self.remote,
+        remote_peer = self.b._add_peer("friend-life", self.remote,
             public_actor(self.local, self.a._state["instance_id"]), "http://not-contacted.example", "isolated-key")
+        # These readiness tests start after both lives have established a valid
+        # same-conversation binding and cached each other's directory. Compute
+        # the proofs against real registered anchors so production admission
+        # still rejects a missing platform or changed conversation membership.
+        for service, peer, other, other_scope in (
+                (self.a, self.peer, self.b, "friend-life"),
+                (self.b, remote_peer, self.a, engine_fixture.SESSION)):
+            connection = service._state["connections"][peer["connection_id"]]
+            anchor = connection["anchors"][0]
+            proof = other._routing_proof(other_scope, anchor)
+            peer["routing"] = service._check_routing_proof(peer["scope"], anchor, proof)
+            connection.update(routing={peer["id"]: proof["tokens"]},
+                              routing_anchor=peer["routing"]["anchor"],
+                              next_catalog_at=self.clock.now() + 86400)
+            self.assertTrue(service._routing_binding_current(peer))
         self.requests = []
 
         async def exchange(url, outgoing):

@@ -15,12 +15,29 @@ from .rhythm import VisitRhythm
 from .snapshots import validate_snapshot
 from .transport import VisitTransportError
 from .decisions import VisitDecisionError, capture_decision_candidate
-from .model_retry import clear_state_read, defer_decision, defer_state_read, valid_retry
+from .model_retry import (clear_state_read, defer_decision, defer_state_read,
+                          pause_decision, recovery_basis, valid_retry)
 from .ports import VisitStateError, describe_local
 from .cancellation import candidate_commit_lock, preserve_cancelled_candidate
 
 
 class VisitFlow(VisitRhythm):
+    def _resume_paused_decision(self, visit):
+        """Wake only on new facts; sync timestamps and ordinary ticks are not evidence."""
+        retry = visit.get("model_retry") or {}
+        if not isinstance(retry, dict) or retry.get("paused") is not True:
+            return False
+        phase = retry.get("phase")
+        if phase not in {"turn", "scene"}:
+            return False
+        cursor = self._decision_cursor(visit, phase)
+        if (valid_retry(visit, retry.get("cursor", {}))
+                and retry.get("basis") == recovery_basis(visit, cursor)):
+            return False
+        visit.pop("model_retry", None)
+        visit["next_at"] = min(visit.get("next_at", self._now()), self._now())
+        return True
+
     def _new_action_attention(self, visit):
         ready = activity_context(visit, self._now()).get("ready_action_ids", [])
         acknowledged = (visit.get("outing") or {}).get("quiet_action_ids", [])
@@ -57,6 +74,7 @@ class VisitFlow(VisitRhythm):
             if visit["status"] in TERMINAL:
                 self._invalidate_memory(visit)
             elif significant:
+                visit["local_experience_attention_seq"] = visit["local_experience_seq"]
                 visit["local_experience_pending"] = True
                 visit["next_at"] = min(visit.get("next_at", self._now()), self._now())
             await self._save()
@@ -310,9 +328,13 @@ class VisitFlow(VisitRhythm):
                          if phase == "turn" and not visit.get("unsent_turn") else "")
                 if issue:
                     self._record_decision_issue(visit, phase, issue)
+                    repair_choice = copy.deepcopy(visit["decision"])
                     visit.pop("decision", None)
                     visit.pop("decision_cursor", None)
-                    if defer_decision(visit, cursor, category="format", now=self._now(), format_issue=issue):
+                    if (defer_decision(visit, cursor, category="format", now=self._now(), format_issue=issue,
+                                       repair_choice=repair_choice)
+                            or pause_decision(visit, cursor, category="format", now=self._now(), format_issue=issue,
+                                              repair_choice=repair_choice)):
                         await self._save()
                     else:
                         await self._finish(visit, "interrupted", str(VisitDecisionError("format")))
@@ -365,6 +387,17 @@ class VisitFlow(VisitRhythm):
                 "next_actor": guest, "next_at": self._now(), "event_stage": "none"}
 
     async def _decide(self, visit_id, phase):
+        async with self._lock:
+            visit = self._state["visits"][visit_id]
+            if (visit.get("model_retry") or {}).get("paused") is True:
+                if await self._complete_outing_if_due(visit):
+                    return None
+                if visit["expires_at"] <= self._now():
+                    await self._finish(visit, "completed", "本次停留到期，只保留已确认经过")
+                    return None
+                if not self._resume_paused_decision(visit):
+                    return None
+                await self._save()
         if not await self._outing_budget_ready(visit_id, phase):
             return None
         saved_choice = None
@@ -467,7 +500,7 @@ class VisitFlow(VisitRhythm):
                     issue = self._shared_choice_issue(snapshot, result, self._now()) if check_choice and not return_due else ""
                     if issue:
                         self._record_decision_issue(snapshot, phase, issue)
-                        raise VisitDecisionError("format", format_issue=issue)
+                        raise VisitDecisionError("format", format_issue=issue, candidate=result)
                     # Only trusted local prechecks can explicitly refund a successful status result.
                     request_started = not isinstance(raw, dict) or raw.get("_request_started") is not False
                     result["contact_kind"] = ("contact_status" if isinstance(raw, dict)
@@ -513,14 +546,19 @@ class VisitFlow(VisitRhythm):
                     category = (error.category if isinstance(error, VisitDecisionError) else
                                 "state" if saved_candidate is not None else
                                 "timeout" if isinstance(error, TimeoutError) else "provider")
+                    repair_choice = clean_decision(saved_candidate) if category == "format" and isinstance(saved_candidate, dict) else None
                     if category == "format":
                         saved_candidate = None  # An invalid choice needs a fresh bounded correction.
-                    if defer_decision(visit, cursor, category=category, now=self._now(),
+                    if (defer_decision(visit, cursor, category=category, now=self._now(),
                                       candidate=saved_candidate,
                                       format_issue=getattr(error, "format_issue", ""),
+                                      repair_text=getattr(error, "repair_text", ""), repair_choice=repair_choice,
                                       waiting=(saved_candidate is not None or isinstance(error, VisitDecisionError)
                                                and not error.request_started
-                                               and category in {"busy", "backoff", "life_busy", "state", "provider"})):
+                                               and category in {"busy", "backoff", "life_busy", "state", "provider"}))
+                            or pause_decision(visit, cursor, category=category, now=self._now(),
+                                              format_issue=getattr(error, "format_issue", ""),
+                                              repair_text=getattr(error, "repair_text", ""), repair_choice=repair_choice)):
                         await self._save()
                         return None
                     if budget is not None:
@@ -1121,6 +1159,30 @@ class VisitFlow(VisitRhythm):
             return ""
         trial = copy.deepcopy(visit)
         actor = visit["host_id"] if visit["role"] == "host" else visit["guest_id"]
+
+        def exceeds_return(owner, choice):
+            outing = trial.get("outing") or {}
+            if not outing.get("return_agreed") or not isinstance(choice, dict):
+                return False
+            start, until, seconds = outing.get("started_at"), outing.get("until"), choice.get("seconds")
+            if any(type(value) not in {int, float} or not math.isfinite(value)
+                   for value in (now, start, until, seconds)):
+                return False
+            begins = max(now, start)
+            if begins + seconds > until:
+                return True
+            reference = choice.get("peer_action_id")
+            shared = trial.get("shared_activity") or {}
+            if reference and shared.get("stage") == outing.get("stage"):
+                partners = [row for other, rows in shared.get("action_steps", {}).items() if other != owner
+                            for row in rows if row.get("id") == reference and row.get("status") == "awaiting_peer"
+                            and row.get("stage") == shared.get("stage") and row.get("requires_peer")]
+                if partners:
+                    partner_seconds = partners[0].get("seconds")
+                    return (type(partner_seconds) in {int, float} and math.isfinite(partner_seconds)
+                            and begins + partner_seconds > until)
+            return False
+
         offer = activity_offer(visit, result, now) if actor == visit["host_id"] else {}
         new_plan = bool(actor == visit["host_id"] and offer
                         or actor == visit["guest_id"] and visit.get("outing_offer") and result.get("outing_accept"))
@@ -1140,13 +1202,19 @@ class VisitFlow(VisitRhythm):
                     return ""
                 trial["status"] = "active"  # Only a prospective copy, not an acceptance.
                 begin_activity(trial, offer, now, {"return_after": offer.get("return_after") is True})
+                if exceeds_return(actor, step):
+                    return "action_time"
                 return "" if record_action(trial, actor, step, now) else "action_references"
             begin_activity(trial, visit["outing_offer"], now, result)
             host_step = visit.get("outing_host_step") or {}
+            if host_step and exceeds_return(visit["host_id"], host_step):
+                return "action_time"
             if host_step and not record_action(trial, visit["host_id"], host_step, now):
                 return "action_references"
         if not step:
             return ""
+        if exceeds_return(actor, step):
+            return "action_time"
         if record_action(trial, actor, step, now):
             return ""
         return "action_capacity" if action_capacity(trial, actor)["remaining"] == 0 else "action_references"
@@ -1376,6 +1444,8 @@ class VisitFlow(VisitRhythm):
                     if self._advance_shared_clock(visit):
                         await self._save()
                     completed = await self._complete_outing_if_due(visit)
+                    if not completed and self._resume_paused_decision(visit):
+                        await self._save()
                 if completed:
                     await self._notify_end(visit_id)
                     await self._observe_memory(visit_id)
@@ -1383,8 +1453,9 @@ class VisitFlow(VisitRhythm):
                     continue
                 if visit["expires_at"] <= self._now():
                     async with self._lock:
-                        await self._finish(visit, "interrupted" if outing_enabled(visit) and visit.get("arrived_at") else "expired",
-                                           "后续联络未续上，只保留已确认经过" if outing_enabled(visit) and visit.get("arrived_at") else "本次停留到期，保留已确认经过")
+                        paused = (visit.get("model_retry") or {}).get("paused") is True
+                        await self._finish(visit, "completed" if paused else "interrupted" if outing_enabled(visit) and visit.get("arrived_at") else "expired",
+                                           "本次停留到期，只保留已确认经过" if paused else "后续联络未续上，只保留已确认经过" if outing_enabled(visit) and visit.get("arrived_at") else "本次停留到期，保留已确认经过")
                     await self._notify_end(visit_id)
                     await self._observe_memory(visit_id)
                     await self._observe_record_card(visit_id)
@@ -1398,7 +1469,16 @@ class VisitFlow(VisitRhythm):
                 except VisitStateError:
                     # A failed read cannot prove the previous wait obsolete.
                     continue
-                if max(visit["next_at"], (visit.get("state_retry") or {}).get("next_at", 0),
+                wait_at = visit["next_at"]
+                retry = visit.get("model_retry") or {}
+                if (outing_enabled(visit) and visit["status"] == "active" and visit["role"] == "guest"
+                        and retry.get("paused") is True):
+                    # A paused choice still needs authenticated host progress.
+                    # Its local model deadline must not disable bounded polling,
+                    # while failed delivery retains the existing network backoff.
+                    wait_at = max(retry.get("sync_at", 0),
+                                  wait_at if visit.get("network_failures") else 0)
+                if max(wait_at, (visit.get("state_retry") or {}).get("next_at", 0),
                        self._touched.get(visit["scope"], 0)) > self._now():
                     continue
                 try:
@@ -1587,13 +1667,15 @@ class VisitFlow(VisitRhythm):
 
     async def _advance_outing(self, visit_id):
         visit = self._state["visits"][visit_id]
+        paused_guest = (visit["role"] == "guest"
+                        and (visit.get("model_retry") or {}).get("paused") is True)
         if (visit["role"] == "host" and visit.get("outbox", {}).get("payload", {}).get("op") == "sync"):
             await self._send(visit_id, {"op": "sync", "visit": self._wire(visit)})
         if visit.get("budget_notice_pending"):
             await self._publish_outing_hold(visit_id)
             if visit.get("budget_notice_pending") or visit["status"] != "active":
                 return
-        if self._activity_waiting(visit):
+        if self._activity_waiting(visit) and not paused_guest:
             return  # The same confirmed shared clock runs on both servers.
         async with self._lock:
             if self._advance_shared_clock(visit):
@@ -1601,7 +1683,7 @@ class VisitFlow(VisitRhythm):
             if await self._complete_outing_if_due(visit):
                 return
             holds = visit.get("budget_holds", {})
-            if holds and not visit.get("manual"):
+            if holds and not visit.get("manual") and not paused_guest:
                 resume_at = max(hold["reset_at"] for hold in holds.values())
                 if resume_at > self._now():
                     visit["next_at"] = resume_at
@@ -1610,6 +1692,14 @@ class VisitFlow(VisitRhythm):
                 visit.pop("budget_holds", None)
                 visit.pop("outing_budget_hold", None)
         if visit["role"] == "guest":
+            if paused_guest:
+                async with self._lock:
+                    retry = visit.get("model_retry") or {}
+                    if retry.get("paused") is True:
+                        if retry.get("sync_at", 0) > self._now():
+                            return
+                        retry["sync_at"] = self._now() + max(15, self.config.poll_seconds)
+                        await self._save()  # Reserve the polling interval before dispatch.
             sync = {"op": "sync", "visit": {**self._wire(visit), "intro": visit.get("intro", "")}}
             if visit.get("local_experience_pending"):
                 sync["experience_wake"] = {"seq": visit.get("local_experience_seq", 1), "at": self._now()}
@@ -1622,6 +1712,13 @@ class VisitFlow(VisitRhythm):
                     visit.pop("unsent_turn", None)
                     if visit.get("decision_experience_seq", 0) >= visit.get("local_experience_seq", 0):
                         visit.pop("local_experience_pending", None)
+                retry = visit.get("model_retry") or {}
+                if retry.get("paused") is True and not self._resume_paused_decision(visit):
+                    # A repeated snapshot is not new evidence for another model
+                    # attempt. Keep the original lease and the private pause.
+                    visit["next_at"] = retry["next_at"]
+                    await self._save()
+                    return
                 await self._save()
             if (visit["status"] != "active" or self._activity_waiting(visit)
                     or visit["next_actor"] != visit["guest_id"] or visit["next_at"] > self._now()):

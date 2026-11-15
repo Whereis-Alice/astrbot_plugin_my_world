@@ -76,14 +76,17 @@ class OutageRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(visit["log"], before)
         self.assertNotIn("model_retry", visit)
 
-    async def test_invalid_choice_and_invitation_keep_the_short_limit(self):
+    async def test_invalid_choice_pauses_and_invitation_keeps_the_short_limit(self):
         visit_id, visit = await self.host_turn()
         self.fail_then_resume(self.b_actor, "format", failures=10, phase="turn")
         for delay in (30, 60):
             await self.b._advance(visit_id)
             self.now += delay
         await self.b._advance(visit_id)
-        self.assertEqual(visit["status"], "interrupted")
+        self.assertEqual(visit["status"], "active")
+        self.assertTrue(visit["model_retry"]["paused"])
+        self.assertNotIn("ended_at", visit)
+        await self.b._finish(visit, "completed", "测试结束")
         await self.b._notify_end(visit_id)
         await self.b._observe_memory(visit_id)
         pending_id, offered = await self.offered()

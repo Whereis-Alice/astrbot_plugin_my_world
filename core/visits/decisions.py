@@ -58,7 +58,9 @@ FORMAT_ISSUES = {
     "choice_boolean": "活动选择没有使用布尔值",
     "pause_number": "停留时间没有使用有限数字",
     "empty_choice": "没有留下本阶段可执行的选择",
+    "cooperation_flags": "加入已有协作时，peer_action_id须引用朋友的awaiting_peer动作，同时requires_peer必须为true；这表示你本人愿意配合该共同动作，不是替朋友同意，也不是另发新请求",
     "action_references": "这次动作引用或执行条件不成立。普通动作须等自己的同类动作结束，或先用action_control取消；新动作时长须能在双方已约定的归家时间前完成。协作加入、取消和结算须引用当前可用的准确动作ID",
+    "action_time": "这一步的固有耗时超过双方已约定归家前剩余的可用时间，协作还须容得下所引用朋友动作的完整耗时。保留未完打算、自然结束或另选真实可行的短步骤；不要压缩实际耗时、延长归家或宣称动作已经完成",
     "action_capacity": "你在当前活动已有6个尚未确认结果或放弃的动作，没有位置再开始新动作。elapsed只表示时间已到，仍占未决位置。东道主可依据ready_action_ids自主用scene_update确认有依据的结果；本人也可明确用action_control取消不再继续的具体动作。可以先回应朋友或安静继续，不能自动宣称旧动作成功或丢弃旧选择",
 }
 
@@ -67,12 +69,15 @@ class VisitDecisionError(ValueError):
     """Expose only a known failure category as the trip's ending reason."""
 
     def __init__(self, category: Literal["budget", "busy", "backoff", "timeout", "provider", "format", "life_busy", "state", "identity"],
-                 *, request_started: bool = True, candidate: dict | None = None, format_issue: str = ""):
+                 *, request_started: bool = True, candidate: dict | None = None, format_issue: str = "",
+                 repair_text: str = ""):
         self.category = category if category in FAILURES else "provider"
         self.request_started = request_started
         self.candidate = copy.deepcopy(candidate) if isinstance(candidate, dict) else None
         self.format_issue = (format_issue if self.category == "format" and isinstance(format_issue, str)
                              and format_issue in FORMAT_ISSUES else "")
+        # Private correction input is neither an executable candidate nor a trip fact.
+        self.repair_text = repair_text[:8000] if self.category == "format" and isinstance(repair_text, str) else ""
         super().__init__(FAILURES[self.category])
 
     @classmethod

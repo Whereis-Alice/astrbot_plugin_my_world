@@ -63,6 +63,27 @@ class VisitMemoryConfirmationTests(unittest.IsolatedAsyncioTestCase):
         await self.port.remember(engine_fixture.SESSION, visit)
         self.assertEqual(self.db.raw._query("SELECT id FROM memory_revision WHERE memory_id=?", (old["id"],)), revisions)
 
+    async def test_completed_receipt_keeps_actual_ending_without_inventing_farewell(self):
+        visit = self.journey("completed-stay", count=1)
+        visit.update(status="completed", end_reason="本次停留已经结束")
+        old = await self.stored(visit)
+        self.assertIn("。本次相处已结束：本次停留已经结束；只记已确认的部分。", old["content"])
+        self.assertNotIn("这次已告别归家", old["content"])
+
+        visit["log"].append({"seq": 2, "actor_id": visit["remote"]["id"], "kind": "say", "text": "纸飞机下次再折，晚安。"})
+        visit["end_reason"] = "对方说完告别后结束相处"
+        updated = await self.stored(visit)
+        self.assertEqual(updated["id"], old["id"])
+        self.assertIn("纸飞机下次再折，晚安。", updated["content"])
+        self.assertIn("第一次一起尝了樱桃蛋糕", updated["content"])
+        self.assertIn("。本次相处已结束：对方说完告别后结束相处", updated["content"])
+
+        no_reason = self.journey("completed-without-reason", count=1)
+        no_reason.update(status="completed", end_reason="")
+        fallback = await self.stored(no_reason)
+        self.assertIn("。本次相处已结束：停留已结束；只记已确认的部分。", fallback["content"])
+        self.assertNotIn("这次已告别归家", fallback["content"])
+
     async def test_legacy_confirmation_without_reason_metadata_can_accept_the_final_reason(self):
         visit = self.journey(count=1)
         old = await self.stored(visit)

@@ -83,13 +83,15 @@ class VisitFormatAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("private wording", str(details))
         self.assertEqual(len(self.llm.calls), 1)
         self.visit["model_retry"] = {"phase": "turn", "category": "format", "attempts": 1,
-                                     "format_issue": caught.exception.format_issue}
+                                     "format_issue": caught.exception.format_issue,
+                                     "repair_text": caught.exception.repair_text}
         self.llm.default_reply = '{"say":"茶还温着，我们接着聊。"}'
         result = await self.port.decide(fixture.fixture.SESSION, "turn", self.visit)
         self.assertEqual(result["say"], "茶还温着，我们接着聊。")
         self.assertIn("格式重试：文字字段没有使用字符串", self.llm.calls[-1]["system_prompt"])
         self.assertNotIn("private wording", self.llm.calls[-1]["system_prompt"])
-        self.assertNotIn("private wording", self.llm.calls[-1]["prompt"])
+        self.assertIn("private wording", self.llm.calls[-1]["prompt"])
+        self.assertNotIn("private wording", json.dumps(self.visit.get("log", [])))
         self.assertEqual(len(self.llm.calls), 2)
 
 
@@ -125,4 +127,4 @@ class VisitFormatLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("model_retry", visit)
         self.assertEqual(set(FORMAT_ISSUES), {"json_object", "invitation_accept", "text_fields", "leave_boolean",
                                               "scene_fields", "choice_boolean", "pause_number", "empty_choice",
-                                              "action_references", "action_capacity"})
+                                              "action_references", "action_capacity", "cooperation_flags", "action_time"})

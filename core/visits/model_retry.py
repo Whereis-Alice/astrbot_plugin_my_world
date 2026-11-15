@@ -11,8 +11,38 @@ WAIT_DELAYS = (30, 60, 120, 300)
 ACTIVE_DELAYS = DELAYS + (300, 600, 900)
 
 
+def recovery_basis(visit: dict, cursor: dict) -> dict:
+    """Only confirmed protocol progress and new attributed experiences may wake a pause."""
+    return {"cursor": copy.deepcopy(cursor),
+            "local_experience_seq": visit.get("local_experience_attention_seq", 0),
+            "remote_experience_seq": visit.get("remote_experience_seq", 0)}
+
+
+def _failure_counts(retry: dict) -> tuple[int, int]:
+    failures = retry.get("failures", 0 if retry.get("waiting") else retry.get("attempts", 0))
+    legacy_format = failures if retry.get("category") == "format" and not retry.get("waiting") else 0
+    formats = retry.get("format_attempts", legacy_format)
+    return failures, formats
+
+
+def _repair_fields(previous: dict, *, repair_text: str = "", repair_choice=None) -> dict:
+    """Keep correction drafts only in the local retry journal, never candidate."""
+    if isinstance(repair_choice, dict):
+        return {"repair_choice": copy.deepcopy(repair_choice)}
+    if isinstance(repair_text, str) and repair_text:
+        return {"repair_text": repair_text[:8000]}
+    text = previous.get("repair_text", "")
+    choice = previous.get("repair_choice")
+    result = {}
+    if isinstance(text, str) and text:
+        result["repair_text"] = text[:8000]
+    if isinstance(choice, dict):
+        result["repair_choice"] = copy.deepcopy(choice)
+    return result
+
+
 def _active_recovery(visit: dict, cursor: dict) -> bool:
-    """Only an existing shared encounter can wait through a provider outage."""
+    """Only an existing shared encounter can retain its phase through a failure."""
     return (visit.get("outing_version") == 1 and bool(visit.get("arrived_at"))
             and visit.get("status") == "active" and cursor.get("phase") in {"turn", "scene"})
 
@@ -66,23 +96,35 @@ def valid_retry(visit: dict, cursor: dict) -> bool:
         return False
     attempts, next_at = retry.get("attempts"), retry.get("next_at")
     waiting = retry.get("waiting", False)
-    failures = retry.get("failures", 0 if waiting else attempts)
+    failures, formats = _failure_counts(retry)
     active = _active_recovery(visit, cursor)
     delays = ACTIVE_DELAYS if active and retry.get("category") in {"timeout", "provider"} else DELAYS
+    paused = retry.get("paused", False)
+    total_limit = len(ACTIVE_DELAYS) + len(DELAYS) if active else len(DELAYS)
+    if paused:
+        return (active and retry.get("category") == "format" and waiting is False
+                and type(attempts) is int and 1 <= attempts <= len(DELAYS) + 1
+                and type(formats) is int and 1 <= formats <= len(DELAYS) + 1
+                and type(failures) is int and formats <= failures <= total_limit + 1
+                and retry.get("phase") == cursor.get("phase")
+                and isinstance(retry.get("basis"), dict)
+                and type(next_at) in {int, float} and math.isfinite(next_at) and next_at >= 0)
     return (retry.get("phase") == cursor.get("phase")
             and retry.get("category") in RETRYABLE
-            and type(waiting) is bool
+            and type(waiting) is bool and paused is False
             and type(attempts) is int and 1 <= attempts <= len(WAIT_DELAYS if waiting else delays)
-            and type(failures) is int and 0 <= failures <= len(ACTIVE_DELAYS if active else DELAYS)
+            and type(formats) is int and 0 <= formats <= len(DELAYS)
+            and type(failures) is int and formats <= failures <= total_limit
+            and failures - formats <= len(ACTIVE_DELAYS if active else DELAYS)
             and type(next_at) in {int, float} and math.isfinite(next_at) and next_at >= 0)
 
 
 def defer_decision(visit: dict, cursor: dict, *, category: str, now: float, candidate=None,
-                   waiting: bool = False, format_issue: str = "") -> bool:
+                   waiting: bool = False, format_issue: str = "", repair_text: str = "", repair_choice=None) -> bool:
     """Unissued waits keep their phase; only unsuccessful inference spends recovery."""
     old = visit.get("model_retry") or {}
     previous = old if valid_retry(visit, cursor) else {}
-    failures = previous.get("failures", 0 if previous.get("waiting") else previous.get("attempts", 0))
+    failures, formats = _failure_counts(previous)
     if category not in RETRYABLE:
         return False
     active = _active_recovery(visit, cursor) and category in {"timeout", "provider"}
@@ -92,9 +134,13 @@ def defer_decision(visit: dict, cursor: dict, *, category: str, now: float, cand
         delay = WAIT_DELAYS[attempts - 1]
     else:
         failures += 1
-        if failures > len(delays):
+        if category == "format":
+            formats += 1
+        attempts = formats if category == "format" else failures - formats
+        total_limit = len(ACTIVE_DELAYS) + len(DELAYS) if _active_recovery(visit, cursor) else len(DELAYS)
+        if attempts > len(delays) or failures > total_limit:
             return False
-        attempts, delay = failures, delays[failures - 1]
+        delay = delays[attempts - 1]
     next_at = now + delay
     if next_at >= visit["expires_at"]:
         if not (waiting or active) or visit["expires_at"] <= now:
@@ -108,10 +154,37 @@ def defer_decision(visit: dict, cursor: dict, *, category: str, now: float, cand
         retry["waiting"] = True
     if failures:
         retry["failures"] = failures
-    if isinstance(candidate, dict):
+    if formats:
+        retry["format_attempts"] = formats
+    retry.update(_repair_fields(previous, repair_text=repair_text, repair_choice=repair_choice))
+    if isinstance(candidate, dict) and category != "format":
         retry["candidate"] = copy.deepcopy(candidate)
     visit["model_retry"] = retry
     visit["next_at"] = max(visit["next_at"], next_at)
+    return True
+
+
+def pause_decision(visit: dict, cursor: dict, *, category: str, now: float,
+                   format_issue: str = "", repair_text: str = "", repair_choice=None) -> bool:
+    """A failed correction pauses an existing encounter without inventing a choice."""
+    if category != "format" or not _active_recovery(visit, cursor) or visit["expires_at"] <= now:
+        return False
+    old = visit.get("model_retry") or {}
+    previous = old if valid_retry(visit, cursor) else {}
+    failures, formats = _failure_counts(previous)
+    formats = min(len(DELAYS) + 1, formats + 1)
+    if "local_experience_attention_seq" not in visit:
+        visit["local_experience_attention_seq"] = (visit.get("local_experience_seq", 0)
+                                                  if visit.get("local_experience_pending") else 0)
+    retry = {"phase": cursor["phase"], "cursor": copy.deepcopy(cursor), "category": "format",
+             "paused": True, "attempts": formats, "format_attempts": formats,
+             "failures": min(len(ACTIVE_DELAYS) + len(DELAYS) + 1, failures + 1),
+             "next_at": visit["expires_at"], "basis": recovery_basis(visit, cursor)}
+    if isinstance(format_issue, str) and format_issue in FORMAT_ISSUES:
+        retry["format_issue"] = format_issue
+    retry.update(_repair_fields(previous, repair_text=repair_text, repair_choice=repair_choice))
+    visit["model_retry"] = retry
+    visit["next_at"] = visit["expires_at"]
     return True
 
 
@@ -124,5 +197,8 @@ def visible_wait(visit: dict) -> dict:
     retry = visit.get("model_retry") or {}
     if retry.get("category") not in WAITING or type(retry.get("attempts")) is not int:
         return {}
+    if retry.get("paused") is True:
+        return {"reason": "这次模型选择尚未修好，保留现场等待新的实际进展", "paused": True,
+                "next_at": retry.get("next_at", 0), "attempts": retry["attempts"]}
     return {"reason": WAITING[retry["category"]] + "，冷却后继续相处",
             "next_at": retry.get("next_at", 0), "attempts": retry["attempts"]}
