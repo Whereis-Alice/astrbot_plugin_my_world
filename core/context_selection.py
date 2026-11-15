@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import Any
 
+from .chat_excerpt import EXCERPT_OMISSION
+
 
 _STOP = frozenset(("这个", "那个", "一个", "自己", "我们", "你们", "他们", "什么", "怎么",
                    "可以", "就是", "还是", "已经", "现在", "时候", "一下", "今天", "最近"))
@@ -20,7 +22,7 @@ _PARTICLES = frozenset("的了呢吧啊呀嘛")
 def search_terms(text: str) -> list[str]:
     """Chinese bigrams + words, including old matches before the SQL LIMIT."""
     result: dict[str, None] = {}
-    for word in _WORDS.findall(str(text).casefold()):
+    for word in _WORDS.findall(str(text).replace(EXCERPT_OMISSION, " ").casefold()):
         if word.isascii():
             result[word] = None
         else:

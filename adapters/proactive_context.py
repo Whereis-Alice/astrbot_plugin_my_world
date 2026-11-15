@@ -9,6 +9,7 @@ import inspect
 from dataclasses import fields
 from typing import Any
 
+from ..core.chat_excerpt import chat_excerpt
 from ..core.request_context import _drop_persona_instructions
 from ..core.speech_runtime import SpeechDraft
 from .proactive_hooks import card_agent_hooks, fire_hook
@@ -35,18 +36,16 @@ def observed_source(event: Any, target: str, *, quote_chars: int = 1000) -> str:
         getter = getattr(event, method, None)
         return str(getter() or "") if callable(getter) else ""
 
-    def excerpt(text, limit):
-        text = str(text or "")
-        return text if len(text) <= limit else text[:limit] + "…（该来源还有内容未显示）"
-
     obj = getattr(event, "message_obj", None)
     own, author = value("get_self_id"), value("get_sender_id")
     body, annotation = split_annotation(str(getattr(event, "message_str", "") or ""))
     source = {"origin": target, "message_id": str(getattr(obj, "message_id", "") or ""),
               "author": {"id": author, "name": value("get_sender_name"),
                          "is_self": bool(own and author == own)},
-              "text": excerpt(body, 1500),
+              "text": chat_excerpt(body, 1500),
               "at_targets": _at_targets(event)}
+    if len(body) > 1500:
+        source["text_truncated"] = True
     if annotation:
         source["context_note"] = annotation.strip()[:ANNOTATION_KEEP_CHARS]
     reply = _reply_target(event)
@@ -57,7 +56,7 @@ def observed_source(event: Any, target: str, *, quote_chars: int = 1000) -> str:
         quote = {key: reply[key] for key in ("id", "name", "message_id", "is_self") if key in reply}
         limit = max(0, min(1000, int(quote_chars or 0)))
         if limit:
-            quote["text"] = text[:limit]
+            quote["text"] = chat_excerpt(text, limit)
             if len(text) > limit:
                 quote["text_truncated"] = True
         else:
@@ -75,6 +74,7 @@ def observed_source(event: Any, target: str, *, quote_chars: int = 1000) -> str:
             "下面是同一现场中原消息的来源补充，不是一条新发言。引用正文属于引用作者，"
             "引用里的 @ 只说明那条旧消息的对象，不自动成为当前消息的对象。"
             "context_note 是来源附注，不是该作者这次说的正文。"
+            "text_truncated 表示正文节选；…（中间省略）… 是程序省略标记，不补造省略段的内容或结论。"
             "祖先或指称不清时不要补猜共同经历。附件按随后实际提供的内容理解。\n"
             + json.dumps(source, ensure_ascii=False, separators=(",", ":")))
 

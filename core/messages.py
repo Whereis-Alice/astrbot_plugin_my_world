@@ -6,6 +6,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from .chat_excerpt import chat_excerpt
 from .constants import MW_EVENT_ID_EXTRA
 
 
@@ -326,7 +327,9 @@ def _reply_target(event: Any) -> dict:
             # The message ID is a local relation, never an unknown sender ID.
             result["message_id"] = message_id
         if text:
-            result["text"] = text[:500]
+            result["text"] = chat_excerpt(text, 500)
+            if len(text) > 500:
+                result["text_truncated"] = True
         try:
             self_id = str(event.get_self_id() or "")
         except Exception:

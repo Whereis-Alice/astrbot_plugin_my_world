@@ -8,7 +8,7 @@ from ..config_scope import session_scoped
 from ..context_selection import ContextRequest
 from ..model_calls import model_operation
 from ..participation import build_participation_prompt
-from ..state import STATE_DROWSY, WorldState
+from ..state import STATE_DROWSY, WorldState, chat_item_is_fresh
 from .life_inference import life_work
 from .models import TickOutcome
 
@@ -262,7 +262,8 @@ class ParticipationMixin:
         text = direct_text(str(latest.get("raw_text") or latest.get("text") or ""))
         return self.context_request(state, target, task="participation", rows=rows, text=text)
 
-    def participation_prompt(self, state, target, persona, *, rows=None, request=None, source="message", browse_id="", reply_seqs=None):
+    def participation_prompt(self, state, target, persona, *, rows=None, request=None, source="message", browse_id="", reply_seqs=None,
+                             answered_seqs=None):
         """Same builder for production and evaluation; never include another session."""
         if rows is None:
             window = self._participation_window(source)
@@ -273,6 +274,10 @@ class ParticipationMixin:
             from ..browse_reply import BrowseReply, available_rows
             ticket = BrowseReply.capture(self, state, target, browse_id)
             reply_seqs = frozenset(int(row.get("seq") or 0) for row in ticket.eligible(available_rows(self, state, target)))
+        elif reply_seqs is None:
+            until, seq = self._watermark(state, target)
+            reply_seqs = frozenset(int(row.get("seq") or 0) for row in rows
+                if not row.get("is_self") and chat_item_is_fresh(row, replied_until=until, replied_seq=seq))
         from ..context_selection import CONTEXT_GUIDANCE, relevance, select_context
         from ..context_sources import browse_feeling_item, life_items, memory_context_items
         request = request or self.participation_context_request(state, target, rows, reply_seqs=reply_seqs)
@@ -287,6 +292,13 @@ class ParticipationMixin:
             rows = [row for row in rows if int(row.get("seq") or 0) not in cited] + [
                 row for row in rows if int(row.get("seq") or 0) in cited]
         rows = self.context_chat(state, request, rows)
+        if answered_seqs is None:
+            until, seq = self._watermark(state, target)
+            # Legacy rows may lack seq; preserve the timestamp fallback per row.
+            rows = [{**row, "answered": bool(not row.get("is_self") and not row.get("internal")
+                and not chat_item_is_fresh(row, replied_until=until, replied_seq=seq))} for row in rows]
+            answered_seqs = frozenset(int(row.get("seq") or 0) for row in rows
+                if row["answered"] and int(row.get("seq") or 0) > 0)
         if source == "browse":
             rows.sort(key=lambda row: int(row.get("seq") or 0))
         _, _, style = self.style_for(state, target, remember=False)
@@ -361,6 +373,7 @@ class ParticipationMixin:
         result = build_participation_prompt(persona=persona, life=life, rows=rows,
             now=self._now(), live_window=self._participation_window(source), style=style,
             background=background, natural_silence=natural_silence, reply_seqs=reply_seqs,
+            answered_seqs=answered_seqs,
             quote_chars=self.world.context.quote_chars)
         request.trace["scene"] = {"rows": len(rows), "characters": len(result[1])}
         request.trace["natural_silence"] = natural_silence
@@ -429,6 +442,10 @@ class ParticipationMixin:
             original = ticket.eligible(available_rows(self, state, target))
             claimed = outcome.chat_claims.get(target, []) if outcome is not None else []
             reply_seqs = frozenset(int(seq) for seq in claimed) if claimed else frozenset(int(row["seq"]) for row in original)
+        else:
+            until, seq = self._watermark(state, target)
+            reply_seqs = frozenset(int(row.get("seq") or 0) for row in rows
+                if not row.get("is_self") and chat_item_is_fresh(row, replied_until=until, replied_seq=seq))
         request = self.participation_context_request(state, target, rows, reply_seqs=reply_seqs)
         await self.prepare_context_memory(request, state=state)
         self.style_for(state, target)
@@ -441,7 +458,7 @@ class ParticipationMixin:
                 return "", ""
         system, prompt, targets = self.participation_prompt(state, target,
             persona, request=request, rows=rows, source=source, browse_id=browse_id, reply_seqs=reply_seqs)
-        if reply_seqs is not None:
+        if source == "browse" and reply_seqs is not None:
             system += ("\n本轮回应这次实际读过的消息：后来的消息只供理解当前话题。"
                        "引用只能选择 can_reply=true 的原消息；接较早的话时引用并自然说明刚看到，"
                        "话题已收尾时选择 listen。")
@@ -455,7 +472,7 @@ class ParticipationMixin:
         source_rows = [row for row in rows if int(row.get("seq") or 0) in reply_seqs] if reply_seqs is not None else rows
         raw, decision = await self.ask_speech_decision(state, target, system, prompt, rows=source_rows,
             live_window=window, reply_seqs=reply_seqs, targets=targets, allowed=allowed,
-            recorded_inner=recorded_inner, strict_reply=source == "browse")
+            recorded_inner=recorded_inner, strict_reply=True)
         original_draft = raw
         if decision.error and str(raw or "").strip():
             # One bounded repair under the same background budget. Never invent
@@ -464,7 +481,7 @@ class ParticipationMixin:
                 + decision.error + "。请重新给出完整 JSON，补上真实想法，并保留本轮发言选择。"
                 + "\n上轮草稿（只修复格式，不添加新事实）：" + str(raw)[:5000], rows=source_rows, allow_tools=False,
                 live_window=window, reply_seqs=reply_seqs,
-                targets=targets, allowed=allowed, recorded_inner=recorded_inner, strict_reply=source == "browse")
+                targets=targets, allowed=allowed, recorded_inner=recorded_inner, strict_reply=True)
         if decision.error:
             from ..background_budget import current_background_admission
             admission = current_background_admission()

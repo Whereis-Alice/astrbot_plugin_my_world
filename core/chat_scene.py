@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .chat_excerpt import chat_excerpt
 from .state import ANNOTATION_KEEP_CHARS, split_annotation
 
 
@@ -13,6 +14,8 @@ SCENE_RELATION_RULES = (
     "context_only 是为补引用关系载入的旧消息，不是新的接话机会。"
     "引用作者、原消息的 @ 对象和本句正文里被指称的人需要分别理解；"
     "旧引用中的 @、‘你’或对你的回应，不自动成为本句的对象。context_note 是引用或媒体附注，不是本句正文。"
+    "text_truncated 表示正文只是节选；…（中间省略）… 是程序省略标记，不是发言者的新话。"
+    "只依据保留的首尾理解，不补造省略段的内容或结论。"
     "‘你／你们／你俩’要结合本句的 @、引用链和语义；对象不明确就保留不确定，"
     "不要自动认领别人的经历或指责，再用自己的生活事实去否认。可以自然评论话题，不必把自己当成被问的人。\n"
 )
@@ -67,7 +70,9 @@ def project_chat_scene(rows: list[dict], *, prefix: str = "m", text_chars: int =
         body, annotation = split_annotation(str(row.get("text") or ""))
         item = {"ref": ref, "who": "我" if row.get("is_self") else str(
             row.get("name") or row.get("user_name") or row.get("user_id") or "群友"),
-            "is_self": bool(row.get("is_self")), "text": body[:text_chars]}
+            "is_self": bool(row.get("is_self")), "text": chat_excerpt(body, text_chars)}
+        if len(body) > max(0, text_chars) or row.get("text_truncated"):
+            item["text_truncated"] = True
         if ref.startswith("q"):
             item["context_only"] = True
         if row.get("user_id"):
@@ -81,8 +86,10 @@ def project_chat_scene(rows: list[dict], *, prefix: str = "m", text_chars: int =
             item["addressing"] = row["addressing"]
         reply = row.get("reply_to")
         if isinstance(reply, dict) and reply:
-            quote = {key: str(reply[key])[:text_chars] for key in ("id", "name", "message_id")
+            quote = {key: str(reply[key]) for key in ("id", "name", "message_id")
                      if reply.get(key)}
+            if "name" in quote:
+                quote["name"] = quote["name"][:max(0, text_chars)]
             mid = str(reply.get("message_id") or "")
             matches = lookup.get((origin(row), mid), []) if mid else []
             if len(matches) == 1:
@@ -95,10 +102,17 @@ def project_chat_scene(rows: list[dict], *, prefix: str = "m", text_chars: int =
                     if quote_chars <= 0:
                         quote["text_omitted"] = True
                     else:
-                        quoted_text = str(reply["text"])
-                        quote["text"] = quoted_text[:min(text_chars, quote_chars)]
-                        if len(quote["text"]) < len(quoted_text):
+                        quoted_text, quoted_note = split_annotation(str(reply["text"]))
+                        quoted_note = quoted_note or str(reply.get("context_note") or "")
+                        budget = max(0, min(text_chars, quote_chars))
+                        kept_note = chat_excerpt(quoted_note, min(ANNOTATION_KEEP_CHARS, budget // 4)) if len(quoted_text) + len(quoted_note) > budget else quoted_note
+                        quote["text"] = chat_excerpt(quoted_text, budget - len(kept_note))
+                        if len(quote["text"]) < len(quoted_text) or reply.get("text_truncated"):
                             quote["text_truncated"] = True
+                        if kept_note:
+                            quote["context_note"] = kept_note
+                            if len(kept_note) < len(quoted_note) or reply.get("context_note_truncated"):
+                                quote["context_note_truncated"] = True
                 if type(reply.get("is_self")) is bool:
                     quote["is_self"] = reply["is_self"]
             item["reply_to"] = quote

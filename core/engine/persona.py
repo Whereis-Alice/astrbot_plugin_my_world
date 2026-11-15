@@ -161,12 +161,14 @@ class PersonaMixin:
         user_name: str = "测试者",
         variant: str = "full",
         director_llm: Any = None,
+        preview_only: bool = False,
     ) -> dict[str, Any]:
         """使用正式任务上下文选择构建剧本请求，**并发**收集真实回复。
 
-        和真机对话的区别只有一个：**不写任何状态**——水位线、记忆、心情、动作都不动，
-        所以可以反复跑、跑给它十遍也不会污染她的世界。它测的正是"这套提示词 + 这个模型"
-        在这一轮会说出什么。
+        不发送消息、不执行工具、不写世界状态；模型调用仍进入用量审计。
+        它测的是共享提示词和模型，不经过 AstrBot 原生历史与第三方请求 hooks。
+        participation 可提供 isolated_scene + chat_rows，使用独立多人现场；
+        此时不读取真实聊天、记忆或画像，只保留当前生活快照。
 
         ``variant="lean"`` 时用 :func:`core.prompt.lean_prompt` 剥掉劝导语，
         用来做"提示词该不该减负"的 A/B。
@@ -176,15 +178,18 @@ class PersonaMixin:
         """
 
         model = llm or self.llm
-        if model is None:
+        if model is None and not preview_only:
             return {"ok": False, "reason": "没有可用的模型"}
         if not rounds:
             return {"ok": False, "reason": "没有要问的问题"}
+        if preview_only and variant not in {"full", "lean", "participation"}:
+            return {"ok": False, "reason": "此测评变体需要额外模型，不能仅预览提示词"}
         state = await self.load_state(session_id, cold_start=False)
         node = self.node(state.node_id)
         persona = await self._persona_text(session_id)
         # 画像那一段要有人才渲染：用这个会话最近说话的人，和真机一致
-        actives = state.recent_active_users(1)
+        has_live_context = any(not item.get("isolated_scene") for item in rounds)
+        actives = state.recent_active_users(1) if has_live_context else []
         who_id = str((actives[0] or {}).get("user_id") or "") if actives else ""
         who_name = str((actives[0] or {}).get("name") or "") if actives else ""
         if who_id:
@@ -192,11 +197,13 @@ class PersonaMixin:
                 state,
                 SimpleNamespace(session_id=session_id, user_id=who_id, user_name=who_name),
             )
-        else:
+        elif has_live_context:
             profile_text = self.profile_block(state)
+        else:
+            profile_text = ""
         limit = max(1, min(8, int(concurrency or 3)))
         gate = asyncio.Semaphore(limit)
-        recent_chat = self.chat_window(state, session_id)
+        recent_chat = self.chat_window(state, session_id) if has_live_context else []
 
         async def one(
             index: int, item: dict[str, Any], prev_analysis: str = ""
@@ -212,23 +219,49 @@ class PersonaMixin:
                 "raw": "",
                 "error": "",
             }
-            if not text:
+            isolated = item.get("isolated_scene") is True
+            if not text and not isolated:
                 row["error"] = "这一轮没问题文本"
                 return row
             async with gate:
                 try:
-                    _cell, say_limit, style_text = self.style_for(state, session_id, remember=False)
-                    eval_rows = [*recent_chat, {"name": user_name, "user_id": str(item.get("user_id") or who_id or ""),
-                        "origin": session_id, "text": text, "at": self._now()}]
-                    request = self.context_request(state, session_id,
-                        task="participation" if variant == "participation" else "reply",
-                        rows=eval_rows, text=text, focus=str(item.get("user_id") or who_id or ""))
+                    eval_engine, eval_state, scene = self, state, None
+                    if isolated:
+                        if variant != "participation":
+                            raise ValueError("isolated_scene 仅用于 participation 测评")
+                        from .eval_scene import prepare_eval_scene
+                        scene = prepare_eval_scene(self, state, session_id, item, index=index, now=self._now())
+                        eval_engine, eval_state, eval_rows = scene.engine, scene.state, scene.rows
+                        text = str(next((r["text"] for r in reversed(eval_rows) if not r["is_self"]), ""))
+                        row["user_text"] = text
+                        row["eval_scene"] = scene.metadata()
+                    else:
+                        if "chat_rows" in item:
+                            raise ValueError("chat_rows 需要 isolated_scene=true")
+                        eval_rows = [*recent_chat, {"name": user_name, "user_id": str(item.get("user_id") or who_id or ""),
+                            "origin": session_id, "text": text, "at": self._now()}]
+                    _cell, say_limit, style_text = eval_engine.style_for(eval_state, session_id, remember=False)
+                    if scene:
+                        request = eval_engine.participation_context_request(
+                            eval_state, session_id, eval_rows, reply_seqs=scene.reply_seqs)
+                    else:
+                        request = self.context_request(state, session_id,
+                            task="participation" if variant == "participation" else "reply",
+                            rows=eval_rows, text=text, focus=str(item.get("user_id") or who_id or ""))
                     request.life_persona = sha256(persona.encode("utf-8")).hexdigest()[:24]
-                    await self.prepare_context_memory(request, state=state)
+                    if not isolated and not preview_only:
+                        await self.prepare_context_memory(request, state=state)
                     # Read-only retrieval: evaluations must not count recalls, log or mutate state.
                     if variant == "participation":
-                        system_prompt, user_prompt, quote_targets = self.participation_prompt(
-                            state, session_id, persona, rows=eval_rows, request=request)
+                        scene_options = {"source": scene.source, "reply_seqs": scene.reply_seqs,
+                                         "answered_seqs": scene.answered_seqs} if scene else {}
+                        system_prompt, user_prompt, quote_targets = eval_engine.participation_prompt(
+                            eval_state, session_id, persona, rows=eval_rows, request=request, **scene_options)
+                        if scene:
+                            from .eval_scene import visible_eval_scene
+                            row["eval_scene"]["visible_scene"] = visible_eval_scene(user_prompt)
+                            row["eval_scene"]["quote_targets"] = {
+                                ref: scene.message_aliases.get(mid, mid) for ref, mid in quote_targets.items()}
                     else:
                         system_prompt = self.prompts.build_autonomous_system_prompt(
                             persona_text=persona,
@@ -341,6 +374,11 @@ class PersonaMixin:
                             pronoun=pronounce_for(self.world.gender),
                         )
                     row["prompt_chars"] = len(system_prompt)
+                    if preview_only:
+                        row["system_prompt"] = system_prompt
+                        row["user_prompt"] = user_prompt
+                        row["preview_only"] = True
+                        return row
                     reply = await model.generate(
                         session_id=session_id,
                         system_prompt=system_prompt,
@@ -375,10 +413,13 @@ class PersonaMixin:
                             row["reply"] = [raw.strip()[:200]]
                     if variant == "participation":
                         from ..speech_decision import parse_decision
-                        decision = parse_decision(raw, quote_targets)
+                        decision = parse_decision(raw, quote_targets, strict_reply=True)
                         row["reply"] = [decision.say] if decision.say else []
                         row["reply_to"] = decision.reply_to
-                        row["decision"] = {"inner": decision.inner, "intent": decision.intent}
+                        row["decision"] = {"inner": decision.inner, "intent": decision.intent,
+                                           "who": decision.who, "motivation": decision.motivation}
+                        if scene:
+                            row["reply_to_alias"] = scene.message_aliases.get(decision.reply_to, "")
                         if decision.error:
                             row["error"] = decision.error
                     if parsed.reasoning:
@@ -421,6 +462,7 @@ class PersonaMixin:
             "ok": True,
             "count": len(results),
             "concurrency": limit,
+            "preview_only": bool(preview_only),
             "results": sorted(results, key=lambda item: item["index"]),
         }
 

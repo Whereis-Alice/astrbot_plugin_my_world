@@ -88,6 +88,8 @@ def source_snapshot(record: dict, session_id: str) -> dict:
         raw["kind"] = str(record.get("kind") or "recalled_memory")
     explicit = str(record.get("source_id") or record.get("event_key") or "")
     identity = [raw["session"], explicit] if explicit else raw
+    if not explicit and record.get("text_fingerprint"):
+        identity = {**raw, "text": ["original_sha256", str(record["text_fingerprint"])]}
     raw["id"] = explicit if explicit.startswith("src_") else "src_" + hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:32]
     return raw
 

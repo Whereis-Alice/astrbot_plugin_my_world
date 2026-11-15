@@ -141,6 +141,29 @@ class SpeechProviderRoutingTests(unittest.IsolatedAsyncioTestCase):
         await self.plugin.engine.speech_llm.generate(session_id=self.session, system_prompt="角色", prompt="台词")
         self.assertIs(self.plugin.take_llm_response(self.session), response)
 
+    async def test_evaluation_skips_native_tools_and_preserves_live_reply_receipt(self):
+        original = object()
+        self.plugin.remember_llm_response(self.session, original)
+        self.plugin.context.get_current_chat_provider_id = AsyncMock(return_value="session-default")
+        self.plugin.context.tool_loop_agent = AsyncMock()
+        self.plugin.context.llm_generate = AsyncMock(return_value=SimpleNamespace(
+            completion_text='{"inner":"只是测评","intent":"listen","say":""}', role="assistant"))
+        runtime = importlib.import_module(self.module.__name__ + ".core.speech_runtime")
+        calls = importlib.import_module(self.module.__name__ + ".core.model_calls")
+        native = importlib.import_module(self.module.__name__ + ".adapters.proactive_context")
+        token = runtime.SPEECH_REQUEST.set({"target": self.session, "rows": [], "allow_tools": True})
+        try:
+            with calls.model_context("evaluation", "管理员测评", self.session), \
+                    patch.object(native.ProactiveContext, "prepare", AsyncMock()) as prepare:
+                result = await self.plugin.engine.speech_llm.generate(session_id=self.session,
+                    system_prompt="角色", prompt="合成场景")
+            self.assertTrue(result.ok)
+            prepare.assert_not_awaited()
+            self.plugin.context.llm_generate.assert_awaited_once()
+            self.assertIs(self.plugin._llm_responses[self.session], original)
+        finally:
+            runtime.SPEECH_REQUEST.reset(token)
+
 
 class VisitSpeechRoutingTests(unittest.IsolatedAsyncioTestCase):
     node_id = "study"

@@ -2078,7 +2078,10 @@ class WebApiMixin(LifeApiMixin):
         return json_response({"ok": True, "warnings": warnings, **self._voice_sample_payload()})
 
     async def api_eval_run(self):
-        """把剧本并发跑一遍：带着完整提示词，收集她的真实回复（不写任何状态）。"""
+        """共享提示词测评；隔离多人场景由每轮 isolated_scene/chat_rows 指定。
+
+        不发群、不执行工具、不写世界状态；模型调用保留用量审计。
+        """
 
         payload = await request.json(default={}) or {}
         guard = self._guard(payload)
@@ -2105,6 +2108,7 @@ class WebApiMixin(LifeApiMixin):
             llm=llm,
             concurrency=concurrency,
             variant=str(payload.get("variant") or "full"),
+            preview_only=payload.get("preview_only") is True,
             director_llm=AstrBotLLM(
                 self,
                 director_id,

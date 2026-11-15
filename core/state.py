@@ -6,8 +6,10 @@ import math
 import re
 import time
 from dataclasses import asdict, dataclass, field
+from hashlib import sha256
 from typing import Any
 
+from .chat_excerpt import chat_excerpt
 from .events import normalize_abilities
 
 THOUGHT_HISTORY_LIMIT = 3000
@@ -1401,6 +1403,8 @@ class WorldState:
                 raw_text = ""
         if not clean:
             return None
+        body_text, note_text = split_annotation(clean)
+        text_fingerprint = sha256(body_text.encode()).hexdigest()
         # 同一条消息可能同时经过"旁观监听"和"LLM 请求"两个钩子，去重避免上下文里重复出现。
         #
         # 有事件身份（平台 message_id / 监听侧生成的内部 id）时**只按身份去重**：
@@ -1433,6 +1437,12 @@ class WorldState:
                     continue
                 age = now - float(item.get("at", 0))
                 old = str(item.get("text") or "")
+                if item.get("text_truncated") and item.get("text_fingerprint"):
+                    annotated = bool(note_text or split_annotation(old)[1])
+                    bound = _CHAT_DEDUPE_ANNOTATED_SECONDS if annotated else _CHAT_DEDUPE_SECONDS
+                    if age <= bound and item["text_fingerprint"] == text_fingerprint:
+                        return None
+                    break  # Excerpts cannot prove two different original messages were equal.
                 if age <= _CHAT_DEDUPE_SECONDS and _same_chat_text(old, clean):
                     return None
                 # 一份带注释、一份不带（例如「亲亲」和「亲亲［这条消息 @ 了：你（…）］」）：
@@ -1451,8 +1461,7 @@ class WorldState:
         )
         # 注释（@ 了谁、引用了什么）不跟着正文一起掐：它正是"这句冲谁说的"的关键，
         # 掐掉半句（"（其中 老普机器人… 还有 12 字没显示"）反而会让她误会
-        body_text, note_text = split_annotation(clean)
-        kept = body_text[:limit]
+        kept = chat_excerpt(body_text, limit)
         if note_text:
             kept = f"{kept}{note_text[:ANNOTATION_KEEP_CHARS]}"
         item = {
@@ -1464,6 +1473,8 @@ class WorldState:
             "is_self": bool(is_self),
             "seq": self.chat_seq + 1,
         }
+        if len(body_text) > limit:
+            item.update(text_truncated=True, text_fingerprint=text_fingerprint)
         if internal:
             item["internal"] = True
         if str(origin or "").strip():
@@ -1490,7 +1501,16 @@ class WorldState:
             if reply_to.get("message_id"):
                 item["reply_to"]["message_id"] = str(reply_to["message_id"])
             if reply_to.get("text"):
-                item["reply_to"]["text"] = str(reply_to["text"])[:500]
+                quoted_body, quoted_note = split_annotation(str(reply_to["text"]))
+                quoted_note = quoted_note or str(reply_to.get("context_note") or "")
+                kept_note = chat_excerpt(quoted_note, min(ANNOTATION_KEEP_CHARS, 125)) if len(quoted_body) + len(quoted_note) > 500 else quoted_note
+                item["reply_to"]["text"] = chat_excerpt(quoted_body, 500 - len(kept_note))
+                if len(quoted_body) > 500 - len(kept_note) or reply_to.get("text_truncated"):
+                    item["reply_to"]["text_truncated"] = True
+                if kept_note:
+                    item["reply_to"]["context_note"] = kept_note
+                    if len(kept_note) < len(quoted_note) or reply_to.get("context_note_truncated"):
+                        item["reply_to"]["context_note_truncated"] = True
             if type(reply_to.get("is_self")) is bool:
                 item["reply_to"]["is_self"] = reply_to["is_self"]
         if str(addressing or "") in ("me", "others"):
@@ -1503,10 +1523,13 @@ class WorldState:
         if has_videos:
             item["has_videos"] = True
         if raw_text is not None:
-            reading = str(raw_text).strip()[:_CHAT_TEXT_CHARS]
+            reading_body, _ = split_annotation(str(raw_text).strip())
+            reading = chat_excerpt(reading_body, _CHAT_TEXT_CHARS)
             if reading != kept or has_images or refs or has_videos:
                 # Keep only the actual message text for quiet reading, never vision annotations.
                 item["reading_text"] = reading
+                if len(reading_body) > _CHAT_TEXT_CHARS:
+                    item["reading_text_truncated"] = True
         # 事件身份留一份：渲染和「这轮要回的那批」排除历史里的同一条时按它认，
         # 不再靠正文（正文一样的两条是两件事）。
         if key:

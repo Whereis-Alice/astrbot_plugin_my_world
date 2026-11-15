@@ -135,7 +135,8 @@ class AstrBotLLM:
         response = None
         token = self.plugin.set_self_initiated()
         try:
-            speech_role = bool(speech and self.provider_slot != "background" and (self.role == "main" or (
+            speech_role = bool(call_context().get("purpose") != "evaluation" and speech
+                and self.provider_slot != "background" and (self.role == "main" or (
                 self.role == "helper" and speech.get("channel") == "helper")))
             if speech_role and callable(getattr(context, "tool_loop_agent", None)):
                 try:
@@ -208,6 +209,6 @@ class AstrBotLLM:
         if response is None or getattr(response, "role", "") == "err":
             return LLMReply(ok=False, error=str(getattr(response, "completion_text", "") or "Provider 返回错误响应"))
         if (self.role == "main" and self.provider_slot != "background"
-                and call_context().get("purpose") != "world_visit"):
+                and call_context().get("purpose") not in {"world_visit", "evaluation"}):
             self.plugin.remember_llm_response(session_id, response)
         return LLMReply(text=getattr(response, "completion_text", "") or "", ok=True)
