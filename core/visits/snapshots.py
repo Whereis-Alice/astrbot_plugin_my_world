@@ -4,15 +4,19 @@ from __future__ import annotations
 import math
 import copy
 from .protocol import RESERVED, TERMINAL, clean_action_control, clean_outing_offer, text, validate_outing_request_maps
-from .outings import CHECKPOINT_LEASE_SECONDS, outing_enabled, valid_activity, valid_quiet_action_ids
+from .outings import (CHECKPOINT_LEASE_SECONDS, confirmed_progress_lease_limit, outing_enabled,
+                     valid_activity, valid_quiet_action_ids, validate_contact_lease_version)
 from .history_pages import extended_history, expand_snapshot
 from .activities import apply_action_control, validate_shared_activity
+from .departure import validate_departure_snapshot
 
 
 def validate_snapshot(visit: dict, remote: dict, *, now: float | None = None) -> dict:
     if not isinstance(remote, dict) or remote.get("id") != visit["id"]:
         raise ValueError("无效旅程快照")
     remote = expand_snapshot(_route_expansion_base(visit, remote), remote)
+    if "contact_lease_version" in remote:
+        validate_contact_lease_version(remote["contact_lease_version"])
     actors = {visit["host_id"], visit["guest_id"]}
     if any(remote.get(key) != visit[key] for key in ("host_id", "guest_id")):
         raise ValueError("旅程参与者不一致")
@@ -174,10 +178,17 @@ def validate_snapshot(visit: dict, remote: dict, *, now: float | None = None) ->
         raise ValueError("东道主不能替访客编造额度等待")
     expires = remote.get("expires_at", visit["expires_at"])
     if outing_enabled(visit) and visit.get("arrived_at") and expires > visit["expires_at"]:
-        basis = max([(remote.get("outing") or {}).get("until", 0)]
-                    + [hold["reset_at"] for hold in holds.values()])
-        if expires > basis + CHECKPOINT_LEASE_SECONDS:
-            raise ValueError("联络期限延长缺少共同活动或预算等待依据")
+        limit = confirmed_progress_lease_limit(visit, remote, now=now)
+        previous_outing, next_outing = visit.get("outing") or {}, remote.get("outing") or {}
+        if (len(next_outing.get("route", [])) > len(previous_outing.get("route", []))
+                or next_outing.get("until", 0) > previous_outing.get("until", 0)):
+            limit = max(limit, next_outing["until"] + CHECKPOINT_LEASE_SECONDS)
+        prior_holds = visit.get("budget_holds", {})
+        for actor, hold in holds.items():
+            if hold["reset_at"] > prior_holds.get(actor, {}).get("reset_at", 0):
+                limit = max(limit, hold["reset_at"] + CHECKPOINT_LEASE_SECONDS)
+        if expires > limit:
+            raise ValueError("联络期限延长缺少新确认的相处进展、共同活动或预算等待依据")
     if (visit["role"] == "guest" and status not in {"inviting", "offered"}
             or not visit.get("arrived_at") and status in TERMINAL):
         logs = remote.get("log", [])
@@ -185,6 +196,7 @@ def validate_snapshot(visit: dict, remote: dict, *, now: float | None = None) ->
         if len(logs) < len(prior) or logs[:len(prior)] != prior:
             raise ValueError("已确认的经过不能被改写")
     _validate_control_logs(visit, remote, now=now)
+    validate_departure_snapshot(visit, remote, now=now)
     return remote
 
 

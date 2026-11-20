@@ -10,6 +10,7 @@ from functools import lru_cache
 import math
 from pathlib import Path
 from typing import Any
+import time
 import unicodedata
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -22,7 +23,7 @@ _TEXT_TYPES = {"say": "speech", "invitation": "speech", "contact_reply": "speech
                "milestone": "result", "action_control": "chronicle"}
 _LABELS = {"speech": "", "intent": "当时的打算", "experience": "当时的感受",
            "result": "发生的结果", "status": "通话前状态", "chronicle": "共同经历"}
-_STATUS = {"completed": "已告别归家", "interrupted": "这次暂时中断", "expired": "这次相处已结束",
+_STATUS = {"completed": "相处已结束", "interrupted": "这次暂时中断", "expired": "这次相处已结束",
            "declined": "这次没有成行", "cancelled": "邀请已取消", "failed": "这次没有成行"}
 
 
@@ -34,6 +35,56 @@ def visit_card_template() -> str:
 
 def _text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
+
+
+def confirmed_visit_farewell(visit: dict) -> bool:
+    """Use receipt/log or explicit saved leave proof, never wording inference."""
+    actors = {visit.get("host_id"), visit.get("guest_id")}
+    if len(actors) != 2 or any(not isinstance(actor, str) or not actor for actor in actors):
+        return False
+    rows = [row for row in visit.get("log", []) if isinstance(row, dict)]
+    receipts = visit.get("departure_farewells") or {}
+    if isinstance(receipts, dict) and all(
+            isinstance(receipts.get(actor), dict)
+            and receipts[actor].get("actor_id") == actor
+            and type(receipts[actor].get("log_seq")) is int and receipts[actor]["log_seq"] > 0
+            and type(receipts[actor].get("at")) in {int, float} and math.isfinite(receipts[actor]["at"])
+            and any(row.get("seq") == receipts[actor].get("log_seq") and row.get("actor_id") == actor
+                    and row.get("kind") == "say" and bool(_text(row.get("text")))
+                    and row.get("text") == receipts[actor].get("text")
+                    and row.get("at") == receipts[actor].get("at") for row in rows)
+            for actor in actors):
+        return True
+    outing = visit.get("outing") or {}
+    planned = outing.get("farewells") or {}
+    if isinstance(planned, dict) and outing.get("return_agreed") is True and all(
+            _text(planned.get(actor)) and any(row.get("actor_id") == actor and row.get("kind") == "say"
+                                            and row.get("text") == planned[actor]
+                                            and row.get("at") == outing.get("until") for row in rows)
+            for actor in actors):
+        return True
+    if visit.get("departure_version") or visit.get("departure") or visit.get("departure_progress"):
+        return False
+    decision = visit.get("decision") or {}
+    own = visit.get("guest_id") if visit.get("role") == "guest" else visit.get("host_id")
+    return bool(isinstance(decision, dict) and decision.get("leave") is True and _text(decision.get("say"))
+                and any(row.get("actor_id") == own and row.get("kind") == "say"
+                        and row.get("text") == decision["say"] for row in rows))
+
+
+def visit_card_status(visit: dict, *, now: float | None = None) -> str:
+    status = _text(visit.get("status"))
+    if status != "completed":
+        return _STATUS.get(status, "这次相处已结束")
+    if visit.get("farewell_confirmed") is True or confirmed_visit_farewell(visit):
+        return "已告别归家"
+    progress = visit.get("departure_progress") or visit.get("departure") or {}
+    current = time.time() if now is None else now
+    deadline = progress.get("deadline") if isinstance(progress, dict) else None
+    if (isinstance(progress, dict) and progress.get("state") not in {"done", "failed"}
+            and type(deadline) in {int, float} and math.isfinite(deadline) and deadline > current):
+        return "相处已结束，等待告别"
+    return "相处已结束"
 
 
 def _zone(value: str | tzinfo | None) -> tzinfo:
@@ -231,7 +282,7 @@ def _entries(visit: dict, zone: tzinfo) -> list[dict]:
 
 
 def build_visit_card_pages(visit: dict, *, timezone: str | tzinfo | None = None,
-                           max_page_height: int = 5200) -> list[dict]:
+                           max_page_height: int = 5200, now: float | None = None) -> list[dict]:
     """Build one complete tall card from an ended visit's confirmed transcript.
 
     The list-shaped API and ``max_page_height`` remain compatible with callers;
@@ -270,7 +321,7 @@ def build_visit_card_pages(visit: dict, *, timezone: str | tzinfo | None = None,
             "activity": activity, "local_name": _text(local.get("name")) or "本方",
             "remote_name": _text(remote.get("name")) or _text(visit.get("peer_name")) or "友邻",
             "date": start.strftime("%Y.%m.%d") if start else "日期未记", "interval": interval,
-            "duration": duration, "status": _STATUS.get(_text(visit.get("status")), "这次相处已结束"),
+            "duration": duration, "status": visit_card_status(visit, now=now),
             "end_time": end.strftime("%H:%M") if end else "", "end_reason": _text(visit.get("end_reason")),
             "width": CARD_WIDTH, "met": met}
     rows = _entries(visit, zone)

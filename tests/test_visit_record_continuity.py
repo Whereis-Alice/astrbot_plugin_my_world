@@ -67,7 +67,7 @@ class VisitRecordContinuityTests(unittest.TestCase):
             {"seq": 1, "actor_id": "home:isla", "kind": "say", "text": "下次再一起喝茶。"},
         ], end_reason="下次再一起喝茶。"), self.visit("legacy-ending", [], end_reason=""))
         farewell = self.open_record("farewell")
-        expect(farewell.locator(".visits-record-ending")).to_contain_text("已告别归家")
+        expect(farewell.locator(".visits-record-ending")).to_contain_text("相处已结束")
         expect(farewell.locator(".visits-record-ending-reason")).to_have_count(0)
         expect(farewell.locator(".visits-visit-body").get_by_text("下次再一起喝茶。", exact=True)).to_have_count(1)
         legacy = self.open_record("legacy-ending")
@@ -88,6 +88,7 @@ class VisitRecordContinuityTests(unittest.TestCase):
         }""")
         self.seed_history(self.visit("refresh-gap", self.page.evaluate("completeRows.slice(0,192)")))
         card = self.open_record("refresh-gap")
+        card.locator(".visits-full-transcript > summary").click()
         expect(card.get_by_role("button", name="继续往前翻", exact=True)).to_have_count(0)
         self.page.evaluate("""() => {
           visitData.history[0].log=completeRows.slice(204);
@@ -127,6 +128,7 @@ class VisitRecordContinuityTests(unittest.TestCase):
             {"seq": 3, "actor_id": "away:alice", "kind": "say", "text": "后来的记录仍可见。"},
         ], log_offset=2, log_count=3))
         card = self.open_record("empty-page")
+        card.locator(".visits-full-transcript > summary").click()
         card.get_by_role("button", name="继续往前翻", exact=True).click()
         expect(card.get_by_role("button", name="继续往前翻", exact=True)).to_be_enabled()
         expect(card.locator(".visits-log-say")).to_have_text("后来的记录仍可见。")

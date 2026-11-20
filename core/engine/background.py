@@ -232,6 +232,10 @@ class BackgroundMixin:
                        + int(kwargs.get("max_tokens") or 2048))
             from ..speech_runtime import SPEECH_REQUEST
             speech = SPEECH_REQUEST.get()
+            if purpose == "world_visit":
+                # A federation control decision has no native chat/tool task,
+                # even when its caller inherited an outward speech context.
+                speech = None
             available = self.allowed_tool_names(speech["state"].node_id) if speech else set()
             if self.world.decider.proactive_tool_names:
                 available &= set(self.world.decider.proactive_tool_names)

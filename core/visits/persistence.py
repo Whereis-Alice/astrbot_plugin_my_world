@@ -13,6 +13,8 @@ from .protocol import RESERVED, TERMINAL, new_id, public_actor, clean_decision
 from .model_retry import valid_retry, visible_wait
 from .history_pages import LOG_PAGE_SIZE, ROUTE_PAGE_SIZE, extended_history, write_page
 from .record_cards import VisitRecordCards
+from .departure import departure_pending
+from .outings import CONTACT_LEASE_VERSION, outing_enabled
 
 KEY = "world_visits.v1"
 MAX_MEMORY_WORKERS = 2
@@ -31,6 +33,7 @@ class VisitJournal(VisitRecordCards, WorldConnections):
         self._remembering: set[str] = set()
         self._memory_tasks: dict[str, asyncio.Task] = {}
         self._record_card_tasks: dict[str, asyncio.Task] = {}
+        self._departure_tasks: dict[str, asyncio.Task] = {}
         self.error = ""
 
     async def _load(self):
@@ -67,6 +70,7 @@ class VisitJournal(VisitRecordCards, WorldConnections):
             for visit in list(self._state["visits"].values()):
                 if visit["status"] in TERMINAL:
                     # A confirmed goodbye wins over stale inference markers.
+                    self._recover_departure(visit)
                     self._clear_decision_wait(visit)
                     if "proposal_stage" in visit:
                         visit["proposal_stage"] = "done"
@@ -151,6 +155,7 @@ class VisitJournal(VisitRecordCards, WorldConnections):
     @staticmethod
     def _settlement_pending(visit: dict) -> bool:
         return visit["status"] in TERMINAL and bool(visit.get("end_pending") or
+            ((visit.get("departure") or {}).get("state") in {"pending", "ready"}) or
             (visit.get("arrived_at") and not visit.get("remembered")))
 
     def _settlement_backlog_full(self, scope: str) -> bool:
@@ -196,6 +201,12 @@ class VisitJournal(VisitRecordCards, WorldConnections):
                 "manual", "outing_version", "outing", "outing_offer", "action_plans", "budget_holds",
                 "outing_requests", "outing_requests_handled", "outing_request_turn", "shared_activity")
         result = {key: copy.deepcopy(visit[key]) for key in keys if key in visit}
+        if outing_enabled(visit):
+            result["contact_lease_version"] = CONTACT_LEASE_VERSION
+        if visit.get("departure"):
+            result["departure_version"] = 1
+        if visit.get("departure_farewells"):
+            result["departure_farewells"] = copy.deepcopy(visit["departure_farewells"])
         if extended_history(visit):
             write_page(result, "log", visit["log"], LOG_PAGE_SIZE)
             if isinstance(result.get("outing"), dict):
@@ -219,6 +230,10 @@ class VisitJournal(VisitRecordCards, WorldConnections):
                                          "playing" if self._now() < result["outing"]["until"] else "checkpoint")
         result["budget_side"] = visit.get("budget_side", "")
         result["model_wait"] = visible_wait(visit) if visit["status"] in RESERVED else {}
+        departure = visit.get("departure") or {}
+        if departure.get("state") in {"pending", "ready", "done", "failed"}:
+            result["departure_progress"] = {"state": departure["state"],
+                                             "deadline": departure.get("deadline", 0)}
         result["progress"] = self._visible_progress(visit, result["model_wait"])
         return result
 
@@ -282,6 +297,7 @@ class VisitJournal(VisitRecordCards, WorldConnections):
         contacted = visit.get("contacted") or visit.get("arrived_at") or visit["status"] == "offered"
         visit["status"], visit["end_reason"] = status, reason
         visit["ended_at"] = self._now() if ended_at is None else ended_at
+        self._prepare_departure(visit)
         self._clear_decision_wait(visit)
         visit.pop("outbox", None)
         visit.pop("unsent_turn", None)
@@ -303,6 +319,7 @@ class VisitJournal(VisitRecordCards, WorldConnections):
                 return current, False
             visit = self._state["visits"].get(visit_id)
             if (self._closed or not visit or visit["status"] not in TERMINAL or visit.get("remembered")
+                    or departure_pending(visit, self._now())
                     or visit_id in self._remembering or visit.get("remember_retry_at", 0) > self._now()
                     or sum(not task.done() for task in self._memory_tasks.values()) >= MAX_MEMORY_WORKERS):
                 return None, False

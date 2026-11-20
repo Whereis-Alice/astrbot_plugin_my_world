@@ -4,13 +4,35 @@ import {recordCursor, recordIdentity, recordMoments, recordParts} from "./visit-
 const STATUS = {
   invited: "邀请已提出", inviting: "正在提出邀请", offered: "等待接待决定", pending: "等待答复", accepted: "对方已接受",
   visiting: "正在做客", active: "相见中", arrived: "已经到访", returning: "正在告别归家",
-  finishing: "正在告别归家", completed: "已告别归家", closed: "已经结束", ended: "已经结束", declined: "这次没有成行",
+  finishing: "正在告别归家", completed: "相处已结束", closed: "已经结束", ended: "已经结束", declined: "这次没有成行",
   rejected: "对方暂时不方便", cancelled: "邀请已取消", interrupted: "这次暂时中断",
   expired: "这次已结束", failed: "这次没有成行",
 };
 const WAITING = new Set(["invited", "inviting", "offered", "pending", "accepted"]);
 const ENDED = new Set(["completed", "closed", "ended", "declined", "rejected", "cancelled", "interrupted", "expired", "failed"]);
 const OPEN = new Set([...WAITING, "visiting", "active", "arrived", "returning", "finishing"]);
+
+function visitStatus(visit) {
+  if (visit?.status !== "completed") return STATUS[visit?.status] || visit?.status || "等待答复";
+  const actors = [visit.host_id, visit.guest_id], rows = Array.isArray(visit.log) ? visit.log : [],
+    receipts = visit.departure_farewells || {};
+  const confirmed = actors.every(actor => typeof actor === "string" && actor) && actors[0] !== actors[1]
+    && actors.every(actor => receipts[actor]?.actor_id === actor && Number.isInteger(receipts[actor].log_seq)
+      && receipts[actor].log_seq > 0 && Number.isFinite(receipts[actor].at)
+      && rows.some(row => row?.seq === receipts[actor].log_seq
+      && row.actor_id === actor && row.kind === "say" && typeof row.text === "string" && row.text.trim()
+      && row.text === receipts[actor].text && row.at === receipts[actor].at));
+  const planned = visit.outing?.farewells || {}, agreed = visit.outing?.return_agreed === true
+    && actors.every(actor => typeof actor === "string" && actor) && actors[0] !== actors[1]
+    && actors.every(actor => typeof planned[actor] === "string" && planned[actor].trim()
+      && rows.some(row => row?.actor_id === actor && row.kind === "say"
+        && row.text === planned[actor] && row.at === visit.outing.until));
+  if (confirmed || agreed || visit.farewell_confirmed === true) return "已告别归家";
+  const progress = visit.departure_progress || {};
+  if (!["done", "failed"].includes(progress.state) && Number.isFinite(progress.deadline)
+      && progress.deadline > Date.now() / 1000) return "相处已结束，等待告别";
+  return "相处已结束";
+}
 
 function stamp(value) {
   if (!value) return "";
@@ -625,7 +647,7 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
       : visit.outing?.origin_place || "活动尚未开始" : visit.outing?.place || visit.outing_version !== 1 && visit.scene?.place);
     const friend = visit.remote?.name || visit.peer_name || visit.peer?.name || "友邻世界";
     const keepsake = !live && !diagnostic;
-    const label = keepsake ? [friend, place].filter(Boolean).join(" · ") : `${friend} · ${STATUS[visit.status] || visit.status || "等待答复"}`;
+    const label = keepsake ? [friend, place].filter(Boolean).join(" · ") : `${friend} · ${visitStatus(visit)}`;
     const summary = el(live ? "h3" : "summary", keepsake ? "visits-entry-summary" : "", keepsake ? "" : label);
     if (!live) {
       card.dataset.visitId = visit.id;
@@ -708,7 +730,7 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
         const ended = ENDED.has(visit.status) || recordDate(visit.ended_at);
         const heading = el("div", "visits-record-ending-head");
         heading.append(el("span", "visits-record-ending-mark", ended ? "✧" : "⋯"),
-          el("span", "", STATUS[visit.status] || (ended ? "已结束，原状态未保存" : "后续状态未保存")));
+          el("span", "", visit.status ? visitStatus(visit) : ended ? "已结束，原状态未保存" : "后续状态未保存"));
         if (recordDate(visit.ended_at)) heading.append(momentTime(visit.ended_at));
         ending.append(heading);
         const parts = recordLogs(visit).flatMap(recordParts);
@@ -851,7 +873,7 @@ export function createVisitsPage({root, apiGet, apiPost, el, toast, getSession, 
       button.dataset.visitInvite = "true"; button.dataset.connectionId = connection.id; button.dataset.peerId = draft.actorId;
       button.onclick = async () => {
         const reply = await mutation("visits/invite", {peer_id: button.dataset.peerId, direction, reason: reason.input.value.trim()});
-        if (reply) toast(STATUS[reply.status] || "电话已打出，等待她们决定");
+        if (reply) toast(reply.status ? visitStatus(reply) : "电话已打出，等待她们决定");
       }; actions.append(button);
     }
     body.append(actions); phone.append(body, el("p", "visits-phone-hint muted")); controls();

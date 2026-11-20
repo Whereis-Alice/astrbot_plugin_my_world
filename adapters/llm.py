@@ -135,7 +135,7 @@ class AstrBotLLM:
         response = None
         token = self.plugin.set_self_initiated()
         try:
-            speech_role = bool(call_context().get("purpose") != "evaluation" and speech
+            speech_role = bool(call_context().get("purpose") not in {"evaluation", "world_visit"} and speech
                 and self.provider_slot != "background" and (self.role == "main" or (
                 self.role == "helper" and speech.get("channel") == "helper")))
             if speech_role and callable(getattr(context, "tool_loop_agent", None)):

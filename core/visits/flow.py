@@ -10,7 +10,9 @@ from .protocol import RESERVED, TERMINAL, clean_decision, clean_scene, new_id, p
 from .activities import (record_action, advance_activity, apply_scene_update,
                          apply_action_control, next_activity_due, activity_context, action_capacity)
 from .history_pages import LOG_PAGE_SIZE, read_page
-from .outings import CHECKPOINT_LEASE_SECONDS, activity_waiting, begin_activity, outing_enabled, pause_activity, pending_outing_requests, activity_offer, valid_quiet_action_ids
+from .outings import (CHECKPOINT_LEASE_SECONDS, PROGRESS_LOG_KINDS, activity_waiting, begin_activity,
+                     confirmed_progress_lease_limit, outing_enabled, pause_activity,
+                     pending_outing_requests, activity_offer, renew_contact_lease, valid_quiet_action_ids)
 from .rhythm import VisitRhythm
 from .snapshots import validate_snapshot
 from .transport import VisitTransportError
@@ -19,9 +21,10 @@ from .model_retry import (clear_state_read, defer_decision, defer_state_read,
                           pause_decision, recovery_basis, valid_retry)
 from .ports import VisitStateError, describe_local
 from .cancellation import candidate_commit_lock, preserve_cancelled_candidate
+from .departure import VisitDeparture
 
 
-class VisitFlow(VisitRhythm):
+class VisitFlow(VisitDeparture, VisitRhythm):
     def _resume_paused_decision(self, visit):
         """Wake only on new facts; sync timestamps and ordinary ticks are not evidence."""
         retry = visit.get("model_retry") or {}
@@ -299,7 +302,7 @@ class VisitFlow(VisitRhythm):
             if (self._decision_cursor(visit, phase) != cursor or visit.get(marker) != cursor):
                 return None
             if visit["expires_at"] <= self._now():
-                await self._finish(visit, "expired", "确认当前生活状态期间本次停留到期，旧决定作废")
+                await self._expire_visit(visit, "确认当前生活状态期间本次停留到期，旧决定作废")
                 return None
             if not self._life_enabled(scope):
                 await self._finish(visit, "interrupted", "这个生活已关闭串门或归属发生变化")
@@ -393,7 +396,7 @@ class VisitFlow(VisitRhythm):
                 if await self._complete_outing_if_due(visit):
                     return None
                 if visit["expires_at"] <= self._now():
-                    await self._finish(visit, "completed", "本次停留到期，只保留已确认经过")
+                    await self._expire_visit(visit, "本次停留到期，只保留已确认经过")
                     return None
                 if not self._resume_paused_decision(visit):
                     return None
@@ -406,7 +409,7 @@ class VisitFlow(VisitRhythm):
             if visit["status"] in TERMINAL or self._closed:
                 return None
             if visit["expires_at"] <= self._now():
-                await self._finish(visit, "expired", "本次停留已经到期，旧决定作废")
+                await self._expire_visit(visit, "本次停留已经到期，旧决定作废")
                 return None
             cursor = self._decision_cursor(visit, phase)
             retry = visit.get("model_retry") or {}
@@ -581,7 +584,7 @@ class VisitFlow(VisitRhythm):
             if charged and not request_started:
                 visit["calls"][own] = max(0, visit["calls"][own] - 1)
             if visit["expires_at"] <= self._now():
-                await self._finish(visit, "expired", "思考期间本次停留到期，旧决定作废")
+                await self._expire_visit(visit, "思考期间本次停留到期，旧决定作废")
                 return None
             visit.pop("model_pending", None)
             if await self._complete_outing_if_due(visit):
@@ -961,7 +964,15 @@ class VisitFlow(VisitRhythm):
         if allow_terminal and (visit["role"] != "guest" or sender != visit["host_id"]
                                or remote.get("status") not in TERMINAL):
             raise ValueError("结束后的确认只能来自东道主的最终经过")
+        if (visit["status"] not in TERMINAL and remote.get("status") == "active"
+                and visit["expires_at"] <= self._now()
+                and not (visit["role"] == "guest" and visit.get("arrived_at")
+                         and remote.get("expires_at", 0) > self._now()
+                         and confirmed_progress_lease_limit(visit, remote, now=self._now()) > self._now())):
+            raise ValueError("已失联的旅程不能靠迟到状态重新激活")
         if remote.get("status") in {"offered", "inviting"}:
+            if outing_enabled(visit):
+                visit["contact_lease_supported"] = remote.get("contact_lease_version") == 1
             return  # Their pending acceptance does not turn our proposal into a received invitation.
         memory_before = copy.deepcopy(visit) if remote.get("status") in TERMINAL else None
         if visit["role"] == "host":
@@ -978,14 +989,20 @@ class VisitFlow(VisitRhythm):
             if remote.get("status") == "active":
                 self._activate(visit, remote.get("intro", ""))
             elif remote.get("status") in TERMINAL:
-                visit["status"] = "declined" if not visit.get("arrived_at") else "interrupted"
+                visit["status"] = ("declined" if not visit.get("arrived_at") else
+                                   "completed" if outing_enabled(visit) and remote["status"] == "completed"
+                                   else "interrupted")
                 visit["end_reason"] = remote.get("end_reason") or "对方已结束本次联系"
                 visit["ended_at"] = remote.get("ended_at", self._now())
                 if not visit.get("arrived_at"):
                     visit["log"] = copy.deepcopy(remote.get("log", []))
                 self._clear_decision_wait(visit)
+                self._prepare_departure(visit)
+                self._reconcile_departure(visit)
                 if not self._same_memory(visit, memory_before):
                     self._invalidate_memory(visit)
+            if outing_enabled(visit):
+                visit["contact_lease_supported"] = remote.get("contact_lease_version") == 1
             return
         if sender != visit["host_id"] or remote.get("status") not in RESERVED | TERMINAL:
             raise ValueError("无效东道主状态")
@@ -1006,7 +1023,7 @@ class VisitFlow(VisitRhythm):
         own_calls = visit["calls"][self._local_id(visit)]
         for key in ("status", "arrived_at", "scene", "log", "next_actor", "next_at", "turns", "event_stage", "ended_at", "end_reason",
                     "outing", "outing_offer", "outing_version", "action_plans", "budget_holds",
-                    "outing_requests", "outing_requests_handled", "outing_request_turn", "shared_activity"):
+                    "outing_requests", "outing_requests_handled", "outing_request_turn", "shared_activity", "departure_farewells"):
             if key in remote:
                 visit[key] = copy.deepcopy(remote[key])
         if "expires_at" in remote:
@@ -1018,18 +1035,30 @@ class VisitFlow(VisitRhythm):
             visit.pop("budget_holds", None)
         visit["calls"][sender] = max(visit["calls"][sender], remote_calls)
         visit["calls"][self._local_id(visit)] = own_calls
+        if outing_enabled(visit):
+            visit["contact_lease_supported"] = remote.get("contact_lease_version") == 1
         self._mark_arrival(visit)
         if visit["status"] in TERMINAL:
             self._clear_decision_wait(visit)
+            self._prepare_departure(visit)
+            self._reconcile_departure(visit)
             if not self._same_memory(visit, memory_before):
                 self._invalidate_memory(visit)
 
     async def _notify_end(self, visit_id):
         """Deliver a bounded durable goodbye without keeping the local life suspended."""
+        await self._advance_departure(visit_id)
         async with self._lock:
             visit = self._state["visits"].get(visit_id)
             notice = visit.get("end_pending") if visit else None
             if not notice or notice.get("next_at", 0) > self._now() or self._closed:
+                return
+            departure = visit.get("departure") or {}
+            if departure.get("quote") and departure.get("deadline", 0) <= self._now():
+                departure["state"] = "done"
+                visit.pop("end_pending", None)
+                visit.pop("outbox", None)
+                await self._save()
                 return
             if (self._find_peer(visit["scope"], visit["remote"]["id"]) is None
                     or notice["attempts"] >= 3):
@@ -1040,6 +1069,10 @@ class VisitFlow(VisitRhythm):
             notice["attempts"] += 1
             notice["next_at"] = self._now() + min(600, 60 * 2 ** notice["attempts"])
             payload = {"op": "end", "visit": self._wire(visit)}
+            if departure:
+                payload["departure_version"] = 1
+                if departure.get("quote"):
+                    payload["farewell"] = copy.deepcopy(departure["quote"])
             await self._save()
         try:
             reply = await self._send(visit_id, payload)
@@ -1050,7 +1083,21 @@ class VisitFlow(VisitRhythm):
                 remote = reply.get("visit")
                 if visit["role"] == "guest" and isinstance(remote, dict) and remote.get("status") in TERMINAL:
                     self._synchronize(visit, remote, visit["host_id"], allow_terminal=True)
-                visit.pop("end_pending", None)
+                departure = visit.get("departure") or {}
+                if departure:
+                    departure["peer_supported"] = reply.get("departure_version") == 1
+                    quote = departure.get("quote")
+                    receipt = (reply.get("visit") or {}).get("departure_farewells", {}).get(self._local_id(visit), {})
+                    confirmed = bool(quote and all(receipt.get(key) == value for key, value in quote.items()))
+                    delivered = bool(quote and (reply.get("delivered_farewell") == quote["id"] or confirmed))
+                    departure["delivered"] = delivered
+                    self._reconcile_departure(visit)
+                    if quote and not delivered and departure.get("deadline", 0) > self._now():
+                        visit["end_pending"] = {"attempts": 0, "next_at": self._now()}
+                    else:
+                        visit.pop("end_pending", None)
+                else:
+                    visit.pop("end_pending", None)
                 await self._save()
         except ValueError:
             async with self._lock:
@@ -1279,6 +1326,10 @@ class VisitFlow(VisitRhythm):
         if not outing_enabled(visit):
             self._commit_turn(visit, sender, result, now)
             return
+        if (visit["expires_at"] <= now
+                or (visit.get("outing") or {}).get("return_agreed")
+                    and visit["outing"]["until"] <= now):
+            raise ValueError("本次相处已经到期，迟到的新回合不能延长停留")
         trial = copy.deepcopy(visit)
         original_role = trial["role"]
         trial["role"] = "host" if sender == visit["host_id"] else "guest"
@@ -1289,6 +1340,9 @@ class VisitFlow(VisitRhythm):
         self._commit_turn(trial, sender, result, now)
         for row in trial["log"][first_log:]:
             row["at"] = now
+        if not result.get("leave") and any(row.get("kind") in PROGRESS_LOG_KINDS
+                                           for row in trial["log"][first_log:]):
+            renew_contact_lease(trial, now)
         visit.clear()
         visit.update(trial)
 
@@ -1453,9 +1507,7 @@ class VisitFlow(VisitRhythm):
                     continue
                 if visit["expires_at"] <= self._now():
                     async with self._lock:
-                        paused = (visit.get("model_retry") or {}).get("paused") is True
-                        await self._finish(visit, "completed" if paused else "interrupted" if outing_enabled(visit) and visit.get("arrived_at") else "expired",
-                                           "本次停留到期，只保留已确认经过" if paused else "后续联络未续上，只保留已确认经过" if outing_enabled(visit) and visit.get("arrived_at") else "本次停留到期，保留已确认经过")
+                        await self._expire_visit(visit, "本次停留到期，只保留已确认经过")
                     await self._notify_end(visit_id)
                     await self._observe_memory(visit_id)
                     await self._observe_record_card(visit_id)

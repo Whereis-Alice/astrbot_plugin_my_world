@@ -50,6 +50,7 @@ WAITING = {
 # Only these structural labels may survive a failed model choice. Never save
 # response bodies, arbitrary keys, provider errors or private thoughts here.
 FORMAT_ISSUES = {
+    "departure_fields": "收尾只提交本人一句自然告别：仅含say的JSON对象，say须为非空字符串且最多400字；不提交新动作、活动、朋友台词或任何回顾字段",
     "json_object": "没有得到完整的JSON对象",
     "invitation_accept": "邀请缺少真正的布尔值accept",
     "text_fields": "文字字段没有使用字符串",
@@ -58,6 +59,10 @@ FORMAT_ISSUES = {
     "choice_boolean": "活动选择没有使用布尔值",
     "pause_number": "停留时间没有使用有限数字",
     "empty_choice": "没有留下本阶段可执行的选择",
+    "action_step_fields": "action_step的字段不成立：description须为1至400字的具体本人动作，seconds须为0.05至14400的有限数字，waiting和requires_peer须为布尔值。peer_action_id只在明确加入现有协作时使用，并须为当前准确ID。没有新动作时省略action_step或用空对象{}，不要把非空的坏动作当成没有动作",
+    "action_control_fields": "action_control的字段不成立：action_id须为当前准确动作ID，operation须为cancel或decline字符串，可选reason为不超过160字的字符串。没有取消或拒绝时省略action_control或用空对象{}，不能替朋友取消独立动作",
+    "scene_update_fields": "scene_update的字段不成立：summary须为1至500字字符串，action_ids须为1至12个不重复的当前准确ID；objects和pending若提供，均须为最多8项的列表，每项为1至160字字符串，done须为布尔值。不结算时省略scene_update或用空对象{}；不改变的objects或pending可省略沿用原记录",
+    "scene_update_capacity": "scene_update的objects或pending列表超过8项。每份列表最多8项，每项最多160字；依已确认事实自主归并有明确关联的条目，保留仍相关的事实，或省略不改变的列表。不能靠裁剪动作ID、补造结果或宣称旧物件消失来修复容量",
     "cooperation_flags": "加入已有协作时，peer_action_id须引用朋友的awaiting_peer动作，同时requires_peer必须为true；这表示你本人愿意配合该共同动作，不是替朋友同意，也不是另发新请求",
     "action_references": "这次动作引用或执行条件不成立。普通动作须等自己的同类动作结束，或先用action_control取消；新动作时长须能在双方已约定的归家时间前完成。协作加入、取消和结算须引用当前可用的准确动作ID",
     "action_time": "这一步的固有耗时超过双方已约定归家前剩余的可用时间，协作还须容得下所引用朋友动作的完整耗时。保留未完打算、自然结束或另选真实可行的短步骤；不要压缩实际耗时、延长归家或宣称动作已经完成",

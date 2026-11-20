@@ -9,10 +9,70 @@ from .activities import begin_shared_activity
 
 OUTING_VERSION = 1
 CHECKPOINT_LEASE_SECONDS = 3600
+CONTACT_LEASE_VERSION = 1
+PROGRESS_LOG_KINDS = frozenset({"say", "action_plan", "action_control", "milestone", "experience", "result"})
 
 
 def outing_enabled(visit: dict) -> bool:
     return type(visit.get("outing_version")) is int and visit["outing_version"] == OUTING_VERSION
+
+
+def validate_contact_lease_version(value: object) -> None:
+    if type(value) is not int or value != CONTACT_LEASE_VERSION:
+        raise ValueError("联络期限能力版本无效")
+
+
+def renew_contact_lease(visit: dict, now: float) -> bool:
+    """Confirmed interaction gets a finite contact window, never a new return time."""
+    expiry = visit.get("expires_at")
+    if (not outing_enabled(visit) or visit.get("status") != "active" or not visit.get("arrived_at")
+            or visit.get("contact_lease_supported") is not True
+            or (visit.get("outing") or {}).get("return_agreed")
+            or any(type(value) not in {int, float} or not math.isfinite(value) for value in (now, expiry))
+            or expiry <= now):
+        return False
+    renewed = max(expiry, now + CHECKPOINT_LEASE_SECONDS)
+    if renewed == expiry:
+        return False
+    visit["expires_at"] = renewed
+    return True
+
+
+def confirmed_progress_lease_limit(visit: dict, remote: dict, *, now: float | None = None) -> float:
+    """Bound signed catch-up by new actual facts linked before each contact expiry."""
+    expiry = visit.get("expires_at", 0)
+    if type(expiry) not in {int, float} or not math.isfinite(expiry):
+        return 0
+    if type(now) not in {int, float} or not math.isfinite(now):
+        return expiry  # No clock proof means no extension based on new facts.
+    if (not outing_enabled(visit) or not visit.get("arrived_at")
+            or type(remote.get("contact_lease_version")) is not int
+            or remote.get("contact_lease_version") != CONTACT_LEASE_VERSION
+            or remote.get("status") not in {"active", "finishing", "completed", "interrupted", "expired"}
+            or (visit.get("outing") or {}).get("return_agreed")
+            or (remote.get("outing") or {}).get("return_agreed")):
+        return expiry
+    previous, logs = visit.get("log", []), remote.get("log", [])
+    if not isinstance(logs, list) or len(logs) <= len(previous) or logs[:len(previous)] != previous:
+        return expiry
+    actors = {visit.get("host_id"), visit.get("guest_id")}
+    arrived = visit.get("arrived_at", 0)
+    stamps = []
+    for row in logs[len(previous):]:
+        if (not isinstance(row, dict) or row.get("actor_id") not in actors
+                or row.get("kind") not in PROGRESS_LOG_KINDS
+                or not isinstance(row.get("text"), str) or not row["text"].strip()):
+            continue
+        at = row.get("at")
+        if (type(at) not in {int, float} or not math.isfinite(at) or at < arrived
+                or at > now):
+            continue
+        stamps.append(at)
+    for at in sorted(stamps):
+        if at >= expiry:
+            break  # A fact first made after losing contact cannot revive the visit.
+        expiry = max(expiry, at + CHECKPOINT_LEASE_SECONDS)
+    return expiry
 
 
 def pending_outing_requests(visit: dict) -> dict:

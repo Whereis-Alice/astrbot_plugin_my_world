@@ -17,6 +17,9 @@ from .protocol import (RESERVED, TERMINAL, code_id, derive_key, digest, envelope
 from .transport import VisitTransport, VisitTransportError
 from .snapshots import validate_snapshot
 from .model_retry import clear_state_read
+from .departure import validate_farewell
+from .outings import (CONTACT_LEASE_VERSION, confirmed_progress_lease_limit, outing_enabled,
+                     validate_contact_lease_version)
 
 
 class VisitService(VisitFlow, VisitJournal):
@@ -40,9 +43,12 @@ class VisitService(VisitFlow, VisitJournal):
         self._closed = True
         try:
             try:
-                await self._close_record_card_tasks()
+                await self._close_departure_tasks()
             finally:
-                await self._close_memory_tasks()
+                try:
+                    await self._close_record_card_tasks()
+                finally:
+                    await self._close_memory_tasks()
         finally:
             await self.transport.close()
 
@@ -161,7 +167,7 @@ class VisitService(VisitFlow, VisitJournal):
             self._enabled()
             if current_local["actor_id"] != local["actor_id"] or current_local["persona_key"] != local["persona_key"]:
                 raise ValueError("生活身份已变化，旧请求作废")
-            result = await self._inbox(peer, current_local, payload)
+            result = await self._inbox(peer, current_local, payload, sent_at=float(body["created_at"]))
             return await self._receipt(body, result, peer["secret"], actor["id"], receipt_key)
 
     async def _cached_response(self, body, cached):
@@ -280,8 +286,11 @@ class VisitService(VisitFlow, VisitJournal):
         await self._save()
         return result
 
-    async def _inbox(self, peer, local, payload):
+    async def _inbox(self, peer, local, payload, *, sent_at=None):
         op, visit_id = payload.get("op"), payload.get("id")
+        contact_supported = "contact_lease_version" in payload
+        if contact_supported:
+            validate_contact_lease_version(payload["contact_lease_version"])
         if not isinstance(op, str) or op not in {"offer", "end", "step", "sync", "status"}:
             raise ValueError("未知旅程消息")
         if not isinstance(visit_id, str) or len(visit_id) != 32:
@@ -374,12 +383,26 @@ class VisitService(VisitFlow, VisitJournal):
                         or current_peer["local"]["actor_id"] != local["actor_id"]
                         or current_peer["local"]["persona_key"] != local["persona_key"]):
                     raise ValueError("接待期间会话归属或绑定已变化，旧邀请作废")
+            if outing_enabled(visit):
+                visit["contact_lease_supported"] = contact_supported
             self._state["visits"][visit_id] = visit
             return {"visit": self._wire(visit)}
         visit = self._state["visits"].get(visit_id)
         if not visit or not self._visit_belongs(visit, peer):
             raise ValueError("找不到本友邻的旅程")
         if op == "end":
+            end_calls = payload.get("calls", 0)
+            if (type(end_calls) is not int or end_calls < 0
+                    or not (visit.get("manual") or visit.get("outing_version"))
+                        and end_calls > self._allocation(visit, peer["id"])):
+                raise ValueError("告别调用账无效")
+            departure_version = payload.get("departure_version")
+            if departure_version is not None and (type(departure_version) is not int or departure_version != 1):
+                raise ValueError("告别协议版本无效")
+            if payload.get("farewell") is not None:
+                if departure_version != 1:
+                    raise ValueError("告别原话缺少协议声明")
+                validate_farewell(visit, peer["id"], payload["farewell"], now=self._now())
             if visit["role"] == "host":
                 await self._complete_outing_if_due(visit)
             previous = (copy.deepcopy(visit["log"]), visit["status"], visit.get("end_reason"))
@@ -398,6 +421,13 @@ class VisitService(VisitFlow, VisitJournal):
                 self._synchronize(candidate, remote, peer["id"], allow_terminal=True)
             elif remote is not None and not candidate.get("arrived_at") and remote.get("status") == "declined":
                 self._synchronize(candidate, remote, peer["id"])
+            if payload.get("farewell") is not None:
+                prospective = copy.deepcopy(candidate)
+                if prospective["status"] not in TERMINAL:
+                    prospective["status"] = "completed"
+                    prospective["ended_at"] = (remote or {}).get("ended_at", self._now())
+                    self._prepare_departure(prospective)
+                self._validate_received_departure(prospective, peer["id"], payload["farewell"], sent_at=sent_at)
             visit.clear()
             visit.update(candidate)
             if visit["status"] not in TERMINAL:
@@ -406,7 +436,11 @@ class VisitService(VisitFlow, VisitJournal):
                 reason = (remote.get("end_reason") if isinstance(remote, dict)
                           and remote.get("status") in TERMINAL else "")
                 natural = status == "completed" and visit.get("outing_version") == 1
-                await self._finish(visit, status, reason or ("" if natural else "对方已告别或结束本次联系"), notify=False)
+                ended_at = remote.get("ended_at") if isinstance(remote, dict) else None
+                if (type(ended_at) not in {int, float} or not visit.get("arrived_at", 0) <= ended_at <= self._now() + 300):
+                    ended_at = None
+                await self._finish(visit, status, reason or ("" if natural else "对方已告别或结束本次联系"),
+                                   notify=False, ended_at=ended_at)
             if (visit["log"], visit["status"], visit.get("end_reason")) != previous:
                 self._invalidate_memory(visit)
             visit.pop("end_pending", None)
@@ -414,16 +448,24 @@ class VisitService(VisitFlow, VisitJournal):
             visit.pop("outbox", None)
             visit.pop("unsent_turn", None)
             self._record_remote_budget_hold(peer, visit)
-            return {"visit": self._wire(visit)}
+            received = self._accept_departure_farewell(visit, peer["id"], payload, sent_at=sent_at)
+            visit["calls"][peer["id"]] = max(visit["calls"][peer["id"]], end_calls)
+            return {"visit": self._wire(visit), "departure_version": 1, "farewell_received": received}
         if visit["status"] in TERMINAL:
             return {"visit": self._wire(visit)}
         if await self._complete_outing_if_due(visit):
             return {"visit": self._wire(visit)}
         if visit["expires_at"] <= self._now():
-            outing = visit.get("outing_version") == 1 and visit.get("arrived_at")
-            await self._finish(visit, "interrupted" if outing else "expired",
-                               "这次相处的联系暂未续上，保留已确认经过" if outing else "本次停留已经到期")
-            return {"visit": self._wire(visit)}
+            in_time_progress = False
+            remote_progress = payload.get("visit")
+            if (op == "sync" and visit.get("role") == "guest" and visit.get("arrived_at")
+                    and isinstance(remote_progress, dict) and remote_progress.get("status") == "active"):
+                remote_progress = validate_snapshot(visit, remote_progress, now=self._now())
+                in_time_progress = (remote_progress.get("expires_at", 0) > self._now()
+                    and confirmed_progress_lease_limit(visit, remote_progress, now=self._now()) > self._now())
+            if not in_time_progress:
+                await self._expire_visit(visit, "本次停留到期，只保留已确认经过")
+                return {"visit": self._wire(visit)}
         manual_continuation = payload.get("manual_continuation", False)
         if type(manual_continuation) is not bool:
             raise ValueError("人工延续标记无效")
@@ -433,6 +475,8 @@ class VisitService(VisitFlow, VisitJournal):
                 and calls > self._allocation(visit, peer["id"])):
             raise ValueError("旅程调用额度无效")
         candidate = copy.deepcopy(visit)
+        if outing_enabled(candidate):
+            candidate["contact_lease_supported"] = contact_supported
         if manual_continuation:
             local_request_pending = (candidate.get("manual_continuation")
                                      and self._local_id(candidate) in candidate.get("outing_requests", {}))
@@ -521,9 +565,7 @@ class VisitService(VisitFlow, VisitJournal):
             if payload.get("op") != "end" and await self._complete_outing_if_due(visit):
                 raise ValueError("双方已按约定告别归家，旧动作不再发送")
             if payload.get("op") != "end" and visit["expires_at"] <= self._now():
-                outing = visit.get("outing_version") == 1 and visit.get("arrived_at")
-                await self._finish(visit, "interrupted" if outing else "expired",
-                                   "这次相处的联系暂未续上，保留已确认经过" if outing else "本次停留已经到期，旧联系作废")
+                await self._expire_visit(visit, "本次停留到期，只保留已确认经过")
                 raise ValueError("本次停留已经到期，旧动作不再发送")
             if not peer["url"]:
                 raise ValueError("对方未提供可访问的串门地址，请补填对外地址后重新配对")
@@ -534,7 +576,8 @@ class VisitService(VisitFlow, VisitJournal):
             local_request = visit.get("outing_requests", {}).get(self._local_id(visit))
             if local_request and payload.get("op") != "end":
                 payload = {**payload, "human_request": copy.deepcopy(local_request)}
-            payload = {**payload, "id": visit_id, "calls": visit["calls"][self._local_id(visit)]}
+            payload = {**payload, "id": visit_id, "calls": visit["calls"][self._local_id(visit)],
+                       **({"contact_lease_version": CONTACT_LEASE_VERSION} if outing_enabled(visit) else {})}
             outgoing = visit.get("outbox")
             if not outgoing:
                 outgoing = envelope(peer["secret"], self._local_id(visit), peer["id"], payload, self._now())
@@ -578,6 +621,13 @@ class VisitService(VisitFlow, VisitJournal):
         result = verify(response, peer["secret"], self._now(), fresh=False)
         if response["sender"] != peer["id"] or response["target"] != outgoing["sender"] or result.get("reply_to") != outgoing["message_id"]:
             raise ValueError("串门答复不属于本次联系")
+        departure_version = result.get("departure_version")
+        if departure_version is not None and (type(departure_version) is not int or departure_version != 1):
+            raise ValueError("告别答复协议版本无效")
+        if (outgoing["payload"].get("op") == "end" and outgoing["payload"].get("farewell")
+                and result.get("departure_version") == 1
+                and result.get("farewell_received") != outgoing["payload"]["farewell"]["id"]):
+            raise ValueError("对方尚未确认收到本人的告别")
         async with self._lock:
             visit = self._state["visits"].get(visit_id)
             current_peer = self._find_peer(visit["scope"], peer["id"]) if visit else None
@@ -593,10 +643,17 @@ class VisitService(VisitFlow, VisitJournal):
             if outgoing["payload"]["op"] != "end" and await self._complete_outing_if_due(visit):
                 raise ValueError("双方已按约定告别归家，旧答复不再使用")
             if outgoing["payload"]["op"] != "end" and visit["expires_at"] <= self._now():
-                outing = visit.get("outing_version") == 1 and visit.get("arrived_at")
-                await self._finish(visit, "interrupted" if outing else "expired",
-                                   "这次相处的联系暂未续上，保留已确认经过" if outing else "本次停留已经到期，旧答复作废")
-                raise ValueError("本次停留已经到期，旧答复作废")
+                remote_progress = result.get("visit")
+                in_time_progress = False
+                if (visit.get("role") == "guest" and visit.get("arrived_at")
+                        and outgoing["created_at"] < visit["expires_at"]
+                        and isinstance(remote_progress, dict) and remote_progress.get("status") == "active"):
+                    remote_progress = validate_snapshot(visit, remote_progress, now=self._now())
+                    in_time_progress = (remote_progress.get("expires_at", 0) > self._now()
+                        and confirmed_progress_lease_limit(visit, remote_progress, now=self._now()) > self._now())
+                if not in_time_progress:
+                    await self._expire_visit(visit, "本次停留到期，只保留已确认经过")
+                    raise ValueError("本次停留已经到期，旧答复作废")
             if (visit.get("outbox") or {}).get("message_id") != outgoing["message_id"]:
                 raise ValueError("本次联系已被更新，旧答复作废")
             self._enabled()
@@ -640,9 +697,16 @@ class VisitService(VisitFlow, VisitJournal):
                     # A newer signed host push already proved this exact step.
                     # Acknowledge its durable receipt without adopting older facts.
                     result["visit"] = remote = self._wire(candidate)
-                validate_snapshot(candidate, remote, now=self._now())
+                confirmed_remote = validate_snapshot(candidate, remote, now=self._now())
                 self._validate_superseded_step_reply(candidate, result, outgoing)
                 self._record_remote_budget_hold(peer, remote)
+                if (candidate.get("role") == "guest" and candidate.get("outing_version") == 1
+                        and candidate.get("arrived_at") and confirmed_remote.get("status") == "active"
+                        and confirmed_remote.get("expires_at", 0) > candidate["expires_at"]):
+                    # Store the actual signed facts together with their renewed
+                    # contact lease; a tick must not see an expired old lease
+                    # between receiving this reply and the caller's catch-up.
+                    self._synchronize(candidate, remote, peer["id"])
             if result.get("declined") is True and outgoing["payload"]["op"] == "offer":
                 if result.get("budget") is not None:
                     remote_budget = result["budget"]
@@ -662,9 +726,8 @@ class VisitService(VisitFlow, VisitJournal):
                     raise ValueError("对方返回无效联系答复")
                 self._append(candidate, peer["id"], contact["kind"], contact["text"])
             expires = (remote or {}).get("expires_at")
-            if isinstance(expires, (int, float)):
-                candidate["expires_at"] = (expires if candidate.get("outing_version") == 1 and candidate.get("arrived_at")
-                                           else min(visit["expires_at"], expires))
+            if isinstance(expires, (int, float)) and not (candidate.get("outing_version") == 1 and candidate.get("arrived_at")):
+                candidate["expires_at"] = min(visit["expires_at"], expires)
             candidate.pop("outbox", None)
             clear_state_read(candidate, checkpoint="exchange")
             candidate["network_failures"] = 0
@@ -673,6 +736,7 @@ class VisitService(VisitFlow, VisitJournal):
             visit.update(candidate)
             await self._save()
         result["delivered_op"] = outgoing["payload"]["op"]
+        result["delivered_farewell"] = (outgoing["payload"].get("farewell") or {}).get("id")
         sent_request = outgoing["payload"].get("human_request")
         received_request = (result.get("visit") or {}).get("outing_requests", {}).get(outgoing["sender"])
         result["delivered_request"] = sent_request["id"] if sent_request and received_request == sent_request else None

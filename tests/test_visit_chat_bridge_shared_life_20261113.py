@@ -278,18 +278,54 @@ class VisitMemoryLocalAdditionTests(unittest.IsolatedAsyncioTestCase):
         await service._load()
         remote = {"actor_id": "peer", "persona_key": "peer-persona", "name": "朋友",
                   "world": "朋友的世界", "ready": True, "home_node": "home"}
+        async def remote_describe(scope):
+            return copy.deepcopy(remote)
+
+        async def remote_decide(scope, phase, journey):
+            return {"say": "嗯，今天先到这里，下次接着玩。"}
+
+        async def remote_remember(scope, journey):
+            return None
+
+        remote_service = VisitService(MemoryKV(), config, SimpleNamespace(
+            describe=remote_describe, decide=remote_decide, remember=remote_remember), clock=self.clock.now)
+        self.addAsyncCleanup(remote_service.close)
+        await remote_service._load()
+        remote_service._state["instance_id"] = "other-instance"
         peer = service._add_peer(engine_fixture.SESSION, self.local, public_actor(remote, "other-instance"),
                                  "http://not-contacted.example", "test-key")
-        visit = service._new_visit(engine_fixture.SESSION, peer, self.local, "chat-recovery-trip",
+        reverse = remote_service._add_peer("friend-life", remote, public_actor(self.local, service._state["instance_id"]),
+                                            "http://not-contacted.example", "test-key")
+        visit = service._new_visit(engine_fixture.SESSION, peer, self.local, "a" * 32,
                                     "guest", "玩一会", False)
         visit.update(status="active", arrived_at=self.clock.now(), outing_version=1)
         service._append(visit, peer["id"], "say", "这一局先到这里")
         service._state["visits"][visit["id"]] = visit
+        host = remote_service._new_visit("friend-life", reverse, remote, visit["id"], "host", "玩一会", False)
+        host.update(status="active", arrived_at=self.clock.now(), outing_version=1, log=copy.deepcopy(visit["log"]))
+        remote_service._state["visits"][visit["id"]] = host
+
+        async def to_remote(url, body):
+            return await remote_service.receive(body)
+
+        async def to_local(url, body):
+            return await service.receive(body)
+
+        service.transport.request = to_remote
+        remote_service.transport.request = to_local
         self.engine.visits = service
         owner = capture_visit_chat_owner(self.engine, engine_fixture.SESSION, persona_key=self.local["persona_key"])
         self.assertIsNotNone(owner)
         await service._finish(visit, "completed", "已经告别", notify=False)
+        await remote_service._finish(host, "completed", "已经告别")
         visit["finish_review_attempted"] = True
+        self.llm.default_reply = '{"say":"好，未完的那一局下次接着玩。"}'
+        await remote_service._notify_end(visit["id"])
+        await service._advance_departure(visit["id"])
+        await asyncio.gather(*service._departure_tasks.values())
+        await service._notify_end(visit["id"])
+        self.assertEqual(visit["log"], host["log"])
+        self.assertEqual(len(visit["departure_farewells"]), 2)
         await service._remember(visit["id"])
         rows = await self.db.call("query_memories", session_id=engine_fixture.SESSION)
         old = next(row for row in rows if json.loads(row.get("context") or "{}").get("visit_id") == visit["id"])

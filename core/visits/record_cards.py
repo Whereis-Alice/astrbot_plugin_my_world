@@ -13,6 +13,8 @@ from typing import Any
 from astrbot.api import logger
 
 from .protocol import TERMINAL, digest, public_actor
+from .departure import departure_pending
+from ..visit_card import confirmed_visit_farewell
 
 MAX_RECORD_CARD_WORKERS = 1
 MAX_RECORD_CARD_QUEUE = 32
@@ -45,6 +47,13 @@ class VisitRecordCards:
     def _record_card_pending(visit: dict) -> bool:
         card = visit.get("record_card")
         return isinstance(card, dict) and card.get("state") == "pending"
+
+    def _record_card_settlement_waiting(self, visit: dict) -> bool:
+        if departure_pending(visit, self._now()):
+            return True
+        # A failed or expired goodbye cannot keep the postcard indefinitely
+        # behind another end acknowledgement. Old journeys retain their gate.
+        return bool(visit.get("end_pending") and not visit.get("departure"))
 
     def _prepare_record_cards(self) -> None:
         """Called by journal saves, including direct protocol terminal transitions."""
@@ -126,6 +135,11 @@ class VisitRecordCards:
                             if key in row}
                            for row in visit.get("log", [])
                            if isinstance(row, dict) and row.get("kind") in PUBLIC_LOG_KINDS]
+        snapshot["farewell_confirmed"] = confirmed_visit_farewell(visit)
+        departure = visit.get("departure")
+        if isinstance(departure, dict):
+            snapshot["departure_progress"] = {key: copy.deepcopy(departure[key])
+                                               for key in ("state", "deadline") if key in departure}
         outing = visit.get("outing")
         if isinstance(outing, dict):
             snapshot["outing"] = {key: copy.deepcopy(outing[key]) for key in
@@ -149,7 +163,7 @@ class VisitRecordCards:
                 self._recover_record_card(visit)
                 await self._save_record_card_progress()
             if (self._closed or not self.config.enabled or not visit
-                    or visit["status"] not in TERMINAL or visit.get("end_pending")
+                    or visit["status"] not in TERMINAL or self._record_card_settlement_waiting(visit)
                     or not self._record_card_pending(visit)
                     or visit["record_card"].get("next_at", 0) > self._now()
                     or sum(not task.done() for task in self._record_card_tasks.values()) >= MAX_RECORD_CARD_WORKERS):
@@ -195,7 +209,7 @@ class VisitRecordCards:
     async def _card_snapshot_current(self, visit_id: str, fingerprint: str) -> bool:
         """Under the lock, discard stale rendering before any external delivery."""
         visit = self._state["visits"].get(visit_id)
-        if (self._closed or not self.config.enabled or not visit or visit.get("end_pending")
+        if (self._closed or not self.config.enabled or not visit or self._record_card_settlement_waiting(visit)
                 or not self._record_card_pending(visit)):
             return False
         if digest(self._record_card_snapshot(visit)) == fingerprint:
@@ -234,7 +248,7 @@ class VisitRecordCards:
     async def _deliver_record_card(self, visit_id: str, owned_pages: list[Any]) -> None:
         async with self._lock:
             visit = self._state["visits"].get(visit_id)
-            if (self._closed or not visit or visit.get("end_pending")
+            if (self._closed or not visit or self._record_card_settlement_waiting(visit)
                     or not self._record_card_pending(visit)):
                 return
             card = visit["record_card"]

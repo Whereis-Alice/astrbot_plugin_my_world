@@ -1,6 +1,7 @@
 """Shared-clock journeys through the real engine, SQLite and signed HTTP channel."""
 from __future__ import annotations
 
+import asyncio
 import copy
 from dataclasses import replace
 import json
@@ -174,8 +175,15 @@ class OutingClockTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             validate_snapshot(guest, altered, now=self.a.clock.now())
         self.assertEqual(before, guest)
+        self.b.llm.default_reply = '{"say":"见闻太多了，下次再慢慢聊。"}'
+        self.a.llm.default_reply = '{"say":"好，把这些留着，下次接着聊。"}'
         await self.b.service._finish(host, "completed")
         await self.b.service._notify_end(visit_id)
+        await asyncio.gather(*tuple(self.b.service._departure_tasks.values()))
+        await self.b.service._notify_end(visit_id)
+        await self.a.service._notify_end(visit_id)
+        await asyncio.gather(*tuple(self.a.service._departure_tasks.values()))
+        await self.a.service._notify_end(visit_id)
         self.assertEqual(guest["log"], host["log"])
         await self.b.service._observe_memory(visit_id)
         await self.b.service._await_memory_tasks(tuple(self.b.service._memory_tasks.values()))
