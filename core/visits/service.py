@@ -18,8 +18,8 @@ from .transport import VisitTransport, VisitTransportError
 from .snapshots import validate_snapshot
 from .model_retry import clear_state_read
 from .departure import validate_farewell
-from .outings import (CONTACT_LEASE_VERSION, confirmed_progress_lease_limit, outing_enabled,
-                     validate_contact_lease_version)
+from .outings import (CONTACT_LEASE_VERSION, QUIET_CLOCK_VERSION, confirmed_progress_lease_limit, outing_enabled,
+                     validate_contact_lease_version, validate_quiet_clock_version)
 
 
 class VisitService(VisitFlow, VisitJournal):
@@ -291,6 +291,9 @@ class VisitService(VisitFlow, VisitJournal):
         contact_supported = "contact_lease_version" in payload
         if contact_supported:
             validate_contact_lease_version(payload["contact_lease_version"])
+        quiet_supported = "quiet_clock_version" in payload
+        if quiet_supported:
+            validate_quiet_clock_version(payload["quiet_clock_version"])
         if not isinstance(op, str) or op not in {"offer", "end", "step", "sync", "status"}:
             raise ValueError("未知旅程消息")
         if not isinstance(visit_id, str) or len(visit_id) != 32:
@@ -385,6 +388,7 @@ class VisitService(VisitFlow, VisitJournal):
                     raise ValueError("接待期间会话归属或绑定已变化，旧邀请作废")
             if outing_enabled(visit):
                 visit["contact_lease_supported"] = contact_supported
+                visit["quiet_clock_supported"] = quiet_supported
             self._state["visits"][visit_id] = visit
             return {"visit": self._wire(visit)}
         visit = self._state["visits"].get(visit_id)
@@ -477,6 +481,7 @@ class VisitService(VisitFlow, VisitJournal):
         candidate = copy.deepcopy(visit)
         if outing_enabled(candidate):
             candidate["contact_lease_supported"] = contact_supported
+            candidate["quiet_clock_supported"] = quiet_supported
         if manual_continuation:
             local_request_pending = (candidate.get("manual_continuation")
                                      and self._local_id(candidate) in candidate.get("outing_requests", {}))
@@ -577,7 +582,8 @@ class VisitService(VisitFlow, VisitJournal):
             if local_request and payload.get("op") != "end":
                 payload = {**payload, "human_request": copy.deepcopy(local_request)}
             payload = {**payload, "id": visit_id, "calls": visit["calls"][self._local_id(visit)],
-                       **({"contact_lease_version": CONTACT_LEASE_VERSION} if outing_enabled(visit) else {})}
+                       **({"contact_lease_version": CONTACT_LEASE_VERSION,
+                           "quiet_clock_version": QUIET_CLOCK_VERSION} if outing_enabled(visit) else {})}
             outgoing = visit.get("outbox")
             if not outgoing:
                 outgoing = envelope(peer["secret"], self._local_id(visit), peer["id"], payload, self._now())

@@ -14,7 +14,7 @@ from .model_retry import valid_retry, visible_wait
 from .history_pages import LOG_PAGE_SIZE, ROUTE_PAGE_SIZE, extended_history, write_page
 from .record_cards import VisitRecordCards
 from .departure import departure_pending
-from .outings import CONTACT_LEASE_VERSION, outing_enabled
+from .outings import CONTACT_LEASE_VERSION, QUIET_CLOCK_VERSION, outing_enabled
 
 KEY = "world_visits.v1"
 MAX_MEMORY_WORKERS = 2
@@ -203,6 +203,7 @@ class VisitJournal(VisitRecordCards, WorldConnections):
         result = {key: copy.deepcopy(visit[key]) for key in keys if key in visit}
         if outing_enabled(visit):
             result["contact_lease_version"] = CONTACT_LEASE_VERSION
+            result["quiet_clock_version"] = QUIET_CLOCK_VERSION
         if visit.get("departure"):
             result["departure_version"] = 1
         if visit.get("departure_farewells"):
@@ -227,7 +228,8 @@ class VisitJournal(VisitRecordCards, WorldConnections):
         result["observed_at"] = self._now()
         if isinstance(result.get("outing"), dict):
             result["outing"]["phase"] = ("traveling" if self._now() < result["outing"]["started_at"] else
-                                         "playing" if self._now() < result["outing"]["until"] else "checkpoint")
+                                         "playing" if self._now() < max(result["outing"]["until"], result["outing"].get("quiet_until", 0))
+                                         else "checkpoint")
         result["budget_side"] = visit.get("budget_side", "")
         result["model_wait"] = visible_wait(visit) if visit["status"] in RESERVED else {}
         departure = visit.get("departure") or {}
@@ -256,9 +258,13 @@ class VisitJournal(VisitRecordCards, WorldConnections):
         outing = visit.get("outing")
         if isinstance(outing, dict):
             until, quiet = timestamp(outing.get("until")), timestamp(outing.get("quiet_until"))
-            if until > now and (quiet > now or outing.get("return_agreed")):
+            attention_clock = getattr(self, "_attention_wait_at", None)
+            own_wait = timestamp(attention_clock(visit)) if attention_clock else 0
+            if own_wait > now:
+                return {"kind": "activity_wait", "reason": "正在一起活动", "next_at": next_at}
+            if quiet > now or until > now and outing.get("return_agreed"):
                 return {"kind": "activity_wait", "reason": "正在一起活动",
-                        "next_at": min(quiet, until) if quiet > now else until}
+                        "next_at": quiet if quiet > now else until}
         return {"kind": "next_turn", "reason": "等待下一步回应", "next_at": next_at,
                 "actor_id": str(visit.get("next_actor") or "")}
 
@@ -416,7 +422,7 @@ class VisitJournal(VisitRecordCards, WorldConnections):
                         review_base = copy.deepcopy(snapshot)
                         async with asyncio.timeout(self.config.timeout_seconds):
                             review = clean_decision(await self.actor_port.decide(snapshot["scope"], "finish", snapshot))
-                        self._retain_private(snapshot, review, self._now())
+                        self._retain_private(snapshot, review, self._now(), phase="finish")
                         async with self._lock:
                             current = self._state["visits"].get(visit_id)
                             if not self._retain_finish_review(current, review_base, snapshot):

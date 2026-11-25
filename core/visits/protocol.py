@@ -8,6 +8,7 @@ import math
 import re
 import secrets
 from typing import Any
+from .intent import clean_activity_intent
 
 VERSION = 1
 MAX_BYTES = 32768
@@ -262,6 +263,7 @@ def clean_decision(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("模型未提供有效串门选择")
     return {"accept": value.get("accept") is True, "say": text(value.get("say"), 400),
+            "activity_intent": clean_activity_intent(value.get("activity_intent")),
             "action": text(value.get("action"), 200), "thought": text(value.get("thought"), 240),
             "leave": value.get("leave") is True, "scene": clean_scene(value.get("scene")),
             "reflection": text(value.get("reflection"), 500),

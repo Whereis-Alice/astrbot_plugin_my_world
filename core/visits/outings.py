@@ -10,6 +10,7 @@ from .activities import begin_shared_activity
 OUTING_VERSION = 1
 CHECKPOINT_LEASE_SECONDS = 3600
 CONTACT_LEASE_VERSION = 1
+QUIET_CLOCK_VERSION = 2
 PROGRESS_LOG_KINDS = frozenset({"say", "action_plan", "action_control", "milestone", "experience", "result"})
 
 
@@ -20,6 +21,23 @@ def outing_enabled(visit: dict) -> bool:
 def validate_contact_lease_version(value: object) -> None:
     if type(value) is not int or value != CONTACT_LEASE_VERSION:
         raise ValueError("联络期限能力版本无效")
+
+
+def validate_quiet_clock_version(value: object) -> None:
+    if type(value) is not int or value != QUIET_CLOCK_VERSION:
+        raise ValueError("共同静处时钟能力版本无效")
+
+
+def quiet_clock_enabled(visit: dict) -> bool:
+    return outing_enabled(visit) and visit.get("quiet_clock_supported") is True
+
+
+def quiet_deadline(visit: dict, first: float, cadence: float, pauses: dict) -> float:
+    """Keep chosen attention inside the existing contact or agreed return window."""
+    activity = visit["outing"]
+    limit = (activity["until"] if activity.get("return_agreed")
+             else activity.get("quiet_contact_until", visit["expires_at"]))
+    return min(limit, first + max(cadence, *(value * 60 for value in pauses.values())))
 
 
 def renew_contact_lease(visit: dict, now: float) -> bool:
@@ -101,7 +119,7 @@ def proposed_activity(decision: dict) -> dict:
 
 def activity_offer(visit: dict, decision: dict, now: float) -> dict:
     """Use the same supported proposal shapes for planning and execution checks."""
-    if decision.get("continue_activity") and (visit.get("outing") or {}).get("until", 0) > now:
+    if decision.get("continue_activity") and visit.get("outing"):
         return {}
     return proposed_activity(decision)
 
@@ -147,10 +165,19 @@ def pause_activity(visit: dict, host_minutes: float, guest_minutes: float, now: 
     """Both characters have independently expressed how long they want quiet company."""
     activity = visit["outing"]
     cadence = max(1, min(180, floor_seconds))
-    base = min(activity["until"], max(now, activity["started_at"]))
-    quiet_until = min(activity["until"], base + max(cadence, host_minutes * 60, guest_minutes * 60))
-    activity["quiet_until"] = quiet_until
     activity["pause_choices"] = {visit["host_id"]: host_minutes, visit["guest_id"]: guest_minutes}
+    continued = (quiet_clock_enabled(visit) and not activity.get("return_agreed")
+                 and now >= activity["until"])
+    base = max(now, activity["started_at"]) if continued else min(activity["until"], max(now, activity["started_at"]))
+    if continued:
+        activity["quiet_clock_version"] = QUIET_CLOCK_VERSION
+        activity["quiet_contact_until"] = visit["expires_at"]
+        quiet_until = quiet_deadline(visit, base, cadence, activity["pause_choices"])
+    else:
+        activity.pop("quiet_clock_version", None)
+        activity.pop("quiet_contact_until", None)
+        quiet_until = min(activity["until"], base + max(cadence, host_minutes * 60, guest_minutes * 60))
+    activity["quiet_until"] = quiet_until
     activity["pause_at"], activity["cadence_seconds"] = base, cadence
     if quiet_action_ids:
         activity["quiet_action_ids"] = list(quiet_action_ids)
@@ -160,7 +187,8 @@ def pause_activity(visit: dict, host_minutes: float, guest_minutes: float, now: 
     visit["next_at"] = quiet_until
 
 
-def valid_activity(activity: object, *, expires_at: float, now: float | None = None) -> bool:
+def valid_activity(activity: object, *, expires_at: float, now: float | None = None,
+                   quiet_clock_supported: bool = False) -> bool:
     if not isinstance(activity, dict) or activity.get("version") != OUTING_VERSION:
         return False
     route = activity.get("route")
@@ -204,9 +232,22 @@ def valid_activity(activity: object, *, expires_at: float, now: float | None = N
             previous_ended = False
     if type(activity.get("return_agreed", False)) is not bool:
         return False
+    continued = "quiet_clock_version" in activity
+    if continued and (type(activity["quiet_clock_version"]) is not int
+                      or activity["quiet_clock_version"] != QUIET_CLOCK_VERSION
+                      or not quiet_clock_supported or activity.get("return_agreed")
+                      or "pause_choices" not in activity):
+        return False
+    if continued:
+        contact_until = activity.get("quiet_contact_until")
+        if (type(contact_until) not in {int, float} or not math.isfinite(contact_until)
+                or not activity["until"] < contact_until <= expires_at):
+            return False
+    elif "quiet_contact_until" in activity:
+        return False
     quiet = activity.get("quiet_until", activity["until"])
     if (type(quiet) not in {int, float} or not math.isfinite(quiet)
-            or not activity["started_at"] <= quiet <= activity["until"]):
+            or not activity["started_at"] <= quiet <= (activity["quiet_contact_until"] if continued else activity["until"])):
         return False
     if "quiet_action_ids" in activity:
         if not valid_quiet_action_ids(activity["quiet_action_ids"]) or "pause_choices" not in activity:

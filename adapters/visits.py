@@ -22,19 +22,36 @@ from ..core.visit_recall import (recall_excerpt as _recall_excerpt, visit_occurr
 from ..core.visit_chat_bridge import local_chat_experiences
 from ..core.visit_memory import render_visit_additions
 from ..core.model_calls import model_context
-from ..core.life_matters import stable_interests
+from ..core.life_matters import stable_interests, practice_records
 from ..core.state import STATE_DROWSY, STATE_NAPPING, STATE_SLEEPING
 from ..core.recovery import sleep_action_kind
 from ..core.visit_presence import active_visit, presence_text
 from ..core.visits.decisions import FORMAT_ISSUES, VisitDecisionError, record_decision_candidate
 from ..core.visits.protocol import clean_action_control, clean_action_step, clean_outing_offer, clean_pause, clean_scene_update
 from ..core.visits.activities import action_capacity, activity_context
+from ..core.visits.intent import activity_intent_context, clean_activity_intent
 from ..core.visits.routing import MAX_CONTEXTS
 from ..core.background_budget import capture_background_admission
 from ..core.planner import same_plan
 from .visit_cards import VisitCardActorMixin
 
 _CONVERSATION_TAG = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}\Z")
+
+
+def _recent_practice(state, *, persona_key: str, now: float) -> list[dict]:
+    """Recent actual effort is inspiration, not a newly assigned personality."""
+    rows = []
+    for item in practice_records(state, persona_key=persona_key).values():
+        at = item.get("last_at")
+        if (type(at) not in {int, float} or not math.isfinite(at)
+                or not 0 <= now - at <= 30 * 86400):
+            continue
+        source = item.get("episodes")
+        episodes = [{key: episode[key] for key in ("at", "day", "period", "minutes") if key in episode}
+                    for episode in (source[-2:] if isinstance(source, list) else []) if isinstance(episode, dict)]
+        rows.append({"label": _text(item.get("label"), 100), "last_at": at,
+                     "recent_episodes": episodes})
+    return sorted(rows, key=lambda item: item["last_at"], reverse=True)[:4]
 _MAX_CONVERSATION_ALIASES = 128
 
 
@@ -442,6 +459,7 @@ class VisitActorPort(VisitCardActorMixin):
                          "activity_progress": self._outing_progress(visit.get("outing"), now=reviewed_at),
                          "shared_activity": shared, "expected_scene_revision": shared.get("revision"),
                          "local_chat_experiences": experiences,
+                         "personal_activity_intent": activity_intent_context(visit),
                          "personal_moments": [{key: row[key] for key in ("at", "seq", "log_seq", "thought", "reflection", "promise") if key in row}
                              for row in visit.get("private_moments", [])[-12:] if isinstance(row, dict)],
                          "friend": {key: _text(remote.get(key), 100)
@@ -457,6 +475,8 @@ class VisitActorPort(VisitCardActorMixin):
                          "previous_visits": past,
                          "recent_personal_activities": [_text(item.get("label"), 100) for item in
                              stable_interests(state, now=engine._now(), persona_key=local["persona_key"])[:4]],
+                         "recent_personal_practice": _recent_practice(state, now=engine._now(),
+                             persona_key=local["persona_key"]),
                          "current_place": current_place,
                          "current_world": (_text(remote.get("world"), 80) or "友邻世界")
                                           if visiting and visit.get("role") == "guest" else local["world"],
@@ -751,6 +771,9 @@ class VisitActorPort(VisitCardActorMixin):
             "这些材料只供你自己决定，不必转述给朋友，不把群聊全文、他人私事或系统字段说出去。"
             "相关群聊想法可以由你重新考虑并向朋友提出，仍要她独立决定。personal_moments只是你自己的感受，不能当朋友内心。"
             "thought/reflection是你自己的主观感受，不能当成对方的内心或事实；promise只在双方明确说过时记录。"
+            "personal_activity_intent是你此前留给自己的相处意愿；current只属于当前活动，pending_proposal只是你对未接受提议的想法，不是共同目标。"
+            "reason是初始邀请缘由，previous_visits和shared_activity.pending是可回想的背景与未完事，不是本次必须重做或解完的任务。"
+            "recent_personal_activities证明多日实际投入，recent_personal_practice是最近真实尝试；都不证明喜欢，不覆盖原有人设，也不必每次重复。"
             "只输出一个完整JSON对象，不要Markdown或额外解释。只用本阶段需要的字段，不用的字段省略。"
             "没有新动作、取消或结算时，action_step/action_control/scene_update可省略、用null或空对象{}；非空对象必须完整合法。"
             "say平常一句且可省略；thought可留一个当下念头，reflection只留自己的具体感受；保持整个JSON简短完整。"
@@ -764,10 +787,16 @@ class VisitActorPort(VisitCardActorMixin):
                 "普通个人安排可以暂时放下，也可以选择先忙完或改约；原进度会保留并在归家后接续。"
                 "human_arranged表示真人这次主动安排；看home_status自行决定是否方便，不必按机械接待时段拒绝。"
             )
+        if phase in {"propose", "receive", "turn"}:
+            rules += (
+                "可以在activity_intent里留简短的本人意愿：want是今天想做或体会什么（最多160字），enough是今天做到哪里就满足（最多160字），feeling是此刻自己的兴趣或感受变化（最多100字）。"
+                "这不是正式任务或必须填的表格；未知可以留着，单纯待在一起也可以。不变时不用重写，只更新需要改变的字段。"
+                "若提出新outing或接受眼前提议，这份意愿属于该提议，双方确认后才用于新活动；它不替朋友决定、不结算结果，也不公开给她。"
+            )
         if phase == "turn" or phase in {"propose", "receive"} and capabilities.get("can_propose_outing"):
             rules += (
                 "活动由你根据性格、兴趣、眼前物件、朋友实际表达的愿望和上次未完的事自由产生，不受示例活动清单限制。"
-                "host_places只列可见地点的名字及邻接地点，recent_personal_activities是近期兴趣；结合当前所在和朋友兴趣决定。"
+                "host_places只列可见地点的名字及邻接地点；结合当前所在、本人近期尝试和朋友真实表达的兴趣自由决定。"
                 "地方少时可以在这些地点附近自主探索，提出具体去处；仍需对方独立同意，不能预写结果。"
                 "东道主用outing:{place,activity,minutes,event?}提出具体地点和做什么，minutes支持小数，按合理真实耗时决定；event可省略。"
                 "路途用travel_seconds表示合理秒数；短动作不必套五分钟，长期活动可分段继续。"
@@ -781,6 +810,12 @@ class VisitActorPort(VisitCardActorMixin):
                 "activity_progress是实际进度；outing.quiet_until是双方确认暂时安静共玩的时点，不是整段活动禁言。"
                 "actual_elapsed_minutes是这段活动已经实际相处的分钟数，planned_minutes是原先估时；past_planned_end说明原估时已过。"
                 "结合实际已经花的时间、自己的兴趣和朋友的表现决定继续、另提想做的事或告别，不为了接回合反复编造新线索。"
+                "先对照本人今天想要的体验、已确认的具体进展与实际经过的时间：这一刻还有什么自己真想参与的新内容？"
+                "已经满足时可以自然收束、提出另一件想做的事或安静相处，不必继续细分同一物件、添待解线索或总结陪伴意义。"
+                "尚未解开的事不妨留到以后，pending非空或done:false都不妨碍告别；不为完成清单拖住朋友。"
+                "想继续时围绕实际新问题、正在发生的动作或愿意分享的具体经历推进，想说故事也可以；不强制换事或结束。"
+                "朋友提出换话题、休息、拒绝合作，或群聊带来相关新玩法时，重新考虑自己的意愿，不自动把话题拉回旧调查，也不替朋友答应。"
+                "不需要接话时可只选择continue_activity和合适pause_minutes，say/action_step都可省略；安静也是相处，不必附台词证明你在。"
                 "continue_activity:true表示继续；pause_minutes是这段之后想静处的分钟数，支持小数，0表示接着聊，最长240分钟。"
                 "动作、等待和路程分别估时；烧水、冲泡、晾凉、喝一口是不同步骤，不重复套同样时间。"
                 "先按动作本身和已有真实进展估时，再核对剩余时间；不能为了挤进期限而缩短动作固有耗时。"
@@ -961,6 +996,7 @@ class VisitActorPort(VisitCardActorMixin):
         if isinstance(step, dict) and "peer_action_id" in step and step.get("requires_peer") is not True:
             raise VisitDecisionError("format", format_issue="cooperation_flags")
         result = {"accept": value.get("accept") is True, "leave": value.get("leave") is True,
+                  "activity_intent": clean_activity_intent(value.get("activity_intent")),
                   "outing": clean_outing_offer(value.get("outing")),
                   "action_step": clean_action_step(value.get("action_step")),
                   "action_control": clean_action_control(value.get("action_control")),
@@ -994,6 +1030,7 @@ class VisitActorPort(VisitCardActorMixin):
             if key in value and (type(value[key]) not in {int, float} or not math.isfinite(value[key])):
                 raise VisitDecisionError("format", format_issue="pause_number")
         if phase not in {"propose", "receive"} and not (result["leave"] or result["outing"] or result["action_step"] or result["action_control"] or result["scene_update"]
+                or phase == "turn" and result["activity_intent"]
                 or any(key in value for key in ("outing_accept", "return_after", "continue_activity",
                                                "pause_minutes", "next_contact_minutes")) or any(
                 result[name] for name in ("say", "action", "thought", "reflection", "promise", "outcome"))

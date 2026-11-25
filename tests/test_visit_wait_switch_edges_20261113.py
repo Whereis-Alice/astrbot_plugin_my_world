@@ -125,7 +125,10 @@ class VisitWaitSwitchEdgeTests(unittest.IsolatedAsyncioTestCase):
     async def test_confirmed_quiet_survives_reload_and_cannot_be_forged_without_a_current_guest_observation(self):
         visit_id, host, guest = await self.start_shared(host_action=action("翻一页自己的书", 1))
         quiet = json.dumps({"continue_activity": True, "pause_minutes": 20})
-        self.b.llm.default_reply = quiet
+        # Shared confirmation needs an actual invitation; a private-only pause
+        # now keeps local attention without forcing the guest to make a turn.
+        self.b.llm.default_reply = json.dumps({"say": "先各自读一会儿吧。",
+            "continue_activity": True, "pause_minutes": 20}, ensure_ascii=False)
         self.a.llm.default_reply = quiet
         self.advance(1.01)
         await self.b.service.tick()

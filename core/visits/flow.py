@@ -12,7 +12,8 @@ from .activities import (record_action, advance_activity, apply_scene_update,
 from .history_pages import LOG_PAGE_SIZE, read_page
 from .outings import (CHECKPOINT_LEASE_SECONDS, PROGRESS_LOG_KINDS, activity_waiting, begin_activity,
                      confirmed_progress_lease_limit, outing_enabled, pause_activity,
-                     pending_outing_requests, activity_offer, renew_contact_lease, valid_quiet_action_ids)
+                     pending_outing_requests, activity_offer, renew_contact_lease, valid_quiet_action_ids,
+                     quiet_clock_enabled, quiet_deadline, QUIET_CLOCK_VERSION)
 from .rhythm import VisitRhythm
 from .snapshots import validate_snapshot
 from .transport import VisitTransportError
@@ -22,6 +23,7 @@ from .model_retry import (clear_state_read, defer_decision, defer_state_read,
 from .ports import VisitStateError, describe_local
 from .cancellation import candidate_commit_lock, preserve_cancelled_candidate
 from .departure import VisitDeparture
+from .intent import retain_activity_intent
 
 
 class VisitFlow(VisitDeparture, VisitRhythm):
@@ -41,9 +43,29 @@ class VisitFlow(VisitDeparture, VisitRhythm):
         visit["next_at"] = min(visit.get("next_at", self._now()), self._now())
         return True
 
+    @staticmethod
+    def _attention_basis(visit):
+        return {"log_seq": len(visit.get("log", [])),
+                "outing_stage": (visit.get("outing") or {}).get("stage", -1),
+                "shared_revision": (visit.get("shared_activity") or {}).get("revision", -1),
+                "local_attention_seq": visit.get("local_experience_attention_seq", 0),
+                "remote_experience_seq": visit.get("remote_experience_seq", 0)}
+
+    def _attention_wait_at(self, visit):
+        wait = visit.get("attention_wait")
+        if (not isinstance(wait, dict) or visit.get("next_actor") != self._local_id(visit)
+                or wait.get("basis") != self._attention_basis(visit)
+                or type(wait.get("until")) not in {int, float} or not math.isfinite(wait["until"])
+                or not valid_quiet_action_ids(wait.get("ready_action_ids", []))):
+            return None
+        return wait["until"]
+
     def _new_action_attention(self, visit):
         ready = activity_context(visit, self._now()).get("ready_action_ids", [])
-        acknowledged = (visit.get("outing") or {}).get("quiet_action_ids", [])
+        acknowledged = set((visit.get("outing") or {}).get("quiet_action_ids", []))
+        attention_at = self._attention_wait_at(visit)
+        if attention_at is not None and attention_at > self._now():
+            acknowledged.update(visit["attention_wait"].get("ready_action_ids", []))
         return bool(set(ready) - set(acknowledged))
 
     def _activity_waiting(self, visit):
@@ -55,6 +77,9 @@ class VisitFlow(VisitDeparture, VisitRhythm):
         if self._new_action_attention(visit):
             return False
         due = next_activity_due(visit, self._now())
+        attention_at = self._attention_wait_at(visit)
+        if attention_at is not None:
+            return attention_at > self._now() and (due is None or due > self._now())
         return activity_waiting(visit, self._now()) and (due is None or due > self._now())
 
     async def wake_local_experience(self, visit_id, scope, actor_id, persona_key, at, seq=None, significant=True):
@@ -98,7 +123,11 @@ class VisitFlow(VisitDeparture, VisitRhythm):
             visit["next_at"] = min(visit["next_at"], self._now())
 
     @staticmethod
-    def _retain_private(visit, result, now):
+    def _retain_private(visit, result, now, *, phase=""):
+        offer = activity_offer(visit, result, now) if phase in {"propose", "receive", "turn"} else {}
+        if not offer and result.get("outing_accept"):
+            offer = visit.get("outing_offer") or {}
+        retain_activity_intent(visit, result.get("activity_intent"), phase=phase, now=now, offer=offer)
         moment = {key: result[key] for key in ("thought", "reflection", "promise") if result.get(key)}
         if not moment:
             return
@@ -122,6 +151,10 @@ class VisitFlow(VisitDeparture, VisitRhythm):
             return self._now()
         if self._new_action_attention(visit):
             return self._now()
+        attention_at = self._attention_wait_at(visit)
+        if attention_at is not None:
+            due = next_activity_due(visit, self._now())
+            return min(attention_at, due) if due is not None else attention_at
         if activity_waiting(visit, self._now()):
             due = next_activity_due(visit, self._now())
             return min(outing.get("quiet_until", outing["until"]), due) if due is not None else outing.get("quiet_until", outing["until"])
@@ -592,7 +625,7 @@ class VisitFlow(VisitDeparture, VisitRhythm):
             if self._decision_cursor(visit, phase) != cursor:
                 await self._save()
                 return None  # Another confirmed step has already advanced this phase.
-            self._retain_private(visit, result, self._now())
+            self._retain_private(visit, result, self._now(), phase=phase)
             visit.pop("model_retry", None)
             # Durable output lets a request retry reuse this decision.
             visit["decision"] = result
@@ -973,6 +1006,7 @@ class VisitFlow(VisitDeparture, VisitRhythm):
         if remote.get("status") in {"offered", "inviting"}:
             if outing_enabled(visit):
                 visit["contact_lease_supported"] = remote.get("contact_lease_version") == 1
+                visit["quiet_clock_supported"] = remote.get("quiet_clock_version") == QUIET_CLOCK_VERSION
             return  # Their pending acceptance does not turn our proposal into a received invitation.
         memory_before = copy.deepcopy(visit) if remote.get("status") in TERMINAL else None
         if visit["role"] == "host":
@@ -1003,6 +1037,7 @@ class VisitFlow(VisitDeparture, VisitRhythm):
                     self._invalidate_memory(visit)
             if outing_enabled(visit):
                 visit["contact_lease_supported"] = remote.get("contact_lease_version") == 1
+                visit["quiet_clock_supported"] = remote.get("quiet_clock_version") == QUIET_CLOCK_VERSION
             return
         if sender != visit["host_id"] or remote.get("status") not in RESERVED | TERMINAL:
             raise ValueError("无效东道主状态")
@@ -1037,6 +1072,7 @@ class VisitFlow(VisitDeparture, VisitRhythm):
         visit["calls"][self._local_id(visit)] = own_calls
         if outing_enabled(visit):
             visit["contact_lease_supported"] = remote.get("contact_lease_version") == 1
+            visit["quiet_clock_supported"] = remote.get("quiet_clock_version") == QUIET_CLOCK_VERSION
         self._mark_arrival(visit)
         if visit["status"] in TERMINAL:
             self._clear_decision_wait(visit)
@@ -1343,6 +1379,12 @@ class VisitFlow(VisitDeparture, VisitRhythm):
         if not result.get("leave") and any(row.get("kind") in PROGRESS_LOG_KINDS
                                            for row in trial["log"][first_log:]):
             renew_contact_lease(trial, now)
+        outing = trial.get("outing") or {}
+        if (sender == trial["guest_id"] and outing.get("quiet_clock_version") == QUIET_CLOCK_VERSION
+                and outing.get("pause_at") == now):
+            outing["quiet_contact_until"] = trial["expires_at"]
+            outing["quiet_until"] = quiet_deadline(trial, now, outing["cadence_seconds"], outing["pause_choices"])
+            trial["next_at"] = self._outing_wait_at(trial)
         visit.clear()
         visit.update(trial)
 
@@ -1389,7 +1431,7 @@ class VisitFlow(VisitDeparture, VisitRhythm):
     def _offer_activity(self, visit, decision, *, now=None):
         now = self._now() if now is None else now
         visit["outing_host_ready_ids"] = copy.deepcopy(visit.get("decision_ready_action_ids", []))
-        if decision.get("continue_activity") and (visit.get("outing") or {}).get("until", 0) > now:
+        if decision.get("continue_activity") and visit.get("outing"):
             visit.pop("outing_offer", None)
             visit["outing_host_pause"] = decision.get("pause_minutes", 5)
             return False
@@ -1405,6 +1447,7 @@ class VisitFlow(VisitDeparture, VisitRhythm):
 
     def _record_outing_choice(self, visit, sender, result, *, now=None):
         now = self._now() if now is None else now
+        visit.pop("attention_wait", None)
         settled = bool(sender == visit["host_id"] and result.get("outcome")
                        and visit.get("event_stage") == "offered" and len(visit.get("action_plans", {})) == 2)
         if result.get("outcome") and not settled:
@@ -1425,6 +1468,22 @@ class VisitFlow(VisitDeparture, VisitRhythm):
             else:
                 visit.pop("outing_request_turn", None)
             self._offer_activity(visit, result, now=now)
+            public_choice = any(result.get(key) for key in (
+                "say", "action", "action_step", "action_control", "scene_update", "outcome"))
+            if (visit.get("outing") and not public_choice and not visit.get("outing_offer")
+                    and not request_turn and not visit.get("remote_experience_pending")):
+                # A private choice to remain here is not a fresh invitation for
+                # the friend to invent another line. Preserve our chosen next
+                # attention and the action clocks we actually observed.
+                outing = visit["outing"]
+                limit = min(visit["expires_at"], outing["until"]) if outing.get("return_agreed") else visit["expires_at"]
+                until = min(limit, now + max(self.config.poll_seconds, result.get("pause_minutes", 5) * 60))
+                visit["next_actor"] = visit["host_id"]
+                visit["attention_wait"] = {"at": now, "until": until,
+                    "basis": self._attention_basis(visit),
+                    "ready_action_ids": copy.deepcopy(visit.get("decision_ready_action_ids", []))}
+                visit["next_at"] = self._outing_wait_at(visit)
+                return
             visit["next_actor"] = visit["guest_id"]
             visit["next_at"] = now + self.config.poll_seconds
             due = next_activity_due(visit, now)
@@ -1460,7 +1519,8 @@ class VisitFlow(VisitDeparture, VisitRhythm):
                 visit["event_stage"] = "none"
             visit["next_at"] = self._outing_wait_at(visit)
             return
-        if not offer and (visit.get("outing") or {}).get("until", 0) > now:
+        if (not offer and visit.get("outing")
+                and (visit["outing"].get("until", 0) > now or quiet_clock_enabled(visit))):
             guest_seen = set(result.get("_observed_ready_ids", []))
             ready = set(activity_context(visit, now).get("ready_action_ids", []))
             quiet_action_ids = [item for item in visit.pop("outing_host_ready_ids", []) if item in guest_seen and item in ready]

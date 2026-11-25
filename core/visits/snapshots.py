@@ -5,7 +5,8 @@ import math
 import copy
 from .protocol import RESERVED, TERMINAL, clean_action_control, clean_outing_offer, text, validate_outing_request_maps
 from .outings import (CHECKPOINT_LEASE_SECONDS, confirmed_progress_lease_limit, outing_enabled,
-                     valid_activity, valid_quiet_action_ids, validate_contact_lease_version)
+                     valid_activity, valid_quiet_action_ids, validate_contact_lease_version,
+                     validate_quiet_clock_version, QUIET_CLOCK_VERSION)
 from .history_pages import extended_history, expand_snapshot
 from .activities import apply_action_control, validate_shared_activity
 from .departure import validate_departure_snapshot
@@ -17,6 +18,8 @@ def validate_snapshot(visit: dict, remote: dict, *, now: float | None = None) ->
     remote = expand_snapshot(_route_expansion_base(visit, remote), remote)
     if "contact_lease_version" in remote:
         validate_contact_lease_version(remote["contact_lease_version"])
+    if "quiet_clock_version" in remote:
+        validate_quiet_clock_version(remote["quiet_clock_version"])
     actors = {visit["host_id"], visit["guest_id"]}
     if any(remote.get(key) != visit[key] for key in ("host_id", "guest_id")):
         raise ValueError("旅程参与者不一致")
@@ -85,7 +88,9 @@ def validate_snapshot(visit: dict, remote: dict, *, now: float | None = None) ->
                                 or not math.isfinite(row["at"]) or row["at"] < 0):
                 raise ValueError("旅程经过时间无效")
     if "outing" in remote:
-        if not outing_enabled(visit) or not valid_activity(remote["outing"], expires_at=remote.get("expires_at", visit["expires_at"]), now=now):
+        if not outing_enabled(visit) or not valid_activity(remote["outing"], expires_at=remote.get("expires_at", visit["expires_at"]), now=now,
+                quiet_clock_supported=(visit.get("quiet_clock_supported") is True
+                                       and remote.get("quiet_clock_version") == QUIET_CLOCK_VERSION)):
             raise ValueError("共同活动时间或路线无效")
         prior_route = (visit.get("outing") or {}).get("route", [])
         route = remote["outing"]["route"]
@@ -100,21 +105,26 @@ def validate_snapshot(visit: dict, remote: dict, *, now: float | None = None) ->
         if "pause_choices" in outing:
             pauses = outing["pause_choices"]
             first, cadence = outing.get("pause_at"), outing.get("cadence_seconds")
+            continued = outing.get("quiet_clock_version") == QUIET_CLOCK_VERSION
+            limit = outing["quiet_contact_until"] if continued else outing["until"]
+            pause_start = outing["until"] if continued else outing["started_at"]
             if (not isinstance(pauses, dict) or set(pauses) != actors
                     or any(type(value) not in {int, float} or not math.isfinite(value) or not 0 <= value <= 240
                            for value in pauses.values())
                     or type(first) not in {int, float} or not math.isfinite(first)
-                    or not outing["started_at"] <= first < outing["until"]
+                    or not pause_start <= first < limit
                     or now is not None and first > now + outing.get("travel_seconds", 0) + 300
                     or type(cadence) not in {int, float} or not 1 <= cadence <= 180
-                    or outing.get("quiet_until") != min(outing["until"], first + max(cadence, *(value * 60 for value in pauses.values())))):
+                    or outing.get("quiet_until") != min(limit, first + max(cadence, *(value * 60 for value in pauses.values())))):
                 raise ValueError("共同休息节奏无效")
             if visit["role"] == "guest":
                 same_checkpoint = (len(route) == len(prior_route) and "pause_choices" in prior
                                    and prior.get("pause_at") == first)
                 if same_checkpoint and any(prior.get(key) != outing.get(key) for key in
-                                           ("pause_choices", "cadence_seconds", "quiet_until")):
+                                           ("pause_choices", "cadence_seconds", "quiet_until", "quiet_clock_version", "quiet_contact_until")):
                     raise ValueError("已经共同确认的休息意愿不能被改写")
+                if continued and not same_checkpoint and limit != remote.get("expires_at", visit["expires_at"]):
+                    raise ValueError("共同静处缺少本次有效联络期限证明")
                 acknowledged = outing.get("quiet_action_ids", [])
                 if not valid_quiet_action_ids(acknowledged):
                     raise ValueError("共同安静的已观察动作计时确认无效")
