@@ -24,6 +24,22 @@ class PersonalVisitIntentTests(unittest.IsolatedAsyncioTestCase):
     shared_visit = fixture.VisitPhaseCapabilityTests.shared_visit
     request = fixture.VisitPhaseCapabilityTests.request
 
+    async def test_plain_speech_persona_applies_to_say_without_replacing_internal_json(self):
+        self.persona.text = "输出方式：只发送你想说的话，不写动作、旁白、内心独白或分析过程。"
+        self.local = await self.port.describe(engine_fixture.SESSION)
+        value = self.shared_visit("host")
+        value["local"] = copy.deepcopy(self.local)
+        begin_activity(value, {"place": "书桌", "activity": "看册子", "minutes": 10}, self.clock.now())
+        choice, _, captured = await self.request(value, {"say": "今天看到这里就够啦。", "activity_intent":
+            {"enough": "看到这处就够"}, "continue_activity": True})
+        prompt = captured["system_prompt"]
+        self.assertIn(self.persona.text, prompt)
+        self.assertLess(prompt.index("人格中只说原话"), prompt.index(self.persona.text))
+        self.assertIn("只约束say里的本人台词", prompt)
+        self.assertIn("所引用动作支持的具体变化", prompt)
+        self.assertEqual(choice["say"], "今天看到这里就够啦。")
+        self.assertEqual(choice["activity_intent"]["enough"], "看到这处就够")
+
     async def test_only_valid_private_intent_is_a_legal_silent_choice(self):
         value = self.shared_visit("host")
         begin_activity(value, {"place": "窗边", "activity": "待一会儿", "minutes": 10}, self.clock.now())

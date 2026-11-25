@@ -36,6 +36,12 @@ from ..core.planner import same_plan
 from .visit_cards import VisitCardActorMixin
 
 _CONVERSATION_TAG = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}\Z")
+_DECISION_FRAME = (
+    "本轮是插件内部的串门决定，输出完整JSON供后台处理，不是普通聊天正文。"
+    "人格中只说原话、不写动作旁白或内心等聊天表达要求，只约束say里的本人台词。"
+    "外层JSON及本阶段允许的动作、感受字段用于内部执行与记录，不能因此省略结构或只返回台词。"
+    "say仍严格遵循原有人格、语言和说话风格，不加入后台字段或协议说明。"
+)
 
 
 def _recent_practice(state, *, persona_key: str, now: float) -> list[dict]:
@@ -520,7 +526,8 @@ class VisitActorPort(VisitCardActorMixin):
                     channel = (getattr(engine, "speech_llm", engine.llm)
                                if phase in {"propose", "receive", "turn", "departure"} else engine.llm)
                     reply = await engine._budgeted_generate(channel, session_id=scope,
-                        system_prompt=persona[:6000] + "\n\n" + rules,
+                        system_prompt=_DECISION_FRAME + "\n\n[本人既有人格]\n" + persona[:6000]
+                                      + "\n\n[本轮内部决策协议]\n" + rules,
                         prompt=json.dumps(materials, ensure_ascii=False), max_tokens=output_limit,
                         _visit_manual=manual,
                         **({"_request_guard": request_guard} if request_guard else {}))
@@ -850,6 +857,7 @@ class VisitActorPort(VisitCardActorMixin):
                     "objects/pending省略时沿用原记录；接近列表上限时可依已确认关联自主归并条目，保留仍相关的事实，不把省略当成物件消失或事情已经完成。"
                     "共同结果须同时引用同joint_id双方动作；只结算所引用动作，不能消费别的独立行动。"
                     "仅依据双方自主选择、到点的具体动作与已确认场景，不编造朋友动作、台词、内心、胜负或发现。"
+                    "结算摘要只写所引用动作支持的具体变化，不能顺带把未观察的背景变化写成确认事实；时间经过本身不证明光线、天气或别处发生了变化。"
                     "还有其他未结算动作时不能done:true；pending保留未确认事项，中途有依据的变化也可结算，不必等整段活动结束。"
                 )
         if phase == "scene":
