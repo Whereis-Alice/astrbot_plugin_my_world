@@ -265,8 +265,19 @@
 .thoughts-tabs button:focus-visible {outline:2px solid var(--accent);outline-offset:2px;}
 .emotion-record-header {display:flex;flex-wrap:wrap;align-items:end;gap:12px;margin-bottom:12px;}
 .emotion-record-header p {margin:0 0 6px;}
+.emotion-record-selection {display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;margin-bottom:12px;}
+.emotion-record-selection[hidden] {display:none;}
+.emotion-record-selection label,.emotion-record-check {display:flex;align-items:center;gap:6px;cursor:pointer;}
+.emotion-record-selection input,.emotion-record-check input {width:auto;margin:0;accent-color:var(--accent);}
+.emotion-record-selection .emotion-record-error {width:100%;}
+.emotion-record[data-selected=true] {border-color:var(--accent-ring);}
 .emotion-record-body,.emotion-record-meta,.emotion-record-error {margin:0;overflow-wrap:anywhere;}
 .emotion-record-body {white-space:pre-wrap;}
+.emotion-record-detail {border-top:1px solid var(--line);padding-top:8px;overflow-wrap:anywhere;}
+.emotion-record-detail summary {color:var(--accent-ink);cursor:pointer;}
+.emotion-record-detail h4 {font-size:12px;margin:10px 0 4px;}
+.emotion-record-detail blockquote {border-inline-start:2px solid var(--line-strong);margin:8px 0;padding-inline-start:10px;}
+.emotion-record-detail blockquote p {margin:0;}
 .emotion-record-actions {display:flex;flex-wrap:wrap;gap:6px;}
 .emotion-record-editor {display:grid;gap:8px;}
 .emotion-record-editor[hidden],.emotion-record-actions[hidden],.emotion-record-error:empty {display:none;}

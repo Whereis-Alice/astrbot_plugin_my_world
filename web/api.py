@@ -29,6 +29,7 @@ from ..core.defaults import (
     DEFAULT_WORLD,
     default_friendship_preset,
 )
+from ..core.emotional_memory import EMOTION_NARRATIVE_LIMIT, EMOTION_SUMMARY_LIMIT
 from ..core.engine.emotion_records import EmotionRecordConflict
 from ..core.generator import grid_layout_nodes, spring_layout_zones
 from ..core.json_actions import extract_json_object
@@ -243,6 +244,8 @@ class WebApiMixin(LifeApiMixin):
         register(f"/{p}/thoughts", self.api_thoughts, ["GET"], "内心活动：她留下的心里话")
         register(f"/{p}/thoughts/emotions", self.api_emotion_records, ["GET"], "读取未释怀记录")
         register(f"/{p}/thoughts/emotions/update", self.api_emotion_record_update, ["POST"], "管理未释怀记录")
+        register(f"/{p}/thoughts/emotions/delete-batch", self.api_emotion_records_delete_batch,
+            ["POST"], "批量删除未释怀记录")
         register(
             f"/{p}/thoughts/clear",
             self.api_thoughts_clear,
@@ -1703,8 +1706,8 @@ class WebApiMixin(LifeApiMixin):
         if action not in {"add", "resolve", "delete"}:
             return error_response("不认识的操作")
         reason = str(payload.get("reason") or payload.get("text") or "").strip()
-        if action == "add" and not 1 <= len(reason) <= 60:
-            return error_response("请填写 1 至 60 字的记录内容")
+        if action == "add" and not 1 <= len(reason) <= EMOTION_SUMMARY_LIMIT:
+            return error_response(f"请填写 1 至 {EMOTION_SUMMARY_LIMIT} 字的记录内容")
         revision = payload.get("revision")
         try:
             async with self.engine.session_state(session_id) as state:
@@ -3581,6 +3584,17 @@ class WebApiMixin(LifeApiMixin):
             return scope, [scope]
         return "", []
 
+    def _emotion_scope_check(self, scope: str, session_id: str, edited_sources: set[str]):
+        state_key = self.engine.state_key(session_id)
+
+        def check() -> None:
+            current_session, current_sources = self._emotion_record_sessions(scope)
+            if (current_session != session_id or not edited_sources.issubset(current_sources)
+                    or any(self.engine.state_key(source) != state_key for source in edited_sources)):
+                raise EmotionRecordConflict("会话范围已变化，请刷新后重试")
+
+        return check
+
     async def api_emotion_records(self):
         guard = self._guard()
         if guard is not None:
@@ -3589,13 +3603,17 @@ class WebApiMixin(LifeApiMixin):
         if not session_id or not sources:
             return error_response("请先选择有会话的生活范围")
         state = await self.engine.load_state(session_id, cold_start=False)
+        from ..core.engine.legacy_emotion_context import legacy_emotion_evidence
         items = []
         for source in sources:
             with self.engine.config_scope(source):
                 _, persona_key = await self.engine._journal_persona(source)
                 enabled = self.engine.is_enabled(source)
-                for item in self.engine.emotion_records(state, source, persona_key=persona_key):
+                rows = self.engine.emotion_records(state, source, persona_key=persona_key)
+                evidence = await legacy_emotion_evidence(self.engine, state, source, rows)
+                for item in rows:
                     items.append({**item,
+                        "evidence": item["evidence"] or evidence.get(item["id"], []),
                         "source_label": self.engine.session_label(source, state),
                         "source_enabled": enabled,
                         "affects_dialogue": enabled and item["affects_dialogue"],
@@ -3621,26 +3639,58 @@ class WebApiMixin(LifeApiMixin):
         if operation not in {"edit", "pause", "resume", "resolve", "delete"}:
             return error_response("不认识的操作")
         text = payload.get("text")
-        if operation == "edit" and (not isinstance(text, str) or not 1 <= len(text.strip()) <= 60):
-            return error_response("请填写 1 至 60 字的记录内容")
-
-        state_key = self.engine.state_key(session_id)
-
-        def scope_still_current() -> None:
-            current_session, current_sources = self._emotion_record_sessions(scope)
-            if (current_session != session_id or source not in current_sources
-                    or self.engine.state_key(source) != state_key):
-                raise EmotionRecordConflict("会话范围已变化，请刷新后重试")
+        narrative = payload.get("narrative")
+        if operation == "edit":
+            if not isinstance(text, str) or not 1 <= len(text.strip()) <= EMOTION_SUMMARY_LIMIT:
+                return error_response(f"请填写 1 至 {EMOTION_SUMMARY_LIMIT} 字的简要摘要")
+            if narrative is not None and (not isinstance(narrative, str)
+                                          or len(narrative.strip()) > EMOTION_NARRATIVE_LIMIT):
+                return error_response(f"第一人称叙述最多 {EMOTION_NARRATIVE_LIMIT} 字")
 
         try:
-            async with self.engine.session_state(source, lock_check=scope_still_current) as state:
+            scope_check = self._emotion_scope_check(scope, session_id, {source})
+            async with self.engine.session_state(source, lock_check=scope_check) as state:
                 item = self.engine.update_emotion_record(state, source, record_id, operation,
-                    text=text, revision=revision)
+                    text=text, narrative=narrative, revision=revision)
         except EmotionRecordConflict as error:
             return error_response(str(error), status_code=409)
         except ValueError as error:
             return error_response(str(error))
         return json_response({"ok": True, "item": item})
+
+    async def api_emotion_records_delete_batch(self):
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload)
+        if guard is not None:
+            return guard
+        scope = payload.get("session")
+        session_id, sources = self._emotion_record_sessions(scope)
+        items = payload.get("items")
+        if not session_id or not isinstance(items, list) or not items:
+            return error_response("请选择要删除的未释怀记录")
+        records = []
+        seen = set()
+        for item in items:
+            if not isinstance(item, dict):
+                return error_response("记录格式无效，请刷新后重试")
+            source, record_id, revision = (item.get(key) for key in ("source_session", "id", "revision"))
+            if not isinstance(source, str) or source not in sources:
+                return error_response("有记录来源不属于当前选择的会话")
+            if not all(isinstance(value, str) and value for value in (record_id, revision)):
+                return error_response("记录标识或版本无效，请刷新后重试")
+            if (source, record_id) in seen:
+                return error_response("同一条记录不能重复选择")
+            seen.add((source, record_id))
+            records.append({"session": source, "id": record_id, "revision": revision})
+        try:
+            scope_check = self._emotion_scope_check(scope, session_id, {source for source, _ in seen})
+            async with self.engine.session_state(session_id, lock_check=scope_check) as state:
+                removed = await self.engine.delete_emotion_records(state, records)
+        except EmotionRecordConflict as error:
+            return error_response(str(error), status_code=409)
+        except ValueError as error:
+            return error_response(str(error))
+        return json_response({"ok": True, "removed": removed})
 
     async def api_memory_create(self):
         payload = await request.json(default={}) or {}

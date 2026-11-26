@@ -43,6 +43,12 @@ def clean(value: Any, limit: int) -> str:
 
 
 class SocialStoreMixin:
+    def claim_interaction_source(self, session: str, user: str, source_id: str) -> bool:
+        """Deduplicate an observed event without saving its words or a score."""
+        cursor = self._execute("INSERT OR IGNORE INTO interaction_source_receipt VALUES(?,?,?)",
+                               (session, user, source_id))
+        return bool(cursor.rowcount)
+
     def record_interaction(
         self,
         session: str,

@@ -994,6 +994,19 @@ class ProfileStore:
         )
         return amount
 
+    def interaction_trust(self, session_id: str, user_id: str) -> float:
+        """A high score buffers ordinary friction without conferring permissions."""
+        profile = self.profile(session_id, user_id) if self.enabled() else None
+        if not profile:
+            return 0.0
+        affinity = float(profile.get("affinity") or 0.0)
+        positive_levels = sorted({float(level.min_affinity) for level in self.config.levels
+                                  if 0 < level.min_affinity <= self.config.affinity_max})
+        # The ordinary friend tier follows the first positive familiarity tier.
+        threshold = (positive_levels[min(1, len(positive_levels) - 1)] if positive_levels
+                     else max(1.0, self.config.affinity_max))
+        return min(1.0, max(0.0, affinity / threshold))
+
     def apply_reply_affinity(
         self,
         session_id: str,

@@ -7,7 +7,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from .emotional_memory import EmotionJudgement, parse_emotion_judgement
 from .extensions import _keep_paragraphs
+from .interaction import InteractionJudgment, parse_interaction
 
 _JSON_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
@@ -202,8 +204,12 @@ class ParseResult:
     """她在跟前的这个人身上**记一笔账**（"他答应的事又没做"）。空 = 这轮没记。
 
     和 ``heart_knot`` 的区别：心事是"她自己的心情"，记仇是**冲这个人**的——
-    会让她对他冷一档，而且只在跟他说话时拿出来。
+    只在相关的当事对话中参考。
     """
+
+    heart_knot_detail: EmotionJudgement | None = None
+    grudge_detail: EmotionJudgement | None = None
+    interaction: InteractionJudgment | None = None
 
     forgive: bool = False
     """他刚道歉 / 补上了 / 解释清楚了 → 之前记着的那笔账可以算了。"""
@@ -553,6 +559,8 @@ def parse_action_payload(
     plan_mode = parse_plan_mode(payload.get("plan_mode"))
     if not cancel and plan_mode:
         cancel = _PLAN_MODE_TO_CANCEL.get(plan_mode, "")
+    heart, heart_detail = _parse_emotion_field(payload.get("heart_knot"))
+    grudge, grudge_detail = _parse_emotion_field(payload.get("grudge"))
     return ParseResult(
         actions=actions,
         reasoning=reasoning,
@@ -564,8 +572,11 @@ def parse_action_payload(
         plan_mode=plan_mode,
         chat_note=_clean_note(payload.get("chat_note")),
         open_topic=_clean_note(payload.get("open_topic")),
-        heart_knot=_clean_note(payload.get("heart_knot")),
-        grudge=_clean_note(payload.get("grudge")),
+        heart_knot=heart,
+        grudge=grudge,
+        heart_knot_detail=heart_detail,
+        grudge_detail=grudge_detail,
+        interaction=parse_interaction(payload.get("interaction")),
         forgive=_as_bool(payload.get("forgive")),
         own_topic=_clean_note(payload.get("own_topic")),
         own_topic_done=str(payload.get("own_topic_done") or "") if isinstance(payload.get("own_topic_done"), str) else "",
@@ -623,6 +634,7 @@ _BUILTIN_JSON_KEYS = frozenset(
         "open_topic",
         "heart_knot",
         "grudge",
+        "interaction",
         "forgive",
         "own_topic",
         "own_topic_done",
@@ -864,6 +876,13 @@ def _clean_note(payload: Any) -> str:
         return ""
     text = " ".join(str(payload).split())
     return text[:80]
+
+
+def _parse_emotion_field(value: Any) -> tuple[str, EmotionJudgement | None]:
+    if isinstance(value, str):
+        return _clean_note(value), None
+    judgement = parse_emotion_judgement(value)
+    return (judgement.summary, judgement) if judgement else ("", None)
 
 
 # 兜底发言的长度上限：超过这个长度、或者还残留 JSON 结构的，就不当"她说了句话"处理。

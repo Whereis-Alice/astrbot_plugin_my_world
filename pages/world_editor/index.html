@@ -10,7 +10,7 @@
     <link rel="stylesheet" href="./workbench.css?v=4.35.0" />
     <link rel="stylesheet" href="./people.css?v=4.29.0" />
     <link rel="stylesheet" href="./model-calls.css?v=4.29.0" />
-    <link rel="stylesheet" href="./life.css?v=4.49.2" />
+    <link rel="stylesheet" href="./life.css?v=4.49.3" />
     <link rel="stylesheet" href="./visits.css?v=4.46.29" />
     <link rel="stylesheet" href="./social-learning.css?v=4.29.0" />
     <link rel="stylesheet" href="./observatory.css?v=4.39.0" />
@@ -798,7 +798,14 @@
                   <option value="paused">已暂停</option>
                   <option value="history">历史记录</option>
                 </select></label>
+                <button id="emotion-records-batch" type="button" class="ghost small" aria-pressed="false">批量选择</button>
                 <p id="emotion-records-feedback" class="muted" role="status"></p>
+              </div>
+              <div id="emotion-records-selection" class="emotion-record-selection" hidden>
+                <label><input id="emotion-records-select-all" type="checkbox" /> 全选当前筛选结果</label>
+                <span id="emotion-records-selected" class="muted" role="status"></span>
+                <button id="emotion-records-delete-selected" type="button" class="ghost small danger" disabled>删除所选</button>
+                <p id="emotion-records-batch-error" class="emotion-record-error" role="alert"></p>
               </div>
               <div id="emotion-records-list" class="list"></div>
             </div>
@@ -1236,6 +1243,6 @@
       </div>
     </div>
 
-    <script type="module" src="./app.js?v=4.49.2"></script>
+    <script type="module" src="./app.js?v=4.49.3"></script>
   </body>
 </html>

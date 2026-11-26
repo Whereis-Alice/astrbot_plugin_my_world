@@ -23,9 +23,23 @@ class EmotionalContinuityTests(unittest.IsolatedAsyncioTestCase):
     idle = audit.LifeAuditTests.idle
 
     async def reflect(self, session, **fields):
+        text = "我有点担心，只和你说。"
+        entries = None
+        if fields.get("grudge"):
+            text = "我就是故意爽约，答应和你一起去的时候我就没打算到场。"
+            self.turn_number = getattr(self, "turn_number", 0) + 1
+            entries = [{"user_id": "42", "text": text, "origin": session, "at": self.clock.now(),
+                        "message_id": str(self.turn_number)}]
+            [source] = self.engine.interaction_sources(session, "42", text, entries)
+            fields.update(addressing="me", interaction={"kind": "breach", "source_id": source["id"],
+                "quote": text, "reason": "明确承认故意爽约"})
+        for kind in ("heart_knot", "grudge"):
+            if fields.get(kind):
+                fields[kind] = {"summary": fields[kind], "narrative": "我听到他亲口说起这件事，心里还有些在意。",
+                                "evidence": [text]}
         self.engine._ask_judge = AsyncMock(return_value=json.dumps(fields, ensure_ascii=False))
         result = await self.engine.reflect_turn(session, user_id="42", user_name="小明",
-            user_text="我有点担心，只和你说。", reply_text="嗯，我听着。")
+            user_text=text, reply_text="嗯，我听着。", interaction_entries=entries)
         self.assertIsNotNone(result)
 
     async def emotions(self, session, *, task="reply", text="你怎么了？"):
@@ -202,8 +216,11 @@ class EmotionalContinuityTests(unittest.IsolatedAsyncioTestCase):
     async def test_original_reply_path_keeps_private_worries_in_the_private_chat(self):
         self.add_group(sessions=[S, P], main=S)
         await self.idle()
-        self.llm.replies = ['{"heart_knot":"只在私聊说过的担心","actions":[{"type":"say","messages":["嗯"]}]}']
-        ctx = audit.fixture.EngineTestCase.ctx(self, session_id=P, user_id="42", text="我有点担心，只和你说。")
+        text = "我有点担心，只和你说。"
+        self.llm.replies = [json.dumps({"heart_knot": {"summary": "只在私聊说过的担心",
+            "narrative": "他只告诉我他在担心，我也想再多听听。", "evidence": [text]},
+            "actions": [{"type": "say", "messages": ["嗯"]}]}, ensure_ascii=False)]
+        ctx = audit.fixture.EngineTestCase.ctx(self, session_id=P, user_id="42", text=text)
         await self.engine.handle_incoming(ctx)
         result = await self.engine.handle_reply(ctx)
         self.assertTrue(result.ok)

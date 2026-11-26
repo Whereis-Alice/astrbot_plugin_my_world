@@ -241,29 +241,32 @@ class SocialEngineTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_blind_evaluation_preserves_persona_and_deduplicates_real_event(self):
         self.engine.profiles.touch(S, "42", "小明")
-        entries = [{"user_id": "42", "message_id": "one", "text": "谢谢你听我说完", "at": 100}]
+        text = "我记得你在找这本书，托人给你留了一本"
+        entries = [{"user_id": "42", "message_id": "one", "text": text, "at": 100}]
+        source = self.engine.interaction_sources(S, "42", text, entries)[0]
         self.engine._ask_judge = AsyncMock(
             return_value=json.dumps(
                 {
                     "actions": [],
-                    "affinity_delta": 0.1,
-                    "interaction_reason": "认真倾听",
-                    "reasoning": {"intent": "回应感谢"},
+                    "addressing": "me",
+                    "interaction": {"kind": "support", "source_id": source["id"], "quote": text, "reason": "实际帮忙留书"},
+                    "reasoning": {"intent": "谢谢他帮忙"},
                 }
             )
         )
         await self.engine.reflect_turn(
             S,
             user_id="42",
-            user_text="谢谢你听我说完",
+            user_text=text,
             reply_text="嗯",
             interaction_entries=entries,
         )
         first = self.engine.profiles.profile(S, "42")["affinity"]
+        self.assertAlmostEqual(first, .15)
         await self.engine.reflect_turn(
             S,
             user_id="42",
-            user_text="谢谢你听我说完",
+            user_text=text,
             reply_text="嗯",
             interaction_entries=entries,
         )

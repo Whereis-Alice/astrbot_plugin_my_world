@@ -128,3 +128,73 @@ class EmotionRecordTests(unittest.IsolatedAsyncioTestCase):
         async with self.engine.session_state(S) as state:
             [current] = self.engine.emotion_records(state, S)
             self.assertEqual((current["status"], current["text"]), ("active", "弄坏了另一只纸风车"))
+
+    async def test_first_person_reflection_and_direct_evidence_persist_through_archive(self):
+        await self.idle()
+        quote = "那只纸风车的叶片被雨泡软了"
+        narrative = "他说风车的叶片被雨泡软了。我做了好久，听见以后还是舍不得。\n\n现在只想先把它晾干看看。"
+        self.engine._ask_judge = AsyncMock(return_value=json.dumps({"heart_knot": {
+            "summary": "雨里的纸风车", "narrative": narrative, "evidence": [quote]}, "addressing": "me"}))
+        now = self.clock.now()
+        await self.engine.reflect_turn(S, user_id="42", user_name="小明", user_text=quote, reply_text="我想先晾晾它。",
+            interaction_entries=[{"user_id": "42", "name": "小明", "text": quote, "origin": S, "at": now}])
+        self.assertIn("第一人称自述", self.engine._ask_judge.call_args.args[1])
+        async with self.engine.session_state(S) as state:
+            [live] = self.engine.emotion_records(state, S)
+            evidence = [{"text": quote, "at": now, "user_name": "小明"}]
+            self.assertEqual((live["text"], live["narrative"], live["evidence"]), ("雨里的纸风车", narrative, evidence))
+            edited = self.engine.update_emotion_record(state, S, live["id"], "edit", text=live["text"],
+                narrative="我想等天晴了看看还能不能修。", revision=live["revision"])
+            archived = self.engine.update_emotion_record(state, S, live["id"], "resolve", revision=edited["revision"])
+            self.assertEqual(archived["narrative"], edited["narrative"])
+            self.assertEqual(archived["evidence"], evidence)
+        state = await self.engine.load_state(S, cold_start=False)
+        [saved] = self.engine.emotion_records(state, S)
+        self.assertEqual((saved["narrative"], saved["evidence"]), (edited["narrative"], evidence))
+
+    async def test_structured_record_rejects_invented_or_indirect_quotes(self):
+        await self.idle()
+        for quote in ("风车已经修好了", "整只风车都踩坏了"):
+            self.engine._ask_judge = AsyncMock(return_value=json.dumps({"heart_knot": {
+                "summary": "担心风车", "narrative": "我听见以后有点在意。", "evidence": [quote]}, "addressing": "me"}))
+            await self.engine.reflect_turn(S, user_id="42", user_text="他说过‘整只风车都踩坏了’，我还没有看到。",
+                reply_text="那得等亲眼看见再说。")
+        state = await self.engine.load_state(S, cold_start=False)
+        self.assertEqual(self.engine.emotion_records(state, S), [])
+
+    async def test_new_automatic_heart_knot_requires_a_complete_account(self):
+        await self.idle()
+        self.engine._ask_judge = AsyncMock(return_value='{"heart_knot":"风车的事","addressing":"me"}')
+        await self.engine.reflect_turn(S, user_id="42", user_text="那只风车的叶片淋坏了", reply_text="我知道了。")
+        state = await self.engine.load_state(S, cold_start=False)
+        self.assertEqual(self.engine.emotion_records(state, S), [])
+
+    async def test_bulk_delete_is_atomic_across_live_and_archived_origins(self):
+        self.add_group(sessions=[S, P], main=S)
+        await self.idle()
+        async with self.engine.session_state(P) as state:
+            self.engine.note_heart_knot(state, "那只纸风车", about="42", session_id=P)
+            [private] = self.engine.emotion_records(state, P)
+            archived = self.engine.update_emotion_record(state, P, private["id"], "resolve", revision=private["revision"])
+        async with self.engine.session_state(S) as state:
+            self.engine.note_grudge(state, "忘了修纸风车", user_id="42")
+            [live] = self.engine.emotion_records(state, S)
+        batch = [{key: row[key] for key in ("session", "id", "revision")} for row in (archived, live)]
+
+        async with self.engine.session_state(S) as state:
+            with self.assertRaises(EmotionRecordConflict):
+                await self.engine.delete_emotion_records(state, [batch[0], {**batch[1], "revision": "stale"}])
+        self.assertEqual(len(self.engine.memory.db.query_emotion_memories(session_id=P)), 1)
+
+        with patch.object(self.engine.memory.db, "save_state", side_effect=RuntimeError("write failed")):
+            async with self.engine.session_state(S) as state:
+                with self.assertRaisesRegex(RuntimeError, "write failed"):
+                    await self.engine.delete_emotion_records(state, batch)
+        self.assertEqual(len(self.engine.memory.db.query_emotion_memories(session_id=P)), 1)
+
+        async with self.engine.session_state(S) as state:
+            self.assertEqual(await self.engine.delete_emotion_records(state, batch), 2)
+            self.assertEqual(state.grudges, [])
+        saved = await self.engine.load_state(S, cold_start=False)
+        self.assertEqual(saved.grudges, [])
+        self.assertEqual(self.engine.memory.db.query_emotion_memories(session_id=P), [])

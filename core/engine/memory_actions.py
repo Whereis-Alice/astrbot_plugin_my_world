@@ -157,7 +157,6 @@ class MemoryActionsMixin:
         evidence = " ".join(str(params.get("evidence") or "").split())
         kind = str(params.get("kind") or "近况").strip()
         bond = str(params.get("bond") or "").strip()
-        delta = params.get("affinity_delta")
         notes: list[str] = []
         if store is None or not bool(getattr(self.world.profile, "enabled", True)):
             outcome.notes.append("通讯录功能没开，这一条不记")
@@ -181,7 +180,7 @@ class MemoryActionsMixin:
                 outcome=outcome,
             )
             return
-        if not text and not bond and delta in (None, ""):
+        if not text and not bond:
             outcome.notes.append("「记住」没说清要记什么，已跳过")
             return
         if (text or bond) and not evidence:
@@ -194,7 +193,7 @@ class MemoryActionsMixin:
             )
             return
         written: list[str] = []
-        sources = self._remember_chat_sources(state, session_id) if text or bond else []
+        sources = self._remember_chat_sources(state, session_id)
         if text:
             def normalized(value: Any) -> str:
                 return "".join(char for char in str(value or "").casefold() if char.isalnum())
@@ -257,21 +256,6 @@ class MemoryActionsMixin:
                     written.append(f"关系改成「{bond}」")
             else:
                 notes.append(str(result.get("reason") or "关系没记下"))
-        if delta not in (None, ""):
-            try:
-                amount = float(delta)
-            except (TypeError, ValueError):
-                amount = 0.0
-            if amount:
-                actual = store.apply_reply_affinity(
-                    session_id,
-                    user_id,
-                    amount,
-                    reason="她自己记住的",
-                    source="remember",
-                )
-                if actual:
-                    written.append(f"好感 {actual:+.2f}")
         await self._log_event(
             state,
             "remember",

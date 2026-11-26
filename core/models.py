@@ -1989,8 +1989,10 @@ class ProfileConfig(Permissive):
     grudge_enabled: bool = True
     """她会不会**记账**（他做了让她气着的事，她记着）。"""
 
-    grudge_days: int = 7
+    grudge_days: int = 1
     """一笔账记多久（天）。到期自己就淡了，并写进记忆。"""
+
+    grudge_duration_version: int = 2
 
     grudge_max: int = 2
     """同时最多记几笔（整个会话组算一份）。"""

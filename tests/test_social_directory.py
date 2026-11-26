@@ -283,7 +283,7 @@ class SocialDirectoryApiTests(unittest.IsolatedAsyncioTestCase):
                 PlannedAction(type="remember", params={"user": self.uid, "text": "喜欢热茶",
                     "evidence": "我喜欢热茶", "affinity_delta": 2}))
         self.assertEqual(engine.profiles.profile(self.session, self.uid)["affinity"], 42)
-        self.assertEqual(engine.profiles.profile(self.other, self.uid)["affinity"], 44)
+        self.assertEqual(engine.profiles.profile(self.other, self.uid)["affinity"], 42)
         self.assertEqual(engine.profiles.facts(self.session, self.uid), [])
         self.assertEqual(engine.profiles.facts(self.other, self.uid)[0]["source_session"], self.other)
 

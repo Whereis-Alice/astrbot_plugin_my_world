@@ -273,7 +273,9 @@ class ReplyBatchTest(unittest.IsolatedAsyncioTestCase):
         # 续行缩进两格：拼成一行时模型会把「a / b / c」误读成"同一句说了三遍"
         for marker in ("顺便问问会议室", "咖啡没了"):
             line = next(line for line in prompt.splitlines() if marker in line)
-            self.assertEqual(line, f"  {marker}", line)
+            body, _, evidence = line.partition("〔证据 id：")
+            self.assertEqual(body, f"  {marker}", line)
+            self.assertRegex(evidence, r"^src_[0-9a-f]{32}〕$")
 
     async def test_another_person_is_not_merged_into_this_reply(self):
         """两个人同时 @ 她：各回各的；第二个人的消息不能被并进第一轮、更不能被吸收。"""

@@ -991,10 +991,14 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_tone_from_the_model_overrides_the_keyword_table(self):
         """反话由模型判：模型说是 attack，就不能按关键词表当成被夸。"""
 
-        self.llm.replies = [
-            '{"tone":"attack","actions":[{"type":"say","messages":["少阴阳怪气啦"]}]}'
-        ]
-        ctx = self.ctx(text="你可真行啊，全群就你最厉害", user_id="2692047521")
+        text = "你可真行啊，全群就你最厉害，也就你什么都做不成"
+        user = "2692047521"
+        entry = {"user_id": user, "message_id": "sarcasm", "text": text}
+        source = self.engine.interaction_sources(SESSION, user, text, [entry])[0]
+        self.llm.replies = [json.dumps({"tone": "attack", "addressing": "me",
+            "interaction": {"kind": "hurt", "source_id": source["id"], "quote": text, "reason": "反讽后直接贬低对方"},
+            "actions": [{"type": "say", "messages": ["少阴阳怪气啦"]}]}, ensure_ascii=False)]
+        ctx = self.ctx(text=text, user_id=user, message_id="sarcasm")
         await self.engine.handle_incoming(ctx)
         before = (await self.get_state()).loneliness
         await self.engine.handle_reply(ctx)
@@ -2576,11 +2580,16 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_reply_can_record_a_grudge_and_her_own_promise(self):
         """模型给的 grudge / own_topic / forgive 要真的落地，不只是能解析。"""
 
-        self.llm.replies = [
-            '{"grudge":"他答应的事又没做","own_topic":"答应给他看照片",'
-            '"actions":[{"type":"say","messages":["哼"]}]}'
-        ]
-        ctx = self.ctx(text="抱歉我又忘了", user_id="9", user_name="小刚")
+        insult = "我就是故意让你在大家面前出丑的"
+        entry = {"user_id": "9", "text": insult, "message_id": "hurt-9"}
+        source = self.engine.interaction_sources(SESSION, "9", insult, [entry])[0]
+        self.llm.replies = [json.dumps({
+            "grudge": {"summary": "他故意让我当众出丑", "narrative": "我还在意他刚才当众针对我。", "evidence": [insult]},
+            "interaction": {"kind": "hurt", "source_id": source["id"], "quote": insult, "reason": "故意当众羞辱"},
+            "addressing": "me", "own_topic": "答应给他看照片",
+            "actions": [{"type": "say", "messages": ["哼"]}],
+        }, ensure_ascii=False)]
+        ctx = self.ctx(text=insult, user_id="9", user_name="小刚", message_id="hurt-9")
         await self.engine.handle_incoming(ctx)
         await self.engine.handle_reply(ctx)
         state = await self.get_state()
@@ -7187,8 +7196,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             ["say"],
         )
 
-    async def test_remember_writes_facts_bonds_and_affinity(self):
-        """内置动作「记住」：当场把事实 / 关系 / 好感写进通讯录（带原话）。"""
+    async def test_remember_writes_facts_bonds_without_taking_a_raw_affinity_delta(self):
+        """内置动作「记住」保存有原话支持的事实和关系。"""
 
         ctx = self.ctx(text="我最喜欢喝冰美式了", user_id="2692047521", user_name="不相疑")
         await self.engine.handle_incoming(ctx)
@@ -7220,6 +7229,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(
             float(self.engine.profiles.profile(SESSION, "2692047521")["affinity"]), 0
         )
+        self.assertFalse(any(row["source"] == "remember" for row in
+                             self.engine.profiles.affinity_logs(SESSION, "2692047521")))
 
     async def test_remember_refuses_to_guess(self):
         """没带原话、或者记的是她没见过的人：一律不写进通讯录。"""

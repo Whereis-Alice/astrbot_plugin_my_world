@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS profile_review_source(source_id TEXT NOT NULL,
 
 
 EXTERNAL_MEMORY = re.compile(r"<(Anamnesis-Memory|RAG-Faiss-Memory)>.*?</\1>", re.S | re.I)
+_QUOTATION = re.compile(r'''“[^”]*”|「[^」]*」|『[^』]*』|‘[^’]*’|"[^"\n]*"|(?<!\w)'[^'\n]*'(?!\w)''')
 
 
 def split_external_memory(text: str) -> tuple[str, str]:
@@ -78,6 +79,11 @@ def direct_text(text: str) -> str:
         parser.feed(body)
         body = "".join(parser.parts)
     return body.strip()
+
+
+def unquoted_segments(text: str) -> list[str]:
+    """Return direct text segments without joining words across a quotation."""
+    return [" ".join(segment.split()) for segment in _QUOTATION.split(direct_text(text)) if segment.strip()]
 
 
 def source_snapshot(record: dict, session_id: str) -> dict:

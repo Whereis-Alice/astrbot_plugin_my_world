@@ -42,6 +42,12 @@ class EmotionRecordApiTests(unittest.IsolatedAsyncioTestCase):
                 "revision": record["revision"], "operation": operation, **params}
         return await self.call("thoughts/emotions/update", method="POST", **data)
 
+    async def delete_selected(self, session, *items, **params):
+        entries = [{"source_session": item["session"], "id": item["id"], "revision": item["revision"]}
+                   for item in items]
+        return await self.call("thoughts/emotions/delete-batch", method="POST", session=session,
+            items=entries, **params)
+
     async def test_group_and_origin_lists_respect_selection_without_rewriting_state(self):
         db = self.plugin.db
         before = await db.call("get_state", self.session)
@@ -54,6 +60,29 @@ class EmotionRecordApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["session"] for item in await self.read(self.private)], [self.private])
         self.assertEqual([item["session"] for item in await self.read(self.outside)], [self.outside])
         self.assertEqual(await db.call("get_state", self.session), before)
+
+    async def test_old_quote_is_displayed_only_after_a_unique_origin_and_author_match(self):
+        engine = self.plugin.engine
+        now = engine._now()
+        quote = "我把约好要送你的纸风车弄坏了"
+        subject = "我还在惦记那只纸风车"
+        async with engine.session_state(self.session) as state:
+            engine.note_heart_knot(state, subject, about="42", session_id=self.session, user_name="小满")
+            state.note_chat(user_id="43", name="小满", text=quote, origin=self.session, now=now - 1)
+            state.note_chat(user_id="42", name="小满", text=quote, origin=self.private, now=now - 1)
+        detail = {"at": now, "sent_at": now, "heart_knot": subject, "user": "小满", "user_text": quote}
+        engine.db.raw.add_event(session_id=self.session, event_type="reflection", detail=detail)
+        original = next(row for row in await self.read(self.session) if row["text"] == subject)
+        self.assertEqual(original["evidence"], [])
+        async with engine.session_state(self.session) as state:
+            state.note_chat(user_id="42", name="小满", text=quote, origin=self.session, now=now - 1,
+                            message_id="paper-windmill")
+        recovered = next(row for row in await self.read(self.session) if row["text"] == subject)
+        self.assertEqual(recovered["evidence"], [{"text": quote, "at": now - 1, "user_name": "小满", "recovered": True}])
+        self.assertEqual(recovered["revision"], original["revision"])
+        engine.db.raw.add_event(session_id=self.session, event_type="reflection", detail=detail)
+        ambiguous = next(row for row in await self.read(self.session) if row["text"] == subject)
+        self.assertEqual(ambiguous["evidence"], [])
 
     async def test_operation_uses_exact_origin_and_revision(self):
         original = (await self.read(self.private))[0]
@@ -101,3 +130,52 @@ class EmotionRecordApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(after["text"], "想清楚了再聊聊")
         stale = await self.call("profile/grudge", method="POST", reason="试图覆盖新的内容", **payload)
         self.assertEqual(stale["status_code"], 409, stale)
+
+    async def test_narrative_round_trips_through_archiving_and_legacy_edits(self):
+        before = (await self.read(self.private))[0]
+        self.assertEqual(before["narrative"], "")
+        self.assertEqual(before["evidence"], [])
+        narrative = "我在约好的地方等了好一阵。\n我想知道下次能不能提前告诉我。"
+        changed = await self.update(self.private, before, "edit", text=before["text"], narrative=narrative)
+        self.assertEqual(changed["status_code"], 200, changed)
+        current = (await self.read(self.private))[0]
+        self.assertEqual(current["narrative"], narrative)
+        self.assertNotEqual(current["revision"], before["revision"])
+        archived = await self.update(self.private, current, "resolve")
+        self.assertEqual(archived["status_code"], 200, archived)
+        archived = (await self.read(self.private))[0]
+        changed = await self.update(self.private, archived, "edit", text="已经说开了")
+        self.assertEqual(changed["status_code"], 200, changed)
+        self.assertEqual((await self.read(self.private))[0]["narrative"], narrative)
+
+    async def test_batch_delete_validates_all_origins_and_revisions_atomically(self):
+        talk = (await self.read(self.private))[0]
+        other = (await self.read(self.outside))[0]
+        heart = next(item for item in await self.read(self.session) if item["current_persona"])
+        result = await self.update(self.session, heart, "resolve")
+        self.assertEqual(result["status_code"], 200, result)
+        archived = next(item for item in await self.read(self.session) if item["archived"])
+
+        before = await self.read(self.group)
+        wrong_scope = await self.delete_selected(self.group, archived, other)
+        self.assertEqual(wrong_scope["status_code"], 400, wrong_scope)
+        outdated = await self.delete_selected(self.group, archived, {**talk, "revision": "stale"})
+        self.assertEqual(outdated["status_code"], 409, outdated)
+        duplicate = await self.delete_selected(self.group, archived, archived)
+        self.assertEqual(duplicate["status_code"], 400, duplicate)
+        self.assertEqual(await self.read(self.group), before)
+
+        deleted = await self.delete_selected(self.group, archived, talk)
+        self.assertEqual(deleted["status_code"], 200, deleted)
+        self.assertEqual(deleted["data"]["removed"], 2)
+        self.assertEqual([item["text"] for item in await self.read(self.group)], ["旧人设留的心事"])
+        self.assertEqual(await self.read(self.outside), [other])
+
+    async def test_batch_delete_requires_editor_token(self):
+        record = (await self.read(self.private))[0]
+        del self.plugin._guard
+        self.plugin.auth.config_password = "fixture-password"
+        denied = await self.delete_selected(self.group, record)
+        self.assertEqual(denied["status_code"], 401, denied)
+        token = self.plugin.auth.issue_token()
+        self.assertEqual(await self.read(self.private, token=token), [record])

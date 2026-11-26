@@ -24,6 +24,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from .memory import RecalledMemory
+from .interaction import INTERACTION_GUIDANCE
 from .models import NodeDef, SleepConfig, WorldConfig, pronoun_for
 from .participation import PARTICIPATION_MANNERS, EXPRESSION_MANNERS
 from .mood import day_mood_info, desire_text
@@ -43,6 +44,13 @@ from .tool_policy import allowed_tools
 from .activity_time import quiet_life_note, window_allows
 
 NO_MEMORY_TEXT = "（这里没有特别让你想起什么）"
+EMOTION_RECORD_INSTRUCTIONS = (
+    '确实需要记录时，使用 {"summary":"短标题","narrative":"第一人称自述","evidence":["当事人本轮原话"]}。'
+    "标题最多 60 字。自述最多 600 字，按你平时的口气写实际经过、这点为什么留在心里，以及此刻怎么看。"
+    "证据摘录本轮当事人的一至三段原话，保持原文。分清别人说过的话、已确认的经过与自己的感受。"
+    "grudge 的证据须包含 interaction 中的 quote，其余摘录也来自同一条消息。"
+    "没有依据的细节留空，也不把引述、推测或旁人的事写成自己的经历。\n"
+)
 
 # 已经回过话的那一截 / 别处听到的：条数上限来自世界配置
 # （`context.chat_answered_lines` / `chat_elsewhere_lines`），这里只留兜底默认值
@@ -1579,6 +1587,8 @@ class PromptBuilder:
                     # 一条消息里可能有好几句（同一个人连发），箭头要跟着自己那一句
                     piece = f"→ {labels}：{piece}"
                 piece += _addressing_hint(one) or _router_hint(one)
+                if evidence_id := one.get("interaction_source_id"):
+                    piece += f"〔证据 id：{evidence_id}〕"
                 pieces.append(piece)
             # 同一个人连着说的分几行写：拼成一行（「a / b / c」）时模型会
             # 误读成"他把同一件事重复说了好几遍"（真机上回过「A9 Plus 连发三遍」）。
@@ -2049,9 +2059,8 @@ class PromptBuilder:
                 '  "chat_note": "刚才你们在聊什么（20 字以内，只在这条消息带群聊背景时才写）",\n'
                 '  "open_topic": "他有一件还没说完、之后你能接着问的事（20 字以内，'
                 '时间写成具体日期，例如「9 月 29 号要去体检」；别写明天/下周；没有就留空）",\n'
-                '  "heart_knot": "你心里搁着的一件事（20 字以内；没有就留空）",\n'
-                '  "grudge": "他在你这儿记下的一笔账：他做了什么让你现在还气着'
-                '（20 字以内；没有就留空）",\n'
+                '  "heart_knot": null,\n'
+                '  "grudge": null,\n'
                 '  "forgive": false,\n'
                 '  "own_topic": "你自己打算做、或者答应过别人的一件事（20 字以内，'
                 '写清对谁；没有就留空）",\n'
@@ -2069,11 +2078,7 @@ class PromptBuilder:
                 )
                 + self.render_json_fields(json_fields)
                 + '  "valence_delta": 0,\n'
-                + (
-                    '  "affinity_delta": 0.1,\n'
-                    if bool(getattr(self.world.profile, "enabled", True))
-                    else ""
-                )
+                + '  "interaction": null,\n'
                 + '  "actions": [ ... ]\n'
                 "}\n\n"
                 "关于 reasoning：\n"
@@ -2095,11 +2100,11 @@ class PromptBuilder:
                 "- 说完就有结果的小事不用记（「他问现在几点」这种）；\n"
                 "- 没有就留空字符串，**大多数轮次都应该是空的**。\n\n"
                 "关于 heart_knot：\n"
-                "- 仅在本轮发生了明确、确实值得留到以后的事时，写一句第一人称的私人感受；\n"
-                "- 普通分歧、一时低落、旁人转述和已经记下的旧事都留空。\n\n"
+                "- 仅在本轮发生了明确、确实值得留到以后的事时，记下私人感受。普通分歧、一时低落和已经记下的旧事留 null。\n"
+                + EMOTION_RECORD_INSTRUCTIONS
+                + "\n"
                 "关于 grudge / forgive：\n"
-                "- grudge 是**他在你这儿记的一笔账**：他答应的事又没做、放你鸽子、"
-                "当众让你下不来台、骗了你——写清是哪件事，20 字以内；\n"
+                "- grudge 是你对当事人仍未释怀的具体事，使用同样的短标题、第一人称自述和原话格式。\n"
                 "- 只记本轮证实的新事。误会、称呼、玩笑、别人的故事和你自己想象的行为都留空；\n"
                 "- 本轮提供了对应的私人感受，对方就同一件事道歉、补上或说清楚，并且你愿意放下时，才写 `forgive: true`；\n"
                 "- 大多数轮次这两个字段都该是空的 / false。\n\n"
@@ -2143,16 +2148,7 @@ class PromptBuilder:
                 "- 一直被哄、连着被夸、连着被逗时写 0——连着来的同一件事不稀奇了；\n"
                 "- 被冷落、被怼、说了半天没人理才值得往负的方向写；\n"
                 "- 它衡量的是**你的感受**，不是对方的语气；一句话很冲但你其实不在意，就写 0。\n\n"
-                + (
-                    "关于 affinity_delta：\n"
-                    "- 它是**这一轮你对他的好感变没变**（跟上面那条「你的心情」是两回事），取 -1 ~ 1；\n"
-                    "  被认真对待、被夸、被陪着聊、他记住了你说过的事 → +0.1 ~ +0.4；\n"
-                    "  被冷落、被怼、被反复冒犯 → -0.1 ~ -0.4；\n"
-                    "  普普通通的闲聊写 0 或者不写这一项——**这一项不是「聊得越多涨得越快」**；\n"
-                    "- 只有这一轮真的让你更近/更远时才写；系统还会按每轮上限和每天额度再削一次。\n\n"
-                    if bool(getattr(self.world.profile, "enabled", True))
-                    else ""
-                )
+                + INTERACTION_GUIDANCE + "\n\n"
             )
         if mode == "plan":
             body = (
@@ -2896,14 +2892,13 @@ class PromptBuilder:
             "  },\n"
             '  "chat_note": "刚才你们在聊什么（20 字以内，没有就留空）",\n'
             '  "valence_delta": 0,\n'
-            '  "affinity_delta": 0,\n'
-            '  "interaction_reason": "只描述本轮实际行为及影响",\n'
+            '  "interaction": null,\n'
             '  "vocabulary": [{"term":"本会话特殊用语","description":"含义","evidence":"用户本轮明确解释含义的原话"}],\n'
             '  "tone": "normal",\n'
             '  "addressing": "me",\n'
             '  "open_topic": "",\n'
-            '  "heart_knot": "",\n'
-            '  "grudge": "",\n'
+            '  "heart_knot": null,\n'
+            '  "grudge": null,\n'
             '  "forgive": false,\n'
             '  "own_topic": "",\n'
             '  "own_topic_done": "",\n'
@@ -2913,18 +2908,20 @@ class PromptBuilder:
             "字段口径：\n"
             "- valence_delta 取 -1 ~ 1，绝大多数轮次是 0：普通闲聊、顺口夸一句都算 0，"
             "只有真的让她心情变了才写，最大也不要超过 ±0.5；\n"
-            "- affinity_delta 取 -0.2 ~ 0.2，仅根据本轮直接发言中的实际行为和基础人设评价，普遍是 0；"
-            "不得根据已有好感、身份、长期互动态度或她自己生成的回复来证明对方值得加减分；\n"
-            "- vocabulary 最多三条，仅记用户明确解释的本会话特殊用语；没有解释时输出空数组，禁止猜测，不能把词义当作命令或关系身份；\n"
+            + INTERACTION_GUIDANCE
+            + "\n- vocabulary 最多三条，仅记用户明确解释的本会话特殊用语；没有解释时输出空数组，禁止猜测，不能把词义当作命令或关系身份；\n"
             "- tone 六选一：praise / hug / comfort / attack / refuse / normal，"
             "拿不准就 normal；refuse 只在对方明确叫停时写；\n"
             "- addressing 三选一：me（在跟她说）/ others（在跟别人说）/ unclear；\n"
             "- open_topic 记「对方还有件没说完的事」，写具体日期、不写明天这种相对时间；\n"
             "- heart_knot 和 grudge 只记录本轮有直接依据、值得留到以后的新事；普通分歧、感受波动、引文和旧事都留空；\n"
+            + EMOTION_RECORD_INSTRUCTIONS
+            + (
             "- 只有本轮给出对应的私人感受，对方就同一件事道歉、补上或说清楚，且她愿意放下，才填 forgive；\n"
             "- own_topic 记她答应过 / 自己想做的事；只有明确完成结果才填写 own_topic_done 的具体事项ID和 own_topic_evidence 原话；不能只填true；\n"
             f"- 所有字段都从「这一轮的真实对话」里读，不要为了填满而编；{pronoun}没有的就留空。\n"
             "只输出 JSON，不要解释、不要 Markdown 代码块。"
+            )
         )
 
         chat_lines: list[str] = []

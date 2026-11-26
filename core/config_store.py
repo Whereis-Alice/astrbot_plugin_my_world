@@ -154,8 +154,10 @@ class ConfigStore:
             self.snapshot_before("清理已停用设置前备份")
             raw = cleaned
             self._write_json(self.world_path, raw)
-        if self._migrate_life_cadence(raw):
-            self.snapshot_before("降低旧默认孤独与无聊增长")
+        cadence_changed = self._migrate_life_cadence(raw)
+        grudge_changed = self._migrate_grudge_duration(raw)
+        if cadence_changed or grudge_changed:
+            self.snapshot_before("更新旧默认生活节奏与芥蒂期限" if grudge_changed else "降低旧默认孤独与无聊增长")
             self._write_json(self.world_path, raw)
         # 升级补字段：默认值 + 用户值（用户值优先）
         merged = _deep_merge(default_world(), raw)
@@ -200,6 +202,15 @@ class ConfigStore:
         return True
 
     @staticmethod
+    def _migrate_grudge_duration(raw: dict[str, Any]) -> bool:
+        profile = raw.get("profile")
+        if (not isinstance(profile, dict) or profile.get("grudge_duration_version") == 2
+                or profile.get("grudge_days") not in (7, "7")):
+            return False
+        profile.update(grudge_days=1, grudge_duration_version=2)
+        return True
+
+    @staticmethod
     def _disable_default_actions(world: WorldConfig) -> int:
         """把随插件附带的默认动作停用（核心动作和用户自己加的动作除外）。"""
 
@@ -231,6 +242,7 @@ class ConfigStore:
             settings = (row.get("config_overrides") or {}).get("settings") if isinstance(row, dict) else None
             if isinstance(settings, dict):
                 changed = self._migrate_life_cadence(settings) or changed
+                changed = self._migrate_grudge_duration(settings) or changed
         if changed:
             self.snapshot_before("更新独立会话生活节奏")
             self._write_json(self.sessions_path, raw)
@@ -260,6 +272,9 @@ class ConfigStore:
         """写世界配置。``snapshot=True``（默认）时先给改动前的那一份留个历史。"""
 
         data = clean_memory_settings(data)
+        profile = data.get("profile")
+        if isinstance(profile, dict) and "grudge_days" in profile:
+            data = {**data, "profile": {**profile, "grudge_duration_version": 2}}
         world, warnings = parse_world(data)
         if snapshot:
             self.snapshot_before(reason)

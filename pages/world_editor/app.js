@@ -9,7 +9,7 @@ import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js?v=4
 import { memorySearchFields } from "./memory-settings.js?v=4.46.18";
 import { familiarityDescriptionEditor, relationshipPromptEditor } from "./relationship-prompt.js";
 import { thoughtDate, updateThoughtDates } from "./thought-history.js";
-import { createEmotionRecords } from "./emotion-records.js";
+import { createEmotionRecords } from "./emotion-records.js?v=4.49.3";
 import { mountLifeWorkspace } from "./life-workspace.js";
 import { createVisitsPage } from "./visits.js?v=4.46.29";
 import { openBrowseSettings } from "./browse-settings.js?v=4.34.7";
@@ -19876,7 +19876,7 @@ function renderSettings() {
     ),
   );
   [
-    ["一笔账记几天", "grudge_days", 7, "到期自己就淡了，并写进记忆。", "1"],
+    ["芥蒂保留天数", "grudge_days", 1, "从记下这件事起计时，到期归为已淡去。", "1"],
     ["同时最多记几笔", "grudge_max", 2, "整个会话组算一份；同一个人最多一笔。", "1"],
     ["一天最多记几笔", "grudge_daily_max", 1, "不让它变成天天记仇。", "1"],
     ["气着时降几档亲密", "grudge_level_drop", 1, "只在这一档的判定上降，关系与好感数值都不动。", "1"],
@@ -21788,7 +21788,7 @@ const relationshipsPage = createRelationshipsPage({
 });
 
 const emotionRecords = createEmotionRecords({root: $("emotion-records"), el, apiGet, apiPost,
-  confirm: confirmDialog, currentSession: () => $("thought-session").value});
+  confirm: confirmDialog, formatStamp, currentSession: () => $("thought-session").value});
 
 const socialLearning = createSocialLearning({apiGet, apiPost, el, toast,
   sessions: () => ui.sessions.map(item => ({value: item.session_id, label: contactSessionLabel(item)})),

@@ -6,6 +6,8 @@ import time
 import json
 from typing import Any
 from uuid import uuid4
+from ..emotional_memory import EmotionJudgement, verified_emotion_evidence
+from ..json_actions import ParseResult
 from ..memory import INNER
 from ..prompt import readable_caption
 from ..state import WorldState
@@ -60,6 +62,8 @@ class RelationsMixin(EmotionRecordsMixin):
         user_name: str = "",
         session_id: str = "",
         force: bool = False,
+        narrative: str = "",
+        evidence: list[dict] | None = None,
     ) -> bool:
         """记一笔账：他做了什么让她现在还气着。
 
@@ -96,16 +100,20 @@ class RelationsMixin(EmotionRecordsMixin):
         if not self._has_emotion_capacity(state, "grudge", persona_key, now) or (existing is None and len(items) >= 32):
             return False
         if existing is not None:
-            self._archive_emotion(state, existing, kind="grudge", status="expired", now=now)
+            if self._archive_emotion(state, existing, kind="grudge", status="expired", now=now) is None:
+                return False
             items = [item for item in items if item is not existing]
-        keep_days = max(1, int(getattr(config, "grudge_days", 7) or 7))
+        keep_days = max(1, config.grudge_days)
         record = {
             "id": uuid4().hex,
             "user_id": uid,
             "who_name": str(user_name or "") or self._user_label(state, uid),
             "reason": body,
+            "narrative": narrative,
+            "evidence": list(evidence or []),
             "at": now,
             "until": now + keep_days * 86400.0,
+            "duration_days": keep_days,
             "session": origin,
             "persona_key": persona_key,
         }
@@ -129,7 +137,8 @@ class RelationsMixin(EmotionRecordsMixin):
             current = self._emotion_row(state, "grudge", record, self._matter_persona_key(state), now)
             if current["id"] != expected["id"] or current["revision"] != expected["revision"]:
                 return False
-        self._archive_emotion(state, record, kind="grudge", status="resolved", now=now)
+        if self._archive_emotion(state, record, kind="grudge", status="resolved", now=now) is None:
+            return False
         state.grudges = [
             item
             for item in (state.grudges or [])
@@ -148,8 +157,13 @@ class RelationsMixin(EmotionRecordsMixin):
                 keep.append(item)
                 continue
             if self._emotion_status("grudge", item, now) == "expired":
-                self._archive_emotion(state, item, kind="grudge", status="expired", now=now)
+                if self._archive_emotion(state, item, kind="grudge", status="expired", now=now) is None:
+                    keep.append(item)
             else:
+                expires = self._emotion_expiry("grudge", item)
+                if expires and expires != _stamp(item.get("until")):
+                    started = _stamp(item.get("at"))
+                    item = {**item, "until": expires, "duration_days": (expires - started) / 86400}
                 keep.append(item)
         state.grudges = keep
 
@@ -244,14 +258,15 @@ class RelationsMixin(EmotionRecordsMixin):
                 keep.append(item)
                 continue
             if self._emotion_status("heart_knot", item, now) == "expired":
-                self._archive_emotion(state, item, kind="heart_knot", status="expired", now=now)
+                if self._archive_emotion(state, item, kind="heart_knot", status="expired", now=now) is None:
+                    keep.append(item)
             else:
                 last = _stamp(item.get("at")) or _stamp(item.get("since")) or now
                 keep.append({**item, "strength": self._emotion_strength(item, now), "at": max(last, now)})
         state.heart_knots = keep
 
     def note_heart_knot(self, state: WorldState, text: str, about: str = "", *, session_id: str = "",
-                        user_name: str = "") -> None:
+                        user_name: str = "", narrative: str = "", evidence: list[dict] | None = None) -> None:
         """记下一件心事（她自己在回复里写的，或者整理时发现的）。"""
 
         config = self.world.state_dynamics
@@ -274,6 +289,8 @@ class RelationsMixin(EmotionRecordsMixin):
             {
                 "id": uuid4().hex,
                 "text": body,
+                "narrative": narrative,
+                "evidence": list(evidence or []),
                 "session": self._emotion_origin(state, session_id),
                 "persona_key": persona_key,
                 "about": about,
@@ -285,6 +302,31 @@ class RelationsMixin(EmotionRecordsMixin):
             }
         )
         state.heart_knots = items
+
+    def note_turn_emotions(self, state: WorldState, ctx: MessageContext, parsed: ParseResult,
+                           sources: list[dict], *, allow_grudge: bool) -> None:
+        if not sources or parsed.addressing == "others":
+            return
+
+        def details(judgement: EmotionJudgement | None, evidence_sources: list[dict]):
+            if judgement is None:
+                return None
+            evidence = verified_emotion_evidence(judgement, evidence_sources)
+            return {"narrative": judgement.narrative, "evidence": evidence} if evidence else None
+
+        person = str(ctx.user_id or "")
+        if parsed.heart_knot and (heart := details(parsed.heart_knot_detail, sources)) is not None:
+            self.note_heart_knot(state, parsed.heart_knot, about=person, session_id=ctx.session_id,
+                user_name=ctx.user_name, **heart)
+        if not allow_grudge or not parsed.grudge_detail or parsed.forgive or not parsed.interaction:
+            return
+        judgement = parsed.grudge_detail
+        # A judgement about one exact utterance cannot ground a different story.
+        if parsed.interaction.quote not in {" ".join(quote.split()) for quote in judgement.evidence}:
+            return
+        grudge_sources = [source for source in sources if source.get("id") == parsed.interaction.source_id]
+        if (grudge := details(judgement, grudge_sources)) is not None:
+            self.note_grudge(state, parsed.grudge, user_id=person, user_name=ctx.user_name, session_id=ctx.session_id, **grudge)
 
     def _person_places(self, state: WorldState, user_id: str) -> str:
         """这个人最近在哪个会话跟她说过话（"找他发到哪儿"）。"""

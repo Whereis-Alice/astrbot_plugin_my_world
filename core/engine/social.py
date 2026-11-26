@@ -8,6 +8,7 @@ import math
 
 from ..config_scope import session_scoped
 from ..evidence import source_snapshot, direct_text
+from ..interaction import AFFINITY_CHANGE, InteractionJudgment, TurnInteraction, interaction_source
 from ..json_actions import extract_json_object
 from ..model_calls import call_context, model_context
 from ..social_learning import clean
@@ -36,7 +37,7 @@ class SocialMixin:
             else [{"user_id": user, "text": text, "origin": session, "at": self._now()}]
         )
         sources = []
-        for row in records:
+        for index, row in enumerate(records):
             if (
                 not isinstance(row, dict)
                 or row.get("is_self")
@@ -45,13 +46,63 @@ class SocialMixin:
                 continue
             if str(row.get("origin") or row.get("session") or session) != session:
                 continue
-            raw = str(row.get("raw_text") or row.get("text") or "")
+            raw = str(row.get("raw_text", row.get("text")) or "")
             body = direct_text(raw)
             if body.strip():
-                source = source_snapshot({**row, "text": body, "origin": session}, session)
+                record = {**row, "text": body, "origin": session, "at": row.get("wall_at", row.get("at")),
+                          "name": row.get("name") or row.get("user_name")}
+                record["event_key"] = self.event_key_of(record)
+                source = source_snapshot(record, session)
                 if source["kind"] == "direct_speech":
+                    source["batch_index"] = index
+                    targets = [target for target in row.get("at_targets") or [] if isinstance(target, dict)]
+                    reply_to = row.get("reply_to") or {}
+                    addressing = row.get("addressing")
+                    if any(target.get("self") for target in targets):
+                        addressing = "me"
+                    elif isinstance(reply_to, dict) and type(reply_to.get("is_self")) is bool:
+                        addressing = "me" if reply_to["is_self"] else "others"
+                    elif targets:
+                        addressing = "others"
+                    if addressing in {"me", "others"}:
+                        source["addressing"] = addressing
                     sources.append(source)
         return sources
+
+    def interaction_evidence_prompt(self, session: str, user: str, sources: list[dict]) -> str:
+        visible = [{"id": source["id"], "text": source["text"][:600],
+                    **({"addressing": source["addressing"]} if source.get("addressing") else {})}
+                   for source in sources[-6:]]
+        return ("\n\n# 本轮可用的直接发言证据\n" + json.dumps(visible, ensure_ascii=False)
+                + self.interaction_familiarity(session, user, sources))
+
+    def interaction_familiarity(self, session: str, user: str, sources: list[dict]) -> str:
+        if not sources or not self.profiles.enabled():
+            return ""
+        trust = self.profiles.interaction_trust(session, user)
+        familiarity = ("相处已经比较熟悉" if trust >= 1 else "有一些相处经历" if trust else "还没有积累太多默契")
+        return "\n双方在本会话中" + familiarity + "。这只帮助理解玩笑与措辞，行为判断仍需要本轮原话。"
+
+    def judge_turn_interaction(
+        self, session: str, user: str, sources: list[dict], judgment: InteractionJudgment | None, *, addressing: str
+    ) -> TurnInteraction:
+        source = interaction_source(judgment, sources, session, user, addressing)
+        if source is None:
+            return TurnInteraction()
+        kind = judgment.kind
+        trust = self.profiles.interaction_trust(session, user)
+        amount = AFFINITY_CHANGE[kind]
+        if kind == "hurt":
+            amount *= 1 - trust / 2
+        harmful = amount < 0
+        grudge_allowed = kind == "breach" or kind == "hurt" and trust < 1
+        if not self.world.profile.interaction_learning or not self.profiles.enabled():
+            if harmful and self.db.raw.claim_interaction_source(session, user, source["id"]):
+                return TurnInteraction(grudge_allowed=grudge_allowed, harmful=True)
+            return TurnInteraction()
+        evidence = {**source, "interaction_kind": kind, "interaction_quote": judgment.quote}
+        applied = self._record_turn_score(session, user, [evidence], amount, judgment.reason)
+        return TurnInteraction(applied, grudge_allowed, harmful) if applied is not None else TurnInteraction()
 
     def record_turn_interaction(
         self, session: str, user: str, sources: list, delta: float, reason: str
@@ -62,21 +113,24 @@ class SocialMixin:
             or not sources
         ):
             return 0.0
-        key = hashlib.sha256(json.dumps(sorted(s["id"] for s in sources)).encode()).hexdigest()
         try:
             delta = float(delta)
         except (TypeError, ValueError):
             return 0.0
         if not math.isfinite(delta):
             return 0.0
-        delta = max(-0.2, min(0.2, float(delta)))
+        return self._record_turn_score(session, user, sources, max(-.2, min(.2, delta)), reason) or 0.0
+
+    def _record_turn_score(self, session: str, user: str, sources: list[dict], delta: float, reason: str) -> float | None:
+        key = hashlib.sha256(json.dumps(sorted(s["id"] for s in sources)).encode()).hexdigest()
+        now = self._now()
         with self.db.raw.atomic():
             if not self.db.raw.record_interaction(
-                session, user, key, delta, reason, sources, now=self._now()
+                session, user, key, delta, reason, sources, now=now
             ):
-                return 0.0
+                return None  # No new evidence, including overlapping reply batches.
             return self.profiles.apply_reply_affinity(
-                session, user, delta, reason=reason, now=self._now()
+                session, user, delta, reason=reason, now=now
             )
 
     def learn_vocabulary(self, session: str, candidates: list, sources: list[dict]) -> None:

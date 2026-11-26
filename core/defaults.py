@@ -323,6 +323,8 @@ DEFAULT_WORLD: dict[str, Any] = {
         "presence_cooldown_minutes": 10,
         "presence_daily_max": 2.0,
         "affinity_decay_per_day": 0.2,
+        "grudge_days": 1,
+        "grudge_duration_version": 2,
         "digest_chars": 60,
         "digest_limit": 5,
         "recall_daily_max": 5,
@@ -1078,13 +1080,13 @@ DEFAULT_WORLD: dict[str, Any] = {
             "on_complete": {"trigger": "none"},
             "description": (
                 "把**这一刻你判断值得记的事**当场写进通讯录（关于某个人的事实、"
-                "你们的关系、你对他的好感变化）。只在他真的说清楚了、"
+                "你们的关系）。只在他真的说清楚了、"
                 "而且你能引用他的原话时才用；日常寒暄不要用。参数写在 params 里："
                 '"user" 写他的 QQ 号，"text" 一句话说清是什么事，'
                 '"evidence" 填**他的原话**（必填，没有原话就不写），'
                 '"kind" 选 喜好/厌恶/习惯/基本信息/关系/约定/近况；'
                 "改关系再给 \"bond\"（例如 朋友 / 闺蜜 / 主人 / 男友 / 讨厌的人），"
-                "想调好感度再给 \"affinity_delta\"（-10~10 的一个数）。例如 "
+                "例如 "
                 '{"type":"remember","params":{"user":"2692047521","text":"爱喝冰美式，不加糖",'
                 '"evidence":"今天又灌了一杯冰美式","kind":"喜好"}}。'
                 "**写完不用再说什么**：想顺口提一句就另外写一个 say。"

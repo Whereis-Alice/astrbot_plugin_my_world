@@ -139,7 +139,7 @@ class ReplyMixin:
             # ``text`` 是"给模型看的正文"（注解后），老调用方都读这个键
             "text": text_value,
             # 注解前的原文：事件身份认的是消息本身，注解改不了它
-            "raw_text": str(info.get("raw_text") or text_value),
+            "raw_text": str(info.get("raw_text", text_value) or ""),
             "model_text": str(info.get("model_text") or text_value),
             # 这条是从哪个会话来的：合并只认同一个会话的连发
             # （跨会话并成一条会在群里答私聊的话），跨会话靠"按她分锁"串行就够
@@ -461,7 +461,7 @@ class ReplyMixin:
         if record is None:
             record = {
                 "text": str(ctx.text or ""),
-                "raw_text": str(ctx.raw_text or ctx.text or ""),
+                "raw_text": str(ctx.raw_text or ("" if ctx.has_images or ctx.chat_images or ctx.has_videos else ctx.text) or ""),
                 "model_text": str(ctx.text or ""),
                 "session": str(ctx.session_id or ""),
                 "origin": str(ctx.session_id or ""),
@@ -495,6 +495,7 @@ class ReplyMixin:
         batch: list[dict[str, Any]],
         *,
         chat_rows: list[dict[str, Any]] | None = None,
+        evidence_sources: list[dict] | None = None,
     ) -> list[dict[str, Any]]:
         """把 batch 转成渲染用的结构化条目（``build_reply_user_prompt`` 的入参）。
 
@@ -517,7 +518,9 @@ class ReplyMixin:
                 stored.setdefault(row_key, row)
         entries: list[dict[str, Any]] = []
         fallback_at = self._now()
-        for record in batch:
+        eligible = {source["batch_index"]: source["id"] for source in evidence_sources or []
+                    if source.get("addressing") != "others"}
+        for index, record in enumerate(batch):
             if not isinstance(record, dict):
                 continue
             at = float(record.get("wall_at") or 0.0) or fallback_at
@@ -560,6 +563,7 @@ class ReplyMixin:
                     "captions": dict(captions),
                     "is_trigger": bool(record.get("trigger")),
                     "event_key": self.event_key_of(record),
+                    **({"interaction_source_id": eligible[index]} if index in eligible else {}),
                 }
             )
         return entries
@@ -848,13 +852,14 @@ class ReplyMixin:
                     )
                     user_prompt = self.prompts.build_reply_user_prompt(
                         entries=self.reply_batch_entries(
-                            batch, chat_rows=list(state.recent_chat)
+                            batch, chat_rows=list(state.recent_chat), evidence_sources=emotion_sources,
                         ),
                         is_private=ctx.is_private,
                         addressing=self.reply_addressing(state, ctx),
                         from_session=self.reply_place(state, ctx.session_id),
                         image_marks=dict(ctx.image_marks or {}),
                     )
+                    user_prompt += self.interaction_familiarity(ctx.session_id, ctx.user_id, emotion_sources)
                 node_id = state.node_id
                 self.record_context_selection(request)
                 # 注入模式先记准备阶段；main 完成宿主请求注入后补成该钩子的快照。
@@ -1006,17 +1011,6 @@ class ReplyMixin:
             node = self.node(state.node_id) or self.node(self.default_node_id())
             state.note_reasoning(parsed.reasoning, source="reply", session_id=ctx.session_id,
                                  persona_key=self._matter_persona_key(state) or "")
-            # 这一轮她对**当前说话人**的好感变化（模型自己判断，代码再削一次上限）
-            if ctx.user_id:
-                applied = self.profiles.apply_reply_affinity(
-                    ctx.session_id,
-                    ctx.user_id,
-                    parsed.affinity_delta,
-                    reason=str((parsed.reasoning or {}).get("intent") or "聊了这一轮")[:60],
-                    now=self._now(),
-                )
-                if abs(applied) > 1e-9:
-                    outcome.notes.append(f"好感 {applied:+.2f}")
             # 被吵醒的迷糊窗口里只准说话：不然她一边"半睡半醒"一边出门逛街，看着很假
             if self._startled_active(state):
                 allowed = {"say", "think"}
@@ -1115,20 +1109,13 @@ class ReplyMixin:
                 self._apply_valence_delta(state, parsed.valence_delta)
             # 「他还有件没说完的事」：记下来，之后到点可以接一句
             self.note_open_topic(state, ctx, parsed.open_topic)
-            # 「你心里搁着的事」：她自己的事，挂着，会自己淡掉
+            addressing = parsed.addressing or ("me" if ctx.is_private else ctx.addressing)
+            interaction = self.judge_turn_interaction(ctx.session_id, ctx.user_id, emotion_sources,
+                                                       parsed.interaction, addressing=addressing)
+            if interaction.affinity_delta:
+                outcome.notes.append(f"好感 {interaction.affinity_delta:+.2f}")
+            self.note_turn_emotions(state, ctx, parsed, emotion_sources, allow_grudge=interaction.grudge_allowed)
             emotion_evidence = emotion_sources and parsed.addressing != "others"
-            if parsed.heart_knot and emotion_evidence:
-                self.note_heart_knot(state, parsed.heart_knot, about=str(ctx.user_id or ""),
-                    session_id=ctx.session_id, user_name=ctx.user_name)
-            # 只记录真实新发生的事；这一轮放下旧事时不要重建同一笔。
-            if parsed.grudge and not parsed.forgive and emotion_evidence:
-                self.note_grudge(
-                    state,
-                    parsed.grudge,
-                    user_id=str(getattr(ctx, "user_id", "") or ""),
-                    user_name=str(getattr(ctx, "user_name", "") or ""),
-                    session_id=str(getattr(ctx, "session_id", "") or ""),
-                )
             # 「他道歉了 / 补上了」：那笔账划掉
             if parsed.forgive and emotion_evidence and emotion_record and emotion_record["kind"] == "grudge":
                 self.resolve_grudge(state, user_id=str(ctx.user_id or ""), session_id=ctx.session_id,
@@ -1144,11 +1131,11 @@ class ReplyMixin:
                 )
             # Legacy boolean completions are deliberately ignored. Execution receipts own progress.
             self.mark_open_topics_asked(state, ctx)
-            # 对方的口吻：模型判的优先，没判才用关键词表兜底（表只认字面，会认错反话）
-            # 带上"谁说的"：同样一句难听的，亲近的人说她更受伤（见 _tone_magnitude）
+            # 口吻影响心情。攻击需要与本轮有依据的行为判断一致。
+            tone = interaction.tone(parsed.tone or keyword_signal(ctx.text))
             await self._apply_tone_pulse(
                 state,
-                parsed.tone or keyword_signal(ctx.text),
+                tone,
                 user_id=str(getattr(ctx, "user_id", "") or ""),
                 outcome=outcome,
             )
@@ -1191,7 +1178,7 @@ class ReplyMixin:
                         outcome=outcome,
                     )
             # 记下来给下一轮抽声音样例用：模型判的口吻比关键词表准得多
-            state.last_user_tone = str(parsed.tone or "")
+            state.last_user_tone = tone
             # 主模型判的"这句在跟谁说话"：它比结构化信息看得多（没有 @ 的一句
             # 「你倒是说啊」它也能判出来），所以它说是别人就信它
             self._mark_reply_addressing(state, ctx, parsed.addressing)
@@ -1218,7 +1205,7 @@ class ReplyMixin:
                     # 模型自己标的心情变化（正 = 变好，负 = 变差）
                     "valence_delta": round(float(parsed.valence_delta or 0.0), 3),
                     # 对方这一轮的口吻（模型判的）：信号不对时，日志里能一眼看出来
-                    "tone": str(parsed.tone or ""),
+                    "tone": tone,
                     # 这句是在跟谁说话（模型判的）：判成 "others" 时这一条会被标出来
                     "addressing": str(parsed.addressing or ""),
                     # 这一轮生成出来的图（生图 / 出图的动作）：日志里能看出贴了几张

@@ -15,7 +15,9 @@ BRIDGE = r"""(() => {
   const defaults = {status:'active', affects_dialogue:true, current_persona:true, feature_enabled:true, source_enabled:true, revision:'r1'};
   let records = [
     {...defaults, id:'a', text:'我还是很担心没修好的风车', kind:'heart_knot', session:first, source_label:'群 1001「工坊」'},
-    {...defaults, id:'b', text:'还没说开的事', kind:'grudge', session:second, source_label:'私聊 2002', user_name:'小满'},
+    {...defaults, id:'b', text:'还没说开的事', kind:'grudge', session:second, source_label:'私聊 2002', user_name:'小满',
+      narrative:'我到约好的地方等了一会儿，还想问问小满后来怎么了。',
+      evidence:[{text:'我今天临时有事，没来得及告诉你。<img src=x>', at:1795654800, user_name:'小满'}]},
     {...defaults, id:'c', text:'<img src=x>', kind:'heart_knot', session:first, source_label:'群 1001「工坊」',
       archived:true, status:'expired', current_persona:false, affects_dialogue:false},
     {...defaults, id:'d', text:'出门忘了带伞', kind:'heart_knot', session:outside, source_label:'群 3003'},
@@ -37,13 +39,21 @@ BRIDGE = r"""(() => {
     return Promise.resolve(result);
   };
   AstrBotPluginPage.apiPost = (endpoint, payload) => {
+    if (endpoint === 'thoughts/emotions/delete-batch') {
+      emotionWrites.push(structuredClone(payload));
+      const chosen = payload.items.map(item => records.find(row => row.id === item.id &&
+        row.session === item.source_session && row.revision === item.revision));
+      if (chosen.includes(undefined)) throw Error('记录已变化');
+      records = records.filter(item => !chosen.includes(item));
+      return Promise.resolve({ok:true, removed:chosen.length});
+    }
     if (endpoint !== 'thoughts/emotions/update') return post(endpoint, payload);
     emotionWrites.push(structuredClone(payload));
     const row = records.find(row => row.id === payload.id && row.session === payload.source_session);
     if (!row || row.revision !== payload.revision) throw Error('记录已变化');
-    const {operation, text} = payload;
+    const {operation, text, narrative} = payload;
     if (operation === 'delete') records = records.filter(item => item !== row);
-    if (operation === 'edit') row.text = text;
+    if (operation === 'edit') Object.assign(row, {text, narrative});
     if (operation === 'pause') Object.assign(row, {status:'paused', affects_dialogue:false});
     if (operation === 'resume') Object.assign(row, {status:'active', affects_dialogue:true});
     if (operation === 'resolve') Object.assign(row, {status:'resolved', affects_dialogue:false, archived:true});
@@ -78,11 +88,19 @@ class EmotionRecordsBrowserTests(unittest.TestCase):
         expect(self.page.locator("#thoughts-clear")).to_be_hidden()
         expect(self.page.locator("#thought-date")).to_be_hidden()
         row = self.records.locator('[data-record-id="b"]')
+        row.get_by_text("查看来龙去脉", exact=True).click()
+        expect(row.get_by_text("我到约好的地方等了一会儿，还想问问小满后来怎么了。")).to_be_visible()
+        expect(row.locator("blockquote")).to_contain_text("我今天临时有事，没来得及告诉你。<img src=x>")
+        expect(row.locator("img")).to_have_count(0)
         row.get_by_role("button", name="编辑内容").click()
-        row.get_by_role("textbox", name="记录内容").fill("想等小满有空再聊")
+        row.get_by_role("textbox", name="简要摘要").fill("想等小满有空再聊")
+        row.get_by_role("textbox", name="第一人称叙述").fill("我想等小满有空，再一起说清楚。")
         self.assertEqual(self.page.evaluate("emotionWrites.length"), 0)
         row.get_by_role("button", name="保存内容").click()
         expect(row).to_contain_text("想等小满有空再聊")
+        row.get_by_text("查看来龙去脉", exact=True).click()
+        expect(row.get_by_text("我想等小满有空，再一起说清楚。")).to_be_visible()
+        expect(row.locator("blockquote")).to_contain_text("我今天临时有事")
         row.get_by_role("button", name="暂停参考").click()
         expect(row).to_contain_text("已暂停")
         row.get_by_role("button", name="恢复参考").click()
@@ -99,6 +117,30 @@ class EmotionRecordsBrowserTests(unittest.TestCase):
         self.assertEqual([item["operation"] for item in writes], ["edit", "pause", "resume", "resolve", "delete"])
         self.assertTrue(all(item["source_session"] == SECOND and item["session"] == "shared-life" for item in writes))
         self.assertEqual(len({item["revision"] for item in writes}), 5)
+        self.assertEqual(writes[0]["narrative"], "我想等小满有空，再一起说清楚。")
+        self.assertNotIn("evidence", writes[0])
+
+    def test_batch_delete_confirms_selected_exact_origins(self):
+        self.page.get_by_role("button", name="批量选择", exact=True).click()
+        delete = self.page.get_by_role("button", name="删除所选", exact=True)
+        expect(delete).to_be_disabled()
+        self.page.get_by_role("checkbox", name="全选当前筛选结果").check()
+        expect(self.page.locator("#emotion-records-selected")).to_have_text("已选 3 条")
+        self.records.locator('[data-record-id="a"]').get_by_role("checkbox").uncheck()
+        expect(self.page.locator("#emotion-records-selected")).to_have_text("已选 2 条")
+        delete.click()
+        expect(self.page.locator("#dialog-title")).to_have_text("删除所选 2 条未释怀记录？")
+        self.page.locator("#dialog-cancel").click()
+        self.assertEqual(self.page.evaluate("emotionWrites.length"), 0)
+        delete.click()
+        self.page.locator("#dialog-ok").click()
+        expect(self.records.locator(".emotion-record")).to_have_count(1)
+        expect(self.records).to_contain_text("风车")
+        expect(self.page.locator("#emotion-records-feedback")).to_contain_text("已删除 2 条记录")
+        self.assertEqual(self.page.evaluate("emotionWrites"), [{"session": "shared-life", "config_scope": "", "items": [
+            {"id": "b", "source_session": SECOND, "revision": "r1"},
+            {"id": "c", "source_session": FIRST, "revision": "r1"},
+        ]}])
 
     def test_old_scope_cannot_replace_current_records(self):
         self.page.evaluate("holdEmotions = true")

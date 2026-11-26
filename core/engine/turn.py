@@ -13,6 +13,7 @@ from ..json_actions import (
 )
 from ..models import pronoun_for as pronounce_for
 from ..mood import keyword_signal
+from ..speech_policy import private_recipient
 from .models import MessageContext
 from .util import _clip_text
 
@@ -126,7 +127,7 @@ class TurnMixin:
                 situation=situation,
             )
             prompt += "\n\n# 基础人设（判断行为的依据，不得改写）\n" + persona_text
-            prompt += "\n\n# 本轮可用的直接发言证据\n" + json.dumps(sources, ensure_ascii=False)
+            prompt += self.interaction_evidence_prompt(session_id, ctx.user_id, sources)
             prompt += "\n\n" + self._own_topic_block(state, ctx,
                 persona_key=persona_key)
             emotion_context = self.context_request(state, session_id,
@@ -181,13 +182,11 @@ class TurnMixin:
                 reply=str(reply_text or ""),
                 intent=str((parsed.reasoning or {}).get("intent") or ""),
             )
-            applied_affinity = 0.0
-            if ctx.user_id:
-                applied_affinity = self.record_turn_interaction(session_id, ctx.user_id, sources,
-                    parsed.affinity_delta, str(payload.get("interaction_reason") or
-                    (parsed.reasoning or {}).get("intent") or "本轮真实互动")[:200])
-                if abs(applied_affinity) > 1e-9:
-                    notes.append(f"好感 {applied_affinity:+.2f}")
+            interaction = self.judge_turn_interaction(session_id, ctx.user_id, sources, parsed.interaction,
+                addressing=parsed.addressing or ("me" if private_recipient(session_id) else ""))
+            applied_affinity = interaction.affinity_delta
+            if applied_affinity:
+                notes.append(f"好感 {applied_affinity:+.2f}")
             if parsed.valence_delta:
                 self._apply_valence_delta(state, parsed.valence_delta)
                 notes.append(f"心情 {parsed.valence_delta:+.2f}")
@@ -195,19 +194,8 @@ class TurnMixin:
                 self.note_chat_note(state, parsed.chat_note, session_id, at=observed_at)
             if parsed.open_topic:
                 self.note_open_topic(state, ctx, parsed.open_topic)
+            self.note_turn_emotions(state, ctx, parsed, sources, allow_grudge=interaction.grudge_allowed)
             emotion_evidence = sources and parsed.addressing != "others"
-            if parsed.heart_knot and emotion_evidence:
-                self.note_heart_knot(
-                    state, parsed.heart_knot, about=str(ctx.user_id or ""), session_id=session_id, user_name=ctx.user_name
-                )
-            if parsed.grudge and not parsed.forgive and emotion_evidence:
-                self.note_grudge(
-                    state,
-                    parsed.grudge,
-                    user_id=str(getattr(ctx, "user_id", "") or ""),
-                    user_name=str(getattr(ctx, "user_name", "") or ""),
-                    session_id=str(getattr(ctx, "session_id", "") or ""),
-                )
             if parsed.forgive and emotion_evidence and emotion_record and emotion_record["kind"] == "grudge":
                 self.resolve_grudge(state, user_id=str(ctx.user_id or ""), session_id=session_id,
                     expected=emotion_record)
@@ -223,14 +211,14 @@ class TurnMixin:
                 self.confirm_matter_from_turn(state, ctx, parsed.own_topic_done,
                                               parsed.own_topic_evidence, tool_trace or [])
             self.mark_open_topics_asked(state, ctx)
-            tone = parsed.tone or keyword_signal(ctx.text)
+            tone = interaction.tone(parsed.tone or keyword_signal(ctx.text))
             await self._apply_tone_pulse(
                 state,
                 tone,
                 user_id=str(getattr(ctx, "user_id", "") or ""),
             )
             if is_latest:
-                state.last_user_tone = str(parsed.tone or "")
+                state.last_user_tone = tone
             self._mark_reply_addressing(state, ctx, parsed.addressing)
             reflection = {
                 "at": self._now(),
@@ -242,7 +230,7 @@ class TurnMixin:
                 "provider_reasoning": _clip_text(reasoning_text, 600),
                 "reasoning": dict(parsed.reasoning or {}),
                 "chat_note": str(parsed.chat_note or ""),
-                "tone": str(parsed.tone or ""),
+                "tone": tone,
                 "addressing": str(parsed.addressing or ""),
                 "valence_delta": round(float(parsed.valence_delta or 0.0), 3),
                 "affinity_delta": round(float(applied_affinity or 0.0), 3),
