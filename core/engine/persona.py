@@ -271,6 +271,7 @@ class PersonaMixin:
                             memories=self.context_memories(state, request, eval_rows),
                             context_request=request,
                             engagement_hint=self.engagement.hint(state),
+                            extra_notes=[self.context_emotions(state, request)],
                             max_messages=say_limit,
                             recent_chat=self.context_chat(state, request, recent_chat),
                             reasoning=bool(self.world.reasoning_enabled),

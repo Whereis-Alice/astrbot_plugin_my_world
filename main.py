@@ -640,14 +640,16 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
         # 固定节拍：按「上一次唤醒 + 间隔」推算下一次唤醒，而不是跑完再睡 60 秒。
         # 后者会被每轮 tick 自身的耗时（调模型可能要好几秒）一直往后推，
         # 攒着攒着就整分钟跳过去，那一分钟到点的日程永远等不到。
-        next_at = time.time() + self.tick_interval
+        loop = asyncio.get_running_loop()
+        next_at = loop.time() + self.tick_interval
         while True:
             try:
-                await asyncio.sleep(max(0.5, next_at - time.time()))
+                await asyncio.sleep(max(0.5, next_at - loop.time()))
                 next_at += self.tick_interval
-                if next_at < time.time():
+                now = loop.time()
+                if next_at < now:
                     # 落后太多（宿主机卡顿 / 长时间睡眠）就重新对齐，别追赶
-                    next_at = time.time() + self.tick_interval
+                    next_at = now + self.tick_interval
                 await self.engine.tick()
                 if self.visits.config.enabled:
                     self.engine.queue_background("world_visits", self._tick_visits)
@@ -1875,6 +1877,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
         session_id = str(turn.get("session_id") or "")
         if not session_id or turn.get("response_error"):
             return
+        turn["sent_at"] = self.engine._now()
         from uuid import uuid4
         speech_turn = turn.setdefault("speech_turn", uuid4().hex)
         self.engine.note_visible_speech(session_id, speech_turn=speech_turn)

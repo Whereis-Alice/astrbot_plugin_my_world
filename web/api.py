@@ -29,6 +29,7 @@ from ..core.defaults import (
     DEFAULT_WORLD,
     default_friendship_preset,
 )
+from ..core.engine.emotion_records import EmotionRecordConflict
 from ..core.generator import grid_layout_nodes, spring_layout_zones
 from ..core.json_actions import extract_json_object
 from ..core.llm_usage import collect_llm_usage
@@ -240,6 +241,8 @@ class WebApiMixin(LifeApiMixin):
         register(f"/{p}/logs/export", self.api_logs_export, ["GET"], "导出事件日志")
         register(f"/{p}/memories", self.api_memories, ["GET"], "记忆列表")
         register(f"/{p}/thoughts", self.api_thoughts, ["GET"], "内心活动：她留下的心里话")
+        register(f"/{p}/thoughts/emotions", self.api_emotion_records, ["GET"], "读取未释怀记录")
+        register(f"/{p}/thoughts/emotions/update", self.api_emotion_record_update, ["POST"], "管理未释怀记录")
         register(
             f"/{p}/thoughts/clear",
             self.api_thoughts_clear,
@@ -1215,6 +1218,7 @@ class WebApiMixin(LifeApiMixin):
         payload["grudge"] = (
             {
                 **grudge,
+                "revision": self.engine._emotion_row(state, "grudge", grudge, emotion_persona_key, self.engine._now())["revision"],
                 "at_text": self.engine._date_text(grudge.get("at")),
                 "until_text": self.engine._date_text(grudge.get("until")),
                 "days": max(
@@ -1696,35 +1700,29 @@ class WebApiMixin(LifeApiMixin):
         action = str(payload.get("action") or "add")
         if not session_id or not user_id:
             return error_response("缺少参数")
-        async with self.engine.session_state(session_id) as state:
-            if action == "add":
-                reason = str(payload.get("reason") or payload.get("text") or "").strip()
-                if not reason:
-                    return error_response("写一句她记着的事")
-                ok = self.engine.note_grudge(
-                    state,
-                    reason,
-                    user_id=user_id,
-                    session_id=session_id,
-                    # 手动加的不吃"每天最多一笔"那道闸（那是拦模型的）
-                    force=True,
-                )
-                if not ok:
-                    return error_response("这笔账没能记下来（记仇关着吗？）")
-            elif action == "resolve":
-                self.engine.resolve_grudge(state, user_id=user_id, session_id=session_id)
-            elif action == "delete":
-                state.grudges = [
-                    item
-                    for item in (state.grudges or [])
-                    if not (
-                        isinstance(item, dict)
-                        and str(item.get("user_id") or "") == user_id
-                        and self.engine._emotion_visible(state, item, session_id)
-                    )
-                ]
-            else:
-                return error_response("不认识的操作")
+        if action not in {"add", "resolve", "delete"}:
+            return error_response("不认识的操作")
+        reason = str(payload.get("reason") or payload.get("text") or "").strip()
+        if action == "add" and not 1 <= len(reason) <= 60:
+            return error_response("请填写 1 至 60 字的记录内容")
+        revision = payload.get("revision")
+        try:
+            async with self.engine.session_state(session_id) as state:
+                active = self.engine.grudge_for(state, user_id, session_id=session_id)
+                if active is not None:
+                    record_id = self.engine._emotion_record_id(state, "grudge", active)
+                    operation = "edit" if action == "add" else action
+                    self.engine.update_emotion_record(state, session_id, record_id, operation,
+                        text=reason, revision=revision)
+                elif revision is not None:
+                    raise EmotionRecordConflict("这条记录已经变化，请刷新后重试")
+                elif action == "add" and not self.engine.note_grudge(
+                        state, reason, user_id=user_id, session_id=session_id, force=True):
+                    return error_response("没能记下这件事，请在未释怀记录查看已有记录与状态")
+        except EmotionRecordConflict as error:
+            return error_response(str(error), status_code=409)
+        except ValueError as error:
+            return error_response(str(error))
         return json_response(await self._profile_person_payload(session_id, user_id))
 
     async def api_profile_forget(self):
@@ -3572,6 +3570,77 @@ class WebApiMixin(LifeApiMixin):
             return error_response("未知的内心活动分类")
         removed = await self.engine.clear_thoughts(session_id, category)
         return json_response({"ok": True, "removed": removed})
+
+    def _emotion_record_sessions(self, scope: Any) -> tuple[str, list[str]]:
+        if not isinstance(scope, str) or not (scope := scope.strip()):
+            return "", []
+        group = self.engine.group_by_id(scope)
+        if group is not None:
+            return self._scope(scope), list(dict.fromkeys(group.sessions or []))
+        if self.engine.session_config(scope) is not None:
+            return scope, [scope]
+        return "", []
+
+    async def api_emotion_records(self):
+        guard = self._guard()
+        if guard is not None:
+            return guard
+        session_id, sources = self._emotion_record_sessions(request.query.get("session"))
+        if not session_id or not sources:
+            return error_response("请先选择有会话的生活范围")
+        state = await self.engine.load_state(session_id, cold_start=False)
+        items = []
+        for source in sources:
+            with self.engine.config_scope(source):
+                _, persona_key = await self.engine._journal_persona(source)
+                enabled = self.engine.is_enabled(source)
+                for item in self.engine.emotion_records(state, source, persona_key=persona_key):
+                    items.append({**item,
+                        "source_label": self.engine.session_label(source, state),
+                        "source_enabled": enabled,
+                        "affects_dialogue": enabled and item["affects_dialogue"],
+                        "created_text": self.engine._date_text(item.get("created_at")),
+                        "expires_text": self.engine._date_text(item.get("expires_at")),
+                    })
+        items.sort(key=lambda item: (not item["affects_dialogue"], -item["updated_at"], item["id"]))
+        return json_response({"session": session_id, "items": items})
+
+    async def api_emotion_record_update(self):
+        payload = await request.json(default={}) or {}
+        guard = self._guard(payload)
+        if guard is not None:
+            return guard
+        scope = payload.get("session")
+        session_id, sources = self._emotion_record_sessions(scope)
+        source = payload.get("source_session", session_id)
+        if not isinstance(source, str) or source not in sources:
+            return error_response("记录来源不属于当前选择的会话")
+        record_id, operation, revision = (payload.get(key) for key in ("id", "operation", "revision"))
+        if not all(isinstance(value, str) and value for value in (record_id, operation, revision)):
+            return error_response("记录标识或版本无效，请刷新后重试")
+        if operation not in {"edit", "pause", "resume", "resolve", "delete"}:
+            return error_response("不认识的操作")
+        text = payload.get("text")
+        if operation == "edit" and (not isinstance(text, str) or not 1 <= len(text.strip()) <= 60):
+            return error_response("请填写 1 至 60 字的记录内容")
+
+        state_key = self.engine.state_key(session_id)
+
+        def scope_still_current() -> None:
+            current_session, current_sources = self._emotion_record_sessions(scope)
+            if (current_session != session_id or source not in current_sources
+                    or self.engine.state_key(source) != state_key):
+                raise EmotionRecordConflict("会话范围已变化，请刷新后重试")
+
+        try:
+            async with self.engine.session_state(source, lock_check=scope_still_current) as state:
+                item = self.engine.update_emotion_record(state, source, record_id, operation,
+                    text=text, revision=revision)
+        except EmotionRecordConflict as error:
+            return error_response(str(error), status_code=409)
+        except ValueError as error:
+            return error_response(str(error))
+        return json_response({"ok": True, "item": item})
 
     async def api_memory_create(self):
         payload = await request.json(default={}) or {}

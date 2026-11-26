@@ -1211,7 +1211,7 @@ class WorldState:
                 {
                     **item,
                     "text": text[:60],
-                    "about": str(item.get("about") or "")[:20],
+                    "about": str(item.get("about") or ""),
                     "strength": max(0.0, min(1.0, strength)),
                 }
             )

@@ -28,9 +28,9 @@ class EmotionalContinuityTests(unittest.IsolatedAsyncioTestCase):
             user_text="我有点担心，只和你说。", reply_text="嗯，我听着。")
         self.assertIsNotNone(result)
 
-    async def emotions(self, session, *, task="reply"):
+    async def emotions(self, session, *, task="reply", text="你怎么了？"):
         async with self.engine.session_state(session) as state:
-            request = self.engine.context_request(state, session, task=task, rows=[], focus="42")
+            request = self.engine.context_request(state, session, task=task, rows=[], focus="42", text=text)
             await self.engine.prepare_context_memory(request)
             return self.engine.context_emotions(state, request)
 
@@ -52,7 +52,7 @@ class EmotionalContinuityTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("旧角色担心风车", block)
         self.assertNotIn("旧角色还气着迟到", block)
         self.persona.text = original
-        self.assertIn("旧角色还气着迟到", await self.emotions(S))
+        self.assertIn("旧角色还气着迟到", await self.emotions(S, text="你还气着迟到那件事吗？"))
 
     async def test_explicit_recall_does_not_reintroduce_another_characters_experience(self):
         await self.idle()
@@ -154,8 +154,7 @@ class EmotionalContinuityTests(unittest.IsolatedAsyncioTestCase):
         self.persona.text = original
         async with self.engine.session_state(S) as state:
             self.assertIsNotNone(self.engine.grudge_for(state, "42"))
-            self.assertIn("担心那件事", self.engine.extra_reminders(state,
-                ctx=SimpleNamespace(session_id=S, user_id="42")))
+        self.assertIn("担心那件事", await self.emotions(S))
 
     async def test_archived_private_emotions_stay_out_of_other_people_and_automatic_work(self):
         self.add_group(sessions=[S, P], main=S)
@@ -223,8 +222,8 @@ class EmotionalContinuityTests(unittest.IsolatedAsyncioTestCase):
         async with self.engine.session_state(S) as state:
             self.engine._decay_heart_knots(state, now=self.clock.now())
             self.engine._decay_grudges(state, now=self.clock.now())
-            self.assertEqual([row["text"] for row in state.heart_knots], ["旧角色担心风车"])
-            self.assertEqual([row["reason"] for row in state.grudges], ["旧角色还气着迟到"])
+            self.assertEqual([row["text"] for row in state.heart_knots], ["旧角色担心风车", "当前角色担心花圃"])
+            self.assertEqual([row["reason"] for row in state.grudges], ["旧角色还气着迟到", "当前角色还气着迟到"])
 
     async def test_reading_emotions_does_not_rewrite_sources_or_decay_them(self):
         await self.idle()
@@ -232,7 +231,7 @@ class EmotionalContinuityTests(unittest.IsolatedAsyncioTestCase):
         async with self.engine.session_state(S) as state:
             before = copy.deepcopy((state.heart_knots, state.grudges))
             for _ in range(3):
-                request = self.engine.context_request(state, S, rows=[], focus="42")
+                request = self.engine.context_request(state, S, rows=[], focus="42", text="还担心风车吗？")
                 await self.engine.prepare_context_memory(request)
                 self.assertIn("担心风车", self.engine.context_emotions(state, request))
                 self.engine.extra_reminders(state, ctx=SimpleNamespace(session_id=S, user_id="42"))

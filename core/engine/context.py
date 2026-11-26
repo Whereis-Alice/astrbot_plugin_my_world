@@ -155,25 +155,40 @@ class ContextMixin:
         elsewhere = take_last_chat_groups(elsewhere, max(0, int(self.world.context.chat_elsewhere_lines)))
         return sorted([*selected, *elsewhere], key=lambda row: int(row.get("seq") or 0))
 
-    def context_emotions(self, state, request: ContextRequest) -> str:
-        from ..context_selection import ContextItem, select_context
-        materials = []
-        sources = (("heart_knots", "about", "text", "since"), ("grudges", "user_id", "reason", "at"))
-        for field, person_field, text_field, time_field in sources:
-            if (field == "heart_knots" and not self.world.state_dynamics.heart_knot_enabled
-                    or field == "grudges" and not self.world.profile.grudge_enabled):
+    def context_emotion(self, state, request: ContextRequest):
+        """Select one feeling cued by the actual addressee's current message."""
+        from ..emotional_memory import asks_about_feelings, current_emotion_query, emotion_topic_match
+        from .emotion_records import EMOTION_FIELDS
+        focus = request.focus_user
+        query = current_emotion_query(request)
+        if not query:
+            return None
+        explicit = asks_about_feelings(query)
+        matches = []
+        for kind, (field, text_field, person_field, _) in EMOTION_FIELDS.items():
+            if not self._emotion_enabled(kind):
                 continue
-            for index, row in enumerate(getattr(state, field, []) or []):
-                uid = str(row.get(person_field) or "")
-                origin = str(row.get("session") or state.session_id)
-                if (not self._emotion_belongs(state, row, request.life_persona)
-                        or origin != request.session or (uid and uid not in request.people)):
+            for item in getattr(state, field):
+                uid = str(item.get(person_field) or "")
+                body = str(item.get(text_field) or "").strip()
+                if (not body or (uid and uid != focus)
+                        or not self._emotion_visible(state, item, request.session, persona_key=request.life_persona)
+                        or self._emotion_status(kind, item, request.now) != "active"):
                     continue
-                materials.append(ContextItem(f"{field}:{index}", "relationship",
-                    f"# 当时留下的心情（仅本会话；不当成任务，也不强行翻旧账）\n涉及用户ID：{uid or '自己'}；{row.get(text_field) or ''}",
-                    people=(uid,) if uid else (), session=origin,
-                    at=float(row.get(time_field) or 0), expires=float(row.get("until") or 0), priority=.2))
-        return select_context(request, materials, budget=600, channel="feelings").render()
+                topical = emotion_topic_match(query, body)
+                if topical or explicit:
+                    row = self._emotion_row(state, kind, item, request.life_persona, request.now)
+                    matches.append((topical, row["created_at"], row))
+        return max(matches, key=lambda row: row[:2])[2] if matches else None
+
+    def context_emotions(self, state, request: ContextRequest) -> str:
+        row = self.context_emotion(state, request)
+        if row is None:
+            return ""
+        return ("# 与本轮有关的私人感受\n"
+                "这是你当时的主观感受，先接住眼前的话。可以自然回应、继续保留或放下这份感受。"
+                "是否提及和如何措辞由眼下的对话及你的人设决定。\n"
+                + row["text"])
 
     async def task_background(self, state, *, task: str, query: str, required: str = "", evidence: bool = False,
                               request: ContextRequest | None = None) -> str:

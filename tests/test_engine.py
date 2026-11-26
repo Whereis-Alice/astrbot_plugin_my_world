@@ -2442,41 +2442,35 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_heart_knot_is_only_about_the_person_it_was_written_for(self):
         """心事是分了人的：跟 B 说话时不该看到关于 A 的那件。"""
 
-        ctx_a = self.ctx(user_id="1", user_name="甲")
-        ctx_b = self.ctx(user_id="2", user_name="乙")
+        _, persona_key = await self.engine._journal_persona(SESSION)
         async with self.engine.session_state(SESSION) as state:
             self.engine.note_heart_knot(state, "他上次那句话到现在还别扭", about="1")
-            self.engine.note_heart_knot(state, "我自己有点在意白天那件事", about="")
-            block_a = self.engine.extra_reminders(state, ctx=ctx_a)
-            block_b = self.engine.extra_reminders(state, ctx=ctx_b)
-            # 自主决策那一路：带上是谁的事，免得她拿着 A 的账去对 B 说
-            block_auto = self.engine.extra_reminders(state, autonomy=True)
-        self.assertIn("他上次那句话", block_a)
-        self.assertNotIn("他上次那句话", block_b)
-        # 没写对谁的心事（她自己那点事）两边都在
-        self.assertIn("我自己有点在意", block_a)
-        self.assertIn("我自己有点在意", block_b)
-        self.assertIn("关于", block_auto)
+            for task, person, query, expected in (
+                ("reply", "1", "你怎么了？", True), ("reply", "2", "你怎么了？", False),
+                ("reply", "1", "早上好", False), ("plan", "1", "上次那句话", False),
+            ):
+                with self.subTest(task=task, person=person, query=query):
+                    request = self.engine.context_request(state, SESSION, task=task, rows=[], focus=person, text=query)
+                    request.life_persona = persona_key
+                    self.assertEqual("他上次那句话" in self.engine.context_emotions(state, request), expected)
 
     async def test_grudge_shows_up_only_for_that_person(self):
-        """记了账就直接生效，但只对当事人：别人面前一个字不提。"""
+        """只有当事人聊到这件事时带入私人感受。"""
 
-        ctx = self.ctx(user_id="9", user_name="小刚")
+        _, persona_key = await self.engine._journal_persona(SESSION)
         async with self.engine.session_state(SESSION) as state:
             self.engine.profiles.touch(state.session_id, "9", "小刚")
             self.engine.note_grudge(
                 state, "他答应的事又没做", user_id="9", user_name="小刚"
             )
             self.assertIsNotNone(self.engine.grudge_for(state, "9"))
-            prompt = self.engine.extra_reminders(state, ctx=ctx)
-            self.assertIn("记着他一笔账", prompt)
-            self.assertIn("他答应的事又没做", prompt)
-            # 只对当事人说
-            other = self.ctx(user_id="7", user_name="小红")
-            self.assertNotIn("他答应的事又没做", self.engine.extra_reminders(state, ctx=other))
+            for person in ("9", "7"):
+                request = self.engine.context_request(state, SESSION, rows=[], focus=person, text="你还在生气吗？")
+                request.life_persona = persona_key
+                self.assertEqual("他答应的事又没做" in self.engine.context_emotions(state, request), person == "9")
 
     async def test_grudge_cools_only_the_person_it_is_about(self):
-        """记了账 → 对他这一档被压下来；同样亲密的别人一点都不变。"""
+        """只有当事人聊到旧事时才调整亲密边界。"""
 
         ctx_a = self.ctx(user_id="9", user_name="小刚")
         ctx_b = self.ctx(user_id="7", user_name="小红")
@@ -2495,11 +2489,16 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
             self.assertIn("你对他：特别的人", self.engine.profile_block(state, ctx_a))
             self.assertIn("你对他：熟人", self.engine.profile_block(state, ctx_b))
             self.engine.note_grudge(state, "当众让我下不来台", user_id="9", user_name="小刚")
-            cold = self.engine.profile_block(state, ctx_a)
+            _, persona_key = await self.engine._journal_persona(SESSION)
+            request = self.engine.context_request(state, SESSION, rows=[], focus="9", text="上次让你下不来台，对不起。")
+            request.life_persona = persona_key
+            cold = self.engine.profile_block(state, ctx_a, context_request=request)
+            ordinary = self.engine.profile_block(state, ctx_a)
             warm_other = self.engine.profile_block(state, ctx_b)
         # 好感还是 95（数值没动），但"生效档位"被他这笔账压下来一档
         self.assertIn("你对他：亲近", cold)
         self.assertNotIn("你对他：特别的人", cold)
+        self.assertIn("你对他：特别的人", ordinary)
         self.assertIn("你对他：熟人", warm_other)
 
     async def test_forgive_clears_the_grudge_and_writes_it_down(self):
@@ -2603,14 +2602,17 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
 
         async with self.engine.session_state(SESSION) as state:
             self.engine.note_heart_knot(state, "他上次那句话到现在还别扭")
-            block = self.engine._heart_knot_block(state)
+            _, persona_key = await self.engine._journal_persona(SESSION)
+            request = self.engine.context_request(state, SESSION, rows=[], focus="9", text="你怎么了？")
+            request.life_persona = persona_key
+            block = self.engine.context_emotions(state, request)
             self.assertIn("还别扭", block)
             # 淡到没：把强度直接压到快没，再过一小时就该退出
             state.heart_knots[0]["strength"] = 0.03
             state.heart_knots[0]["at"] = self.clock.now() - 3600
             self.engine._decay_heart_knots(state, now=self.clock.now())
             self.assertEqual(state.heart_knots, [])
-            self.assertEqual(self.engine._heart_knot_block(state), "")
+            self.assertEqual(self.engine.context_emotions(state, request), "")
         rows = self.engine.memory.db.query_memories(session_id=SESSION, limit=20)
         self.assertTrue(
             any("心里搁过的事" in str(item.get("content") or "") for item in rows),
@@ -7279,12 +7281,15 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_arrival_still_asks_when_nothing_is_queued(self):
         """只移动、没说到了做什么：还是照旧问一次（这条是原来就有的兜底）。"""
 
+        from tests.schedule_delivery import settled_clock_delivery
+
         async with self.engine.session_state(SESSION) as state:
             state.node_id = "study"
             state.pending_arrival = True
             state.current_action = None
             state.current_plan = None
         await self.engine.tick()
+        await settled_clock_delivery(self.engine)
         arrival_calls = [
             item
             for item in self.llm.calls
@@ -8884,16 +8889,10 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
 
         from tests.schedule_delivery import settled_clock_delivery
 
-        self.tools.schemas["web_search"] = {
-            "type": "object",
-            "properties": {"query": {"type": "string"}},
-            "required": ["query"],
-        }
         self.llm.replies = [
-            '{"reasoning":{"intent":"去书房"},'
-            '"actions":[{"type":"walk_to","target_node":"study"}]}',
-            '{"plan":[{"action":"search_web","params":{"query":"今天的新闻"}}],'
-            '"reason":"刚进书房，顺手查点东西","valid_until":1800}',
+            '{"actions":[{"type":"walk_to","target_node":"study","intent":"去书房找一本旧书"}]}',
+            '{"intent":"listen","plan":[{"action":"read","duration":600}],'
+            '"reason":"刚进书房，接着看一会儿书","valid_until":1800}',
         ]
         await self.set_state(node_id="bedroom")  # 从卧室走过去才有"抵达"这件事
         ctx = self.ctx(text="去书房")
@@ -8908,16 +8907,14 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
 
         state = await self.get_state()
         self.assertEqual(state.node_id, "study")
-        # 计划里的「上网搜索」是瞬时动作：落地决策这一下就查完了，
-        # 所以留痕在工具调用记录里，而不是挂在 current_plan / current_action 上
-        self.assertEqual([name for name, _params in self.tools.calls], ["web_search"])
-        self.assertEqual(self.tools.calls[0][1]["query"], "今天的新闻")
+        self.assertEqual(state.current_action["type"], "read")
+        self.assertEqual(self.tools.calls, [])
         # 这次决策要明确告诉她「为什么走到这儿」，而不是让她重新规划一整段时间
         prompts = [call["prompt"] for call in self.llm.calls]
         self.assertTrue(
             any("你刚刚特地走到了「书房」" in text for text in prompts), prompts
         )
-        self.assertTrue(any("去书房" in text for text in prompts), prompts)
+        self.assertTrue(any("走来时的打算是「去书房找一本旧书」" in text for text in prompts), prompts)
 
 
     async def test_interrupt_stops_continuous_action(self):

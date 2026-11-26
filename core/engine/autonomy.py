@@ -336,18 +336,16 @@ class AutonomyMixin:
             group_chatting=self.group_is_chatting(state),
             interject_allowed=self.interject_allowed(state),
         )
-        # 她特地走过来通常是有目的的：把刚才的打算和她现在能做什么摆在最前面，
-        # 免得这次调用还在"重新规划整段时间"。
         where = (node.name if node else "") or state.node_id
-        intent = str(state.reasoning_for().get("intent") or "").strip()
         here = "、".join(
             f"{item.id}（{item.name or item.id}）" for item in self.world.actions_in(state.node_id)
         )
-        hint = f"你刚刚特地走到了「{where}」"
-        hint += f"，因为你打算：{intent}。" if intent else "。"
+        hint = f"你刚刚特地走到了「{where}」。"
+        if outcome.arrival_intent:
+            hint += f"走来时的打算是「{outcome.arrival_intent}」。"
         hint += (
             f"这里能做：{here or '没什么特别的'}。"
-            "直接安排你到了这里要做的那件事；如果你只是随便走走，就挑一件这儿能做的事。"
+            "如果来时的打算还适合现在，就接着做；也可以留一会儿、休息或挑一件这里能做的事。"
         )
         llm_plan = await self._ask_llm_for_plan(
             state, node, outcome, force=True, hint=hint

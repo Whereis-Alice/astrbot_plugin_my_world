@@ -22,7 +22,7 @@ LIFE_SQL = "type IN ('scene','event','inner','dream') AND source IN ('runtime','
 SOURCE_SCOPED_SQL = ("(source='chat_browse' OR (source='life_matter' AND "
     "(coalesce(participants,'[]')!='[]' OR coalesce(related_users,'[]')!='[]')) OR "
     "(source='runtime' AND coalesce(CASE WHEN json_valid(context) THEN json_extract(context,'$.kind') END,'') "
-    "IN ('heart_knot','grudge') AND coalesce(CASE WHEN json_valid(context) THEN json_extract(context,'$.source_scoped') END,0)=1))")
+    "IN ('heart_knot','grudge')))")
 RETIRED_MEMORY = {"dialogue_summary", "summary_trigger_messages", "summary_idle_minutes", "summary_on_move", "summary_max_chars"}
 RETIRED_CONTEXT = {"chat_overflow", "chat_compress_threshold", "chat_keep_after_compress", "summary_refresh_minutes"}
 RETIRED_STATE = {"pending_memory", "pending_memory_node", "memory_hints", "memory_flush_at", "memory_flush_wanted",
@@ -41,8 +41,7 @@ def scoped_emotion(source: str, context: Any) -> bool:
         meta = json.loads(context) if isinstance(context, str) else context
     except (ValueError, TypeError):
         return False
-    return (isinstance(meta, dict) and meta.get("kind") in {"heart_knot", "grudge"}
-            and meta.get("source_scoped") is True)
+    return isinstance(meta, dict) and meta.get("kind") in ("heart_knot", "grudge")
 
 
 def clean_memory_settings(data: dict) -> dict:

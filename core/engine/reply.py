@@ -761,8 +761,14 @@ class ReplyMixin:
                     extra_notes = [*(extra_notes or []), vocabulary]
                 request = self.context_request(state, ctx.session_id, task="reply", text="\n".join(texts),
                     rows=recall_records, focus=ctx.user_id, persona=ctx.persona_id)
-                persona_text = await self._persona_text(state.session_id)
+                emotion_sources = self.interaction_sources(ctx.session_id, str(ctx.user_id or ""), ctx.text, batch)
+                request.focus_text = str(emotion_sources[-1]["text"]) if emotion_sources else ""
+                persona_text = await self._persona_text(ctx.session_id)
                 request.life_persona = sha256(persona_text.encode("utf-8")).hexdigest()[:24]
+                emotion_record = self.context_emotion(state, request)
+                feeling = self.context_emotions(state, request)
+                if feeling:
+                    extra_notes = [*(extra_notes or []), feeling]
                 memories = self.context_memories(state, request, recall_records)
                 background_chat = self.context_chat(state, request,
                     self.chat_context_for_reply(state, ctx, exclude_entries=self.reply_batch_entries(batch)))
@@ -1110,10 +1116,12 @@ class ReplyMixin:
             # 「他还有件没说完的事」：记下来，之后到点可以接一句
             self.note_open_topic(state, ctx, parsed.open_topic)
             # 「你心里搁着的事」：她自己的事，挂着，会自己淡掉
-            if parsed.heart_knot:
-                self.note_heart_knot(state, parsed.heart_knot, about=str(ctx.user_id or ""), session_id=ctx.session_id)
-            # 「他这笔账我记着了」：冲人的，会让她对他冷一档，而且只在他面前提
-            if parsed.grudge:
+            emotion_evidence = emotion_sources and parsed.addressing != "others"
+            if parsed.heart_knot and emotion_evidence:
+                self.note_heart_knot(state, parsed.heart_knot, about=str(ctx.user_id or ""),
+                    session_id=ctx.session_id, user_name=ctx.user_name)
+            # 只记录真实新发生的事；这一轮放下旧事时不要重建同一笔。
+            if parsed.grudge and not parsed.forgive and emotion_evidence:
                 self.note_grudge(
                     state,
                     parsed.grudge,
@@ -1122,8 +1130,9 @@ class ReplyMixin:
                     session_id=str(getattr(ctx, "session_id", "") or ""),
                 )
             # 「他道歉了 / 补上了」：那笔账划掉
-            if parsed.forgive:
-                self.resolve_grudge(state, user_id=str(getattr(ctx, "user_id", "") or ""), session_id=ctx.session_id)
+            if parsed.forgive and emotion_evidence and emotion_record and emotion_record["kind"] == "grudge":
+                self.resolve_grudge(state, user_id=str(ctx.user_id or ""), session_id=ctx.session_id,
+                    expected=emotion_record)
             # 「我自己答应过的事」：她自己的账本，跟 open_topic 正好对称
             if parsed.own_topic:
                 await self.note_own_topic(

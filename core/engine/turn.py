@@ -66,6 +66,7 @@ class TurnMixin:
         persona_id: str = "",
         interaction_entries: list[dict[str, Any]] | None = None,
         scene_snapshot: dict[str, str] | None = None,
+        sent_at: float | None = None,
     ) -> dict[str, Any] | None:
         """回合复盘：她说完之后，把这一轮的心情 / 好感 / 话题 / 心事补记上。
 
@@ -76,6 +77,7 @@ class TurnMixin:
 
         if not self.is_enabled(session_id):
             return None
+        observed_at = self._now() if sent_at is None else sent_at
         world = self.world
         state_key = self.state_key(session_id)
         sources = self.interaction_sources(session_id, str(user_id or ""), user_text, interaction_entries)
@@ -107,8 +109,9 @@ class TurnMixin:
             recent_chat = [
                 dict(item)
                 for item in (state.recent_chat or [])
-                if isinstance(item, dict)
-            ][-8:]
+                if isinstance(item, dict) and self._chat_origin(item, state) == session_id
+                and float(item.get("at") or 0) <= observed_at
+            ][-6:]
             system, prompt = self.prompts.build_reflection_prompt(
                 state=state,
                 node=node,
@@ -126,6 +129,13 @@ class TurnMixin:
             prompt += "\n\n# 本轮可用的直接发言证据\n" + json.dumps(sources, ensure_ascii=False)
             prompt += "\n\n" + self._own_topic_block(state, ctx,
                 persona_key=persona_key)
+            emotion_context = self.context_request(state, session_id,
+                text=str(sources[-1]["text"]) if sources else "", rows=[], focus=ctx.user_id)
+            emotion_context.life_persona = persona_key
+            emotion_record = self.context_emotion(state, emotion_context)
+            feeling = self.context_emotions(state, emotion_context)
+            if feeling:
+                prompt += "\n\n" + feeling
         if tool_trace:
             prompt += ("\n\n# 本轮原生工具的实际记录\n只有成功的实际结果覆盖具体目标才可确认该事项完成。"
                        "检索到旧记录、获取资料、准备成功不等于外部操作已完成；失败或结果不明确就留空。\n"
@@ -153,7 +163,9 @@ class TurnMixin:
             if (current_persona != persona_text or self.world is not world
                     or state.session_id != state_key or not self.is_enabled(session_id)):
                 return None
-            if parsed.reasoning:
+            latest = state.last_reflection or {}
+            is_latest = float(latest.get("sent_at") or 0) <= observed_at
+            if parsed.reasoning and is_latest:
                 state.note_reasoning(parsed.reasoning, source="reflect", session_id=session_id,
                                      persona_key=self._matter_persona_key(state) or "")
             # 复盘里那句「心里冒出来的一两句」也存下来：这样每聊一轮，
@@ -180,14 +192,15 @@ class TurnMixin:
                 self._apply_valence_delta(state, parsed.valence_delta)
                 notes.append(f"心情 {parsed.valence_delta:+.2f}")
             if parsed.chat_note:
-                self.note_chat_note(state, parsed.chat_note, session_id)
+                self.note_chat_note(state, parsed.chat_note, session_id, at=observed_at)
             if parsed.open_topic:
                 self.note_open_topic(state, ctx, parsed.open_topic)
-            if parsed.heart_knot:
+            emotion_evidence = sources and parsed.addressing != "others"
+            if parsed.heart_knot and emotion_evidence:
                 self.note_heart_knot(
-                    state, parsed.heart_knot, about=str(ctx.user_id or ""), session_id=session_id
+                    state, parsed.heart_knot, about=str(ctx.user_id or ""), session_id=session_id, user_name=ctx.user_name
                 )
-            if parsed.grudge:
+            if parsed.grudge and not parsed.forgive and emotion_evidence:
                 self.note_grudge(
                     state,
                     parsed.grudge,
@@ -195,8 +208,9 @@ class TurnMixin:
                     user_name=str(getattr(ctx, "user_name", "") or ""),
                     session_id=str(getattr(ctx, "session_id", "") or ""),
                 )
-            if parsed.forgive:
-                self.resolve_grudge(state, user_id=str(getattr(ctx, "user_id", "") or ""), session_id=session_id)
+            if parsed.forgive and emotion_evidence and emotion_record and emotion_record["kind"] == "grudge":
+                self.resolve_grudge(state, user_id=str(ctx.user_id or ""), session_id=session_id,
+                    expected=emotion_record)
             if parsed.own_topic:
                 await self.note_own_topic(
                     state,
@@ -215,10 +229,12 @@ class TurnMixin:
                 tone,
                 user_id=str(getattr(ctx, "user_id", "") or ""),
             )
-            state.last_user_tone = str(parsed.tone or "")
+            if is_latest:
+                state.last_user_tone = str(parsed.tone or "")
             self._mark_reply_addressing(state, ctx, parsed.addressing)
             reflection = {
                 "at": self._now(),
+                "sent_at": observed_at,
                 "world_time": int(state.world_time),
                 "user": str(user_name or user_id or ""),
                 "user_text": _clip_text(user_text, 160),
@@ -241,7 +257,8 @@ class TurnMixin:
                     if isinstance(item, dict)
                 ][:20],
             }
-            state.last_reflection = reflection
+            if is_latest:
+                state.last_reflection = reflection
             self.learn_vocabulary(session_id, payload.get("vocabulary") if isinstance(payload.get("vocabulary"), list) else [], sources)
             log = [
                 dict(item)

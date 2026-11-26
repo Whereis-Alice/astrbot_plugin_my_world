@@ -193,8 +193,11 @@ class ProfilesMixin:
         session_id = str(getattr(ctx, "session_id", "") or state.session_id)
         user_id = str(getattr(ctx, "user_id", "") or "")
         person = self.person_payload(session_id, user_id) if user_id else None
-        if person is not None:
-            person = self._apply_grudge_coldness(state, user_id, person, session_id=session_id)
+        if person is not None and context_request is not None:
+            feeling = self.context_emotion(state, context_request)
+            if feeling and feeling["kind"] == "grudge":
+                person = self._apply_grudge_coldness(state, user_id, person, session_id=session_id,
+                    persona_key=context_request.life_persona)
         if person is not None and context_request is not None:
             from ..context_selection import select_context
             from ..context_sources import profile_fact_items

@@ -234,7 +234,7 @@ class ChatBrowseBrowserTests(unittest.TestCase):
           };
         }""")
         self.page.locator('button[data-tab="thoughts"]').click()
-        self.page.get_by_role('tab', name='心里的话', exact=True).press('End')
+        self.page.get_by_role('tab', name='心里的话', exact=True).press('ArrowRight')
         expect(self.page.get_by_role('tab', name='翻消息时', exact=True)).to_have_attribute('aria-selected', 'true')
         self.page.locator('#thoughts-clear').click()
         self.page.locator('#dialog-ok').click()

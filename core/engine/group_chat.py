@@ -411,7 +411,7 @@ class GroupChatMixin:
             self.mark_chat_replied(state, session_id)
 
     def note_chat_note(
-        self, state: WorldState, text: str, session_id: str = ""
+        self, state: WorldState, text: str, session_id: str = "", *, at: float | None = None
     ) -> None:
         """记下「刚才在聊什么」（模型顺手写的），下一轮当背景用。
 
@@ -423,11 +423,12 @@ class GroupChatMixin:
         if not note:
             return
         target = str(session_id or state.session_id)
-        state.chat_notes = {
-            **dict(state.chat_notes or {}),
-            target: {"text": _clip_text(note, 80), "at": self._now(),
-                     "persona_key": self._matter_persona_key(state) or ""},
-        }
+        stamp = self._now() if at is None else at
+        persona = self._matter_persona_key(state) or ""
+        previous = state.chat_notes.get(target) or {}
+        if previous.get("persona_key") == persona and float(previous.get("at") or 0) > stamp:
+            return
+        state.chat_notes[target] = {"text": _clip_text(note, 80), "at": stamp, "persona_key": persona}
 
     def chat_note_for(self, state: WorldState, session_id: str = "", *,
                       persona_key: str | None = None) -> str:

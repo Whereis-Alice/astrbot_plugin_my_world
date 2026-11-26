@@ -390,8 +390,7 @@ class CuddleMixin:
         ``autonomy``：这一轮是"她自己决定要做什么"（不是回谁的话）。只有这时候才把
         「好奇心上来了，想去问问谁」带进去——回话时带这段等于把话题拐到第三个人身上。
 
-        ``ctx``：正在跟谁说话。心事 / 记着的账 / 她自己的事都是**分人**的，
-        不回话的场合（``ctx`` 为空）就按"她自己心里的事"带上名字。
+        ``ctx`` 用于检查她自己的事项是否对本轮对象可见。
         """
 
         # Adaptive directed turns stay with the present people. Social planning
@@ -400,8 +399,6 @@ class CuddleMixin:
         if autonomy or include_life:
             parts.append(self._greet_hint(state))
             parts.append(self._outdoor_hint(state))
-        parts.append(self._heart_knot_block(state, ctx, autonomy=autonomy, persona_key=persona_key or None))
-        parts.append(self._grudge_block(state, ctx, autonomy=autonomy, persona_key=persona_key or None))
         if include_life:
             parts.append(self._own_topic_block(state, ctx, autonomy=autonomy, persona_key=persona_key))
         if autonomy:
@@ -701,54 +698,6 @@ class CuddleMixin:
                 )
             )
         return ""
-
-    def _heart_knot_block(
-        self, state: WorldState, ctx: Any = None, *, autonomy: bool = False, persona_key: str | None = None
-    ) -> str:
-        """「心里搁着的事」那一段：挂着、不推进，影响她说话的样子。
-
-        心事是**分了人的**（写进来时记了 ``about``）：跟谁说话就只想谁的那件，
-        不然她会把 A 的事拿到 B 面前说，还容易认错人。
-        自主决策那一路把名字带上（她可能要为此去找人）。
-        """
-
-        if not self.world.state_dynamics.heart_knot_enabled:
-            return ""
-        who = str(getattr(ctx, "user_id", "") or "")
-        lines: list[str] = []
-        for item in list(state.heart_knots or []):
-            if not isinstance(item, dict):
-                continue
-            if not self._emotion_visible(state, item, str(getattr(ctx, "session_id", "") or ""), persona_key=persona_key):
-                continue
-            text = str(item.get("text") or "").strip()
-            if not text:
-                continue
-            about = str(item.get("about") or "")
-            # 跟谁说话就只想谁的事；没有归属的（早期数据 / 整理时发现的）两边都带
-            if who and about and about != who:
-                continue
-            since = float(item.get("since") or 0.0)
-            days = (self._now() - since) / 86400.0 if since > 0 else 0.0
-            age = f"（搁了 {days:.0f} 天了）" if days >= 1 else ""
-            label = ""
-            if autonomy and about and about != who:
-                name = self._user_label(state, about)
-                label = f"（关于 {name}）" if name else ""
-            lines.append(f"- {label}{text}{age}")
-            if len(lines) >= 3:
-                break
-        if not lines:
-            return ""
-        return (
-            "# 你心里搁着的事\n"
-            "这些不是任务、也不用去解决，只是你心里还惦记着——说话时会带出来一点："
-            "要么语气淡一些，要么在合适的时机主动提一句。**别反复念叨、也别硬把话题拽过去**。\n"
-            "**但他要是直接问你「怎么了 / 谁惹你了 / 还在生气吗」，就照你的口气说出来**："
-            "不用一次说全，可以嘴硬、可以说一半、可以让他猜——但不能装没事，"
-            "也不能只用冷淡回答他。被问到了还什么都不说，那不是你的性格。\n"
-            + "\n".join(lines)
-        )
 
     def _user_label(self, state: WorldState, user_id: str) -> str:
         """这个 QQ 号在她眼里叫什么（拿不到名字就回落到号码）。"""

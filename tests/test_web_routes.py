@@ -35,6 +35,7 @@ PLUGIN_NAME = "astrbot_plugin_my_world"
 MAIN_PY = os.path.join(PLUGIN_DIR, "main.py")
 APP_JS = os.path.join(PLUGIN_DIR, "pages", "world_editor", "app.js")
 LIFE_JS = os.path.join(PLUGIN_DIR, "pages", "world_editor", "life.js")
+EMOTIONS_JS = os.path.join(PLUGIN_DIR, "pages", "world_editor", "emotion-records.js")
 
 # app.js 里三种取接口的写法：本文件的 apiGet/apiPost，以及直接调 bridge 的那几处。
 _ENDPOINT_PATTERNS = (
@@ -81,11 +82,11 @@ def plugin_method_names() -> list[str]:
 
 
 def frontend_endpoints() -> list[str]:
-    with open(APP_JS, encoding="utf-8") as app_handle, open(
-        LIFE_JS, encoding="utf-8"
-    ) as life_handle:
-        source = app_handle.read() + "\n" + life_handle.read()
-    found = {match for pattern in _ENDPOINT_PATTERNS for match in pattern.findall(source)}
+    found = set()
+    for path in (APP_JS, LIFE_JS, EMOTIONS_JS):
+        with open(path, encoding="utf-8") as handle:
+            source = handle.read()
+        found.update(match for pattern in _ENDPOINT_PATTERNS for match in pattern.findall(source))
     return sorted(found)
 
 

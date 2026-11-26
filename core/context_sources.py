@@ -191,6 +191,7 @@ def profile_fact_items(user_id: str, facts: list[dict], session: str) -> list[Co
 def memory_context_items(state: Any, request: ContextRequest, memories, *, stamp=None,
                          life_enabled: bool = True) -> list[ContextItem]:
     """Recall a dated fragment together with its current matter, or omit it."""
+    from .emotional_memory import archived_feeling_relevant
     matters = {row.key: row for row in life_items(state, request)} if life_enabled else {}
     raw_matters = {str(row.get("id")): row for row in state.life_matters if isinstance(row, dict)}
     result = {}
@@ -200,16 +201,18 @@ def memory_context_items(state: Any, request: ContextRequest, memories, *, stamp
         people = tuple(memory.participants or memory.related_users)
         if memory.private_matter and (request.task in {"plan", "sleep", "diary"} or not set(people) & set(request.people)):
             continue
-        if memory.private_emotion and (request.task in {"plan", "sleep", "diary"}
-                                      or (people and not set(people) & set(request.people))):
-            continue
         meta = life_memory_metadata(memory.source, memory.context)
+        if memory.private_emotion and not archived_feeling_relevant(request, people,
+                str(meta.get("original") or memory.content)):
+            continue
         if meta.get("persona_key") and meta["persona_key"] != request.life_persona:
             continue
         label = "# 相关经历（当时的事，按记录理解）\n"
         dependencies = ()
         if memory.source == "chat_browse":
             label = "# 阅读本会话时的感想（主观想法，不是亲历或人物事实）\n"
+        elif memory.private_emotion:
+            label = "# 已放下的旧感受（当时的主观经历）\n"
         elif meta.get("kind") == "world_visit":
             label = "# 与另一位生活角色的串门经历（虚拟世界中的双边互动，不能证明现实用户言行）\n"
             label += "这是已结束的经历；现在在家或睡觉不表示此前没有出门。\n"

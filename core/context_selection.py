@@ -58,6 +58,7 @@ class ContextRequest:
     semantic_context: dict[str, float] = field(default_factory=dict)
     current_text: str = ""
     timezone: str = "Asia/Shanghai"
+    focus_text: str | None = None  # Actual addressee's words when the current batch contains others.
 
     @property
     def has_current_topic(self) -> bool:

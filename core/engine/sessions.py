@@ -298,7 +298,7 @@ class SessionsMixin:
 
         以前"勾组"等于落在组代表身上，用户看着就是"我说了落在组里，她却总是
         发到那一个群"。现在勾组 = 把这句话交给组里的某一个会话，由她自己挑
-        （挑不动 / 没配模型时才回落到代表会话）。
+        （只有一个授权落点时直接使用；挑不动时优先使用获授权的代表会话）。
         勾了具体会话的照旧，不问模型。
         """
 
@@ -313,12 +313,14 @@ class SessionsMixin:
         members = [
             str(item)
             for item in (group.sessions or [])
-            if self.is_enabled(str(item))
+            if self.speech_allowed(str(item), "schedule")
         ]
-        if len(members) <= 1:
+        if not members:
             return self.schedule_target(schedule, session_id)
+        if len(members) == 1:
+            return members[0]
         chosen = await self._pick_schedule_session(state, schedule, members)
-        return chosen or self.schedule_target(schedule, session_id)
+        return chosen or (session_id if session_id in members else members[0])
 
     @model_operation("schedule", "为日程选择合适的发送会话")
     async def _pick_schedule_session(
@@ -377,11 +379,10 @@ class SessionsMixin:
         reply = await self._ask_llm(state.session_id, system, prompt)
         if reply is None:
             return ""
-        text = " ".join(str(reply).split())
-        digits = "".join(char for char in text if char.isdigit())
-        if not digits:
+        choice = str(reply).strip()
+        if not choice.isdecimal() or len(choice) > len(str(len(members))):
             return ""
-        index = int(digits[:2]) - 1
+        index = int(choice) - 1
         if 0 <= index < len(members):
             return members[index]
         return ""

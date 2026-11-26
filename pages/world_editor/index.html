@@ -10,7 +10,7 @@
     <link rel="stylesheet" href="./workbench.css?v=4.35.0" />
     <link rel="stylesheet" href="./people.css?v=4.29.0" />
     <link rel="stylesheet" href="./model-calls.css?v=4.29.0" />
-    <link rel="stylesheet" href="./life.css?v=4.33.0" />
+    <link rel="stylesheet" href="./life.css?v=4.49.2" />
     <link rel="stylesheet" href="./visits.css?v=4.46.29" />
     <link rel="stylesheet" href="./social-learning.css?v=4.29.0" />
     <link rel="stylesheet" href="./observatory.css?v=4.39.0" />
@@ -762,7 +762,7 @@
                 <span>会话</span>
                 <select id="thought-session"></select>
               </label>
-              <label class="field">
+              <label id="thought-date-field" class="field">
                 <span>日期</span>
                 <select id="thought-date" aria-label="内心活动日期" title="按世界设定的时区归类；选择全部日期可回看已保留的历史。"><option value="">全部日期</option></select>
               </label>
@@ -780,6 +780,7 @@
           <div id="thoughts-tabs" class="thoughts-tabs" role="tablist" aria-label="内心活动分类">
             <button type="button" role="tab" id="thought-tab-inner" aria-controls="thoughts-content" aria-selected="true" data-thought-tab="inner">心里的话</button>
             <button type="button" role="tab" id="thought-tab-browse" aria-controls="thoughts-content" aria-selected="false" data-thought-tab="browse">翻消息时</button>
+            <button type="button" role="tab" id="thought-tab-records" aria-controls="thoughts-content" aria-selected="false" data-thought-tab="records">未释怀记录</button>
           </div>
           <p id="thoughts-hint" class="hint-line">
             每聊完一轮、每做一次自主决定，她心里冒出来的那一两句都会留在这儿；
@@ -789,6 +790,18 @@
           <div id="thoughts-content" role="tabpanel" aria-labelledby="thought-tab-inner">
             <div id="thoughts-browse-status" class="browse-status hidden" aria-live="polite"></div>
             <div id="thoughts-list" class="list" data-keep-text></div>
+            <div id="emotion-records" class="hidden" data-keep-text>
+              <div class="emotion-record-header">
+                <label class="field"><span>记录状态</span><select id="emotion-records-filter">
+                  <option value="all">全部状态</option>
+                  <option value="reference">仍可参考</option>
+                  <option value="paused">已暂停</option>
+                  <option value="history">历史记录</option>
+                </select></label>
+                <p id="emotion-records-feedback" class="muted" role="status"></p>
+              </div>
+              <div id="emotion-records-list" class="list"></div>
+            </div>
           </div>
         </section>
 
@@ -1223,6 +1236,6 @@
       </div>
     </div>
 
-    <script type="module" src="./app.js?v=4.46.33"></script>
+    <script type="module" src="./app.js?v=4.49.2"></script>
   </body>
 </html>

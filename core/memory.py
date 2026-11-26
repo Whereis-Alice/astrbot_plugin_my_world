@@ -344,9 +344,11 @@ class MemoryEngine:
         for item in candidates:
             prior = life_memory_metadata(str(item.get("source") or ""), item.get("context"))
             if (origin or prior) and (source, origin.get("persona_key", ""), origin.get("matter_id", ""),
-                                     origin.get("kind", ""), origin.get("emotion_user", ""), origin.get("visit_id", "")) != (
+                                     origin.get("kind", ""), origin.get("emotion_user", ""), origin.get("visit_id", ""),
+                                     origin.get("emotion_id", "")) != (
                     item.get("source"), prior.get("persona_key", ""), prior.get("matter_id", ""),
-                    prior.get("kind", ""), prior.get("emotion_user", ""), prior.get("visit_id", "")):
+                    prior.get("kind", ""), prior.get("emotion_user", ""), prior.get("visit_id", ""),
+                    prior.get("emotion_id", "")):
                 continue
             other = _normalize(str(item.get("content", "")))
             if not other:
@@ -557,6 +559,7 @@ class MemoryEngine:
         """
         from .context_selection import ContextItem, relevance, search_terms, select_context
         from .context_sources import life_memory_metadata
+        from .emotional_memory import archived_feeling_relevant
         from .recall_time import recall_day
         from .visit_recall import visit_occurrence_interval
         config = self.world.memory
@@ -606,7 +609,7 @@ class MemoryEngine:
             people = tuple(str(uid) for uid in (*row.get("related_users", []), *row.get("participants", [])))
             related = bool(set(people) & set(request.people))
             if scoped_emotion(str(row.get("source") or ""), row.get("context")):
-                if request.task in {"plan", "sleep", "diary"} or (people and not related):
+                if not archived_feeling_relevant(request, people, str(meta.get("original") or row.get("content") or "")):
                     continue
             if row.get("source") == "life_matter" and people:
                 if request.task in {"plan", "sleep", "diary"} or not related:

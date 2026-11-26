@@ -238,6 +238,7 @@ class SnapshotMixin:
         _, event_persona = await self._journal_persona(session_id)
         event_help = self._pending_event_help(state, event_persona)
         visit = active_visit(self, session_id)
+        now = self._now()
         return {
             "session_id": session_id,
             "world_time": state.world_time,
@@ -419,6 +420,8 @@ class SnapshotMixin:
                 }
                 for item in (state.grudges or [])
                 if isinstance(item, dict)
+                and self._emotion_visible(state, item, session_id, persona_key=event_persona)
+                and self._emotion_enabled("grudge") and self._emotion_status("grudge", item, now) == "active"
             ],
             "own_topics": [
                 {
@@ -438,6 +441,8 @@ class SnapshotMixin:
                 }
                 for item in (state.heart_knots or [])
                 if isinstance(item, dict)
+                and self._emotion_visible(state, item, session_id, persona_key=event_persona)
+                and self._emotion_enabled("heart_knot") and self._emotion_status("heart_knot", item, now) == "active"
             ],
             "channel": self._channel_status(session_id),
             # 名片是否被锁住（编辑器里用一个按钮切换，所以要能读到当前状态）

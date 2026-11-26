@@ -9,6 +9,7 @@ import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js?v=4
 import { memorySearchFields } from "./memory-settings.js?v=4.46.18";
 import { familiarityDescriptionEditor, relationshipPromptEditor } from "./relationship-prompt.js";
 import { thoughtDate, updateThoughtDates } from "./thought-history.js";
+import { createEmotionRecords } from "./emotion-records.js";
 import { mountLifeWorkspace } from "./life-workspace.js";
 import { createVisitsPage } from "./visits.js?v=4.46.29";
 import { openBrowseSettings } from "./browse-settings.js?v=4.34.7";
@@ -3333,6 +3334,7 @@ async function loadAll(scope = ui.scope) {
 function renderEverything() {
   if (!ui.selectedZone && zones().length) ui.selectedZone = zones()[0].id;
   renderSessionSelects();
+  if ($("tab-thoughts").classList.contains("active")) loadThoughts();
   renderMap();
   renderNodeForm();
   renderActionGrid();
@@ -3874,6 +3876,7 @@ function showTab(name, button) {
   if (name === "relationships") relationshipsPage.reload();
   if (name === "memories") loadMemories();
   if (name === "thoughts") loadThoughts();
+  else emotionRecords.clear();
   if (name === "logs") loadLogs();
   if (name === "model-calls") modelCallsPage.reload();
   if (name === "life") {
@@ -4804,10 +4807,11 @@ function renderSessionSelects({ labelsOnly = false } = {}) {
   ].forEach((id) => {
     const select = $(id);
     if (!select) return;
+    const scopedOptions = id === "thought-session" ? scopeOptions({withMembers: true}) : options;
     if (labelsOnly) {
       // Metadata refresh must not change the loaded contact scope or remove a
       // selected historical session that is absent from current configuration.
-      const labels = new Map(options.map(item => [item.value, item.label]));
+      const labels = new Map(scopedOptions.map(item => [item.value, item.label]));
       for (const item of select.options) {
         if (id === "contacts-session" && ui.config.session_names?.[item.value]) {
           const session = ui.sessions.find(row => row.session_id === item.value) || {session_id: item.value};
@@ -4821,13 +4825,13 @@ function renderSessionSelects({ labelsOnly = false } = {}) {
     }
     const previous = select.value;
     select.innerHTML = "";
-    if (!options.length) {
+    if (!scopedOptions.length) {
       select.appendChild(option("", "（还没有白名单会话）"));
       return;
     }
     const choices = id === "contacts-session"
       ? ui.sessions.map(item => ({value: item.session_id, label: contactSessionLabel(item)}))
-      : options;
+      : scopedOptions;
     choices.forEach((item) => select.appendChild(option(item.value, item.label)));
     select.value = choices.some((item) => item.value === previous)
       ? previous
@@ -16193,9 +16197,15 @@ async function loadThoughts() {
   const session = $("thought-session") ? $("thought-session").value : "";
   if (ui.thoughtSession !== session) ui.thoughtDate = "";
   ui.thoughtSession = session;
+  if (ui.thoughtJump?.session === session && ui.thoughtTab === "records") ui.thoughtTab = "inner";
   const requestId = ui.thoughtRequest = (ui.thoughtRequest || 0) + 1;
   $("thoughts-health")?.classList.add("hidden");
   $("thoughts-browse-status")?.classList.add("hidden");
+  if (ui.thoughtTab === "records") {
+    renderThoughtTabs();
+    return emotionRecords.reload(session);
+  }
+  emotionRecords.clear();
   list.innerHTML = "";
   ui.thoughtRows = [];
   ui.browseStatus = null;
@@ -16244,26 +16254,14 @@ function renderThoughts(data) {
 function renderThoughtsPage() {
   const list = $("thoughts-list");
   if (!list) return;
+  renderThoughtTabs();
+  if (ui.thoughtTab === "records") return;
   list.innerHTML = "";
   const browsing = ui.thoughtTab === "browse";
   const all = ui.thoughtRows || [];
   const categoryRows = all.filter(row => Boolean(row.browse_session) === browsing);
   updateThoughtDates($("thought-date"), categoryRows, ui.thoughtDate || "");
   const rows = categoryRows.filter(row => !ui.thoughtDate || thoughtDate(row) === ui.thoughtDate);
-  $("thoughts-content")?.setAttribute("aria-labelledby", browsing ? "thought-tab-browse" : "thought-tab-inner");
-  document.querySelectorAll("[data-thought-tab]").forEach(button => {
-    const selected = (button.dataset.thoughtTab === "browse") === browsing;
-    button.setAttribute("aria-selected", String(selected));
-    button.tabIndex = selected ? 0 : -1;
-    button.onclick = () => {ui.thoughtTab = button.dataset.thoughtTab; ui.thoughtRenderLimit = 40; renderThoughtsPage();};
-    button.onkeydown = event => {
-      if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
-        event.preventDefault();
-        const next = event.key === "Home" ? "inner" : event.key === "End" ? "browse" : browsing ? "inner" : "browse";
-        ui.thoughtTab = next; ui.thoughtRenderLimit = 40; renderThoughtsPage(); $("thought-tab-" + next)?.focus();
-      }
-    };
-  });
   $("thoughts-hint").textContent = browsing
     ? "安静读过的消息，也会在心里留下回声。阅读感想可按日期回看，超过 24 小时的感想不再作为近期对话参考。两类内心活动合计保留最近 3000 条。"
     : "聊后的心里话和自主生活的想法，可按日期回看。翻消息的感想在「翻消息时」查看，两类合计保留最近 3000 条。";
@@ -16384,9 +16382,45 @@ function renderThoughtsPage() {
   }
 }
 
+function renderThoughtTabs() {
+  const active = ui.thoughtTab || "inner";
+  const records = active === "records";
+  $("thoughts-content").setAttribute("aria-labelledby", `thought-tab-${active}`);
+  $("thoughts-list").classList.toggle("hidden", records);
+  $("emotion-records").classList.toggle("hidden", !records);
+  $("thought-date-field").classList.toggle("hidden", records);
+  $("thoughts-clear").classList.toggle("hidden", records);
+  if (records) {
+    $("thoughts-note").textContent = "";
+    $("thoughts-hint").textContent = "查看她自己的心事与对人的芥蒂。可修正内容、暂停对话参考，或在事情过去后标为已释怀。";
+  }
+  function select(next) {
+    if (next === active) return;
+    ui.thoughtTab = next;
+    ui.thoughtRenderLimit = 40;
+    if (records || next === "records") loadThoughts();
+    else renderThoughtsPage();
+  }
+  const tabs = [...document.querySelectorAll("[data-thought-tab]")];
+  tabs.forEach((button, index) => {
+    const selected = button.dataset.thoughtTab === active;
+    button.setAttribute("aria-selected", String(selected));
+    button.tabIndex = selected ? 0 : -1;
+    button.onclick = () => select(button.dataset.thoughtTab);
+    button.onkeydown = event => {
+      const next = {Home: 0, End: tabs.length - 1, ArrowLeft: (index - 1 + tabs.length) % tabs.length,
+        ArrowRight: (index + 1) % tabs.length}[event.key];
+      if (next === undefined) return;
+      event.preventDefault();
+      select(tabs[next].dataset.thoughtTab);
+      tabs[next].focus();
+    };
+  });
+}
+
 async function clearThoughts() {
   const session = $("thought-session") ? $("thought-session").value : "";
-  if (!session) return;
+  if (!session || ui.thoughtTab === "records") return;
   const category = ui.thoughtTab === "browse" ? "browse" : "inner";
   const sure = await confirmDialog({
     title: category === "browse" ? "清空阅读感想" : "清空心里的话",
@@ -21739,6 +21773,11 @@ const contactWorkbench = createContactWorkbench({
 const relationshipsPage = createRelationshipsPage({
   root: $("tab-relationships"), el, apiGet, apiPost, toast, formatStamp,
   confirm: confirmDialog, openRules: openRelationshipRules,
+  openEmotionRecords: session => {
+    $("thought-session").value = session;
+    ui.thoughtTab = "records";
+    showTab("thoughts");
+  },
   openContact: async (uid, session) => {
     $("contacts-session").value = session;
     $("contacts-session").title = $("contacts-session").selectedOptions[0]?.textContent || "";
@@ -21747,6 +21786,9 @@ const relationshipsPage = createRelationshipsPage({
     await contactWorkbench.select(uid);
   },
 });
+
+const emotionRecords = createEmotionRecords({root: $("emotion-records"), el, apiGet, apiPost,
+  confirm: confirmDialog, currentSession: () => $("thought-session").value});
 
 const socialLearning = createSocialLearning({apiGet, apiPost, el, toast,
   sessions: () => ui.sessions.map(item => ({value: item.session_id, label: contactSessionLabel(item)})),

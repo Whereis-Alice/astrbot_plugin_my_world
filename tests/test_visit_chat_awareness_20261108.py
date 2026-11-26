@@ -104,7 +104,7 @@ class VisitChatAwarenessTests(unittest.IsolatedAsyncioTestCase):
         self.clock.advance(1000)
         plan = await self.prepare()
         self.assertIn("艾拉", plan.runtime_part)
-        self.assertIn("双方下一步尚未确认", plan.runtime_part)
+        self.assertIn("约好的这段活动时间已过，接下来还在商量", plan.runtime_part)
         self.active["status"] = "completed"
         notes = await self.engine.runtime_notes(fixture.SESSION, query="有在跟谁玩吗")
         self.assertNotIn("visit_context", notes)

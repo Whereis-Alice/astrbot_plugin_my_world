@@ -229,9 +229,12 @@ class AddressingMixin:
 
         if float(state.valence) < 0.45:
             return True
-        if str(getattr(state, "heart_knot", "") or "").strip():
-            return True
         uid = str(user_id or "")
+        now = self._now()
+        if self._emotion_enabled("heart_knot") and any(
+                self._emotion_visible(state, item) and self._emotion_status("heart_knot", item, now) == "active"
+                and str(item.get("about") or "") in {"", uid} for item in state.heart_knots):
+            return True
         if uid:
             try:
                 if self.grudge_for(state, uid):

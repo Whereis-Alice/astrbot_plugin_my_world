@@ -183,6 +183,9 @@ class TickOutcome:
     speech_receipt_batch: str = field(default_factory=lambda: uuid4().hex)
     """Messages accepted by the platform, used to distinguish thinking from speaking."""
 
+    arrival_intent: str = field(default="", repr=False)
+    """The completed walk's own intent, when it belongs to the planning room."""
+
     def add_speech(self, text: str, session_id: str = "", *, kind: str | None = None) -> None:
         """记一句她要说的：没说给谁就是这一轮的会话，说了就投到那个会话去。
 

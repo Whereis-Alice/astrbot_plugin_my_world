@@ -918,18 +918,6 @@ class ScheduleMixin:
                                 "note": "当前采用活动恢复，无可执行的日程步骤；原日程保留。",
                             })
                         continue
-                    # 勾了会话组 = 让她自己挑组里的哪一处说（见 resolve_schedule_target）
-                    target = await self.resolve_schedule_target(state, schedule, session_id)
-                    # 这一轮的允许落点：锁上以后动作模型的 send_to 越不过它
-                    locked_targets = self.schedule_lock_targets(schedule, session_id)
-                    # 广播目标只看"勾了哪几个具体会话"：勾组 = 她在组里挑一处说，
-                    # 不是一次发一片（锁集合比它大：勾组时组里每一处都允许她开口，
-                    # 但真正发出去的只有她挑的那一处）
-                    broadcast_targets = [
-                        item
-                        for item in self.schedule_targets(schedule, session_id)
-                        if item != target
-                    ]
                     label = schedule.id
                     if not schedule.matter_id and schedule.action_chain:
                         names = [
@@ -951,6 +939,11 @@ class ScheduleMixin:
                             },
                         )
                         continue
+                    # 条件通过后才为会话组选落点。锁可以包含多个成员，
+                    # 只有用户明确勾选具体会话才会广播。
+                    target = await self.resolve_schedule_target(state, schedule, session_id)
+                    locked_targets = self.schedule_lock_targets(schedule, session_id)
+                    broadcast_targets = [item for item in self.schedule_targets(schedule, session_id) if item != target]
                     echo_marker = await self._event_marker(state)
                     claimed = await self.db.call(
                         "mark_schedule_fired",
@@ -1047,7 +1040,7 @@ class ScheduleMixin:
                     chain_labels = self._chain_labels(chain)
                     brief: list[str] = []
                     if str(schedule.note or "").strip():
-                        brief.append(f"到点了：这是你之前专门排的一件事——{schedule.note}")
+                        brief.append(f"有一项日程到点了——{schedule.note}")
                     if chain_labels:
                         brief.append("这条日程要做的事（按顺序）：" + " → ".join(chain_labels))
                     if brief:
@@ -1191,7 +1184,7 @@ class ScheduleMixin:
             manual_labels = self._chain_labels(chain)
             manual_brief: list[str] = []
             if str(schedule.note or "").strip():
-                manual_brief.append(f"你刚跑了一遍日程：{schedule.note}")
+                manual_brief.append(f"这次手动触发的日程——{schedule.note}")
             if manual_labels:
                 manual_brief.append("这条日程要做的事（按顺序）：" + " → ".join(manual_labels))
             if manual_brief:

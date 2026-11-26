@@ -346,7 +346,7 @@ class ParticipationMixin:
             materials.append(current_feeling)
         background = select_context(request, materials).render()
         profile = self.context_profiles(state, request)
-        background = "\n\n".join(part for part in (CONTEXT_GUIDANCE, profile, self.context_emotions(state, request), background) if part)
+        background = "\n\n".join(part for part in (CONTEXT_GUIDANCE, profile, background) if part)
         if source == "browse":
             background += ("\n\n# 刚翻过消息\n你刚安静看过这段对话。看清每条消息距今多久，以及后续是否换了话题、"
                            "问题是否已解决。消息时间只作参考，不按15分钟固定截断，也不因为刚读过就必须回复。"

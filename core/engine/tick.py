@@ -580,6 +580,7 @@ class TickMixin:
                 # 特地走到一个新地方，落地后就地看看这里能做什么
                 if int(action.get("arrival_decide", 1)):
                     state.pending_arrival = True
+                    outcome.arrival_intent = _clip_text(action.get("intent"), 120) if action_home == state.session_id else ""
         elif definition is not None and definition.llm_level == "tool":
             # 工具型动作：配了几个工具就按顺序调几个，成功失败都记账，
             # 日志页要能看出"她到底查到了什么 / 为什么没查到"。
@@ -1056,6 +1057,7 @@ class TickMixin:
         home = outcome.home()
         request = self.context_request(state, home, task="reply" if outcome.speech_kind == "reply" else "expression",
             text=hint + "\n" + tool_result, focus=next(iter(outcome.contact_people), ""))
+        request.focus_text = ""  # Tool output is not a fresh cue from the person.
         await self.prepare_context_memory(request, state=state)
         system_prompt = self.prompts.build_autonomous_system_prompt(
             persona_text=persona_text,
@@ -1078,7 +1080,6 @@ class TickMixin:
             current_session=home,
             session_labels=self.session_labels(state),
             profile_text=self.context_profiles(state, request),
-            extra_notes=[self.context_emotions(state, request)],
             json_fields=self.extensions.json_fields(),
             **await self.runtime_notes(home),
         )

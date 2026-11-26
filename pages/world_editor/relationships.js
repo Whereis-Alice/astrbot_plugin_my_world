@@ -3,7 +3,7 @@ import { renderRelationshipOverview, renderRelationshipHistory, describeMiss } f
 
 /** One identity, many independent conversations. No model calls or writes on read. */
 export function createRelationshipsPage({ root, el, apiGet, apiPost, toast,
-  formatStamp, confirm, openRules, openContact }) {
+  formatStamp, confirm, openRules, openContact, openEmotionRecords }) {
   const $ = id => root.querySelector(`#${id}`);
   let data = null, person = null, revision = 0, detailRevision = 0;
   let page = 1, filter = "all", sort = "recent", searchTimer, busy = false, dirty = false, opener = null;
@@ -127,6 +127,7 @@ export function createRelationshipsPage({ root, el, apiGet, apiPost, toast,
     dirty = false;
     const currentCard = person && grid.querySelector(`[data-qq="${CSS.escape(String(person.user_id))}"]`);
     (currentCard || opener)?.focus();
+    return true;
   }
   async function select(uid, trigger) {
     const request = ++detailRevision;
@@ -336,9 +337,10 @@ export function createRelationshipsPage({ root, el, apiGet, apiPost, toast,
       const active = detail.grudge;
       grudge.append(el("p", "people-muted", active?.reason || active?.text || "目前没有放不下的事。"));
       if (active?.until_text) grudge.append(el("p", "people-muted", `预计淡去：${active.until_text}`));
-      grudge.append(el("p", "people-muted", "情绪属于她的生活状态；共享生活组内也会共同感受到。关系与好感数值仍各会话独立。"));
+      grudge.append(el("p", "people-muted", "这类芥蒂按人设、来源会话和相关人保留。可以在内心活动里查看历史记录或暂停参考。"));
       const reason = el("input"); reason.placeholder = "写一句她还在意的事";
-      reason.setAttribute("aria-label", "她还在意的事"); reason.maxLength = 300;
+      reason.setAttribute("aria-label", "她还在意的事"); reason.maxLength = 60;
+      reason.value = active?.reason || active?.text || "";
       const controls = el("div", "social-candidate");
       const error = el("p", "social-error"); error.setAttribute("role", "alert");
       const update = async act => {
@@ -346,13 +348,20 @@ export function createRelationshipsPage({ root, el, apiGet, apiPost, toast,
         if (act === "add" && !reason.value.trim()) { error.textContent = "先写一句她还在意的事"; return; }
         busy = true; error.textContent = "";
         try {
-          await apiPost("profile/grudge", {session, user_id: uid, action: act, reason: reason.value.trim(), config_scope: ""});
+          if (act === "delete" && !await confirm({title: "删除这件事？", message: "这条记录将被永久删除。", confirmText: "删除"})) return;
+          await apiPost("profile/grudge", {session, user_id: uid, action: act, reason: reason.value.trim(),
+            revision: active?.revision, config_scope: ""});
           target.remove(); await loadEvidence(uid, session, container); toast("已更新她记着的事");
         } catch (problem) {error.textContent = problem.message || String(problem);}
         finally {busy = false;}
       };
       controls.append(action(active ? "更新这件事" : "记下一件事", () => update("add")));
       if (active) controls.append(action("已经释怀", () => update("resolve")), action("删除记录", () => update("delete")));
+      if (person?.sessions?.some(scope => scope.session === session && scope.configured)) {
+        controls.append(action("查看未释怀记录", async () => {
+          if (await close()) openEmotionRecords(session);
+        }));
+      }
       grudge.append(reason, controls, error); target.append(grudge);
     } catch (error) { empty(target, `读取失败：${error.message || error}`, () => { target.remove(); loadEvidence(uid, session, container); }); }
   }

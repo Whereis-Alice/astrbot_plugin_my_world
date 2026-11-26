@@ -644,6 +644,13 @@ class Database(
         rows = [self._memory_row(row) for row in self._query(sql, params)]
         return rows
 
+    def query_emotion_memories(self, *, session_id: str) -> list[dict[str, Any]]:
+        """Read the exact conversation's archived feelings, including legacy rows."""
+        sql = ("SELECT * FROM node_memory WHERE session_id=? AND source='runtime' AND type='inner' "
+               "AND CASE WHEN json_valid(context) THEN json_extract(context, '$.kind') END "
+               "IN ('heart_knot','grudge') ORDER BY created_at DESC, id DESC")
+        return [self._memory_row(row) for row in self._query(sql, (session_id,))]
+
     def query_visit_memories(self, *, session_ids: list[str], persona_key: str, peer_id: str,
                              limit: int = 3) -> list[dict[str, Any]]:
         """Filter owned encounters before LIMIT, ordered by actual occurrence when known.

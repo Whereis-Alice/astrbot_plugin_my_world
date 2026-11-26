@@ -248,6 +248,50 @@ class LifeAuditTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(secret == row["content"] for row in
             (await self.engine.thoughts_payload(S))["thoughts"]))
 
+    async def test_reflection_background_comes_from_the_room_and_time_of_the_send(self):
+        self.add_group(sessions=[S, P])
+        sent_at = self.clock.now()
+        async with self.engine.session_state(S) as state:
+            for origin, text, at in (
+                (S, "本群之前在聊折纸", sent_at - 20),
+                (P, "隔壁私聊的信件", sent_at - 5),
+                (S, "回完以后才发来的新消息", sent_at + 1),
+            ):
+                state.note_chat(user_id="42", name="小明", text=text, now=at, keep=20, origin=origin)
+        judge = self.engine._ask_judge = AsyncMock(return_value='{}')
+        self.clock.advance(2)
+        await self.engine.reflect_turn(S, user_text="这是什么折法", reply_text="小燕子", sent_at=sent_at)
+        prompt = judge.call_args.args[2]
+        self.assertIn("本群之前在聊折纸", prompt)
+        self.assertNotIn("隔壁私聊的信件", prompt)
+        self.assertNotIn("回完以后才发来的新消息", prompt)
+
+    async def test_a_slower_earlier_reflection_does_not_replace_current_chat_notes(self):
+        started, finish = asyncio.Event(), asyncio.Event()
+
+        async def judge(_session, _system, prompt):
+            if "先聊折纸" in prompt:
+                started.set()
+                await finish.wait()
+                return json.dumps({"chat_note": "折纸备忘", "reasoning": {"intent": "旧的话题"}})
+            return json.dumps({"chat_note": "拼图备忘", "reasoning": {"intent": "新的话题"}})
+
+        self.engine._ask_judge = judge
+        first_at = self.clock.now()
+        old = asyncio.create_task(self.engine.reflect_turn(S, user_text="先聊折纸", sent_at=first_at))
+        try:
+            await asyncio.wait_for(started.wait(), 2)
+            self.clock.advance(2)
+            await self.engine.reflect_turn(S, user_text="再聊拼图", sent_at=self.clock.now())
+        finally:
+            finish.set()
+            await old
+        state = await self.engine.load_state(S)
+        self.assertEqual(state.chat_notes[S]["text"], "拼图备忘")
+        self.assertEqual(state.last_reflection["user_text"], "再聊拼图")
+        self.assertEqual(state.last_reasoning["intent"], "新的话题")
+        self.assertEqual(len(state.reflection_log), 2)
+
     async def test_private_reading_records_do_not_starve_due_public_memories(self):
         for i in range(12):
             self.db.raw.add_memory(session_id=S, persona_id="", scope="group", node_id="study",

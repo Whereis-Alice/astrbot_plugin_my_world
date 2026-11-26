@@ -27,10 +27,12 @@ class ReflectionMixin:
     def _spawn_reflection(self, turn: dict[str, Any]) -> None:
         """把回合复盘放到后台：她说完就完事，复盘慢一点不影响聊天。"""
 
+        if self.retired:
+            return
         scene = turn.get("scene_snapshot") or {}
         read_owner = restore_visit_chat_owner(scene.get("visit_chat_owner"))
         session = str(turn.get("session_id") or "")
-        sent_at = self.engine._now()
+        sent_at = turn.get("sent_at") or self.engine._now()
         sent_owner = capture_visit_chat_owner(self.engine, session,
             persona_key=str(scene.get("persona_key") or ""),
             expected_state_key=str(scene.get("state_key") or ""),
@@ -58,6 +60,7 @@ class ReflectionMixin:
                     persona_id=str(turn.get("persona_id") or ""),
                     interaction_entries=list(turn.get("interaction_entries") or []),
                     scene_snapshot=dict(turn.get("scene_snapshot") or {}),
+                    sent_at=sent_at,
                 )
                 if result and self.debug:
                     inner = str(dict(result.get("reasoning") or {}).get("inner") or "")
