@@ -7,6 +7,7 @@ import json
 from typing import Any
 from uuid import uuid4
 from ..emotional_memory import EmotionJudgement, verified_emotion_evidence
+from ..interaction import ForgivenessJudgment, interaction_source
 from ..json_actions import ParseResult
 from ..memory import INNER
 from ..prompt import readable_caption
@@ -48,8 +49,8 @@ class RelationsMixin(EmotionRecordsMixin):
         now = self._now()
         for item in list(state.grudges or []):
             if (isinstance(item, dict) and str(item.get("user_id") or "") == uid
-                    and self._emotion_status("grudge", item, now) == "active"
-                    and self._emotion_visible(state, item, session_id, persona_key=persona_key)):
+                    and self._emotion_visible(state, item, session_id, persona_key=persona_key)
+                    and self._emotion_live_active(state, "grudge", item, now)):
                 return item
         return None
 
@@ -90,7 +91,7 @@ class RelationsMixin(EmotionRecordsMixin):
         if not force and int(state.grudge_count or 0) >= daily:
             self._log("debug", "今天记的账够多了，这一笔不记")
             return False
-        items = list(state.grudges)
+        items = [item for item in state.grudges if not self._emotion_has_archive(state, "grudge", item)]
         # Repeating the same incident never restarts its clock or revives a
         # paused record. Keep one live grudge for a person in this conversation.
         existing = next((item for item in items if str(item.get("user_id") or "") == uid
@@ -146,12 +147,43 @@ class RelationsMixin(EmotionRecordsMixin):
         ]
         return True
 
+    @staticmethod
+    def forgiveness_record_note(expected: dict | None) -> str:
+        if not expected or expected.get("kind") != "grudge":
+            return ""
+        return "\n\n本轮私人感受对应的芥蒂编号为 " + expected["id"] + "。仅在放下这一笔时填写它。"
+
+    def resolve_turn_grudge(self, state: WorldState, ctx: MessageContext, judgment: ForgivenessJudgment | None,
+                            sources: list[dict], *, addressing: str, expected: dict | None, observed_at: float) -> bool:
+        """A repair belongs to one visible incident and one new direct message."""
+        if not judgment or not expected or expected.get("kind") != "grudge" or judgment.record_id != expected["id"]:
+            return False
+        source = interaction_source(judgment, sources, ctx.session_id, ctx.user_id, addressing)
+        if not source or not (source.get("message_id") or source.get("event_id")):
+            return False
+        created = expected["created_at"]
+        incident = max((_stamp(row.get("at")) for row in expected["evidence"]), default=0) or created
+        if expected["updated_at"] > created:
+            incident = max(incident, expected["updated_at"])
+        at = _stamp(source.get("at")) or observed_at
+        if not incident <= at <= observed_at:
+            return False
+        receipt = "forgive:" + source["id"]
+        with self.db.raw.atomic():
+            if self.db.raw.has_interaction_source(ctx.session_id, ctx.user_id, receipt):
+                return False
+            if not self.resolve_grudge(state, user_id=ctx.user_id, session_id=ctx.session_id, expected=expected):
+                return False
+            return self.db.raw.claim_interaction_source(ctx.session_id, ctx.user_id, receipt)
+
     def _decay_grudges(self, state: WorldState, *, now: float) -> None:
         """到期的账自己淡掉（写进记忆），不留着一个半年前的仇。"""
 
         keep: list[dict[str, Any]] = []
         for item in list(state.grudges or []):
             if not isinstance(item, dict):
+                continue
+            if self._emotion_has_archive(state, "grudge", item):
                 continue
             if not self._emotion_belongs(state, item):
                 keep.append(item)
@@ -254,6 +286,8 @@ class RelationsMixin(EmotionRecordsMixin):
         for item in list(state.heart_knots or []):
             if not isinstance(item, dict):
                 continue
+            if self._emotion_has_archive(state, "heart_knot", item):
+                continue
             if not self._emotion_belongs(state, item):
                 keep.append(item)
                 continue
@@ -280,9 +314,13 @@ class RelationsMixin(EmotionRecordsMixin):
         max_days = max(0.0, float(getattr(config, "heart_knot_max_days", 5.0) or 5.0))
         about = " ".join(str(about or "").split())
         items = list(state.heart_knots or [])
-        if any(str(item.get("text") or "").strip() == body and str(item.get("about") or "") == about
-               and self._emotion_visible(state, item, session_id) for item in items):
-            return  # The same observation never refreshes the clock.
+        evidence_ids = {row["source_id"] for row in evidence or [] if row.get("source_id")}
+        for item in items:
+            if str(item.get("about") or "") != about or not self._emotion_visible(state, item, session_id):
+                continue
+            prior_ids = {row["source_id"] for row in item.get("evidence") or [] if isinstance(row, dict) and row.get("source_id")}
+            if str(item.get("text") or "").strip() == body or evidence_ids & prior_ids:
+                return  # The same source cannot create or refresh a live note under a new title.
         if not self._has_emotion_capacity(state, "heart_knot", persona_key, now) or len(items) >= 32:
             return
         items.append(
@@ -318,7 +356,7 @@ class RelationsMixin(EmotionRecordsMixin):
         if parsed.heart_knot and (heart := details(parsed.heart_knot_detail, sources)) is not None:
             self.note_heart_knot(state, parsed.heart_knot, about=person, session_id=ctx.session_id,
                 user_name=ctx.user_name, **heart)
-        if not allow_grudge or not parsed.grudge_detail or parsed.forgive or not parsed.interaction:
+        if not allow_grudge or not parsed.grudge_detail or not parsed.interaction:
             return
         judgement = parsed.grudge_detail
         # A judgement about one exact utterance cannot ground a different story.

@@ -1,5 +1,7 @@
 """The registered editor routes preserve emotion origins and reject stale writes."""
+import asyncio
 import unittest
+from unittest.mock import patch
 
 from tests import test_scope_api as scope
 
@@ -60,6 +62,33 @@ class EmotionRecordApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["session"] for item in await self.read(self.private)], [self.private])
         self.assertEqual([item["session"] for item in await self.read(self.outside)], [self.outside])
         self.assertEqual(await db.call("get_state", self.session), before)
+
+    async def test_group_read_rejects_snapshot_when_group_changes_mid_request(self):
+        engine = self.plugin.engine
+        original = engine._journal_persona
+        reading_other_member = asyncio.Event()
+        release = asyncio.Event()
+
+        async def read_persona(origin):
+            if origin == self.private:
+                reading_other_member.set()
+                await release.wait()
+            return await original(origin)
+
+        with patch.object(engine, "_journal_persona", side_effect=read_persona):
+            result = asyncio.create_task(self.call("thoughts/emotions", session=self.group))
+            try:
+                await asyncio.wait_for(reading_other_member.wait(), 5)
+                sessions = self.plugin.store.raw_sessions()
+                sessions["groups"][0]["sessions"].remove(self.private)
+                self.plugin.store.save_sessions(sessions)
+                engine.reload_config()
+            finally:
+                release.set()
+            response = await asyncio.wait_for(result, 5)
+        self.assertEqual(response["status_code"], 409, response)
+        self.assertNotIn("约好的事迟迟没说清楚", str(response))
+        self.assertEqual({row["session"] for row in await self.read(self.group)}, {self.session})
 
     async def test_old_quote_is_displayed_only_after_a_unique_origin_and_author_match(self):
         engine = self.plugin.engine

@@ -7,6 +7,7 @@ from ..model_calls import model_operation
 from typing import Any
 import json
 from ..config_scope import session_scoped
+from ..emotional_memory import emotion_cue_from_sources
 from ..json_actions import (
     extract_json_object,
     parse_action_payload,
@@ -131,12 +132,13 @@ class TurnMixin:
             prompt += "\n\n" + self._own_topic_block(state, ctx,
                 persona_key=persona_key)
             emotion_context = self.context_request(state, session_id,
-                text=str(sources[-1]["text"]) if sources else "", rows=[], focus=ctx.user_id)
+                text=emotion_cue_from_sources(sources), rows=[], focus=ctx.user_id)
             emotion_context.life_persona = persona_key
             emotion_record = self.context_emotion(state, emotion_context)
             feeling = self.context_emotions(state, emotion_context)
             if feeling:
                 prompt += "\n\n" + feeling
+                prompt += self.forgiveness_record_note(emotion_record)
         if tool_trace:
             prompt += ("\n\n# 本轮原生工具的实际记录\n只有成功的实际结果覆盖具体目标才可确认该事项完成。"
                        "检索到旧记录、获取资料、准备成功不等于外部操作已完成；失败或结果不明确就留空。\n"
@@ -182,23 +184,22 @@ class TurnMixin:
                 reply=str(reply_text or ""),
                 intent=str((parsed.reasoning or {}).get("intent") or ""),
             )
-            interaction = self.judge_turn_interaction(session_id, ctx.user_id, sources, parsed.interaction,
-                addressing=parsed.addressing or ("me" if private_recipient(session_id) else ""))
+            addressing = parsed.addressing or ("me" if private_recipient(session_id) else "")
+            interaction = self.judge_turn_interaction(session_id, ctx.user_id, sources, parsed.interaction, addressing=addressing)
             applied_affinity = interaction.affinity_delta
             if applied_affinity:
                 notes.append(f"好感 {applied_affinity:+.2f}")
-            if parsed.valence_delta:
-                self._apply_valence_delta(state, parsed.valence_delta)
-                notes.append(f"心情 {parsed.valence_delta:+.2f}")
+            valence_delta = interaction.valence_delta(parsed.valence_delta, parsed.tone, parsed.interaction)
+            if valence_delta:
+                self._apply_valence_delta(state, valence_delta)
+                notes.append(f"心情 {valence_delta:+.2f}")
             if parsed.chat_note:
                 self.note_chat_note(state, parsed.chat_note, session_id, at=observed_at)
             if parsed.open_topic:
                 self.note_open_topic(state, ctx, parsed.open_topic)
-            self.note_turn_emotions(state, ctx, parsed, sources, allow_grudge=interaction.grudge_allowed)
-            emotion_evidence = sources and parsed.addressing != "others"
-            if parsed.forgive and emotion_evidence and emotion_record and emotion_record["kind"] == "grudge":
-                self.resolve_grudge(state, user_id=str(ctx.user_id or ""), session_id=session_id,
-                    expected=emotion_record)
+            forgiven = self.resolve_turn_grudge(state, ctx, parsed.forgive, sources,
+                addressing=addressing, expected=emotion_record, observed_at=observed_at)
+            self.note_turn_emotions(state, ctx, parsed, sources, allow_grudge=interaction.grudge_allowed and not forgiven)
             if parsed.own_topic:
                 await self.note_own_topic(
                     state,
@@ -232,7 +233,7 @@ class TurnMixin:
                 "chat_note": str(parsed.chat_note or ""),
                 "tone": tone,
                 "addressing": str(parsed.addressing or ""),
-                "valence_delta": round(float(parsed.valence_delta or 0.0), 3),
+                "valence_delta": round(valence_delta, 3),
                 "affinity_delta": round(float(applied_affinity or 0.0), 3),
                 "open_topic": str(parsed.open_topic or ""),
                 "heart_knot": str(parsed.heart_knot or ""),

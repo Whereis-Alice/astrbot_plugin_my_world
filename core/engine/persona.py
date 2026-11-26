@@ -8,6 +8,7 @@ import asyncio
 from hashlib import sha256
 from types import SimpleNamespace
 from typing import Any
+from ..evidence import unquoted_segments
 from ..json_actions import (
     extract_json_object,
     parse_action_payload,
@@ -719,27 +720,11 @@ class PersonaMixin:
             return {"ok": False, "reason": "模型没给出可用的候选", "raw": raw[:600]}
         return {"ok": True, "scenes": scenes_out}
 
-    TONE_SIGNALS: dict[str, str] = {
-        "praise": "positive",
-        "attack": "negative",
-        "hug": "hug",
-        "comfort": "comfort",
-        "positive": "positive",
-        "negative": "negative",
-    }
-    """主模型判的口吻 → 声音样例的场景组。``normal`` / 空不映射。"""
-
-    def tone_signal(self, state: WorldState, text: str = "") -> str:
-        """这一轮该按哪种场景抽样例。
-
-        先用上一轮主模型判的口吻（它认得反话），没有再用关键词表兜底
-        （"你可真行啊"这种反话，词表一定会认错）。
-        """
-
-        mapped = self.TONE_SIGNALS.get(str(getattr(state, "last_user_tone", "") or ""))
-        if mapped:
-            return mapped
-        return keyword_signal(text)
+    @staticmethod
+    def tone_signal(text: str) -> str:
+        """Sample for present direct cues; an attack needs the later turn judgment."""
+        hint = keyword_signal("\n".join(unquoted_segments(text)))
+        return "" if hint == "negative" else hint
 
     def voice_sample_lines(
         self,
@@ -751,8 +736,7 @@ class PersonaMixin:
     ) -> list[dict[str, Any]]:
         """这一轮抽哪几条样例进去：先按场景对，再轮换，避免连着两轮同一组。
 
-        ``signal`` 是**这一轮该按哪种场景说话**（``hug`` / ``negative`` / ``positive``），
-        由 ``tone_signal`` 算出来：主模型上一轮判的口吻最准，没有才退回关键词表。
+        ``signal`` 是**这一轮该按哪种场景说话**（``hug`` / ``negative`` / ``positive``）。
         ``preview=True`` 时只算不记账——预览不该把轮换状态往前推。
         """
 

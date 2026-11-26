@@ -402,6 +402,9 @@ class MemoryEngine:
         ``strict_keyword``：有主题时不回退无关记忆。
         ``participants``：只召回涉及这些用户之一的记录，先筛选再计算排名和条数。
         """
+        from .context_sources import life_memory_metadata
+        from .emotional_memory import archived_feeling_subjects, feeling_matches_focus
+        from .evidence import unquoted_segments
 
         if limit <= 0:
             return []
@@ -417,6 +420,21 @@ class MemoryEngine:
         if node_id and node_id not in wanted_nodes:
             wanted_nodes.append(node_id)
         terms = self._keyword_terms(keyword)
+        feeling_query = "\n".join(unquoted_segments(keyword)) if include_private_matters and focus_user else ""
+
+        def visible(row: dict) -> bool:
+            source = str(row.get("source") or "")
+            if source == "chat_browse":
+                return include_reading
+            if scoped_emotion(source, row.get("context")):
+                if not feeling_query:
+                    return False
+                meta = life_memory_metadata(source, row.get("context"))
+                people = archived_feeling_subjects(meta, row.get("participants") or row.get("related_users") or [])
+                return feeling_matches_focus(focus_user, feeling_query,
+                    people, str(meta.get("original") or row.get("content") or ""))
+            return (include_private_matters or source != "life_matter"
+                    or not (row.get("participants") or row.get("related_users")))
 
         def query(terms: list[str]) -> list[dict[str, Any]]:
             rows = self._query(
@@ -441,11 +459,7 @@ class MemoryEngine:
                     participants=participants,
                     exclude_source_scoped=not include_reading and not include_private_matters,
                 )
-            return [row for row in rows
-                    if (include_reading or row.get("source") != "chat_browse")
-                    and (include_private_matters or not scoped_emotion(row.get("source", ""), row.get("context")))
-                    and (include_private_matters or row.get("source") != "life_matter"
-                         or not (row.get("participants") or row.get("related_users")))]
+            return [row for row in rows if visible(row)]
 
         semantic = self.semantic.cached(session_id, persona_id, keyword, mode=mode, automatic=automatic,
                                         life_persona_key=life_persona_key, node_id=node_id) if config and config.semantic_enabled and keyword else {}
@@ -559,7 +573,7 @@ class MemoryEngine:
         """
         from .context_selection import ContextItem, relevance, search_terms, select_context
         from .context_sources import life_memory_metadata
-        from .emotional_memory import archived_feeling_relevant
+        from .emotional_memory import archived_feeling_relevant, archived_feeling_subjects
         from .recall_time import recall_day
         from .visit_recall import visit_occurrence_interval
         config = self.world.memory
@@ -606,11 +620,13 @@ class MemoryEngine:
                     continue
                 if day and (not interval or interval[0] >= day[1] or interval[1] < day[0]):
                     continue  # A delayed write does not turn yesterday's trip into today's.
-            people = tuple(str(uid) for uid in (*row.get("related_users", []), *row.get("participants", [])))
-            related = bool(set(people) & set(request.people))
             if scoped_emotion(str(row.get("source") or ""), row.get("context")):
+                people = archived_feeling_subjects(meta, row.get("participants") or row.get("related_users") or [])
                 if not archived_feeling_relevant(request, people, str(meta.get("original") or row.get("content") or "")):
                     continue
+            else:
+                people = tuple(str(uid) for uid in (*row.get("related_users", []), *row.get("participants", [])))
+            related = bool(set(people) & set(request.people))
             if row.get("source") == "life_matter" and people:
                 if request.task in {"plan", "sleep", "diary"} or not related:
                     continue

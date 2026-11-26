@@ -1,6 +1,7 @@
 """Registered Web API handlers must retain config and operational scope semantics."""
 
 import asyncio
+import json
 import os
 import tempfile
 import types
@@ -207,6 +208,16 @@ class ScopeApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("种下了薄荷", result)
         self.assertNotIn("秘密", result)
         self.assertIn("没有找到", await self.plugin.tool_memory_lookup(event, topic="毕业考试"))
+
+    async def test_native_memory_tool_checks_actor_before_reading_private_feelings(self):
+        self.plugin.engine.memory.remember(session_id=self.session, persona_id="", node_id="bedroom", memory_type="inner",
+            content="心里以前挂着庭院的纸风车", source="runtime",
+            context=json.dumps({"kind": "heart_knot", "emotion_user": "42", "original": "庭院的纸风车"}))
+        for actor, expected in (("42", True), ("77", False), ("", False)):
+            event = types.SimpleNamespace(unified_msg_origin=self.session, get_extra=lambda *args: "",
+                get_sender_id=lambda: actor)
+            result = await self.plugin.tool_memory_lookup(event, topic="庭院的纸风车")
+            self.assertEqual("心里以前挂着庭院的纸风车" in result, expected)
 
     async def test_contact_note_merges_from_profile_weaver_facts(self):
         """通讯录备注：本插件这边没写过时，借「心迹画像」搬来的那条（只补空）。"""

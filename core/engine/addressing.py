@@ -232,7 +232,7 @@ class AddressingMixin:
         uid = str(user_id or "")
         now = self._now()
         if self._emotion_enabled("heart_knot") and any(
-                self._emotion_visible(state, item) and self._emotion_status("heart_knot", item, now) == "active"
+                self._emotion_visible(state, item) and self._emotion_live_active(state, "heart_knot", item, now)
                 and str(item.get("about") or "") in {"", uid} for item in state.heart_knots):
             return True
         if uid:

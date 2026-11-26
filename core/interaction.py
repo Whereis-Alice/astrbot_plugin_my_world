@@ -16,8 +16,14 @@ INTERACTION_GUIDANCE = (
     'hurt 是明确针对她的人身贬低或直接伤害。breach 只用于本轮有确切依据的严重侵犯、威胁或明显背信，'
     '如明确承认故意公开承诺保密的内容。语气冲或她一时难过不足以判为 breach。\n'
     '区分她的性格、熟人打趣与真实攻击：礼貌寒暄、不同意见、合理拒绝和表达边界、引用别人的话、'
-    '复述旧事、反话或拿不准谁是对象时，保持 null。只引用当事人这轮自己的原话，'
+    '复述旧事、意义不明的反话和拿不准对象的情况都保持 null。明确的人身贬低仍按实际语境判断。只引用当事人这轮自己的原话，'
     '不把她的回复、已有好感或背景故事当作行为证据，也不根据单个词给人定性。'
+)
+FORGIVENESS_GUIDANCE = (
+    'forgive 默认 null。只有这轮给出的同一笔芥蒂确实得到道歉、修补或澄清，而且她现在愿意放下，才填写 '
+    '{"record_id":"当前芥蒂的编号","kind":"apology|repair|clarification",'
+    '"source_id":"当前直接发言证据里的 id","quote":"对方本轮道歉、修补或澄清的原话"}。'
+    '复述原事、询问她还生不生气、转述别人的道歉或未兑现的承诺都保持 null。'
 )
 
 
@@ -27,6 +33,14 @@ class InteractionJudgment:
     source_id: str
     quote: str
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class ForgivenessJudgment:
+    record_id: str
+    kind: str
+    source_id: str
+    quote: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +55,10 @@ class TurnInteraction:
             return "attack"
         return "normal" if suggested in {"attack", "negative"} else suggested
 
+    def valence_delta(self, suggested: float, tone: str, judgment: InteractionJudgment | None) -> float:
+        proposed_attack = tone in {"attack", "negative"} or judgment is not None and judgment.kind in {"hurt", "breach"}
+        return 0.0 if suggested < 0 and proposed_attack and not self.harmful else suggested
+
 
 def parse_interaction(item: object) -> InteractionJudgment | None:
     if not isinstance(item, dict):
@@ -54,7 +72,19 @@ def parse_interaction(item: object) -> InteractionJudgment | None:
     return InteractionJudgment(kind, source_id, quote, reason[:200])
 
 
-def interaction_source(judgment: InteractionJudgment | None, sources: list[dict],
+def parse_forgiveness(item: object) -> ForgivenessJudgment | None:
+    if not isinstance(item, dict):
+        return None
+    values = [item.get(key) for key in ("record_id", "kind", "source_id", "quote")]
+    if any(not isinstance(value, str) or not value.strip() for value in values):
+        return None
+    record_id, kind, source_id, quote = (" ".join(value.split()) for value in values)
+    if kind not in {"apology", "repair", "clarification"} or not source_id.startswith("src_") or not 2 <= len(quote) <= 300:
+        return None
+    return ForgivenessJudgment(record_id, kind, source_id, quote)
+
+
+def interaction_source(judgment: InteractionJudgment | ForgivenessJudgment | None, sources: list[dict],
                        session: str, user: str, addressing: str) -> dict | None:
     if judgment is None or addressing == "others":
         return None

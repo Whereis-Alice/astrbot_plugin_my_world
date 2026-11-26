@@ -191,7 +191,7 @@ def profile_fact_items(user_id: str, facts: list[dict], session: str) -> list[Co
 def memory_context_items(state: Any, request: ContextRequest, memories, *, stamp=None,
                          life_enabled: bool = True) -> list[ContextItem]:
     """Recall a dated fragment together with its current matter, or omit it."""
-    from .emotional_memory import archived_feeling_relevant
+    from .emotional_memory import archived_feeling_relevant, archived_feeling_subjects
     matters = {row.key: row for row in life_items(state, request)} if life_enabled else {}
     raw_matters = {str(row.get("id")): row for row in state.life_matters if isinstance(row, dict)}
     result = {}
@@ -202,9 +202,10 @@ def memory_context_items(state: Any, request: ContextRequest, memories, *, stamp
         if memory.private_matter and (request.task in {"plan", "sleep", "diary"} or not set(people) & set(request.people)):
             continue
         meta = life_memory_metadata(memory.source, memory.context)
-        if memory.private_emotion and not archived_feeling_relevant(request, people,
-                str(meta.get("original") or memory.content)):
-            continue
+        if memory.private_emotion:
+            people = archived_feeling_subjects(meta, people)
+            if not archived_feeling_relevant(request, people, str(meta.get("original") or memory.content)):
+                continue
         if meta.get("persona_key") and meta["persona_key"] != request.life_persona:
             continue
         label = "# 相关经历（当时的事，按记录理解）\n"

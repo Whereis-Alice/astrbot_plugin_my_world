@@ -28,9 +28,16 @@ BRIDGE = r"""(() => {
   window.emotionWrites = [];
   window.holdEmotions = false;
   window.releaseEmotions = null;
+  window.holdEmotionDelete = false;
+  window.releaseEmotionDelete = null;
+  window.failNextEmotionRead = false;
   AstrBotPluginPage.apiGet = (endpoint, params = {}) => {
     if (endpoint === 'config') return get(endpoint, params).then(config => ({...config, sessions}));
     if (endpoint !== 'thoughts/emotions') return get(endpoint, params);
+    if (failNextEmotionRead) {
+      failNextEmotionRead = false;
+      return Promise.reject(Error('模拟读取中断'));
+    }
     const origins = params.session === 'shared-life' ? [first, second] : [params.session];
     const result = {items: structuredClone(records.filter(item => origins.includes(item.session)))};
     if (holdEmotions && params.session === 'shared-life') return new Promise(resolve => {
@@ -41,11 +48,17 @@ BRIDGE = r"""(() => {
   AstrBotPluginPage.apiPost = (endpoint, payload) => {
     if (endpoint === 'thoughts/emotions/delete-batch') {
       emotionWrites.push(structuredClone(payload));
-      const chosen = payload.items.map(item => records.find(row => row.id === item.id &&
-        row.session === item.source_session && row.revision === item.revision));
-      if (chosen.includes(undefined)) throw Error('记录已变化');
-      records = records.filter(item => !chosen.includes(item));
-      return Promise.resolve({ok:true, removed:chosen.length});
+      const remove = () => {
+        const chosen = payload.items.map(item => records.find(row => row.id === item.id &&
+          row.session === item.source_session && row.revision === item.revision));
+        if (chosen.includes(undefined)) throw Error('记录已变化');
+        records = records.filter(item => !chosen.includes(item));
+        return {ok:true, removed:chosen.length};
+      };
+      if (holdEmotionDelete) return new Promise(resolve => {
+        window.releaseEmotionDelete = () => resolve(remove());
+      });
+      return Promise.resolve(remove());
     }
     if (endpoint !== 'thoughts/emotions/update') return post(endpoint, payload);
     emotionWrites.push(structuredClone(payload));
@@ -155,6 +168,33 @@ class EmotionRecordsBrowserTests(unittest.TestCase):
         expect(self.records).to_contain_text("小满")
         expect(self.records).not_to_contain_text("风车")
         self.assertEqual(self.page.evaluate("emotionWrites"), [])
+
+    def start_batch_delete(self):
+        self.page.get_by_role("button", name="批量选择", exact=True).click()
+        self.records.locator('[data-record-id="b"]').get_by_role("checkbox").check()
+        self.page.get_by_role("button", name="删除所选", exact=True).click()
+        self.page.locator("#dialog-ok").click()
+
+    def test_refresh_and_switch_to_member_wait_for_committed_delete(self):
+        self.page.evaluate("holdEmotionDelete = true")
+        self.start_batch_delete()
+        self.page.wait_for_function("releaseEmotionDelete !== null")
+        self.page.locator("#thoughts-refresh").click()
+        self.page.locator("#thought-session").select_option(SECOND)
+        self.page.evaluate("releaseEmotionDelete()")
+        expect(self.page.locator("#emotion-records-feedback")).to_have_text("所选会话暂无未释怀记录。")
+        expect(self.records.locator(".emotion-record")).to_have_count(0)
+        self.assertEqual(self.page.evaluate("emotionWrites.length"), 1)
+
+    def test_successful_delete_remains_confirmed_when_list_refresh_fails(self):
+        self.page.evaluate("failNextEmotionRead = true")
+        self.start_batch_delete()
+        feedback = self.page.locator("#emotion-records-feedback")
+        expect(feedback).to_contain_text("模拟读取中断")
+        expect(feedback).to_contain_text("已删除 1 条记录")
+        self.page.get_by_role("button", name="重新读取", exact=True).click()
+        expect(self.records.locator(".emotion-record")).to_have_count(2)
+        expect(feedback).to_contain_text("已删除 1 条记录")
 
     def test_keyboard_navigation_includes_records(self):
         records_tab = self.page.get_by_role("tab", name="未释怀记录")

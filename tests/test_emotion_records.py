@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from core.engine.emotion_records import EmotionRecordConflict
+from core.engine.legacy_emotion_context import legacy_emotion_evidence
 from tests import test_life_audit as audit
 
 S, P = audit.S, audit.P
@@ -57,9 +58,11 @@ class EmotionRecordTests(unittest.IsolatedAsyncioTestCase):
     async def test_archived_legacy_feeling_stays_in_the_original_conversation(self):
         self.add_group(sessions=[S, P], main=S)
         await self.idle()
-        self.engine.memory.remember(session_id=P, persona_id="", node_id="study", memory_type="inner",
+        memory_id = self.engine.memory.remember(session_id=P, persona_id="", node_id="study", memory_type="inner",
             content="（跟他算清了一笔账）小明：折断了蓝风车", source="runtime",
+            related_users=["77"], participants=[],
             context=json.dumps({"kind": "grudge", "original": "折断了蓝风车", "emotion_user": "42"}))
+        self.engine.memory.db.update_memory(memory_id, created_at=self.clock.now())
         async with self.engine.session_state(P) as state:
             [row] = self.engine.emotion_records(state, P)
             self.assertEqual((row["status"], row["user_name"]), ("resolved", "小明"))
@@ -67,6 +70,15 @@ class EmotionRecordTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 self.engine.update_emotion_record(state, S, row["id"], "delete", revision=row["revision"])
             self.assertEqual(self.engine.memory.db.query_memories(session_id=P, exclude_source_scoped=True), [])
+            for focus, expected in (("42", [memory_id]), ("77", [])):
+                request = self.engine.context_request(state, P, rows=[], focus=focus, text="折断了蓝风车")
+                self.assertEqual([item.id for item in self.engine.context_memories(state, request)], expected)
+        for origin, focus, topic, expected in ((P, "42", "折断了蓝风车", [memory_id]),
+                (P, "77", "折断了蓝风车", []), (P, "", "折断了蓝风车", []),
+                (P, "42", "", []), (S, "42", "折断了蓝风车", [])):
+            with self.subTest(origin=origin, focus=focus, topic=topic):
+                items, _ = await self.engine.lookup_life_memories(origin, "", topic, focus_user=focus)
+                self.assertEqual([item.id for item in items], expected)
 
     async def test_disabled_and_expired_live_rows_remain_editable_without_dialogue_effect(self):
         await self.idle()
@@ -98,11 +110,57 @@ class EmotionRecordTests(unittest.IsolatedAsyncioTestCase):
                     self.engine.update_emotion_record(state, S, row["id"], "resolve", revision=row["revision"])
             self.assertEqual(self.engine.emotion_records(state, S), [row])
 
+    async def test_archive_survives_a_failed_world_save_without_reactivating_or_reappearing(self):
+        await self.idle()
+        async with self.engine.session_state(S) as state:
+            self.engine.note_grudge(state, "我被撕掉了纸风车", user_id="42")
+            [original] = self.engine.emotion_records(state, S)
+        db = self.engine.db.raw
+        with patch.object(db, "save_state", side_effect=RuntimeError("world write failed")):
+            with self.assertRaisesRegex(RuntimeError, "world write failed"):
+                async with self.engine.session_state(S) as state:
+                    self.assertTrue(self.engine.resolve_grudge(state, user_id="42"))
+
+        async with self.engine.session_state(S) as state:
+            self.assertEqual(len(state.grudges), 1)  # Stale world snapshot after the failed save.
+            [saved] = self.engine.emotion_records(state, S)
+            self.assertEqual((saved["id"], saved["status"]), (original["id"], "resolved"))
+            self.assertIsNone(self.engine.grudge_for(state, "42"))
+            request = self.engine.context_request(state, S, rows=[], focus="42", text="你还在意纸风车吗？")
+            self.assertIsNone(self.engine.context_emotion(state, request))
+            self.engine.update_emotion_record(state, S, saved["id"], "delete", revision=saved["revision"])
+
+        state = await self.engine.load_state(S, cold_start=False)
+        self.assertEqual(state.grudges, [])
+        self.assertEqual(self.engine.emotion_records(state, S), [])
+
+    async def test_deleted_archive_receipt_hides_stale_live_row_until_tick_can_clean_it(self):
+        await self.idle()
+        async with self.engine.session_state(S) as state:
+            self.engine.note_heart_knot(state, "我还惦记那只风车", about="42")
+            [original] = self.engine.emotion_records(state, S)
+        db = self.engine.db.raw
+        with patch.object(db, "save_state", side_effect=RuntimeError("world write failed")):
+            with self.assertRaisesRegex(RuntimeError, "world write failed"):
+                async with self.engine.session_state(S) as state:
+                    self.engine.update_emotion_record(state, S, original["id"], "resolve", revision=original["revision"])
+            with self.assertRaisesRegex(RuntimeError, "world write failed"):
+                async with self.engine.session_state(S) as state:
+                    [saved] = self.engine.emotion_records(state, S)
+                    self.engine.update_emotion_record(state, S, saved["id"], "delete", revision=saved["revision"])
+
+        async with self.engine.session_state(S) as state:
+            self.assertEqual(len(state.heart_knots), 1)
+            self.assertEqual(self.engine.emotion_records(state, S), [])
+            self.engine._decay_heart_knots(state, now=self.clock.now())
+            self.assertEqual(state.heart_knots, [])
+
     async def test_native_dialogue_uses_only_current_relevant_record_once(self):
         await self.idle()
         async with self.engine.session_state(S) as state:
             self.engine.note_heart_knot(state, "有点担心纸风车被踩坏", about="42")
-        for query, expected in (("吃面还是吃饭？", 0), ("你还担心纸风车吗？", 1)):
+        for query, expected in (("吃面还是吃饭？", 0), ("她只问了‘你怎么了’，我转达一下。", 0),
+                ("他说‘纸风车被踩坏’，只是举个例子。", 0), ("你还担心纸风车吗？", 1)):
             ctx = audit.fixture.EngineTestCase.ctx(self, session_id=S, text=query, user_id="42", is_mentioned=True)
             await self.engine.handle_incoming(ctx)
             result = await self.engine.handle_reply(ctx, inject_only=True)
@@ -114,6 +172,9 @@ class EmotionRecordTests(unittest.IsolatedAsyncioTestCase):
         await self.idle()
         async with self.engine.session_state(S) as state:
             self.engine.note_grudge(state, "折断了纸风车", user_id="42")
+        apology = "折断了你的纸风车，对不起。"
+        entries = [{"user_id": "42", "text": apology, "message_id": "apology", "at": self.clock.now()}]
+        [source] = self.engine.interaction_sources(S, "42", apology, entries)
 
         async def edit_during_generation(session, system, prompt):
             self.assertIn("折断了纸风车", prompt)
@@ -121,10 +182,12 @@ class EmotionRecordTests(unittest.IsolatedAsyncioTestCase):
                 [record] = self.engine.emotion_records(state, S)
                 self.engine.update_emotion_record(state, S, record["id"], "edit",
                     text="弄坏了另一只纸风车", revision=record["revision"])
-            return '{"forgive":true}'
+            return json.dumps({"addressing": "me", "forgive": {"record_id": record["id"],
+                "kind": "apology", "source_id": source["id"], "quote": apology}}, ensure_ascii=False)
 
         self.engine._ask_judge = AsyncMock(side_effect=edit_during_generation)
-        await self.engine.reflect_turn(S, user_id="42", user_text="折断了你的纸风车，对不起。", reply_text="好吧。")
+        await self.engine.reflect_turn(S, user_id="42", user_text=apology, reply_text="好吧。",
+                                       interaction_entries=entries)
         async with self.engine.session_state(S) as state:
             [current] = self.engine.emotion_records(state, S)
             self.assertEqual((current["status"], current["text"]), ("active", "弄坏了另一只纸风车"))
@@ -161,6 +224,51 @@ class EmotionRecordTests(unittest.IsolatedAsyncioTestCase):
                 reply_text="那得等亲眼看见再说。")
         state = await self.engine.load_state(S, cold_start=False)
         self.assertEqual(self.engine.emotion_records(state, S), [])
+
+    async def test_same_direct_source_does_not_record_a_second_headline(self):
+        await self.idle()
+        quote = "那只风车的叶片已经泡软了"
+        entries = [{"user_id": "42", "text": quote, "at": self.clock.now(), "message_id": "windmill"}]
+        for title in ("雨里的纸风车", "那把泡软的叶片"):
+            self.engine._ask_judge = AsyncMock(return_value=json.dumps({"heart_knot": {
+                "summary": title, "narrative": "听见叶片坏了，我还舍不得。", "evidence": [quote]}, "addressing": "me"}))
+            await self.engine.reflect_turn(S, user_id="42", user_text=quote, reply_text="我想看看能不能修。",
+                interaction_entries=entries)
+            self.clock.advance(30)
+        state = await self.engine.load_state(S, cold_start=False)
+        [row] = self.engine.emotion_records(state, S)
+        self.assertEqual(row["text"], "雨里的纸风车")
+        self.assertEqual(row["created_at"], entries[0]["at"])
+
+    async def test_words_addressed_to_someone_else_do_not_ground_a_record(self):
+        await self.idle()
+        quote = "那只风车的叶片已经泡软了"
+        self.engine._ask_judge = AsyncMock(return_value=json.dumps({"heart_knot": {
+            "summary": "担心那只风车", "narrative": "我听了很舍不得。", "evidence": [quote]}, "addressing": "me"}))
+        await self.engine.reflect_turn(S, user_id="42", user_text=quote, reply_text="我听见了。",
+            interaction_entries=[{"user_id": "42", "text": quote, "at": self.clock.now(), "addressing": "others"}])
+        state = await self.engine.load_state(S, cold_start=False)
+        self.assertEqual(self.engine.emotion_records(state, S), [])
+
+    async def test_legacy_editor_recovers_only_untampered_direct_evidence(self):
+        await self.idle()
+        now = self.clock.now()
+        async with self.engine.session_state(S) as state:
+            for speaker, quote, flags in (("42", "那只风车的叶片泡软了", {}),
+                    ("43", "他说过‘风车已经坏了’", {}),
+                    ("44", "那只风车在屋里", {"text_truncated": True}),
+                    ("45", "风车已经修好了", {"kind": "quote"})):
+                state.recent_chat.append({"user_id": speaker, "name": speaker, "text": quote,
+                                          "origin": S, "at": now - 5, **flags})
+                await self.engine._log_event(state, "reflection", {"at": now, "user": speaker, "user_text": quote,
+                    "heart_knot": f"关于风车的事 {speaker}"}, place=S)
+            items = [{"id": speaker, "created_at": now, "user_id": speaker, "evidence": [],
+                      "kind": "heart_knot", "text": f"关于风车的事 {speaker}"}
+                     for speaker in ("42", "43", "44", "45")]
+            items[0].update(text="我改了这个标题", source_summary="关于风车的事 42")
+            recovered = await legacy_emotion_evidence(self.engine, state, S, items)
+            self.assertEqual(recovered, {"42": [{"text": "那只风车的叶片泡软了", "at": now - 5,
+                "user_name": "42", "recovered": True}]})
 
     async def test_new_automatic_heart_knot_requires_a_complete_account(self):
         await self.idle()

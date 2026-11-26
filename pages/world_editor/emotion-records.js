@@ -16,6 +16,7 @@ export function createEmotionRecords({root, el, apiGet, apiPost, confirm, format
   const batchError = root.querySelector("#emotion-records-batch-error");
   let generation = 0;
   let writingGeneration = -1;
+  let pendingWrite = null;
   let items = [];
   let visibleItems = [];
   let shownSession = "";
@@ -46,22 +47,34 @@ export function createEmotionRecords({root, el, apiGet, apiPost, confirm, format
     if (shownSession !== session) filter.value = "all";
     shownSession = session;
     const requested = generation;
+    const isCurrent = () => requested === generation && currentSession() === session;
     filter.disabled = true;
     if (!session) {
       feedback.textContent = "请先配置要查看的会话。";
       return;
     }
+    const pending = pendingWrite;
+    if (pending) {
+      feedback.textContent = "正在等待记录操作完成…";
+      try {
+        const outcome = await pending.completion;
+        if (pending.session === session) ({message, focusId} = outcome);
+      } catch (error) {
+        if (pending.session === session) message = `操作失败。${error.message || "请核对当前记录。"} `;
+      }
+      if (!isCurrent()) return;
+    }
     feedback.textContent = "正在读取未释怀记录…";
     try {
       const result = await apiGet("thoughts/emotions", {session, config_scope: ""});
-      if (requested !== generation || currentSession() !== session) return;
+      if (!isCurrent()) return;
       items = result.items || [];
       filter.disabled = false;
       render(message, focusId);
     } catch (error) {
-      if (requested !== generation || currentSession() !== session) return;
-      feedback.textContent = error.message || "读取未释怀记录失败";
-      list.append(button("重新读取", () => reload(session)));
+      if (!isCurrent()) return;
+      feedback.textContent = `${message}${error.message || "读取未释怀记录失败"}`;
+      list.append(button("重新读取", () => reload(session, message, focusId)));
     }
   }
 
@@ -117,19 +130,26 @@ export function createEmotionRecords({root, el, apiGet, apiPost, confirm, format
   async function write(requestId, endpoint, payload, {error, confirmation, message, focusId}) {
     const session = shownSession;
     const stillSelected = () => generation === requestId && currentSession() === session;
-    if (writingGeneration === requestId || !stillSelected()) return;
+    if (pendingWrite || writingGeneration === requestId || !stillSelected()) return;
     writingGeneration = requestId;
     const controls = [...root.querySelectorAll("button, input, textarea, select")].filter(control => !control.disabled);
     for (const control of controls) control.disabled = true;
     error.textContent = "";
+    let pending;
     try {
       if (confirmation && !await confirm(confirmation)) return;
       if (!stillSelected()) return;
-      const result = await apiPost(endpoint, {session, config_scope: "", ...payload});
-      if (stillSelected()) await reload(session, typeof message === "function" ? message(result) : message, focusId);
+      const completion = apiPost(endpoint, {session, config_scope: "", ...payload}).then(result => ({
+        message: typeof message === "function" ? message(result) : message, focusId,
+      }));
+      pending = pendingWrite = {session, completion};
+      const outcome = await completion;
+      pendingWrite = null;
+      if (stillSelected()) await reload(session, outcome.message, outcome.focusId);
     } catch (problem) {
       if (stillSelected()) error.textContent = problem.message || "保存失败，请刷新后重试";
     } finally {
+      if (pendingWrite === pending) pendingWrite = null;
       if (writingGeneration === requestId) writingGeneration = -1;
       if (stillSelected()) for (const control of controls) control.disabled = false;
     }

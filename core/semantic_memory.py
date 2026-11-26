@@ -267,16 +267,17 @@ class SemanticMemory:
                         if int(row["id"]) not in existing_ids
                         and (not persona or not row.get("persona_id") or row.get("persona_id") == persona)
                     )
+                from .life_memory import scoped_emotion
+                # Private feelings already require an exact owner and topic.
+                # They do not need embedding or durable vector indexing.
+                candidates = [row for row in candidates
+                              if not scoped_emotion(str(row.get("source") or ""), row.get("context"))]
                 if automatic:
-                    from .life_memory import scoped_emotion
                     present_people = {str(item) for item in people if str(item)}
                     filtered = []
                     for row in candidates:
                         related = {str(item) for item in
                                    (*row.get("participants", []), *row.get("related_users", [])) if str(item)}
-                        if scoped_emotion(str(row.get("source") or ""), row.get("context")):
-                            if task in {"plan", "sleep", "diary"} or related and not present_people.intersection(related):
-                                continue
                         if row.get("source") == "life_matter" and related:
                             if task in {"plan", "sleep", "diary"} or not present_people.intersection(related):
                                 continue

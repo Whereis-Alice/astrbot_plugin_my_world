@@ -105,8 +105,8 @@ class EmotionalContinuityTests(unittest.IsolatedAsyncioTestCase):
         self.clock.advance(6 * 86400)
         async with self.engine.session_state(S) as state:
             self.engine._decay_heart_knots(state, now=self.clock.now())
-        private, _ = await self.engine.lookup_life_memories(P, "", "只在私聊说过的担心")
-        group, _ = await self.engine.lookup_life_memories(S, "", "只在私聊说过的担心")
+        private, _ = await self.engine.lookup_life_memories(P, "", "只在私聊说过的担心", focus_user="42")
+        group, _ = await self.engine.lookup_life_memories(S, "", "只在私聊说过的担心", focus_user="42")
         self.assertEqual(len(private), 1)
         self.assertEqual(group, [])
 
@@ -177,7 +177,7 @@ class EmotionalContinuityTests(unittest.IsolatedAsyncioTestCase):
         self.clock.advance(6 * 86400)
         async with self.engine.session_state(P) as state:
             self.engine._decay_heart_knots(state, now=self.clock.now())
-            items, _ = await self.engine.lookup_life_memories(P, "", "只在私聊说过的担心")
+            items, _ = await self.engine.lookup_life_memories(P, "", "只在私聊说过的担心", focus_user="42")
             self.assertEqual(len(items), 1)
             self.assertTrue(items[0].private_emotion)
             for task, session, person, expected in (("reply", P, "42", True), ("reply", P, "7", False),

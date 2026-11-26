@@ -2594,13 +2594,19 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         await self.engine.handle_reply(ctx)
         state = await self.get_state()
         _, current_persona_key = await self.engine._journal_persona(SESSION)
-        self.assertIsNotNone(self.engine.grudge_for(state, "9", persona_key=current_persona_key))
+        record = self.engine.grudge_for(state, "9", persona_key=current_persona_key)
+        self.assertIsNotNone(record)
         self.assertEqual(len(state.own_topics), 1)
         self.assertIn("看照片", state.own_topics[0]["text"])
 
-        # 他补上了 → forgive 把那笔账划掉
-        self.llm.replies = ['{"forgive":true,"actions":[{"type":"say","messages":["算了"]}]}']
-        ctx2 = self.ctx(text="对不起，我这就补上", user_id="9", user_name="小刚")
+        # 针对同一件事致歉，经过确认后划掉它。
+        apology = "对不起，我上次故意当众让你出丑是我做错了"
+        entry = {"user_id": "9", "text": apology, "message_id": "apology-9"}
+        [source] = self.engine.interaction_sources(SESSION, "9", apology, [entry])
+        self.llm.replies = [json.dumps({"addressing": "me", "forgive": {"record_id": record["id"],
+            "kind": "apology", "source_id": source["id"], "quote": apology},
+            "actions": [{"type": "say", "messages": ["好吧"]}]}, ensure_ascii=False)]
+        ctx2 = self.ctx(text=apology, user_id="9", user_name="小刚", message_id="apology-9")
         await self.engine.handle_incoming(ctx2)
         await self.engine.handle_reply(ctx2)
         state = await self.get_state()
@@ -8140,8 +8146,8 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertIn("没人接", prompt)
         self.assertIn("保持安静", prompt)
 
-    async def test_voice_signal_follows_the_last_judged_tone(self):
-        """声音样例按上一轮模型判的口吻挑场景：被夸挑"哄人"那组，而不是随机。"""
+    async def test_voice_signal_uses_this_turns_direct_cue(self):
+        """本轮的声音样例使用眼前的原话。"""
 
         persona = self.engine.world.persona
         persona.samples = [
@@ -8150,14 +8156,13 @@ class EngineTestCase(unittest.IsolatedAsyncioTestCase):
         ]
         state = await self.get_state()
         state.last_voice_samples = []
-        state.last_user_tone = "praise"
-        picked = self.engine.voice_sample_lines(state, SESSION, signal=self.engine.tone_signal(state, ""))
+        state.last_user_tone = "attack"
+        picked = self.engine.voice_sample_lines(state, SESSION, signal=self.engine.tone_signal("你真厉害"))
         self.assertEqual([item["id"] for item in picked][:1], ["b"])
 
-        state.last_voice_samples = []
-        state.last_user_tone = "attack"
-        picked = self.engine.voice_sample_lines(state, SESSION, signal=self.engine.tone_signal(state, ""))
-        self.assertEqual([item["id"] for item in picked][:1], ["a"])
+        self.assertEqual(self.engine.tone_signal("你吃饭了吗"), "")
+        self.assertEqual(self.engine.tone_signal("他说‘抱抱’，我只是在转述"), "")
+        self.assertEqual(self.engine.tone_signal("你这个笨蛋，快看看这个"), "")
 
     async def test_chat_samples_only_pick_answered_lines(self):
         """从聊天里挑样例：只挑她说过、而且后面有人接话的那几句。"""

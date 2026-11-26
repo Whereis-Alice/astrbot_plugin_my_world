@@ -69,6 +69,8 @@ class InteractionPolicyTests(unittest.IsolatedAsyncioTestCase):
             self.entry(f"<quote>{quote}</quote>这不是我的意思", message_id="platform"),
             self.entry(quote, message_id="caption", raw_text=""),
             self.entry(quote, message_id="someone-else", reply_to={"is_self": False}),
+            self.entry(quote, message_id="recalled", is_recalled=True, kind="direct_speech"),
+            self.entry(quote, message_id="internal", internal=True),
         )
         for entry in turns:
             with self.subTest(message=entry["message_id"]):
@@ -80,14 +82,22 @@ class InteractionPolicyTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(self.engine.grudge_for(state, USER, session_id=SESSION))
             self.assertEqual(state.negative_tone_streak, 0)
 
+    async def test_addressing_is_unclear_when_the_same_message_mentions_multiple_people(self):
+        self.engine.profiles.touch(SESSION, USER)
+        targets = [{"id": "bot", "self": True}, {"id": "someone", "self": False}]
+        entry = self.entry("你也太烦了", at_targets=targets, addressing="me")
+        result = await self.assess(entry, addressing="unclear")
+        self.assertEqual((result["affinity_delta"], result["tone"]), (0, "normal"))
+
     async def test_numeric_scores_and_plain_grudges_do_not_change_a_neutral_turn(self):
         self.engine.profiles.touch(SESSION, USER)
         self.engine._ask_judge = AsyncMock(return_value='{"addressing":"me", "tone":"attack",'
-            '"affinity_delta":-1,"grudge":"他顶嘴"}')
+            '"affinity_delta":-1,"valence_delta":-0.2,"grudge":"他顶嘴"}')
         entry = self.entry("这个选择我不同意，我们换一个吧")
         result = await self.engine.reflect_turn(SESSION, user_id=USER, user_text=entry["text"], reply_text="好",
                                                  interaction_entries=[entry])
         self.assertEqual(result["affinity_delta"], 0)
+        self.assertEqual(result["valence_delta"], 0)
         self.assertEqual(result["tone"], "normal")
         self.assertEqual(self.affinity(), 0)
         async with self.engine.session_state(SESSION) as state:

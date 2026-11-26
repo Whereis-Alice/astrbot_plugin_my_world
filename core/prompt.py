@@ -24,7 +24,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from .memory import RecalledMemory
-from .interaction import INTERACTION_GUIDANCE
+from .interaction import FORGIVENESS_GUIDANCE, INTERACTION_GUIDANCE
 from .models import NodeDef, SleepConfig, WorldConfig, pronoun_for
 from .participation import PARTICIPATION_MANNERS, EXPRESSION_MANNERS
 from .mood import day_mood_info, desire_text
@@ -2061,7 +2061,7 @@ class PromptBuilder:
                 '时间写成具体日期，例如「9 月 29 号要去体检」；别写明天/下周；没有就留空）",\n'
                 '  "heart_knot": null,\n'
                 '  "grudge": null,\n'
-                '  "forgive": false,\n'
+                '  "forgive": null,\n'
                 '  "own_topic": "你自己打算做、或者答应过别人的一件事（20 字以内，'
                 '写清对谁；没有就留空）",\n'
                 '  "own_topic_done": "",\n'
@@ -2106,8 +2106,8 @@ class PromptBuilder:
                 "关于 grudge / forgive：\n"
                 "- grudge 是你对当事人仍未释怀的具体事，使用同样的短标题、第一人称自述和原话格式。\n"
                 "- 只记本轮证实的新事。误会、称呼、玩笑、别人的故事和你自己想象的行为都留空；\n"
-                "- 本轮提供了对应的私人感受，对方就同一件事道歉、补上或说清楚，并且你愿意放下时，才写 `forgive: true`；\n"
-                "- 大多数轮次这两个字段都该是空的 / false。\n\n"
+                + FORGIVENESS_GUIDANCE + "\n"
+                "- 大多数轮次这两个字段都应留 null。\n\n"
                 "关于 own_topic / own_topic_done：\n"
                 "- own_topic 记的是**你自己**的事：你答应过别人的（答应给他看照片）、"
                 "你自己想做的（想做顿饭）——写清对谁，20 字以内；\n"
@@ -2119,14 +2119,14 @@ class PromptBuilder:
                 "  praise＝夸你、认真接你的话；hug＝哄你、撒娇、亲昵的小动作；\n"
                 "  comfort＝他在安慰你、接住了你刚才说的难受（只有你真露出情绪时才算，"
                 "随手一句「我懂你」不算）；\n"
-                "  attack＝怼你、阴阳怪气、拿你开玩笑；\n"
+                "  attack＝有直接依据的真实攻击或人身贬低；\n"
                 "  refuse＝他**明确叫停 / 拒绝**——「停下」「别这样」「不要」「我不想要」"
                 "「今天不想」，或者你刚伸手就被他挡回来；\n"
                 "  normal＝普通聊天。\n"
                 "- refuse 只记**明说的那种**：他说了不要就是不要，别当成欲拒还迎；"
                 "这一条会让她接下来一段时间收着手，所以判错代价比漏判大。\n"
-                "- 看**真实意思**，不要被字面骗：「你可真行啊」是 attack 不是 praise；\n"
-                "  「大肥鱼」这种熟人式的逗你是 attack；单纯问事情就是 normal。\n"
+                "- 看话的实际语境。类似「你可真行啊」可能是赞赏、打趣或讽刺。"
+                "熟人式的逗趣、别人的引文和普通分歧用 normal。\n"
                 "- 拿不准就写 normal。\n\n"
                 "关于 addressing：\n"
                 "- 它记的是**这一句到底在跟谁说话**，三选一：\n"
@@ -2899,7 +2899,7 @@ class PromptBuilder:
             '  "open_topic": "",\n'
             '  "heart_knot": null,\n'
             '  "grudge": null,\n'
-            '  "forgive": false,\n'
+            '  "forgive": null,\n'
             '  "own_topic": "",\n'
             '  "own_topic_done": "",\n'
             '  "own_topic_evidence": "",\n'
@@ -2916,12 +2916,10 @@ class PromptBuilder:
             "- open_topic 记「对方还有件没说完的事」，写具体日期、不写明天这种相对时间；\n"
             "- heart_knot 和 grudge 只记录本轮有直接依据、值得留到以后的新事；普通分歧、感受波动、引文和旧事都留空；\n"
             + EMOTION_RECORD_INSTRUCTIONS
-            + (
-            "- 只有本轮给出对应的私人感受，对方就同一件事道歉、补上或说清楚，且她愿意放下，才填 forgive；\n"
+            + FORGIVENESS_GUIDANCE + "\n"
             "- own_topic 记她答应过 / 自己想做的事；只有明确完成结果才填写 own_topic_done 的具体事项ID和 own_topic_evidence 原话；不能只填true；\n"
             f"- 所有字段都从「这一轮的真实对话」里读，不要为了填满而编；{pronoun}没有的就留空。\n"
             "只输出 JSON，不要解释、不要 Markdown 代码块。"
-            )
         )
 
         chat_lines: list[str] = []

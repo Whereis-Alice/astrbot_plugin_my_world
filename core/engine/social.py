@@ -41,6 +41,8 @@ class SocialMixin:
             if (
                 not isinstance(row, dict)
                 or row.get("is_self")
+                or row.get("internal")
+                or row.get("is_recalled")
                 or str(row.get("user_id") or "") != user
             ):
                 continue
@@ -59,12 +61,15 @@ class SocialMixin:
                     reply_to = row.get("reply_to") or {}
                     addressing = row.get("addressing")
                     if any(target.get("self") for target in targets):
-                        addressing = "me"
+                        if all(target.get("self") for target in targets) or isinstance(reply_to, dict) and reply_to.get("is_self") is True:
+                            addressing = "me"
+                        else:
+                            addressing = "unclear"
                     elif isinstance(reply_to, dict) and type(reply_to.get("is_self")) is bool:
                         addressing = "me" if reply_to["is_self"] else "others"
                     elif targets:
                         addressing = "others"
-                    if addressing in {"me", "others"}:
+                    if addressing in {"me", "others", "unclear"}:
                         source["addressing"] = addressing
                     sources.append(source)
         return sources

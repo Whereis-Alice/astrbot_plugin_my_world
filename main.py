@@ -2982,8 +2982,11 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
         session_id = event.unified_msg_origin
         if not self.engine.is_enabled(session_id):
             return "这个会话尚未启用小世界。"
+        sender = getattr(event, "get_sender_id", None)
+        focus_user = str(sender() or "") if callable(sender) else ""
         with self.engine.config_scope(session_id):
-            items, match_reason = await self.engine.lookup_life_memories(session_id, _event_persona_id(event), str(topic or "").strip())
+            items, match_reason = await self.engine.lookup_life_memories(session_id, _event_persona_id(event),
+                str(topic or "").strip(), focus_user=focus_user)
         if not items:
             return "没有找到相关生活经历。聊天往事请查询聊天记忆插件，不要编造经历。"
         lines = ["生活回忆参考（梦与内心不作为外部事实）：", "命中依据：" + match_reason]

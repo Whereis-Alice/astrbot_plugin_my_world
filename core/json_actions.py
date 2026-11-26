@@ -9,7 +9,7 @@ from typing import Any
 
 from .emotional_memory import EmotionJudgement, parse_emotion_judgement
 from .extensions import _keep_paragraphs
-from .interaction import InteractionJudgment, parse_interaction
+from .interaction import ForgivenessJudgment, InteractionJudgment, parse_forgiveness, parse_interaction
 
 _JSON_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
@@ -211,8 +211,8 @@ class ParseResult:
     grudge_detail: EmotionJudgement | None = None
     interaction: InteractionJudgment | None = None
 
-    forgive: bool = False
-    """他刚道歉 / 补上了 / 解释清楚了 → 之前记着的那笔账可以算了。"""
+    forgive: ForgivenessJudgment | None = None
+    """指定芥蒂及对方这轮道歉、修补或澄清的原话。"""
 
     own_topic: str = ""
     """**她自己**打算做、或者答应过别人的事（"答应给他看照片"）。空 = 这轮没添新的。"""
@@ -577,7 +577,7 @@ def parse_action_payload(
         heart_knot_detail=heart_detail,
         grudge_detail=grudge_detail,
         interaction=parse_interaction(payload.get("interaction")),
-        forgive=_as_bool(payload.get("forgive")),
+        forgive=parse_forgiveness(payload.get("forgive")),
         own_topic=_clean_note(payload.get("own_topic")),
         own_topic_done=str(payload.get("own_topic_done") or "") if isinstance(payload.get("own_topic_done"), str) else "",
         own_topic_evidence=str(payload.get("own_topic_evidence") or "")[:500],

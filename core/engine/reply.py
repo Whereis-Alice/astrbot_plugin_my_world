@@ -11,6 +11,7 @@ from hashlib import sha256
 from functools import wraps
 from typing import Any
 from ..config_scope import session_scoped
+from ..emotional_memory import emotion_cue_from_sources
 from ..json_actions import parse_action_payload
 from ..mood import keyword_signal
 from ..state import (
@@ -766,7 +767,7 @@ class ReplyMixin:
                 request = self.context_request(state, ctx.session_id, task="reply", text="\n".join(texts),
                     rows=recall_records, focus=ctx.user_id, persona=ctx.persona_id)
                 emotion_sources = self.interaction_sources(ctx.session_id, str(ctx.user_id or ""), ctx.text, batch)
-                request.focus_text = str(emotion_sources[-1]["text"]) if emotion_sources else ""
+                request.focus_text = emotion_cue_from_sources(emotion_sources)
                 persona_text = await self._persona_text(ctx.session_id)
                 request.life_persona = sha256(persona_text.encode("utf-8")).hexdigest()[:24]
                 emotion_record = self.context_emotion(state, request)
@@ -787,7 +788,7 @@ class ReplyMixin:
                     state.session_id, query="\n".join(texts),
                     visit_semantic_match=visit_semantic_match)
                 samples = self.voice_sample_lines(
-                    state, ctx.session_id, signal=self.tone_signal(state, ctx.text)
+                    state, ctx.session_id, signal=self.tone_signal(request.focus_text or "")
                 )
                 if inject_only:
                     # 注入模式：只拼提示词，不列工具、不列动作 type、不要 JSON。
@@ -860,6 +861,7 @@ class ReplyMixin:
                         image_marks=dict(ctx.image_marks or {}),
                     )
                     user_prompt += self.interaction_familiarity(ctx.session_id, ctx.user_id, emotion_sources)
+                    user_prompt += self.forgiveness_record_note(emotion_record)
                 node_id = state.node_id
                 self.record_context_selection(request)
                 # 注入模式先记准备阶段；main 完成宿主请求注入后补成该钩子的快照。
@@ -1105,21 +1107,19 @@ class ReplyMixin:
             self.note_chat_note(state, parsed.chat_note, ctx.session_id)
             # 模型自己标的心情变化（主路径）：只在这一轮是她真的跟人说话时接受，
             # 自主轮不写，免得她凭空给自己加心情。
-            if parsed.valence_delta:
-                self._apply_valence_delta(state, parsed.valence_delta)
             # 「他还有件没说完的事」：记下来，之后到点可以接一句
             self.note_open_topic(state, ctx, parsed.open_topic)
             addressing = parsed.addressing or ("me" if ctx.is_private else ctx.addressing)
             interaction = self.judge_turn_interaction(ctx.session_id, ctx.user_id, emotion_sources,
                                                        parsed.interaction, addressing=addressing)
+            valence_delta = interaction.valence_delta(parsed.valence_delta, parsed.tone, parsed.interaction)
+            if valence_delta:
+                self._apply_valence_delta(state, valence_delta)
             if interaction.affinity_delta:
                 outcome.notes.append(f"好感 {interaction.affinity_delta:+.2f}")
-            self.note_turn_emotions(state, ctx, parsed, emotion_sources, allow_grudge=interaction.grudge_allowed)
-            emotion_evidence = emotion_sources and parsed.addressing != "others"
-            # 「他道歉了 / 补上了」：那笔账划掉
-            if parsed.forgive and emotion_evidence and emotion_record and emotion_record["kind"] == "grudge":
-                self.resolve_grudge(state, user_id=str(ctx.user_id or ""), session_id=ctx.session_id,
-                    expected=emotion_record)
+            forgiven = self.resolve_turn_grudge(state, ctx, parsed.forgive, emotion_sources,
+                addressing=addressing, expected=emotion_record, observed_at=self._now())
+            self.note_turn_emotions(state, ctx, parsed, emotion_sources, allow_grudge=interaction.grudge_allowed and not forgiven)
             # 「我自己答应过的事」：她自己的账本，跟 open_topic 正好对称
             if parsed.own_topic:
                 await self.note_own_topic(
@@ -1203,7 +1203,7 @@ class ReplyMixin:
                     "style_cell": state.last_style_cell,
                     "say_limit": int(state.last_say_limit or 0),
                     # 模型自己标的心情变化（正 = 变好，负 = 变差）
-                    "valence_delta": round(float(parsed.valence_delta or 0.0), 3),
+                    "valence_delta": round(valence_delta, 3),
                     # 对方这一轮的口吻（模型判的）：信号不对时，日志里能一眼看出来
                     "tone": tone,
                     # 这句是在跟谁说话（模型判的）：判成 "others" 时这一条会被标出来

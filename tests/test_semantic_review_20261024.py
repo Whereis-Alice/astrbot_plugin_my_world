@@ -296,6 +296,19 @@ class SemanticReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(private, indexed)
         self.assertIn(visible, indexed)
 
+    async def test_archived_feeling_stays_keyword_only_even_for_an_authorized_speaker(self):
+        self.enable_embedding()
+        private = self.remember("心里记挂过的纸风车", source="runtime", memory_type="inner", participants=["42"],
+            context=json.dumps({"kind": "heart_knot", "emotion_user": "42", "original": "纸风车"}))
+        self.remember("在厨房磨了咖啡")
+        self.db.raw.update_memory(private, created_at=self.clock.now())
+        state = await self.engine.load_state(SESSION, cold_start=False)
+        request = self.engine.context_request(state, SESSION, text="纸风车", rows=[], focus="42")
+        await self.engine.prepare_context_memory(request, state=state)
+        self.assertNotIn("心里记挂过的纸风车", self.provider.embed.await_args.args[0])
+        self.assertIn("在厨房磨了咖啡", self.provider.embed.await_args.args[0])
+        self.assertIn(private, [item.id for item in self.engine.context_memories(state, request)])
+
     async def test_query_vectors_are_reused_when_new_memory_arrives(self):
         semantic = self.enable_embedding()
         self.remember("第一次散步")

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .context_selection import ContextRequest, search_terms
-from .evidence import direct_text, unquoted_segments
+from .evidence import unquoted_segments
 
 
 EMOTION_SUMMARY_LIMIT = 60
@@ -44,6 +44,7 @@ def parse_emotion_judgement(value: Any) -> EmotionJudgement | None:
 
 def verified_emotion_evidence(judgement: EmotionJudgement, sources: list[dict]) -> list[dict]:
     """Accept only exact excerpts from the direct messages in this turn."""
+    sources = [row for row in sources if row.get("kind") == "direct_speech" and row.get("addressing") != "others"]
     verified = []
     for quote in judgement.evidence:
         excerpt = " ".join(quote.split())
@@ -51,7 +52,8 @@ def verified_emotion_evidence(judgement: EmotionJudgement, sources: list[dict]) 
                        if any(excerpt in part for part in unquoted_segments(str(row.get("text") or "")))), None)
         if source is None:
             return []
-        verified.append({"text": excerpt, "at": source.get("at") or 0, "user_name": str(source.get("name") or "")[:80]})
+        verified.append({"text": excerpt, "at": source.get("at") or 0, "user_name": str(source.get("name") or "")[:80],
+                         "source_id": str(source.get("id") or "")})
     return verified
 
 
@@ -79,8 +81,24 @@ def asks_about_feelings(query: str) -> bool:
 def current_emotion_query(request: ContextRequest) -> str:
     if request.task != "reply" or not request.focus_user:
         return ""
-    return direct_text(request.current_text if request.focus_text is None else request.focus_text)
+    return "\n".join(unquoted_segments(request.current_text if request.focus_text is None else request.focus_text))
+
+
+def emotion_cue_from_sources(sources: list[dict]) -> str:
+    """Use the newest direct line only if it could have been directed at this character."""
+    if not sources or sources[-1].get("addressing") == "others":
+        return ""
+    return str(sources[-1].get("text") or "")
+
+
+def archived_feeling_subjects(meta: dict, people) -> tuple[str, ...]:
+    owner = str(meta.get("emotion_user") or "")
+    return (owner,) if owner else tuple(str(person) for person in people if person)
+
+
+def feeling_matches_focus(focus: str, query: str, people: tuple[str, ...], text: str) -> bool:
+    return bool(focus and (not people or focus in people) and emotion_topic_match(query, text))
 
 
 def archived_feeling_relevant(request: ContextRequest, people, text: str) -> bool:
-    return (not people or request.focus_user in people) and emotion_topic_match(current_emotion_query(request), text)
+    return feeling_matches_focus(request.focus_user, current_emotion_query(request), people, text)

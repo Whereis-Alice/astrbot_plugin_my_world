@@ -2,7 +2,7 @@
 
 from collections import defaultdict
 
-from ..evidence import direct_text
+from ..evidence import direct_text, source_snapshot, unquoted_segments
 from .emotion_records import _stamp
 from .util import _clip_text
 
@@ -17,20 +17,26 @@ async def legacy_emotion_evidence(engine, state, session_id: str, records: list[
     by_user = defaultdict(list)
     for entry in state.recent_chat:
         if (not isinstance(entry, dict) or entry.get("is_self") or entry.get("internal")
-                or engine._chat_origin(entry, state) != session_id):
+                or entry.get("addressing") == "others" or engine._chat_origin(entry, state) != session_id
+                or source_snapshot(entry, session_id)["kind"] != "direct_speech"):
+            continue
+        truncated = "reading_text_truncated" if "reading_text" in entry else "text_truncated"
+        if entry.get(truncated):
             continue
         text = entry.get("reading_text", entry.get("text"))
-        if quote := direct_text(str(text or "")):
+        quote = direct_text(str(text or ""))
+        if quote and unquoted_segments(quote) == [" ".join(quote.split())]:
             by_user[str(entry.get("user_id") or "")].append((entry, quote))
     result = {}
     for item in candidates:
         created = item["created_at"]
+        summary = item.get("source_summary") or item["text"]
         matched = []
         for event in events:
             detail = event.get("detail")
             if (not isinstance(detail, dict) or detail.get("session")
                     or abs(_stamp(detail.get("at")) - created) > 2
-                    or " ".join(str(detail.get(item["kind"]) or "").split())[:60] != item["text"]):
+                    or " ".join(str(detail.get(item["kind"]) or "").split())[:60] != summary):
                 continue
             sent = _stamp(detail.get("sent_at")) or created
             for entry, quote in by_user[item["user_id"]]:

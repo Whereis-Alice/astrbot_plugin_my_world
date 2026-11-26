@@ -9,7 +9,7 @@ import { createLifePage, renderLifeFocus, openLifeSettings } from "./life.js?v=4
 import { memorySearchFields } from "./memory-settings.js?v=4.46.18";
 import { familiarityDescriptionEditor, relationshipPromptEditor } from "./relationship-prompt.js";
 import { thoughtDate, updateThoughtDates } from "./thought-history.js";
-import { createEmotionRecords } from "./emotion-records.js?v=4.49.3";
+import { createEmotionRecords } from "./emotion-records.js?v=4.49.4";
 import { mountLifeWorkspace } from "./life-workspace.js";
 import { createVisitsPage } from "./visits.js?v=4.46.29";
 import { openBrowseSettings } from "./browse-settings.js?v=4.34.7";

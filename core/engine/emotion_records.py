@@ -90,11 +90,21 @@ class EmotionRecordsMixin:
             item.get(user) or "", _stamp(item.get(created)), item.get(text) or "",
         ]))
 
+    def _emotion_has_archive(self, state: WorldState, kind: str, item: dict) -> bool:
+        key = "emotion:" + self._emotion_record_id(state, kind, item)
+        # The archive transaction may finish before the world-state write. Its
+        # receipt also preserves an explicit archive deletion after a failed save.
+        return bool(self.memory.db._query("SELECT 1 FROM memory_receipt WHERE batch_key=?", (key,)))
+
+    def _emotion_live_active(self, state: WorldState, kind: str, item: dict, now: float) -> bool:
+        return self._emotion_status(kind, item, now) == "active" and not self._emotion_has_archive(state, kind, item)
+
     def _emotion_row(self, state: WorldState, kind: str, item: dict, persona_key: str | None, now: float) -> dict:
         _, text, user, created = EMOTION_FIELDS[kind]
         row = {
             "id": self._emotion_record_id(state, kind, item), "kind": kind,
             "text": str(item.get(text) or ""), "user_id": str(item.get(user) or ""),
+            **({"source_summary": item["source_summary"]} if item.get("source_summary") else {}),
             "narrative": emotion_narrative(item.get("narrative"))[:EMOTION_NARRATIVE_LIMIT],
             "evidence": _evidence_rows(item.get("evidence")),
             "user_name": str(item.get("who_name") or ""),
@@ -124,6 +134,7 @@ class EmotionRecordsMixin:
         return self._describe_emotion_row({
             "id": str(meta.get("emotion_id") or f"memory_{memory['id']}"), "kind": meta["kind"],
             "text": text, "user_id": str(meta.get("emotion_user") or ""), "user_name": name,
+            **({"source_summary": meta["emotion_source_summary"]} if meta.get("emotion_source_summary") else {}),
             "narrative": emotion_narrative(meta.get("emotion_narrative"))[:EMOTION_NARRATIVE_LIMIT],
             "evidence": _evidence_rows(meta.get("emotion_evidence")),
             "session": str(memory["session_id"]), "persona_key": str(meta.get("persona_key") or ""),
@@ -136,19 +147,19 @@ class EmotionRecordsMixin:
                          include_shadowed: bool = False):
         persona = self._matter_persona_key(state) if persona_key is None else persona_key
         now = self._now()
-        active_ids = set()
+        archived_ids = set()
+        for memory in self.memory.db.query_emotion_memories(session_id=session_id):
+            meta = json.loads(memory["context"])
+            row = self._archived_emotion_row(memory, meta, persona)
+            archived_ids.add(row["id"])
+            yield row, meta, memory
         for kind, (field, _, _, _) in EMOTION_FIELDS.items():
             for item in getattr(state, field):
                 if str(item.get("session") or state.session_id) != session_id:
                     continue
                 row = self._emotion_row(state, kind, item, persona, now)
-                active_ids.add(row["id"])
-                yield row, item, None
-        for memory in self.memory.db.query_emotion_memories(session_id=session_id):
-            meta = json.loads(memory["context"])
-            row = self._archived_emotion_row(memory, meta, persona)
-            if include_shadowed or row["id"] not in active_ids:
-                yield row, meta, memory
+                if include_shadowed or (row["id"] not in archived_ids and not self._emotion_has_archive(state, kind, item)):
+                    yield row, item, None
 
     def emotion_records(self, state: WorldState, session_id: str, *, persona_key: str | None = None) -> list[dict]:
         """List editable records for this origin, including other personas and archives."""
@@ -169,6 +180,7 @@ class EmotionRecordsMixin:
                 "emotion_name": name, "original": row["text"], "emotion_id": row["id"], "source_scoped": True,
                 "emotion_status": status, "emotion_created_at": row["created_at"],
                 "emotion_narrative": row["narrative"], "emotion_evidence": row["evidence"],
+                "emotion_source_summary": row.get("source_summary", ""),
                 "emotion_expires_at": row["expires_at"], "emotion_updated_at": now}, ensure_ascii=False))
 
     def update_emotion_record(self, state: WorldState, session_id: str, record_id: str, operation: str,
@@ -196,18 +208,25 @@ class EmotionRecordsMixin:
             account = row["narrative"] if narrative is None else emotion_narrative(narrative)
             if len(account) > EMOTION_NARRATIVE_LIMIT:
                 raise ValueError(f"第一人称记录最多 {EMOTION_NARRATIVE_LIMIT} 字")
+            source_summary = row.get("source_summary") or (row["text"] if not row["evidence"] and body != row["text"] else "")
             if memory is not None:
                 item.update(original=body, emotion_narrative=account, emotion_updated_at=now, source_scoped=True)
+                if source_summary:
+                    item["emotion_source_summary"] = source_summary
                 content = _archive_content(kind, row["status"], body, row["user_name"])
                 self.memory.db.revise_memory(memory["id"], {"content": content,
                     "context": json.dumps(item, ensure_ascii=False)}, reason="管理员整理未释怀记录")
                 return self._archived_emotion_row({**memory, "content": content}, item, persona)
             item.update({"id": record_id, text_field: body, "narrative": account, "edited_at": now})
+            if source_summary:
+                item["source_summary"] = source_summary
         elif operation == "delete":
             if memory is not None:
                 self.memory.db.delete_memories_by_ids([memory["id"]])
-            else:
-                setattr(state, field, [entry for entry in entries if entry is not item])
+            setattr(state, field, [entry for entry in entries if (
+                str(entry.get("session") or state.session_id) != session_id
+                or self._emotion_record_id(state, kind, entry) != record_id
+            )])
             return {**row, "status": "deleted", "affects_dialogue": False}
         elif operation == "resolve" and row["status"] in {"active", "paused"}:
             memory_id = self._archive_emotion(state, item, kind=kind, status="resolved", now=now)
@@ -293,6 +312,6 @@ class EmotionRecordsMixin:
     def _has_emotion_capacity(self, state: WorldState, kind: str, persona_key: str, now: float) -> bool:
         limit = self.world.profile.grudge_max if kind == "grudge" else self.world.state_dynamics.heart_knot_max
         field, _, _, _ = EMOTION_FIELDS[kind]
-        count = sum(self._emotion_belongs(state, item, persona_key) and self._emotion_status(kind, item, now) == "active"
+        count = sum(self._emotion_belongs(state, item, persona_key) and self._emotion_live_active(state, kind, item, now)
                     for item in getattr(state, field))
         return count < max(1, limit)

@@ -172,11 +172,10 @@ class ContextMixin:
                 uid = str(item.get(person_field) or "")
                 body = str(item.get(text_field) or "").strip()
                 if (not body or (uid and uid != focus)
-                        or not self._emotion_visible(state, item, request.session, persona_key=request.life_persona)
-                        or self._emotion_status(kind, item, request.now) != "active"):
+                        or not self._emotion_visible(state, item, request.session, persona_key=request.life_persona)):
                     continue
                 topical = emotion_topic_match(query, body)
-                if topical or explicit:
+                if (topical or explicit) and self._emotion_live_active(state, kind, item, request.now):
                     row = self._emotion_row(state, kind, item, request.life_persona, request.now)
                     matches.append((topical, row["created_at"], row))
         return max(matches, key=lambda row: row[:2])[2] if matches else None

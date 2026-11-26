@@ -3599,9 +3599,11 @@ class WebApiMixin(LifeApiMixin):
         guard = self._guard()
         if guard is not None:
             return guard
-        session_id, sources = self._emotion_record_sessions(request.query.get("session"))
+        scope = request.query.get("session")
+        session_id, sources = self._emotion_record_sessions(scope)
         if not session_id or not sources:
             return error_response("请先选择有会话的生活范围")
+        state_key = self.engine.state_key(session_id)
         state = await self.engine.load_state(session_id, cold_start=False)
         from ..core.engine.legacy_emotion_context import legacy_emotion_evidence
         items = []
@@ -3620,6 +3622,9 @@ class WebApiMixin(LifeApiMixin):
                         "created_text": self.engine._date_text(item.get("created_at")),
                         "expires_text": self.engine._date_text(item.get("expires_at")),
                     })
+        if (self._emotion_record_sessions(scope) != (session_id, sources)
+                or self.engine.state_key(session_id) != state_key):
+            return error_response("会话范围已变化，请刷新后重试", status_code=409)
         items.sort(key=lambda item: (not item["affects_dialogue"], -item["updated_at"], item["id"]))
         return json_response({"session": session_id, "items": items})
 

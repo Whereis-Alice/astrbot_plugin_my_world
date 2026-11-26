@@ -43,6 +43,12 @@ def clean(value: Any, limit: int) -> str:
 
 
 class SocialStoreMixin:
+    def has_interaction_source(self, session: str, user: str, source_id: str) -> bool:
+        return bool(self._query(
+            "SELECT 1 FROM interaction_source_receipt WHERE session_id=? AND user_id=? AND source_id=?",
+            (session, user, source_id),
+        ))
+
     def claim_interaction_source(self, session: str, user: str, source_id: str) -> bool:
         """Deduplicate an observed event without saving its words or a score."""
         cursor = self._execute("INSERT OR IGNORE INTO interaction_source_receipt VALUES(?,?,?)",
@@ -64,13 +70,7 @@ class SocialStoreMixin:
             return False
         ids = list(dict.fromkeys(row["id"] for row in evidence))
         with self.atomic():
-            if any(
-                self._query(
-                    "SELECT 1 FROM interaction_source_receipt WHERE session_id=? AND user_id=? AND source_id=?",
-                    (session, user, sid),
-                )
-                for sid in ids
-            ):
+            if any(self.has_interaction_source(session, user, sid) for sid in ids):
                 return False
             cursor = self._execute(
                 "INSERT OR IGNORE INTO interaction_evaluation"

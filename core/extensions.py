@@ -66,6 +66,7 @@ RESERVED_JSON_KEYS = frozenset(
         "open_topic",
         "heart_knot",
         "grudge",
+        "interaction",
         "forgive",
         "own_topic",
         "own_topic_done",
