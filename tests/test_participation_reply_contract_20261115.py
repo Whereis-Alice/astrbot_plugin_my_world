@@ -113,6 +113,14 @@ class ParticipationReplyContractTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SharedPromptReplyCapabilityTests(unittest.TestCase):
+    def test_internal_scene_row_cannot_grant_a_quote_capability(self):
+        rows = [{"seq": 1, "at": 100, "message_id": "internal", "text": "内部事件。", "internal": True}]
+        system, _, targets = build_participation_prompt(persona="简短自然", life={}, rows=rows, now=102,
+            natural_silence=True, require_reply=True)
+        self.assertEqual(targets, {})
+        self.assertIn("intent 只能选 listen", system)
+        self.assertNotIn("continue_chat", system)
+
     def test_explicit_answered_rows_remain_visible_and_override_quote_selection(self):
         rows = [{"seq": 1, "at": 100, "message_id": "old", "text": "已回答过的背景。"},
                 {"seq": 2, "at": 101, "message_id": "new", "text": "现在的新话题。"}]

@@ -2320,6 +2320,10 @@ class WebApiMixin(LifeApiMixin):
                 "world": world,
                 "schedules": schedules,
                 "sessions": sessions,
+                "inactive_session_adapters": [
+                    item.session_id for item in self.engine.sessions.sessions
+                    if not self.engine.session_transport_available(item.session_id)
+                ],
                 # 展示元数据独立于可保存的会话配置，避免群名往返写入 sessions.json。
                 "session_names": {
                     item.session_id: name

@@ -94,6 +94,18 @@ class SpeechDecisionTests(unittest.IsolatedAsyncioTestCase):
         await self.engine.maybe_participate(GROUP)
         self.assertEqual(self.messenger.sent, [(GROUP, ["一起看看吧。"])])
 
+    async def test_speech_intent_with_an_empty_line_is_repaired_before_listening(self):
+        self.llm.replies = [
+            '{"inner":"这句我没什么可补充。","intent":"join_chat","say":""}',
+            '{"inner":"这句我没什么可补充。","intent":"listen","say":""}',
+        ]
+        await self.chat()
+        outcome = await self.engine.maybe_participate(GROUP)
+        self.assertEqual(len(self.llm.calls), 2)
+        self.assertIn("选择了接话却没有有效正文", self.llm.calls[1]["prompt"])
+        self.assertEqual(outcome.speech_decisions[0]["intent"], "listen")
+        self.assertFalse(self.messenger.sent)
+
     async def test_expired_or_failed_send_does_not_become_a_sent_memory(self):
         self.messenger.send_text = AsyncMock(return_value=False)
         await self.chat()

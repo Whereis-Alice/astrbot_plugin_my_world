@@ -47,6 +47,9 @@ class BrowseFollowupTests(unittest.IsolatedAsyncioTestCase):
         await self.settled()
         self.assertEqual(self.messenger.sent, [(S, ["花现在开得怎么样？"])])
         self.assertEqual(len(self.llm.calls), 2)
+        system = self.llm.calls[1]["system_prompt"]
+        self.assertIn("intent 只能选 continue_chat、listen", system)
+        self.assertNotIn("join_chat", system)
         state = await self.engine.load_state(S)
         thought = next(row for row in state.thoughts if row.get("browse_id") == action["id"])
         self.assertTrue(thought["browse_replied"])

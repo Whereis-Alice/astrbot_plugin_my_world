@@ -26,7 +26,14 @@ class SessionsMixin:
         return session_id not in blocked
 
     def enabled_session_ids(self) -> list[str]:
-        return [item.session_id for item in self.sessions.sessions if self.is_enabled(item.session_id)]
+        return [
+            item.session_id for item in self.sessions.sessions
+            if self.is_enabled(item.session_id) and self.session_transport_available(item.session_id)
+        ]
+
+    def session_transport_available(self, session_id: str) -> bool:
+        available = getattr(self.messenger, "transport_available", None)
+        return not callable(available) or available(session_id)
 
     def session_config(self, session_id: str) -> SessionDef | None:
         return self._sessions_index.get(session_id)
@@ -118,7 +125,7 @@ class SessionsMixin:
         return main
 
     def tick_session_ids(self) -> list[str]:
-        """真正要推进时钟的会话：同一个她只推一次（一个组一份）。"""
+        """只推进有可用会话的生活，共享生活始终保留原来的状态归属。"""
 
         picked: list[str] = []
         seen: set[str] = set()
@@ -493,7 +500,7 @@ class SessionsMixin:
         activity = dict(getattr(state, "session_activity", None) or {})
         lines: list[str] = []
         for session_id in members:
-            if not self.is_enabled(session_id):
+            if not self.is_enabled(session_id) or not self.session_transport_available(session_id):
                 continue
             info = activity.get(session_id) or {}
             at = float(info.get("at") or 0.0)

@@ -4793,6 +4793,11 @@ function contactSessionLabel(session) {
   return `${name || "群聊"} · ${number}`;
 }
 
+function sessionHistoryReason(session) {
+  if (ui.config.inactive_session_adapters?.includes(session.session_id)) return "适配器未加载";
+  return session.enabled === false ? "已停用" : "";
+}
+
 function renderSessionSelects({ labelsOnly = false } = {}) {
   const options = scopeOptions();
   [
@@ -4832,10 +4837,22 @@ function renderSessionSelects({ labelsOnly = false } = {}) {
     const choices = id === "contacts-session"
       ? ui.sessions.map(item => ({value: item.session_id, label: contactSessionLabel(item)}))
       : scopedOptions;
-    choices.forEach((item) => select.appendChild(option(item.value, item.label)));
+    if (id === "thought-session") {
+      const live = choices.filter(item => !item.history);
+      const history = choices.filter(item => item.history);
+      live.forEach(item => select.appendChild(option(item.value, item.label)));
+      if (history.length) {
+        const archived = document.createElement("optgroup");
+        archived.label = "历史会话";
+        history.forEach(item => archived.appendChild(option(item.value, item.label)));
+        select.appendChild(archived);
+      }
+    } else {
+      choices.forEach((item) => select.appendChild(option(item.value, item.label)));
+    }
     select.value = choices.some((item) => item.value === previous)
       ? previous
-      : choices[0]?.value || "";
+      : select.options[0]?.value || "";
     if (id === "contacts-session") select.title = select.selectedOptions[0]?.textContent || "";
   });
 }
@@ -4852,6 +4869,7 @@ function scopeOptions({ withMembers = false, onlyFor = "" } = {}) {
   const options = [];
   const grouped = new Set();
   const ownerOf = new Map();
+  const sessionsById = new Map(ui.sessions.map(session => [session.session_id, session]));
   const scopeOwner = onlyFor ? groupOwning(onlyFor) : null;
   groups().forEach((group) => {
     if (onlyFor && (!scopeOwner || String(group.id) !== String(scopeOwner.id))) return;
@@ -4859,10 +4877,15 @@ function scopeOptions({ withMembers = false, onlyFor = "" } = {}) {
       grouped.add(id);
       ownerOf.set(id, group);
     });
+    const history = (group.sessions || []).length > 0 && group.sessions.every(id => {
+      const session = sessionsById.get(id);
+      return session && sessionHistoryReason(session);
+    });
     options.push({
       value: group.id,
       label: `组：${group.name || group.id}（${(group.sessions || []).length} 个会话）`,
       desc: (group.sessions || []).join("、") || "（还没有成员）",
+      history,
     });
   });
   ui.sessions.forEach((session) => {
@@ -4876,6 +4899,7 @@ function scopeOptions({ withMembers = false, onlyFor = "" } = {}) {
     options.push({
       value: session.session_id,
       label: contactSessionLabel(session),
+      history: sessionHistoryReason(session),
       desc:
         (session.type === "private" ? "私聊" : "群聊") +
         (owner ? ` · 属于「${owner.name || owner.id}」` : ""),
@@ -14189,14 +14213,15 @@ function renderSessionList() {
   ui.sessions.forEach((session) => {
     const item = el("div", "list-item");
     const info = el("div");
-    info.appendChild(el("div", "", `${session.enabled ? "✅" : "⛔"} ${session.session_id}`));
+    const historyReason = sessionHistoryReason(session);
+    info.appendChild(el("div", "", `${historyReason ? "⛔" : "✅"} ${session.session_id}`));
     info.appendChild(
       el(
         "div",
         "meta",
         `${session.type === "private" ? "私聊" : "群聊"} · ${session.platform || "未知平台"} · 冷启动 ${
           session.cold_start_mode || "awakening"
-        } @ ${session.cold_start_node || "bedroom"}`,
+        } @ ${session.cold_start_node || "bedroom"}${historyReason ? ` · ${historyReason}` : ""}`,
       ),
     );
     // 备注：她在提示词里就按这个名字认这个会话（有备注就不显示群名）
@@ -14230,6 +14255,7 @@ function renderSessionList() {
     const toggle = el("button", "small", session.enabled ? "禁用" : "启用");
     toggle.addEventListener("click", () => {
       session.enabled = !session.enabled;
+      markDirty();
       renderSessionList();
       renderSessionSelects();
     });

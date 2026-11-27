@@ -471,7 +471,7 @@ class MyWorldPlugin(ProfileCommandsMixin, WebApiMixin, ReflectionMixin, Particip
             self.logger.info(f"[my_world] 首次启动，已生成默认配置 {name}")
         for warning in self.engine.load_warnings:
             self.logger.warning(f"[my_world] 配置提醒：{warning}")
-        if not self.engine.enabled_session_ids():
+        if not self.engine.sessions.sessions:
             self.logger.info(
                 "[my_world] 会话白名单为空，请在群聊里发送「/mw session add」"
                 "或在 WebUI 的小世界里添加会话。"

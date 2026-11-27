@@ -10,9 +10,21 @@ from ..speech_decision import parse_decision
 from ..speech_policy import private_recipient
 
 if TYPE_CHECKING:
+    from ..speech_decision import SpeechDecision
     from . import MyWorldEngine
     from .models import TickOutcome
     from ..state import WorldState
+
+
+async def keep_private_plan_choice(
+    engine: MyWorldEngine, state: WorldState, outcome: TickOutcome, decision: SpeechDecision,
+    *, target: str, payload: dict[str, Any], blocked: str = "", lines: tuple[str, ...] | list[str] = (),
+) -> None:
+    if decision.inner:
+        if isinstance(payload.get("plan"), list) or payload.get("intent") == "listen":
+            outcome.plan_stayed_quiet = True
+        await engine.remember_speech_decision(state, target, decision, trigger="plan",
+            outcome=outcome, drafts=list(lines) if blocked else [], blocked_reason=blocked)
 
 
 async def choose_autonomous_plan(
@@ -99,10 +111,9 @@ async def choose_autonomous_plan(
                 if person_action and person else {})})
         elif life_share and definition.target_type != "user":
             accepted.append({**step, "kind": "life_share"})
-    if plan is None:
-        if decision.inner:
-            await engine.remember_speech_decision(state, target, decision,
-                trigger="plan", outcome=outcome, drafts=[])
+    if plan is None or not accepted:
+        await keep_private_plan_choice(engine, state, outcome, decision, target=target,
+            payload=payload, blocked=blocked, lines=lines)
         return None
     plan["steps"] = accepted
     plan["contact_people"] = sorted(defaults) if outreach else []
@@ -118,9 +129,4 @@ async def choose_autonomous_plan(
         for step in accepted:
             if step.get("kind") == "continuation":
                 step["speech_scene"] = deepcopy(plan["speech_scene"])
-    if not accepted:
-        if decision.inner:
-            await engine.remember_speech_decision(state, target, decision,
-                trigger="plan", outcome=outcome, drafts=lines if blocked else [], blocked_reason=blocked)
-        return None
     return plan

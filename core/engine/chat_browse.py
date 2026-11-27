@@ -27,6 +27,7 @@ class ChatBrowseMixin:
     def _browse_sources(self, state) -> list[str]:
         config = self.world.chat_browse
         return [sid for sid in self.group_sessions(state.session_id) if self.is_enabled(sid)
+                and self.session_transport_available(sid)
                 and (not config.sessions or sid in config.sessions)]
 
     def _browse_ready(self, state, action_id: str) -> bool:

@@ -138,7 +138,7 @@ class ScopedConfigMixin:
         if world.proactive_chat_paused or str(session_id or "") not in world.proactive_session_whitelist:
             return False
         with self.config_scope(session_id):
-            return self.is_enabled(session_id)
+            return self.is_enabled(session_id) and self.session_transport_available(session_id)
 
     def proactive_chat_allowed(self, session_id: str) -> bool:
         if not self.autonomous_speech_allowed(session_id):

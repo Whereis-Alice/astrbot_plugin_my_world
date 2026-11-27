@@ -95,12 +95,12 @@ class AutonomyMixin:
                 self._refresh_interject_closed(state)
                 # 先看"是不是想他想得不行了"：软推她自己去找他一次（在哪说由她决定）
                 pushed = await self._maybe_miss_push(state, node, outcome, session_id)
-                if not pushed:
+                if not pushed and not outcome.plan_stayed_quiet:
                     # 想被碰一碰：同样是"交给她自己决定"，但要排在"想他"后面
                     pushed = await self._maybe_desire_push(
                         state, node, outcome, session_id
                     )
-                if not pushed:
+                if not pushed and not outcome.plan_stayed_quiet:
                     await self._decide_normally(state, node, outcome, session_id)
             await self._echo_events_since(state, outcome, echo_marker)
         # 发消息这件事必须在**出锁之后**做：_deliver 自己还要拿这把会话锁
@@ -151,6 +151,8 @@ class AutonomyMixin:
                         state.last_quiet_plan_at = now + retry - 3600
             if admission.deferred and not admission.started:
                 outcome.notes.append("安静规划暂未请求模型，稍后重试；规则生活继续")
+            if outcome.plan_stayed_quiet:
+                return
             plan = proposed or plan
         if plan is None:
             return
@@ -195,6 +197,8 @@ class AutonomyMixin:
         # 规则决策不受影响，命中就直接执行。
         if self.decider.should_ask_llm(state):
             llm_plan = await self._ask_llm_for_plan(state, node, outcome)
+            if outcome.plan_stayed_quiet:
+                return
             plan = llm_plan or plan
         if plan is not None:
             # 她想说给谁：她自己在计划里挑了一个会话就发那儿；没挑就按动机定——
@@ -350,6 +354,8 @@ class AutonomyMixin:
         llm_plan = await self._ask_llm_for_plan(
             state, node, outcome, force=True, hint=hint
         )
+        if outcome.plan_stayed_quiet:
+            return
         plan = llm_plan or plan
         if plan is None:
             return
@@ -377,6 +383,7 @@ class AutonomyMixin:
         focus_user: str = "",
         contact_user: str = "",
     ) -> dict[str, Any] | None:
+        outcome.plan_stayed_quiet = False
         if self.llm is None:
             return None
         if not force and not self._llm_plan_allowed(state):
@@ -457,6 +464,7 @@ class AutonomyMixin:
             '{"action":"stare","duration":600},{"action":"think","content":"..."}],'
             '"valid_until":1800,"inner":"此刻心里的一句话","reason":"为什么这样安排"}\n'
             "计划的长度由你决定；duration 是这一步持续多少秒，valid_until 是这份计划大概管多少秒。\n"
+            "有适合接着做的事，就挑眼下能推进的步骤。想暂时就这样待着，可以写 plan:[]、intent:listen，并留下一句心里话。\n"
             + rest_guidance + "\n"
             + self.prompts.AUTONOMOUS_MANNERS
             + "只输出 JSON。"
@@ -526,6 +534,9 @@ class AutonomyMixin:
         elif plan_options is not None:
             plan = await self.autonomous_plan_choice(state, outcome, plan, reply,
                 target=request.session, options=plan_options, candidates=plan_candidates)
+        elif quiet and plan is None:
+            await self.autonomous_plan_choice(state, outcome, None, reply,
+                target=request.session, options=(["listen"], [], {}), candidates=[])
         if plan:
             if quiet:
                 plan["send_to"] = ""

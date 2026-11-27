@@ -42,6 +42,8 @@ EXPRESSION_MANNERS = (
     "别把人家珍惜的失败作品顺手建议丢掉或改造成你的爱好。\n"
     "- 兴趣通过留意细节、自己的感受或有根据的小问题体现；只在话题相关时自然流露。"
     "不为提到爱好而强拐话题，不编共同经历；比较选项时看清各自指什么。\n"
+    "- 按你平时和这个人说话的口吻，只接一个值得回应的点。能直接接上时就直接说，"
+    "不用先概括来龙去脉；有话说完就停，不固定用客套、问句或邀请收尾。\n"
 )
 
 
@@ -74,11 +76,19 @@ CHAT_ONLY_MANNERS = (
 )
 
 
+def participation_intents(targets: dict[str, str], *, require_reply: bool = False) -> tuple[str, ...]:
+    """Use the same available choices for generation and validation."""
+    join = () if require_reply else ("join_chat",)
+    quote = ("continue_chat",) if targets else ()
+    return join + quote + ("listen",)
+
+
 def build_participation_prompt(*, persona: str, life: dict, rows: list[dict],
                                now: float, live_window: int | None = 180,
                                style: str = "", background: str = "",
                                natural_silence: bool = False, reply_seqs: frozenset[int] | None = None,
                                answered_seqs: frozenset[int] | None = None,
+                               require_reply: bool = False,
                                quote_chars: int = 1000) -> tuple[str, str, dict[str, str]]:
     """A single decision with a bounded scene, no life planner/action schema.
 
@@ -95,20 +105,19 @@ def build_participation_prompt(*, persona: str, life: dict, rows: list[dict],
         answered = row.get("answered") is True or seq > 0 and seq in (answered_seqs or ())
         if answered and not row.get("is_self"):
             item["answered"] = True
-        if (mid and not row.get("is_self") and not answered and (live_window is None or age < live_window)
-                and (reply_seqs is None or int(row.get("seq") or 0) in reply_seqs)):
+        if (mid and not row.get("is_self") and not row.get("internal") and not answered
+                and (live_window is None or age < live_window) and (reply_seqs is None or seq in reply_seqs)):
             targets[tag] = mid
             item["can_reply"] = True
-    from .speech_decision import DECISION_OUTPUT
+    from .speech_decision import decision_output
+    intents = participation_intents(targets, require_reply=require_reply)
     system = (persona + "\n\n# 此刻的你\n" + json.dumps(life, ensure_ascii=False)
               + ("\n\n" + background if background else "")
               + "\n" + (style[:600] + "\n" if style else "")
               + participation_manners(natural_silence) + CHAT_ONLY_MANNERS + SCENE_RELATION_RULES
-              + DECISION_OUTPUT
+              + decision_output(intents)
               + "answered=true 的消息已经回应过，只作理解背景，不再引用追答；"
-              "后续有新的问题、信息或情绪变化时仍可自然接话。"
-              + "reply_to 仅选 can_reply=true 的编号；接较早的一句或需要明确对象时引用，"
-              "顺接全场时留空。")
+              "后续有新的问题、信息或情绪变化时仍可自然接话。")
     if not natural_silence:
         system += "自然沉默关闭：生成本轮接话；仅现场边界要求不接话时选择 listen。\n"
     prompt = (("没有人要求你必须回复。" if natural_silence else "请生成本轮接话。")

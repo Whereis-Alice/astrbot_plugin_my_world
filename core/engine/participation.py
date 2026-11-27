@@ -7,7 +7,8 @@ import time
 from ..config_scope import session_scoped
 from ..context_selection import ContextRequest
 from ..model_calls import model_operation
-from ..participation import build_participation_prompt
+from ..participation import build_participation_prompt, participation_intents
+from ..participation_opportunity import attention_text
 from ..state import STATE_DROWSY, WorldState, chat_item_is_fresh
 from .life_inference import life_work
 from .models import TickOutcome
@@ -259,11 +260,11 @@ class ParticipationMixin:
                    and not row.get("is_self") and not row.get("internal")
                    and (reply_seqs is None or int(row.get("seq") or 0) in reply_seqs)]
         latest = sources[-1] if sources else {}
-        text = direct_text(str(latest.get("raw_text") or latest.get("text") or ""))
+        text = direct_text(attention_text(latest))
         return self.context_request(state, target, task="participation", rows=rows, text=text)
 
     def participation_prompt(self, state, target, persona, *, rows=None, request=None, source="message", browse_id="", reply_seqs=None,
-                             answered_seqs=None):
+                             answered_seqs=None, require_reply=False):
         """Same builder for production and evaluation; never include another session."""
         if rows is None:
             window = self._participation_window(source)
@@ -373,7 +374,7 @@ class ParticipationMixin:
         result = build_participation_prompt(persona=persona, life=life, rows=rows,
             now=self._now(), live_window=self._participation_window(source), style=style,
             background=background, natural_silence=natural_silence, reply_seqs=reply_seqs,
-            answered_seqs=answered_seqs,
+            answered_seqs=answered_seqs, require_reply=require_reply,
             quote_chars=self.world.context.quote_chars)
         request.trace["scene"] = {"rows": len(rows), "characters": len(result[1])}
         request.trace["natural_silence"] = natural_silence
@@ -456,19 +457,21 @@ class ParticipationMixin:
             request.life_persona = sha256(persona.encode("utf-8")).hexdigest()[:24]
             if browse_feeling_item(state, request, browse_id) is None:
                 return "", ""
-        system, prompt, targets = self.participation_prompt(state, target,
-            persona, request=request, rows=rows, source=source, browse_id=browse_id, reply_seqs=reply_seqs)
+        require_reply = bool(browse_ticket and browse_ticket.deferred)
+        system, prompt, targets = self.participation_prompt(state, target, persona,
+            request=request, rows=rows, source=source, browse_id=browse_id, reply_seqs=reply_seqs,
+            require_reply=require_reply)
         if source == "browse" and reply_seqs is not None:
             system += ("\n本轮回应这次实际读过的消息：后来的消息只供理解当前话题。"
                        "引用只能选择 can_reply=true 的原消息；接较早的话时引用并自然说明刚看到，"
                        "话题已收尾时选择 listen。")
-            if browse_ticket and browse_ticket.deferred:
+            if require_reply:
                 system += "短暂等待后接话必须引用原消息，不能转而接后来的新话题。"
         self.record_context_selection(request)
         feeling = next((item for item in reversed(state.thoughts)
                         if source == "browse" and browse_id and item.get("browse_id") == browse_id), None)
         recorded_inner = feeling["content"][:240] if feeling else ""
-        allowed = ("continue_chat", "listen") if browse_ticket and browse_ticket.deferred else ("join_chat", "continue_chat", "listen")
+        allowed = participation_intents(targets, require_reply=require_reply)
         source_rows = [row for row in rows if int(row.get("seq") or 0) in reply_seqs] if reply_seqs is not None else rows
         raw, decision = await self.ask_speech_decision(state, target, system, prompt, rows=source_rows,
             live_window=window, reply_seqs=reply_seqs, targets=targets, allowed=allowed,
@@ -478,8 +481,8 @@ class ParticipationMixin:
             # One bounded repair under the same background budget. Never invent
             # thoughts from the draft and never replay a failed provider call.
             raw, decision = await self.ask_speech_decision(state, target, system, prompt + "\n上轮结果未通过校验："
-                + decision.error + "。请重新给出完整 JSON，补上真实想法，并保留本轮发言选择。"
-                + "\n上轮草稿（只修复格式，不添加新事实）：" + str(raw)[:5000], rows=source_rows, allow_tools=False,
+                + decision.error + "。请重新给出完整 JSON；如果没有合适的正文或可用引用，可以选择 listen。"
+                + "\n上轮草稿（修正选择和格式，不添加新事实）：" + str(raw)[:5000], rows=source_rows, allow_tools=False,
                 live_window=window, reply_seqs=reply_seqs,
                 targets=targets, allowed=allowed, recorded_inner=recorded_inner, strict_reply=True)
         if decision.error:
@@ -488,8 +491,11 @@ class ParticipationMixin:
             if admission and admission.deferred and not admission.started:
                 return "", ""  # The caller restores its unstarted observation.
             self.decision_trace(target, "participation", "failed", decision.error)
-            state.participation[target] = {**state.participation.get(target, {}),
-                                           "decision": "failed", "reason": decision.error}
+            if outcome is None:
+                state.participation.setdefault(target, {}).update(decision="failed", reason=decision.error)
+            else:
+                self.finish_participation_observation(state, target, outcome.speech_receipt_batch,
+                    "failed", decision.error)
             await self._log_event(state, "speech_decision_failed", {"trigger": source, "reason": decision.error}, outcome=outcome, silent=True)
             return "", ""
         await self.remember_speech_decision(state, target, decision, trigger=source,
@@ -713,9 +719,10 @@ class ParticipationMixin:
                     or self._now() >= outcome.chat_expires_at[session_id]):
                 reason = "这轮继续旁听" if not message else "现场与权限已变化，本轮取消发送"
                 if outcome.speech_decisions:
-                    self.decision_trace(session_id, "participation", "listening" if not message else "cancelled", reason)
-                    state.participation[session_id]["decision"] = "listening" if not message else "cancelled"
-                    state.participation[session_id]["reason"] = reason
+                    status = "listening" if not message else "cancelled"
+                    self.decision_trace(session_id, "participation", status, reason)
+                    self.finish_participation_observation(
+                        state, session_id, outcome.speech_receipt_batch, status, reason)
                 outcome.notes.append(reason)
             else:
                 outcome.add_speech(message)

@@ -26,7 +26,7 @@ def _number(value: Any, default: float = 0.0) -> float:
     try:
         result = float(value)
         return result if math.isfinite(result) else default
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -103,7 +103,8 @@ class SleepRhythmMixin:
         start = _number(state.sleep_rhythm.get("awake_since"))
         if start <= 0 or start > now:
             # 旧存档没有清醒起点，从现有困意估计，不编造最近睡眠记录。
-            start = now - min(18.0, max(0.0, float(state.sleep_pressure)) * 20) * 3600
+            pressure = state.sleep_pressure if self.world.sleep.pressure_enabled else 0.0
+            start = now - min(18.0, max(0.0, pressure) * 20) * 3600
             state.sleep_rhythm["awake_since"] = start
         return max(0.0, (now - start) / 3600)
 
@@ -116,6 +117,7 @@ class SleepRhythmMixin:
             return
         config = self.world.sleep
         awake = self._rhythm_awake_hours(state)
+        pressure = state.sleep_pressure if config.pressure_enabled else 0.0
         rhythm = state.sleep_rhythm
         now = self._now()
         exhausted = awake >= config.max_awake_hours or (state.energy <= 0.08 and awake >= 8)
@@ -142,20 +144,23 @@ class SleepRhythmMixin:
             return
         if now < _number(rhythm.get("next_evaluation_at")):
             return
-        if awake < 8 and state.sleep_pressure < 0.6:
+        if awake < 8 and pressure < 0.6:
             return  # 刚睡饱后的短时疲劳优先交给普通休息/小睡，不再睡一整晚。
         hour = self.local_now().hour
-        evening = hour >= 20 or hour < 7
+        start = self.world.night.start_hour % 24
+        end = self.world.night.end_hour % 24
+        near_night = start != end and (self.world.is_night_time(hour) or 0 < (start - hour) % 24 <= 3)
         # 白天精神好不逐小时问模型；到评估窗口后仍可自由选择继续活动。
-        if awake < 12 and state.energy > 0.35 and state.sleep_pressure < 0.6:
+        if awake < 12 and state.energy > 0.35 and pressure < 0.6:
             return
-        if not evening and awake < 16 and state.energy > 0.25 and state.sleep_pressure < 0.8:
+        if not near_night and awake < 16 and state.energy > 0.25 and pressure < 0.8:
             return
         interval = int(config.evaluation_minutes)
         rhythm["next_evaluation_at"] = now + interval * 60
         low, high = self._rhythm_duration_bounds()
         hours = min(high / 3600, max(low / 3600, 8.0 + max(0, awake - 16) * 0.25))
-        decision = "sleep" if awake >= 17 or state.energy <= 0.2 or state.sleep_pressure >= 0.85 else "continue"
+        need_rest = awake >= 17 or state.energy <= 0.2 or self.decider.sleep_pressure_high(state)
+        decision = "sleep" if need_rest else "continue"
         reason = "结合清醒时长与疲劳决定休息" if decision == "sleep" else "还可以继续活动，稍后再评估"
         source = "fallback"
         if self.llm is not None:
@@ -173,7 +178,7 @@ class SleepRhythmMixin:
                         context = {
                             "当地时间": self.local_now().isoformat(timespec="minutes"),
                             "清醒小时": round(awake, 2), "精力": round(state.energy, 3),
-                            "困意": round(state.sleep_pressure, 3), "心情": state.mood,
+                            "困意": round(pressure, 3) if config.pressure_enabled else "未启用", "心情": state.mood,
                             "正在做": str(current.get("desc") or current.get("type") or "自由活动"),
                             "最近睡眠": state.sleep_history[-4:],
                             "日程": schedules[:12], "上次决定": str(rhythm.get("reason") or ""),

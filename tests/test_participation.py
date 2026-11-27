@@ -121,6 +121,24 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(state.awaiting_reply)
         self.assertFalse(self.engine.group_is_chatting(state))
 
+    async def test_bare_video_enters_attention_when_media_policy_allows_it(self):
+        self.engine.participation_sample = ParticipationMixin.participation_sample.__get__(self.engine)
+        await self.chat("", has_videos=True, message_id="video")
+        await self.engine.maybe_participate(GROUP, sample=True)
+        self.assertEqual(self.llm.calls, [])
+        self.engine.world.decider.media_only_participation = "normal"
+        self.llm.replies = ['{"inner":"这一段是什么时候拍的呢？","intent":"listen","say":""}']
+        outcome = await self.engine.maybe_participate(GROUP, sample=True)
+        self.assertEqual(len(self.llm.calls), 1)
+        self.assertEqual(outcome.speech_decisions[0]["intent"], "listen")
+        self.assertEqual(self.messenger.sent, [])
+
+    async def test_annotated_media_recall_uses_the_original_caption(self):
+        row = await self.chat("风车［图片识别结果：山坡、钟楼］", raw_text="今天去看风车", has_images=True)
+        async with self.engine.session_state(GROUP) as state:
+            request = self.engine.participation_context_request(state, GROUP, [row])
+        self.assertEqual(request.retrieval_query, "今天去看风车")
+
     async def test_natural_silence_can_be_enabled_without_changing_scene_boundaries(self):
         self.engine.world.decider.natural_silence = True
         self.llm.replies = ['{"inner":"这件事让我有点在意。","say":"","reply_to":""}']

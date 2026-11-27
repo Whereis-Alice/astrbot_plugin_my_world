@@ -88,6 +88,7 @@ class SpeechDecisionsMixin:
         from copy import deepcopy
         from ..json_actions import extract_json_object, strip_reasoning
         from ..speech_decision import parse_decision
+        from .plan_expression import keep_private_plan_choice
         allowed, rows, targets = options or self.expression_options(state, target, "outreach",
                                                                   token=outcome.speech_receipt_batch)
         payload = extract_json_object(strip_reasoning(str(raw or ""))) or {}
@@ -142,9 +143,9 @@ class SpeechDecisionsMixin:
                 # permission to export this group's message to another session.
                 quiet_steps.append({**step, "kind": "continuation", "target": "",
                                     "send_to": target})
-        if plan is None:
-            if decision.inner:
-                await self.remember_speech_decision(state, target, decision, trigger="plan", outcome=outcome, drafts=[])
+        if plan is None or not quiet_steps:
+            await keep_private_plan_choice(self, state, outcome, decision, target=target,
+                payload=payload, blocked=blocked, lines=lines)
             return None
         plan["steps"] = quiet_steps
         plan["contact_people"] = [user_id] if outreach else []
@@ -162,11 +163,6 @@ class SpeechDecisionsMixin:
             for step in quiet_steps:
                 if step.get("kind") == "continuation":
                     step["speech_scene"] = deepcopy(plan["speech_scene"])
-        if not quiet_steps:
-            if decision.inner:
-                await self.remember_speech_decision(state, target, decision, trigger="plan", outcome=outcome,
-                    drafts=lines if blocked else [], blocked_reason=blocked)
-            return None
         return plan
 
     async def note_expression(self, state, outcome, raw, lines, *, target, trigger, options=None):
@@ -268,7 +264,8 @@ class SpeechDecisionsMixin:
         with capture_attempt(target) as attempt:
             raw = await self.ask_speech(state, target, system, prompt, **kwargs)
         return raw, parse_decision(raw or "", targets, allowed=allowed,
-                                   recorded_inner=recorded_inner, generation_error=attempt.error, strict_reply=strict_reply)
+                                   recorded_inner=recorded_inner, generation_error=attempt.error,
+                                   strict_reply=strict_reply, require_say=True)
 
     async def _ask_speech_media(self, state, target, system, prompt, *, rows, images=None):
         media = getattr(self, "media", None)

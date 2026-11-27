@@ -17,7 +17,12 @@ from ..core.ports import CardResult, PokeResult
 from ..core.speech_policy import segment_allowed, segment_ready, reply_target, accept_segment, contact_targets
 from .group_names import GroupNamesMixin
 from .group_mentions import GroupMentions, addressed_chain, has_body
-from .platform_capabilities import QQ_OFFICIAL, official_delivery_hold, platform_family
+from .platform_capabilities import (
+    QQ_OFFICIAL,
+    official_delivery_hold,
+    platform_family,
+    session_transport_available,
+)
 
 if TYPE_CHECKING:
     from .. import MyWorldPlugin
@@ -45,6 +50,9 @@ class AstrBotMessenger(GroupNamesMixin):
         texts = self._sent_texts.get() or []
         self._sent_texts.set(None)
         return list(texts)
+
+    def transport_available(self, session_id: str) -> bool:
+        return session_transport_available(self.plugin, session_id)
 
     def take_sent_images(self, session_id: str) -> list[str]:
         """This task's last accepted image group, after transport filtering."""

@@ -7,6 +7,22 @@ from typing import Any
 QQ_OFFICIAL = frozenset({"qq_official", "qq_official_webhook"})
 
 
+def session_transport_available(plugin: Any, session: str) -> bool:
+    """Only a known AstrBot platform inventory can mark a route unavailable."""
+    parts = session.split(":", 2)
+    if len(parts) != 3 or not all(parts):
+        return True
+    context = plugin.context
+    manager = getattr(context, "platform_manager", None)
+    if not isinstance(getattr(manager, "platform_insts", None), (list, tuple)):
+        return True
+    getter = getattr(context, "get_platform_inst", None)
+    try:
+        return not callable(getter) or getter(parts[0]) is not None
+    except Exception:
+        return True
+
+
 def target_platform(plugin: Any, session: str) -> Any:
     getter = getattr(plugin.context, "get_platform_inst", None)
     try:

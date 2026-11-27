@@ -38,21 +38,25 @@ def _continuation_topics(text: str) -> set[str]:
 
 def attention_text(row: dict) -> str:
     """Quoted text/vision annotations are context, not the author's new contribution."""
-    text = chat_core_text(str(row.get("reading_text", row.get("text", "")) or "")).strip()
+    text = chat_core_text(str(row.get("reading_text", row.get("raw_text", row.get("text", ""))) or "")).strip()
     if re.fullmatch(r"(?:\s*[\[［「](?:图片|图像|动画表情|表情包|表情|视频|image|video)(?:[:：][^\]］」]*)?[\]］」]\s*)+", text, re.I):
         return ""
     return text
 
 
+def has_media(row: dict) -> bool:
+    return bool(row.get("has_images") or row.get("images") or row.get("has_videos"))
+
+
 def media_scene_allowed(*, rows: list[dict], new: list[dict], now: float,
                         mode: str = "contextual") -> bool:
     """A bare image alone is not a summons or evidence of topic relevance."""
-    if not any(row.get("has_images") or row.get("images") or row.get("has_videos") for row in new):
+    if not any(has_media(row) for row in new):
         return True
     turns = visible_turns(rows, now)
     own_ids = {mid for t in turns for mid in t["message_ids"]}
     for row in new:
-        media = row.get("has_images") or row.get("images") or row.get("has_videos")
+        media = has_media(row)
         explicit = (row.get("addressing") == "me" or
                     str((row.get("reply_to") or {}).get("message_id") or "") in own_ids)
         text = attention_text(row)
@@ -140,8 +144,7 @@ def assess_opportunity(*, now: float, rows: list[dict], new: list[dict],
     content = []
     for row in new:
         text = attention_text(row)
-        if ((text and text.casefold() not in _ACKNOWLEDGEMENTS) or row.get("has_images")
-                or row.get("images") or row.get("addressing") == "me"):
+        if (text and text.casefold() not in _ACKNOWLEDGEMENTS) or has_media(row) or row.get("addressing") == "me":
             content.append(row)
     if not content:
         return Opportunity(False, "这批只有简短应答或空白，等待新的具体内容", now + 30,

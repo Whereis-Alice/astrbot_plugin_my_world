@@ -34,6 +34,30 @@ class SleepRhythmTests(unittest.IsolatedAsyncioTestCase):
             await self.engine._tick_sleep_rhythm(state, outcome)
         return outcome
 
+    async def test_ordinary_assessment_follows_the_configured_night(self):
+        self.engine.world.night.start_hour = 19
+        self.engine.world.night.end_hour = 2
+        self.clock.set_struct(datetime(2026, 10, 19, 17, 30))
+        self.llm.replies = ['{"decision":"continue","review_minutes":30,"reason":"等手上的事收尾"}']
+        await self.assess()
+        self.assertEqual(len(self.llm.calls), 1)
+        self.assertEqual((await self.get_state()).sleep_rhythm["source"], "llm")
+
+    async def test_disabled_pressure_does_not_trigger_sleep_from_saved_pressure(self):
+        self.engine.world.sleep.pressure_enabled = False
+        self.clock.set_struct(datetime(2026, 10, 19, 12, 30))
+        await self.set_state(sleep_pressure=.95)
+        await self.assess()
+        self.assertEqual(self.llm.calls, [])
+        self.assertIsNone((await self.get_state()).current_action)
+
+    async def test_overflowing_model_duration_uses_the_bounded_default(self):
+        self.llm.replies = ['{"decision":"continue","hours":' + ("9" * 400) + '}']
+        await self.assess()
+        rhythm = (await self.get_state()).sleep_rhythm
+        self.assertEqual(rhythm["source"], "llm")
+        self.assertEqual(rhythm["duration_seconds"], 8 * 3600)
+
     def add_due_schedule(self, *, chain=None):
         self.store.save_schedules({"schedules":[{"id":"evening_activity", "time":"21:30",
             "smart":False, "auto_travel":False,

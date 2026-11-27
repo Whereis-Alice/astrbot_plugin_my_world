@@ -39,6 +39,7 @@ class SendMixin:
             str(item)
             for item in self.group_sessions(state.session_id)
             if ":GroupMessage:" in str(item) and self.is_enabled(str(item))
+            and self.session_transport_available(str(item))
         ]
         owner = getattr(self.messenger, "group_card_owner", None)
         if callable(owner):
@@ -728,6 +729,8 @@ class SendMixin:
             await send_target(target, view)
         outcome.delivered_messages.update(delivered)
         if delivered or delivered_images:
+            chat_delivered = {record["target"] for record in outcome.accepted_receipts.values()
+                if (record.get("kind") in CHAT_KINDS or CHAT_KINDS.intersection(record.get("kinds", ())))}
             async with receipt_state(self, outcome.session_id, owner=owner) as state:
                 if autonomous_delivered:
                     self.engagement.on_bot_spoke(state)
@@ -735,7 +738,7 @@ class SendMixin:
                 if interject_delivered:
                     state.last_interject_at = self._now()
                 for target in dict.fromkeys([*delivered, *delivered_images]):
-                    if outcome.chat_claims.get(target):
+                    if target in chat_delivered and outcome.chat_claims.get(target):
                         seqs = set(outcome.chat_claims[target])
                         # Archive sequence numbers also exist on transports without message IDs.
                         observed = [row for row in state.recent_chat

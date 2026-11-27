@@ -111,6 +111,33 @@ class ChatBrowseBrowserTests(unittest.TestCase):
         expect(self.page.locator('#thought-session option').first).to_have_text('我写的备注 · 1001')
         self.assertEqual(self.errors, [])
 
+    def test_inactive_adapter_history_remains_readable_without_being_selected_by_default(self):
+        self.context.add_init_script(script="""(() => {
+          const read = AstrBotPluginPage.apiGet;
+          const old = 'old:GroupMessage:123';
+          AstrBotPluginPage.apiGet = async (key, params) => {
+            if (key === 'thoughts') {
+              return {session: params.session, thoughts: [{content: params.session === old
+                ? '旧群里留下的想法' : '今天的想法'}]};
+            }
+            const data = await read(key, params);
+            if (key === 'config') {
+              data.inactive_session_adapters = [old];
+              data.sessions.sessions.unshift({session_id: old, type: 'group', enabled: true});
+            }
+            return data;
+          };
+        })();""")
+        self.host.reload()
+        self.page = self.host.frame(name='editor')
+        self.page.locator('button[data-tab="thoughts"]').click()
+        picker = self.page.locator('#thought-session')
+        expect(picker).to_have_value('aiocqhttp:GroupMessage:1001')
+        expect(picker.locator('optgroup[label="历史会话"] option')).to_have_text('群聊 · 123')
+        picker.select_option('old:GroupMessage:123')
+        expect(self.page.locator('#thoughts-list')).to_contain_text('旧群里留下的想法')
+        self.assertEqual(self.errors, [])
+
     def test_devices_source_range_and_budget_save_together(self):
         self.page.evaluate("""() => {
           const post = AstrBotPluginPage.apiPost; window.browseWrites=[];

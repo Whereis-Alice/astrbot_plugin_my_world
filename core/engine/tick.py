@@ -398,12 +398,6 @@ class TickMixin:
                 f"t={state.world_time} node={state.node_id} state={state.state} mood={state.mood}"
             )
             self._filter_proactive_speech(outcome)
-            if outcome.messages:
-                # 她这一轮主动开口了，也算回应过了这些群聊内容
-                self.mark_chat_replied(state, outcome.session_id)
-            for target in list((outcome.routed or {}).keys()):
-                # 说给别处的那几句，也让那个会话的留言算"回应过"
-                self.mark_chat_replied(state, target)
             await self._echo_events_since(state, outcome, echo_marker)
         return outcome
 
